@@ -1,0 +1,14 @@
+(executable
+ (name reviewotron)
+ (public_name reviewotron)
+ (libraries
+  reviewotron_lib
+  cmdliner
+  devkit
+  devkit.core
+  extlib
+  lwt.unix
+  unix
+  mirage-crypto-rng.unix)
+ (preprocess
+  (pps lwt_ppx)))

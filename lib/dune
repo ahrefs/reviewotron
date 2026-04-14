@@ -1,0 +1,87 @@
+(library
+ (name reviewotron_lib)
+ (libraries
+  atdgen-runtime
+  base64
+  containers
+  curl
+  devkit
+  devkit.core
+  extlib
+  digestif
+  lwt
+  lwt.unix
+  unix
+  mirage-crypto-pk
+  ppx_deriving_jsonschema.runtime
+  ptime
+  ptime.clock.os
+  re2
+  x509
+  yojson)
+ (preprocess
+  (pps lwt_ppx ppx_deriving_jsonschema)))
+
+(rule
+ (targets
+  github_types_t.ml
+  github_types_t.mli
+  github_types_j.ml
+  github_types_j.mli)
+ (deps github_types.atd)
+ (action
+  (progn
+   (run %{bin:atdgen} -j %{deps})
+   (run %{bin:atdgen} -t %{deps}))))
+
+(rule
+ (targets config_t.ml config_t.mli config_j.ml config_j.mli)
+ (deps config.atd)
+ (action
+  (progn
+   (run %{bin:atdgen} -j %{deps})
+   (run %{bin:atdgen} -t %{deps}))))
+
+(rule
+ (targets
+  review_types_t.ml
+  review_types_t.mli
+  review_types_j.ml
+  review_types_j.mli)
+ (deps review_types.atd)
+ (action
+  (progn
+   (run %{bin:atdgen} -j %{deps})
+   (run %{bin:atdgen} -t %{deps}))))
+
+(rule
+ (targets
+  anthropic_types_t.ml
+  anthropic_types_t.mli
+  anthropic_types_j.ml
+  anthropic_types_j.mli)
+ (deps anthropic_types.atd)
+ (action
+  (progn
+   (run %{bin:atdgen} -j %{deps})
+   (run %{bin:atdgen} -t %{deps}))))
+
+(rule
+ (targets state_t.ml state_t.mli state_j.ml state_j.mli)
+ (deps state.atd)
+ (action
+  (progn
+   (run %{bin:atdgen} -j %{deps})
+   (run %{bin:atdgen} -t %{deps}))))
+
+(rule
+ (targets
+  slack_types_t.ml
+  slack_types_t.mli
+  slack_types_j.ml
+  slack_types_j.mli)
+ (deps slack_types.atd)
+ (action
+  (progn
+   (run %{bin:atdgen} -j %{deps})
+   (run %{bin:atdgen} -t %{deps}))))

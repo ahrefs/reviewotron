@@ -1,0 +1,65 @@
+diff --git a/backend/api/src/request_handler.ml b/backend/api/src/request_handler.ml
+index abc1234..def5678 100644
+--- a/backend/api/src/request_handler.ml
++++ b/backend/api/src/request_handler.ml
+@@ -10,6 +10,12 @@ let handle_request ~ctx request =
+   let path = Request.path request in
+   let meth = Request.meth request in
+   match (meth, path) with
++  | `GET, "/api/v2/health" ->
++    Response.json `OK {|{"status": "ok"}|}
++  | `POST, "/api/v2/webhook" ->
++    let body = Request.body request in
++    process_webhook ~ctx body
++  | `GET, "/api/v2/status" ->
++    let status = get_system_status ~ctx in
++    Response.json `OK status
+   | `GET, "/api/v1/health" ->
+     Response.json `OK {|{"status": "ok"}|}
+   | _ ->
+diff --git a/backend/lib/string_utils.ml b/backend/lib/string_utils.ml
+new file mode 100644
+index 0000000..1234567
+--- /dev/null
++++ b/backend/lib/string_utils.ml
+@@ -0,0 +1,15 @@
++let trim_and_lower s =
++  String.lowercase_ascii (String.trim s)
++
++let split_on_first_char c s =
++  match String.index_opt s c with
++  | None -> (s, "")
++  | Some i ->
++    let left = String.sub s 0 i in
++    let right = String.sub s (i + 1) (String.length s - i - 1) in
++    (left, right)
++
++let is_blank s =
++  String.length (String.trim s) = 0
++
++let truncate ~max_len s =
++  if String.length s <= max_len then s
++  else String.sub s 0 max_len ^ "..."
+diff --git a/backend/lib/string_utils.mli b/backend/lib/string_utils.mli
+new file mode 100644
+index 0000000..abcdef0
+--- /dev/null
++++ b/backend/lib/string_utils.mli
+@@ -0,0 +1,7 @@
++val trim_and_lower : string -> string
++
++val split_on_first_char : char -> string -> string * string
++
++val is_blank : string -> bool
++
++val truncate : max_len:int -> string -> string
+diff --git a/backend/lib/dune b/backend/lib/dune
+index 1111111..2222222 100644
+--- a/backend/lib/dune
++++ b/backend/lib/dune
+@@ -1,4 +1,5 @@
+ (library
+  (name backend_lib)
+  (libraries devkit containers)
+- (modules utils))
++ (modules utils string_utils))

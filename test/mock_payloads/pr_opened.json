@@ -1,0 +1,87 @@
+{
+  "action": "opened",
+  "number": 42,
+  "pull_request": {
+    "number": 42,
+    "title": "Add feature X to the dashboard",
+    "body": "This PR adds a new feature X that improves the dashboard performance.\n\n## Changes\n- Added new component\n- Updated styles\n- Added tests",
+    "html_url": "https://github.com/org/monorepo/pull/42",
+    "diff_url": "https://github.com/org/monorepo/pull/42.diff",
+    "state": "open",
+    "draft": false,
+    "merged": false,
+    "labels": [],
+    "comments": 0,
+    "user": {
+      "login": "developer1",
+      "id": 12345,
+      "url": "https://api.github.com/users/developer1",
+      "html_url": "https://github.com/developer1",
+      "avatar_url": "https://avatars.githubusercontent.com/u/12345?v=4"
+    },
+    "head": {
+      "sha": "abc123def456789012345678901234567890abcd",
+      "ref": "feature/add-feature-x",
+      "label": "ahrefs:feature/add-feature-x",
+      "repo": {
+        "name": "monorepo",
+        "full_name": "org/monorepo",
+        "html_url": "https://github.com/org/monorepo",
+        "commits_url": "https://api.github.com/repos/org/monorepo/commits{/sha}",
+        "contents_url": "https://api.github.com/repos/org/monorepo/contents/{+path}",
+        "pulls_url": "https://api.github.com/repos/org/monorepo/pulls{/number}",
+        "issues_url": "https://api.github.com/repos/org/monorepo/issues{/number}",
+        "compare_url": "https://api.github.com/repos/org/monorepo/compare/{base}...{head}"
+      },
+      "user": {
+        "login": "developer1",
+        "id": 12345,
+        "url": "https://api.github.com/users/developer1",
+        "html_url": "https://github.com/developer1",
+        "avatar_url": "https://avatars.githubusercontent.com/u/12345?v=4"
+      }
+    },
+    "base": {
+      "sha": "def456789012345678901234567890abcdef1234",
+      "ref": "develop",
+      "label": "ahrefs:develop",
+      "repo": {
+        "name": "monorepo",
+        "full_name": "org/monorepo",
+        "html_url": "https://github.com/org/monorepo",
+        "commits_url": "https://api.github.com/repos/org/monorepo/commits{/sha}",
+        "contents_url": "https://api.github.com/repos/org/monorepo/contents/{+path}",
+        "pulls_url": "https://api.github.com/repos/org/monorepo/pulls{/number}",
+        "issues_url": "https://api.github.com/repos/org/monorepo/issues{/number}",
+        "compare_url": "https://api.github.com/repos/org/monorepo/compare/{base}...{head}"
+      },
+      "user": {
+        "login": "developer1",
+        "id": 12345,
+        "url": "https://api.github.com/users/developer1",
+        "html_url": "https://github.com/developer1",
+        "avatar_url": "https://avatars.githubusercontent.com/u/12345?v=4"
+      }
+    },
+    "additions": 150,
+    "deletions": 30,
+    "changed_files": 5
+  },
+  "repository": {
+    "name": "monorepo",
+    "full_name": "org/monorepo",
+    "html_url": "https://github.com/org/monorepo",
+    "commits_url": "https://api.github.com/repos/org/monorepo/commits{/sha}",
+    "contents_url": "https://api.github.com/repos/org/monorepo/contents/{+path}",
+    "pulls_url": "https://api.github.com/repos/org/monorepo/pulls{/number}",
+    "issues_url": "https://api.github.com/repos/org/monorepo/issues{/number}",
+    "compare_url": "https://api.github.com/repos/org/monorepo/compare/{base}...{head}"
+  },
+  "sender": {
+    "login": "developer1",
+    "id": 12345,
+    "url": "https://api.github.com/users/developer1",
+    "html_url": "https://github.com/developer1",
+    "avatar_url": "https://avatars.githubusercontent.com/u/12345?v=4"
+  }
+}
