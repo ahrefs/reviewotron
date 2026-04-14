@@ -11,6 +11,7 @@
   digestif
   lwt
   lwt.unix
+  melange-json-native
   unix
   mirage-crypto-pk
   ppx_deriving_jsonschema.runtime
@@ -20,7 +21,7 @@
   x509
   yojson)
  (preprocess
-  (pps lwt_ppx ppx_deriving_jsonschema)))
+  (pps lwt_ppx melange-json-native.ppx ppx_deriving_jsonschema)))
 
 (rule
  (targets
