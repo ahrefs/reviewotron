@@ -98,7 +98,7 @@ module Make (GH : Api.Github) (AI : Api.Claude) (SL : Api.Slack) = struct
       Returns [Ok (filtered_diff, filtered_diff_text)] or [Error reason]. *)
   let prepare_diff ~config diff_text =
     let parsed_diff = Diff_parser.parse diff_text in
-    let filtered_diff = Diff_parser.filter_paths parsed_diff ~ignored:config.Config_t.ignored_paths in
+    let filtered_diff = Diff_parser.filter_paths parsed_diff ~ignored:config.Config_types.ignored_paths in
     let total_lines = Diff_parser.total_lines filtered_diff in
     match filtered_diff with
     | [] -> Error `Empty

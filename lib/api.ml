@@ -2,7 +2,7 @@
     Real implementations live in {!Api_remote}, mock implementations in {!Api_local}. *)
 
 module type Github = sig
-  val get_config : ctx:Context.t -> repo_url:string -> (Config_t.config, string) result Lwt.t
+  val get_config : ctx:Context.t -> repo_url:string -> (Config_types.config, string) result Lwt.t
 
   val get_pr_files :
     ctx:Context.t -> repo_url:string -> number:int -> (Github_types_t.pull_request_file list, string) result Lwt.t

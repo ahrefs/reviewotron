@@ -38,3 +38,25 @@ NOTES:
 - The `Melange_json.to_string`/`of_string` + `to_json`/`of_json` composition pattern should be used for all future ATD migrations in api_remote.ml
 - Next task (P0.3: state.atd migration) can follow the same pattern established here
 </task-result>
+=== P0.3: Migrate state.atd to OCaml types with [@@deriving json] ===
+Completed: 2026-04-14 22:33:03
+<task-result>
+TASK_ID: P0.3
+STATUS: DONE
+FILES_CHANGED: lib/state_types.ml (NEW), lib/state_types.mli (NEW), lib/state.ml, lib/state.mli, lib/dune, lib/state.atd (DELETED)
+DECISIONS:
+- `review_record`, `push_review_record`, and `repo_state` use `[@@deriving json]` from melange-json-native
+- `state` type has manual `state_to_json`/`state_of_json` because ATD used `<json repr="object">` for the `repos` field (assoc list serialized as JSON object), which melange-json-native has no annotation for. PRD rule "No manual JSON unless impossible" — this is a genuine impossibility.
+- `[@json.default []]` on `pr_reviews` and `push_reviews` replicates ATD's `~field <ocaml default="[]">` behavior
+- `.mli` exposes types with `[@@deriving json]` for auto-generated val signatures, plus manual `val state_to_json`/`val state_of_json`
+- `save` uses `Yojson.Basic.pretty_to_string` (melange-json-native uses `Yojson.Basic.t`, not `Safe.t`)
+- `load` uses `State_types.state_of_json (Melange_json.of_string content)` composition pattern (same as P0.2)
+- All `State_t.` references → `State_types.`, all `State_j.` references → `State_types.` + `Melange_json` composition
+NOTES:
+- The JSON format is backward compatible with existing state files (verified by state_persistence tests passing)
+- melange-json-native uses `Yojson.Basic.t` — any future consumer that mixes with ATD types (which use `Yojson.Safe.t`) needs to be aware of this distinction
+- Review and simplify passes found no issues specific to this migration; all findings were pre-existing patterns
+- All 54 tests pass, build clean, formatter clean
+- Next task (P0.4: config.atd migration) can follow this same pattern. Note config.atd may have more complex types — check for `<json repr="object">` and other ATD annotations
+</task-result>
+

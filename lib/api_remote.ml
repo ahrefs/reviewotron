@@ -88,7 +88,7 @@ module Github : Api.Github = struct
       let cleaned = Stre.replace_all ~str:response.content ~sub:"\n" ~by:"" in
       (match Base64.decode cleaned with
       | Ok decoded ->
-        (match Config_j.config_of_string decoded with
+        (match Config_types.config_of_json (Melange_json.of_string decoded) with
         | config -> Lwt.return (Ok config)
         | exception exn -> Lwt.return (Error (Printf.sprintf "failed to parse config JSON: %s" (Exn.str exn))))
       | Error (`Msg msg) -> Lwt.return (Error (Printf.sprintf "failed to decode base64 config: %s" msg)))
