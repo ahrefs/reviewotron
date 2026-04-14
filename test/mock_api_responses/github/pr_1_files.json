@@ -1,0 +1,26 @@
+[
+  {
+    "sha": "abc123def456",
+    "filename": "src/main.ml",
+    "status": "modified",
+    "additions": 5,
+    "deletions": 2,
+    "changes": 7,
+    "blob_url": "https://github.com/org/repo/blob/abc123/src/main.ml",
+    "raw_url": "https://github.com/org/repo/raw/abc123/src/main.ml",
+    "contents_url": "https://api.github.com/repos/org/repo/contents/src/main.ml?ref=abc123",
+    "patch": "@@ -10,7 +10,10 @@ let main () =\n   let config = load_config () in\n-  let old_value = 42 in\n-  process old_value\n+  let new_value = 100 in\n+  let result = process new_value in\n+  log_result result;\n+  print_endline \"done\";\n+  result"
+  },
+  {
+    "sha": "abc123def457",
+    "filename": "src/utils.ml",
+    "status": "added",
+    "additions": 8,
+    "deletions": 0,
+    "changes": 8,
+    "blob_url": "https://github.com/org/repo/blob/abc123/src/utils.ml",
+    "raw_url": "https://github.com/org/repo/raw/abc123/src/utils.ml",
+    "contents_url": "https://api.github.com/repos/org/repo/contents/src/utils.ml?ref=abc123",
+    "patch": "@@ -0,0 +1,8 @@\n+let log_result result =\n+  Printf.printf \"Result: %d\\n\" result\n+\n+let process value =\n+  let doubled = value * 2 in\n+  let incremented = doubled + 1 in\n+  Printf.printf \"Processing: %d -> %d\\n\" value incremented;\n+  incremented"
+  }
+]

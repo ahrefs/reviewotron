@@ -1,0 +1,3 @@
+pin-depends: [
+  ["devkit.dev" "https://github.com/ahrefs/devkit/archive/8319a1419088506ac2862c444f62bf60ccfa34d6.tar.gz"]
+]

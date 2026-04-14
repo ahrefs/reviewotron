@@ -1,0 +1,27 @@
+(* Slack Web API payload types *)
+
+type slack_field = {
+  title: string;
+  value: string;
+  short: bool;
+}
+
+type slack_attachment = {
+  color: string;
+  title: string;
+  title_link: string;
+  text: string;
+  ~fields <ocaml default="[]">: slack_field list;
+  ?footer: string option;
+}
+
+type slack_message = {
+  channel: string;
+  text: string;
+  ?attachments: slack_attachment list option;
+}
+
+type slack_api_response = {
+  ok: bool;
+  ?error: string option;
+}

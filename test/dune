@@ -1,0 +1,26 @@
+(test
+ (name test)
+ (modules test test_helpers)
+ (libraries
+  reviewotron_lib
+  devkit
+  alcotest
+  containers
+  digestif
+  extlib
+  lwt
+  lwt.unix
+  yojson)
+ (deps
+  (glob_files mock_payloads/*.json)
+  (glob_files_rec mock_api_responses/github/*)
+  (glob_files_rec mock_api_responses/claude/*))
+ (preprocess
+  (pps lwt_ppx)))
+
+(test
+ (name test_diff_parser)
+ (modules test_diff_parser)
+ (libraries reviewotron_lib alcotest extlib fmt)
+ (deps
+  (glob_files_rec mock_api_responses/github/*)))

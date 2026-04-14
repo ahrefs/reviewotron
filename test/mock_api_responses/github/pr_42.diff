@@ -1,0 +1,27 @@
+diff --git a/src/main.ml b/src/main.ml
+index 1234567..abcdefg 100644
+--- a/src/main.ml
++++ b/src/main.ml
+@@ -10,7 +10,10 @@ let main () =
+   let config = load_config () in
+-  let old_value = 42 in
+-  process old_value
++  let new_value = 100 in
++  let result = process new_value in
++  log_result result;
++  print_endline "done";
++  result
+diff --git a/src/utils.ml b/src/utils.ml
+new file mode 100644
+index 0000000..fedcba9
+--- /dev/null
++++ b/src/utils.ml
+@@ -0,0 +1,8 @@
++let log_result result =
++  Printf.printf "Result: %d\n" result
++
++let process value =
++  let doubled = value * 2 in
++  let incremented = doubled + 1 in
++  Printf.printf "Processing: %d -> %d\n" value incremented;
++  incremented
