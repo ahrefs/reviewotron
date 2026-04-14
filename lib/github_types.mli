@@ -1,0 +1,210 @@
+(** GitHub webhook and API types. *)
+
+(** {2 Scalar aliases} *)
+
+type commit_hash = string [@@deriving json]
+
+type pr_action = string [@@deriving json]
+
+(** {2 Core user types} *)
+
+type git_user = {
+  name : string;
+  email : string;
+  username : string option;
+}
+[@@deriving json]
+
+type github_user = {
+  login : string;
+  id : int;
+  url : string;
+  html_url : string;
+  avatar_url : string;
+}
+[@@deriving json]
+
+type label = { name : string } [@@deriving json]
+
+(** {2 Repository} *)
+
+type repository = {
+  name : string;
+  full_name : string;
+  url : string;
+  commits_url : string;
+  contents_url : string;
+  pulls_url : string;
+  issues_url : string;
+  compare_url : string;
+}
+[@@deriving json]
+
+(** {2 Commit types} *)
+
+type commit = {
+  id : commit_hash;
+  distinct : bool;
+  message : string;
+  timestamp : string;
+  url : string;
+  author : git_user;
+  committer : git_user;
+  added : string list;
+  removed : string list;
+  modified : string list;
+}
+[@@deriving json]
+
+type commit_pushed_notification = {
+  ref_ : string;
+  before : commit_hash;
+  after : commit_hash;
+  base_ref : string option;
+  created : bool;
+  deleted : bool;
+  forced : bool;
+  commits : commit list;
+  head_commit : commit option;
+  repository : repository;
+  compare : string;
+  pusher : git_user;
+  sender : github_user;
+}
+[@@deriving json]
+
+(** {2 Pull request types} *)
+
+type pr_branch = {
+  sha : commit_hash;
+  ref_ : string;
+  label : string;
+  repo : repository option;
+  user : github_user option;
+}
+[@@deriving json]
+
+type pull_request = {
+  number : int;
+  title : string;
+  body : string option;
+  html_url : string;
+  diff_url : string;
+  state : string;
+  user : github_user;
+  head : pr_branch;
+  base : pr_branch;
+  draft : bool;
+  merged : bool;
+  labels : label list;
+  comments : int;
+  additions : int;
+  deletions : int;
+  changed_files : int;
+}
+[@@deriving json]
+
+type installation = { id : int } [@@deriving json]
+
+type pr_notification = {
+  action : pr_action;
+  number : int;
+  pull_request : pull_request;
+  repository : repository;
+  sender : github_user;
+  installation : installation option;
+}
+[@@deriving json]
+
+(** {2 GitHub API response types} *)
+
+type pull_request_file = {
+  sha : string option;
+  filename : string;
+  status : string;
+  additions : int;
+  deletions : int;
+  changes : int;
+  blob_url : string;
+  raw_url : string;
+  contents_url : string;
+  patch : string option;
+  previous_filename : string option;
+}
+[@@deriving json]
+
+(** {2 Diff side — bare string enum} *)
+
+type diff_side =
+  | Left
+  | Right
+
+val diff_side_to_string : diff_side -> string
+val diff_side_of_string : string -> diff_side
+val diff_side_to_json : diff_side -> Yojson.Basic.t
+val diff_side_of_json : Yojson.Basic.t -> diff_side
+
+(** {2 Review event — bare string enum} *)
+
+type review_event =
+  | Comment
+  | Approve
+  | Request_changes
+
+val review_event_to_string : review_event -> string
+val review_event_of_string : string -> review_event
+val review_event_to_json : review_event -> Yojson.Basic.t
+val review_event_of_json : Yojson.Basic.t -> review_event
+
+(** {2 Review request types} *)
+
+type review_comment_req = {
+  path : string;
+  position : int option;
+  line : int option;
+  side : diff_side option;
+  start_line : int option;
+  start_side : diff_side option;
+  body : string;
+}
+[@@deriving json]
+
+type create_review_req = {
+  commit_id : string option;
+  body : string;
+  event : review_event;
+  comments : review_comment_req list;
+}
+
+val create_review_req_to_json : create_review_req -> Yojson.Basic.t
+val create_review_req_of_json : Yojson.Basic.t -> create_review_req
+
+type commit_comment_req = {
+  body : string;
+  path : string option;
+  position : int option;
+  line : int option;
+}
+[@@deriving json]
+
+(** {2 Webhook envelope} *)
+
+type webhook_envelope = { repository : repository } [@@deriving json]
+
+(** {2 GitHub Contents API response} *)
+
+type content_api_response = {
+  content : string;
+  encoding : string;
+  name : string;
+  path : string;
+}
+[@@deriving json]
+
+(** {2 GitHub App installation token} *)
+
+type installation_token_response = {
+  token : string;
+  expires_at : string;
+}
+[@@deriving json]

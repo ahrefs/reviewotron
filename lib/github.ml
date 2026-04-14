@@ -21,8 +21,8 @@ let pr_action_of_string = function
   | s -> Other s
 
 type event =
-  | Pull_request of Github_types_t.pr_notification
-  | Push of Github_types_t.commit_pushed_notification
+  | Pull_request of Github_types.pr_notification
+  | Push of Github_types.commit_pushed_notification
   | Unknown of string
 
 let repo_url_of_event = function
@@ -43,14 +43,14 @@ let parse_event ~event_type ~body =
   match event_type with
   | "pull_request" ->
     (try
-       let n = Github_types_j.pr_notification_of_string body in
+       let n = Github_types.pr_notification_of_json (Melange_json.of_string body) in
        log#info "[%s] PR #%d: action=%s, title=%s, user=%s" n.repository.full_name n.pull_request.number n.action
          n.pull_request.title n.pull_request.user.login;
        Ok (Pull_request n)
      with exn -> Error (Printf.sprintf "failed to parse pull_request payload: %s" (Exn.str exn)))
   | "push" ->
     (try
-       let n = Github_types_j.commit_pushed_notification_of_string body in
+       let n = Github_types.commit_pushed_notification_of_json (Melange_json.of_string body) in
        let num_commits = List.length n.commits in
        log#info "[%s] push: ref=%s, commits=%d, pusher=%s" n.repository.full_name n.ref_ num_commits n.pusher.name;
        Ok (Push n)

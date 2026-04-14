@@ -68,7 +68,7 @@ let exchange_installation_token (app : Config_types.app_installation_cfg) =
       log#error "%s" msg;
       Lwt.return (Error msg)
     | Ok body ->
-    match Github_types_j.installation_token_response_of_string body with
+    match Github_types.installation_token_response_of_json (Melange_json.of_string body) with
     | resp ->
       cache_token ~installation_id:app.installation_id resp.token;
       log#info "obtained installation token for installation %s" app.installation_id;

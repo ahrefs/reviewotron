@@ -83,3 +83,26 @@ NOTES:
 - melange-json-native uses `Yojson.Basic.t` — any code mixing with ATD types (which use `Yojson.Safe.t`) needs awareness of this distinction
 - All 54 tests pass, build clean, formatter clean
 
+=== P0.5: Migrate review_types.atd to OCaml types with [@@deriving json, jsonschema] ===
+Completed: 2026-04-14 23:37:35
+<task-result>
+TASK_ID: P0.5
+STATUS: DONE
+FILES_CHANGED: lib/review_types.ml (NEW), lib/review_types.mli (NEW), lib/review_types.atd (DELETED), lib/review_prompt.ml, lib/review_prompt.mli, lib/review_format.ml, lib/review_format.mli, lib/reviewer.ml, lib/api.ml, lib/api_remote.ml, lib/api_local.ml, lib/dune, test/test.ml
+DECISIONS:
+- `severity` and `finding_category` have manual `to_json`/`of_json` because they are open string enums (bare string encoding like `"critical"`, `"error-handling"`) incompatible with melange-json-native's array-based variant encoding (`["Name", payload]`). Justified under PRD "no manual JSON unless impossible."
+- Manual `jsonschema` functions for enum types produce `{"type": "string"}` — matches the pre-existing schema behavior in review_prompt.ml
+- `finding` and `review_output` use `[@@deriving json, jsonschema]` with `[@@json.allow_extra_fields]` for parsing robustness (matches ATD's default ignore-unknown-fields behavior)
+- Extracted `severity_to_string` and `finding_category_to_string` helpers — used by both `_to_json` and `review_format.ml`, eliminating 20+ lines of duplicated variant-to-string mapping
+- `review_prompt.ml` duplicate type hierarchy (30 lines) deleted — now references `Review_types.review_output_jsonschema` directly
+- Dropped `Ppx_deriving_jsonschema_runtime.json_schema` wrapper (only added `$schema` metadata not needed for Anthropic tool schemas) — uses direct coercion `(review_output_jsonschema :> Yojson.Safe.t)` instead
+- `api_remote.ml` uses `Yojson.Safe.to_basic` instead of string round-trip for Safe→Basic conversion
+- `.mli` uses explicit val signatures (not `[@@deriving]` in interface) because ppx_deriving_jsonschema doesn't support sig_type_decl
+NOTES:
+- This is the first module using both `[@@deriving json]` AND `[@@deriving jsonschema]` — establishes the pattern for future security pipeline types
+- The `severity_to_string`/`finding_category_to_string` pattern should be reused when implementing security pipeline types (Phase 3+) that also need string-encoded enums (e.g., `vuln_class`, `confidence`)
+- `Yojson.Safe.to_basic` works for converting Anthropic API responses (Safe.t) to melange-json-native types (Basic.t) — use this instead of string round-trips in future ATD→melange-json migrations
+- `Yojson.Basic.t` can be coerced to `Yojson.Safe.t` via `:>` — no string round-trip needed when going the other direction
+- All 54 tests pass, build clean, formatter clean
+</task-result>
+
