@@ -36,14 +36,6 @@
    (run %{bin:atdgen} -t %{deps}))))
 
 (rule
- (targets config_t.ml config_t.mli config_j.ml config_j.mli)
- (deps config.atd)
- (action
-  (progn
-   (run %{bin:atdgen} -j %{deps})
-   (run %{bin:atdgen} -t %{deps}))))
-
-(rule
  (targets
   review_types_t.ml
   review_types_t.mli

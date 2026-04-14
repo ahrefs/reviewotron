@@ -58,7 +58,7 @@ let test_config_defaults () =
     "anthropic_api_key": "sk-test"
   }|}
   in
-  let secrets = Config_j.secrets_of_string json in
+  let secrets = Config_types.secrets_of_json (Melange_json.of_string json) in
   (check string) "api key" "sk-test" secrets.anthropic_api_key;
   (check string) "version default" "2023-06-01" secrets.anthropic_version;
   (check int) "repo count" 1 (List.length secrets.repos)
@@ -193,7 +193,7 @@ let test_pr_synchronize_review () =
 
 let test_pr_all_ignored_paths_skipped () =
   Test_helpers.reset_test_state ();
-  let config = Config_j.config_of_string {|{"ignored_paths": ["*.lock", "*.json"]}|} in
+  let config = Config_types.config_of_json (Melange_json.of_string {|{"ignored_paths": ["*.lock", "*.json"]}|}) in
   let ctx = Test_helpers.make_test_context ~config () in
   (* Use PR 99 which only has .lock and .json files *)
   let payload = Test_helpers.make_pr_payload ~number:99 ~title:"Update lock files" () in
@@ -219,7 +219,7 @@ let test_pr_empty_findings_review () =
 let test_pr_large_diff_skipped () =
   Test_helpers.reset_test_state ();
   (* Set max_diff_lines very low so the normal PR 42 diff exceeds it *)
-  let config = Config_j.config_of_string {|{"max_diff_lines": 1}|} in
+  let config = Config_types.config_of_json (Melange_json.of_string {|{"max_diff_lines": 1}|}) in
   let ctx = Test_helpers.make_test_context ~config () in
   let payload = read_file "mock_payloads/pr_opened.json" in
   let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
@@ -232,7 +232,7 @@ let test_pr_large_diff_skipped () =
 let test_push_review_e2e () =
   Test_helpers.reset_test_state ();
   Api_local.set_claude_response_path "mock_api_responses/claude/push_review_response.json";
-  let config = Config_j.config_of_string {|{"slack_channel": "dev-reviews"}|} in
+  let config = Config_types.config_of_json (Melange_json.of_string {|{"slack_channel": "dev-reviews"}|}) in
   let ctx = Test_helpers.make_test_context ~config () in
   let payload = read_file "mock_payloads/push_develop.json" in
   let event = Test_helpers.parse_event_exn ~event_type:"push" ~body:payload in
@@ -298,7 +298,7 @@ let test_duplicate_push_prevention () =
   Test_helpers.reset_test_state ();
   Api_local.set_claude_response_path "mock_api_responses/claude/push_review_response.json";
   let state = State.create () in
-  let config = Config_j.config_of_string {|{"slack_channel": "dev-reviews"}|} in
+  let config = Config_types.config_of_json (Melange_json.of_string {|{"slack_channel": "dev-reviews"}|}) in
   let ctx = Test_helpers.make_test_context ~state ~config () in
   let payload = read_file "mock_payloads/push_develop.json" in
   let event = Test_helpers.parse_event_exn ~event_type:"push" ~body:payload in
@@ -317,7 +317,7 @@ let test_duplicate_push_prevention () =
 
 let test_ignored_author_pr_skipped () =
   Test_helpers.reset_test_state ();
-  let config = Config_j.config_of_string {|{"ignored_authors": ["developer1"]}|} in
+  let config = Config_types.config_of_json (Melange_json.of_string {|{"ignored_authors": ["developer1"]}|}) in
   let ctx = Test_helpers.make_test_context ~config () in
   let payload = read_file "mock_payloads/pr_opened.json" in
   let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
@@ -327,7 +327,7 @@ let test_ignored_author_pr_skipped () =
 
 let test_ignored_author_push_skipped () =
   Test_helpers.reset_test_state ();
-  let config = Config_j.config_of_string {|{"ignored_authors": ["developer2"]}|} in
+  let config = Config_types.config_of_json (Melange_json.of_string {|{"ignored_authors": ["developer2"]}|}) in
   let ctx = Test_helpers.make_test_context ~config () in
   let payload = read_file "mock_payloads/push_develop.json" in
   let event = Test_helpers.parse_event_exn ~event_type:"push" ~body:payload in
