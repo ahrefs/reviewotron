@@ -71,7 +71,7 @@ module Claude : Api.Claude = struct
 end
 
 (** Recorded Slack messages for test assertions. *)
-let slack_posted_messages : (string * string * Slack_types_t.slack_attachment list option) list ref = ref []
+let slack_posted_messages : (string * string * Slack_types.slack_attachment list option) list ref = ref []
 
 module Slack : Api.Slack = struct
   let post_message ~ctx:_ ~channel ~text ?attachments () =

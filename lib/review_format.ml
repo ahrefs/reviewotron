@@ -44,7 +44,7 @@ let format_slack_attachment ~compare_url ~pusher_name ~num_commits ~(review : Re
   let critical, warnings, suggestions = count_by_severity review.findings in
   let findings_str = Printf.sprintf "%d critical, %d warnings, %d suggestions" critical warnings suggestions in
   let color = if critical > 0 then "#dc3545" else "#36a64f" in
-  Slack_types_t.
+  Slack_types.
     {
       color;
       title = Printf.sprintf "Push by %s \u{2014} %d commits" pusher_name num_commits;
