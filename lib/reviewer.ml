@@ -106,7 +106,7 @@ module Make (GH : Api.Github) (AI : Api.Claude) (SL : Api.Slack) = struct
     | _ -> Ok (filtered_diff, Diff_parser.to_string filtered_diff)
 
   (** Map a finding to a GitHub review comment, if it can be positioned in the diff. *)
-  let finding_to_comment ~diff (finding : Review_types_t.finding) =
+  let finding_to_comment ~diff (finding : Review_types.finding) =
     let file_diff = List.find_opt (fun fd -> String.equal fd.Diff_parser.path finding.path) diff in
     match file_diff with
     | None -> None
@@ -187,7 +187,7 @@ module Make (GH : Api.Github) (AI : Api.Claude) (SL : Api.Slack) = struct
   (** Post commit comments for critical/warning findings from a push review. *)
   let post_push_comments ~ctx ~repo_url ~sha findings =
     Lwt_list.iter_s
-      (fun (finding : Review_types_t.finding) ->
+      (fun (finding : Review_types.finding) ->
         match finding.severity with
         | Critical | Warning ->
           let comment : Github_types_t.commit_comment_req =

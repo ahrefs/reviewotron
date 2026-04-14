@@ -29,7 +29,7 @@ module type Claude = sig
     files:(string * string) list ->
     pr_title:string ->
     description:string ->
-    (Review_types_t.review_output, string) result Lwt.t
+    (Review_types.review_output, string) result Lwt.t
 end
 
 module type Slack = sig

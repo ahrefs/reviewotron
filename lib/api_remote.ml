@@ -213,14 +213,13 @@ module Claude : Api.Claude = struct
     match extract_tool_use_input response with
     | None -> Lwt.return (Error "Claude did not return submit_review tool use")
     | Some input_json ->
-      let json_str = Yojson.Safe.to_string input_json in
-      (match Review_types_j.review_output_of_string json_str with
-      | review ->
-        log#info "Claude review: %d findings, summary length %d" (List.length review.findings)
-          (String.length review.summary);
-        Lwt.return (Ok review)
-      | exception exn ->
-        Lwt.return (Error (Printf.sprintf "failed to parse review_output from tool_use input: %s" (Exn.str exn))))
+    match Review_types.review_output_of_json (Yojson.Safe.to_basic input_json) with
+    | review ->
+      log#info "Claude review: %d findings, summary length %d" (List.length review.findings)
+        (String.length review.summary);
+      Lwt.return (Ok review)
+    | exception exn ->
+      Lwt.return (Error (Printf.sprintf "failed to parse review_output from tool_use input: %s" (Exn.str exn)))
 end
 
 (** {2 Slack API} *)

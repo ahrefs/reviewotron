@@ -1,7 +1,7 @@
 (** Prompt construction for Claude code review.
     Builds system prompts and user messages from diffs, PR metadata, and file contents. *)
 
-(** JSON Schema for the [submit_review] tool's [input_schema], matching {!Review_types_t.review_output}. *)
+(** JSON Schema for the [submit_review] tool's [input_schema], matching {!Review_types.review_output}. *)
 val review_schema : Yojson.Safe.t
 
 (** System prompt instructing Claude how to review code.

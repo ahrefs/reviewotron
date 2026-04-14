@@ -111,7 +111,7 @@ let test_prompt_token_estimation () =
 (** {2 Review types tests} *)
 
 let test_review_output_roundtrip () =
-  let review : Review_types_t.review_output =
+  let review : Review_types.review_output =
     {
       summary = "Looks good";
       findings =
@@ -129,8 +129,8 @@ let test_review_output_roundtrip () =
       overall_assessment = "Solid code";
     }
   in
-  let json_str = Review_types_j.string_of_review_output review in
-  let parsed = Review_types_j.review_output_of_string json_str in
+  let json_str = Melange_json.to_string (Review_types.review_output_to_json review) in
+  let parsed = Review_types.review_output_of_json (Melange_json.of_string json_str) in
   (check string) "summary" review.summary parsed.summary;
   (check int) "findings count" 1 (List.length parsed.findings);
   let f = List.hd parsed.findings in
@@ -139,7 +139,7 @@ let test_review_output_roundtrip () =
 
 let test_mock_claude_response () =
   let json_str = read_file "mock_api_responses/claude/review_response.json" in
-  let review = Review_types_j.review_output_of_string json_str in
+  let review = Review_types.review_output_of_json (Melange_json.of_string json_str) in
   (check int) "findings count" 3 (List.length review.findings);
   (check bool) "has summary" true (String.length review.summary > 0);
   (check bool) "has assessment" true (String.length review.overall_assessment > 0)

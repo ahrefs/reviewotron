@@ -19,39 +19,7 @@ Guidelines:
 - Be concise — one clear sentence per finding
 - If the code looks good, say so briefly with few or no findings|}
 
-(** {2 JSON Schema for Claude tool_use}
-
-    We derive the JSON Schema from OCaml types using [ppx_deriving_jsonschema].
-    These types mirror the ATD types in [review_types.atd] — the ATD types are
-    used for deserialization of Claude's response, while these are used solely
-    to generate the schema that tells Claude what shape to produce. *)
-
-(** Severity is a string enum at the schema level; Claude returns one of:
-    critical, warning, suggestion, nitpick, praise. *)
-type severity = string [@@deriving jsonschema] [@@warning "-69"]
-
-type finding = {
-  path : string; [@jsonschema.description "File path relative to repo root"]
-  line : int option; [@jsonschema.description "Line number in the new version of the file"]
-  end_line : int option; [@jsonschema.description "End line for multi-line findings"]
-  severity : severity; [@jsonschema.description "Severity: critical, warning, suggestion, nitpick, or praise"]
-  category : string;
-     [@jsonschema.description
-       "Category: bug, security, performance, style, logic, error-handling, naming, documentation"]
-  message : string; [@jsonschema.description "Clear explanation of the finding"]
-  suggested_fix : string option; [@jsonschema.description "Code suggestion to fix the issue, if applicable"]
-}
-[@@deriving jsonschema] [@@warning "-69"]
-
-type review_output = {
-  summary : string; [@jsonschema.description "High-level summary of the review (2-4 sentences)"]
-  findings : finding list;
-  overall_assessment : string; [@jsonschema.description "Brief overall quality assessment"]
-}
-[@@deriving jsonschema] [@@warning "-69"]
-
-let review_schema : Yojson.Safe.t =
-  (Ppx_deriving_jsonschema_runtime.json_schema review_output_jsonschema :> Yojson.Safe.t)
+let review_schema : Yojson.Safe.t = (Review_types.review_output_jsonschema :> Yojson.Safe.t)
 
 let system_prompt ?override () =
   match override with

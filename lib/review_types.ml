@@ -1,0 +1,110 @@
+(** Review types -- structured output from Claude code review via tool_use.
+
+    {2 JSON encoding}
+
+    Severity and category are open string enums: known values map to specific
+    constructors, unknown values land in [Other of string].  JSON representation
+    is a bare string (e.g. ["critical"], ["error-handling"]).  This encoding is
+    incompatible with melange-json-native's derived variant format, so these two
+    types have manual [to_json]/[of_json] (justified under PRD rule "no manual
+    JSON unless impossible").
+
+    Records ([finding], [review_output]) use [[@@deriving json, jsonschema]]. *)
+
+open Melange_json.Primitives
+
+(** {2 Severity} *)
+
+type severity =
+  | Critical
+  | Warning
+  | Suggestion
+  | Nitpick
+  | Praise
+  | Other of string
+
+let severity_to_string = function
+  | Critical -> "critical"
+  | Warning -> "warning"
+  | Suggestion -> "suggestion"
+  | Nitpick -> "nitpick"
+  | Praise -> "praise"
+  | Other s -> s
+
+let severity_to_json sev = `String (severity_to_string sev)
+
+let severity_of_json = function
+  | `String "critical" -> Critical
+  | `String "warning" -> Warning
+  | `String "suggestion" -> Suggestion
+  | `String "nitpick" -> Nitpick
+  | `String "praise" -> Praise
+  | `String s -> Other s
+  | json -> Melange_json.of_json_error ~json "expected a string for severity"
+
+let severity_jsonschema = `Assoc [ "type", `String "string" ]
+
+(** {2 Finding category} *)
+
+type finding_category =
+  | Bug
+  | Security
+  | Performance
+  | Style
+  | Logic
+  | Error_handling
+  | Naming
+  | Documentation
+  | Other of string
+
+let finding_category_to_string = function
+  | Bug -> "bug"
+  | Security -> "security"
+  | Performance -> "performance"
+  | Style -> "style"
+  | Logic -> "logic"
+  | Error_handling -> "error-handling"
+  | Naming -> "naming"
+  | Documentation -> "documentation"
+  | Other s -> s
+
+let finding_category_to_json cat = `String (finding_category_to_string cat)
+
+let finding_category_of_json = function
+  | `String "bug" -> Bug
+  | `String "security" -> Security
+  | `String "performance" -> Performance
+  | `String "style" -> Style
+  | `String "logic" -> Logic
+  | `String "error-handling" -> Error_handling
+  | `String "naming" -> Naming
+  | `String "documentation" -> Documentation
+  | `String s -> Other s
+  | json -> Melange_json.of_json_error ~json "expected a string for finding_category"
+
+let finding_category_jsonschema = `Assoc [ "type", `String "string" ]
+
+(** {2 Finding} *)
+
+type finding = {
+  path : string; [@jsonschema.description "File path relative to repo root"]
+  line : int option; [@json.option] [@jsonschema.description "Line number in the new version of the file"]
+  end_line : int option; [@json.option] [@jsonschema.description "End line for multi-line findings"]
+  severity : severity; [@jsonschema.description "Severity: critical, warning, suggestion, nitpick, or praise"]
+  category : finding_category;
+     [@jsonschema.description
+       "Category: bug, security, performance, style, logic, error-handling, naming, documentation"]
+  message : string; [@jsonschema.description "Clear explanation of the finding"]
+  suggested_fix : string option;
+     [@json.option] [@jsonschema.description "Code suggestion to fix the issue, if applicable"]
+}
+[@@deriving json, jsonschema] [@@json.allow_extra_fields]
+
+(** {2 Review output} *)
+
+type review_output = {
+  summary : string; [@jsonschema.description "High-level summary of the review (2-4 sentences)"]
+  findings : finding list;
+  overall_assessment : string; [@json.default ""] [@jsonschema.description "Brief overall quality assessment"]
+}
+[@@deriving json, jsonschema] [@@json.allow_extra_fields]

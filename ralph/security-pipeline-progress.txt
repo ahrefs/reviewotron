@@ -60,3 +60,26 @@ NOTES:
 - Next task (P0.4: config.atd migration) can follow this same pattern. Note config.atd may have more complex types — check for `<json repr="object">` and other ATD annotations
 </task-result>
 
+=== P0.4: Migrate config.atd to OCaml types with [@@deriving json] ===
+Completed: 2026-04-14 23:05:29
+<task-result>
+TASK_ID: P0.4
+STATUS: DONE
+FILES_CHANGED: lib/config_types.ml (NEW), lib/config_types.mli (NEW), lib/config.atd (DELETED), lib/config_adapter.ml (DELETED), lib/context.ml, lib/context.mli, lib/api.ml, lib/api_remote.ml, lib/reviewer.ml, lib/github_auth.ml, lib/github_auth.mli, lib/dune, test/test.ml, test/test_helpers.ml
+DECISIONS:
+- Used `[@@deriving json]` from melange-json-native on `config`, `app_installation_cfg`, `repo_auth`, and `secrets` types
+- `repo_config` uses manual `repo_config_of_json`/`repo_config_to_json` because the legacy `gh_token` → `auth` adapter pattern is impossible to express with derived serialization (PRD "no manual JSON unless impossible" — justified)
+- melange-json-native variant encoding (`["Name", payload]`) matches ATD `<ocaml repr="classic">` format — backward-compatible with existing secrets.json files
+- `config` type has `[@@json.allow_extra_fields]` for forward compatibility (repos may add unknown fields)
+- ATD `~field <default>` → `[@json.default expr]`, ATD `?field` → `[@json.option]` (same pattern as P0.2/P0.3)
+- Factored out `cons_opt_field` and `nullable_field` helpers to avoid repeated verbose Option matching (per review feedback)
+- Used `string_of_json`/`string_to_json` from `Melange_json.Primitives` instead of inline lambdas
+- Deleted `config_adapter.ml` — adapter logic inlined into `config_types.ml`'s `normalize_repo_config_json`
+- `.mli` does NOT expose `normalize_repo_config_json` or `cons_opt_field`/`nullable_field` (internal helpers)
+- All call sites updated: `Config_t.X` → `Config_types.X`, `Config_j.X_of_string s` → `Config_types.X_of_json (Melange_json.of_string s)`
+NOTES:
+- The `X_of_json (Melange_json.of_string ...)` composition pattern now has 12+ call sites across all migrated types. Consider adding convenience `_of_string`/`_to_string` wrappers as a cross-cutting follow-up for all migrated types (slack_types, state_types, config_types).
+- The `test_config_defaults` test exercises the `gh_token` backward-compatibility path (parses `{"gh_token": "tok"}` in repos array)
+- melange-json-native uses `Yojson.Basic.t` — any code mixing with ATD types (which use `Yojson.Safe.t`) needs awareness of this distinction
+- All 54 tests pass, build clean, formatter clean
+
