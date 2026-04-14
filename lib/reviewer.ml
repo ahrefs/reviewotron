@@ -19,7 +19,7 @@ module Make (GH : Api.Github) (AI : Api.Claude) (SL : Api.Slack) = struct
     | Some _ ->
     match event with
     | Github.Push push ->
-      let modified_files = List.concat_map (fun (c : Github_types_t.commit) -> c.added @ c.modified) push.commits in
+      let modified_files = List.concat_map (fun (c : Github_types.commit) -> c.added @ c.modified) push.commits in
       let config_modified = List.exists (String.equal (Context.config_filename ctx)) modified_files in
       if config_modified then fetch_config ~ctx ~repo_url else Lwt.return (Ok ())
     | Pull_request _ | Unknown _ -> Lwt.return (Ok ())
@@ -28,7 +28,7 @@ module Make (GH : Api.Github) (AI : Api.Claude) (SL : Api.Slack) = struct
       Returns [None] if it should, [Some reason] if it should be skipped. *)
   let is_bot_sender login = CCString.suffix ~suf:"[bot]" login
 
-  let pr_skip_reason ~ctx (pr : Github_types_t.pr_notification) =
+  let pr_skip_reason ~ctx (pr : Github_types.pr_notification) =
     let config = Context.get_config ctx ~repo_url:pr.repository.url in
     let state = Context.state ctx in
     let head_sha = pr.pull_request.head.sha in
@@ -50,7 +50,7 @@ module Make (GH : Api.Github) (AI : Api.Claude) (SL : Api.Slack) = struct
 
   (** Check whether a push event should trigger a review.
       Returns [None] if it should, [Some reason] if it should be skipped. *)
-  let push_skip_reason ~ctx (push : Github_types_t.commit_pushed_notification) =
+  let push_skip_reason ~ctx (push : Github_types.commit_pushed_notification) =
     let config = Context.get_config ctx ~repo_url:push.repository.url in
     let state = Context.state ctx in
     let is_develop = String.equal push.ref_ "refs/heads/develop" in
@@ -117,7 +117,7 @@ module Make (GH : Api.Github) (AI : Api.Claude) (SL : Api.Slack) = struct
       let position = Diff_parser.line_to_position fd ~line ~side:Right in
       Option.map
         (fun pos ->
-          Github_types_t.
+          Github_types.
             {
               path = finding.path;
               position = Some pos;
@@ -146,7 +146,7 @@ module Make (GH : Api.Github) (AI : Api.Claude) (SL : Api.Slack) = struct
         | "" -> review.summary
         | assessment -> Printf.sprintf "%s\n\n**Overall**: %s" review.summary assessment
       in
-      let review_req = Github_types_t.{ commit_id = Some head_sha; body = review_body; event = Comment; comments } in
+      let review_req = Github_types.{ commit_id = Some head_sha; body = review_body; event = Comment; comments } in
       let%lwt post_result = GH.create_pr_review ~ctx ~repo_url ~number review_req in
       (match post_result with
       | Ok () -> log#info "posted review for PR #%d (%s): %d inline comments" number pr_title (List.length comments)
@@ -158,7 +158,7 @@ module Make (GH : Api.Github) (AI : Api.Claude) (SL : Api.Slack) = struct
       Lwt.return_unit
 
   (** Orchestrate a full PR review: fetch diff, call Claude, post review. *)
-  let review_pr ~ctx (pr_notif : Github_types_t.pr_notification) =
+  let review_pr ~ctx (pr_notif : Github_types.pr_notification) =
     let repo_url = pr_notif.repository.url in
     let number = pr_notif.number in
     let pr = pr_notif.pull_request in
@@ -190,7 +190,7 @@ module Make (GH : Api.Github) (AI : Api.Claude) (SL : Api.Slack) = struct
       (fun (finding : Review_types.finding) ->
         match finding.severity with
         | Critical | Warning ->
-          let comment : Github_types_t.commit_comment_req =
+          let comment : Github_types.commit_comment_req =
             {
               body = Review_format.format_finding_body finding;
               path = Some finding.path;
@@ -209,7 +209,7 @@ module Make (GH : Api.Github) (AI : Api.Claude) (SL : Api.Slack) = struct
       findings
 
   (** Orchestrate a full push review: fetch diff, call Claude, post comments + Slack. *)
-  let review_push ~ctx (push : Github_types_t.commit_pushed_notification) =
+  let review_push ~ctx (push : Github_types.commit_pushed_notification) =
     let repo_url = push.repository.url in
     log#info "reviewing push to %s in %s" push.ref_ push.repository.full_name;
     let%lwt diff_result = GH.get_compare_diff ~ctx ~repo_url ~base:push.before ~head:push.after in
@@ -229,7 +229,7 @@ module Make (GH : Api.Github) (AI : Api.Claude) (SL : Api.Slack) = struct
       | Ok (_filtered_diff, filtered_text) ->
         let description =
           push.commits
-          |> List.map (fun (c : Github_types_t.commit) -> Printf.sprintf "- %s" c.message)
+          |> List.map (fun (c : Github_types.commit) -> Printf.sprintf "- %s" c.message)
           |> String.concat "\n"
         in
         let pr_title = Printf.sprintf "Push to %s" push.ref_ in

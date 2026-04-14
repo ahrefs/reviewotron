@@ -5,7 +5,7 @@ module type Github = sig
   val get_config : ctx:Context.t -> repo_url:string -> (Config_types.config, string) result Lwt.t
 
   val get_pr_files :
-    ctx:Context.t -> repo_url:string -> number:int -> (Github_types_t.pull_request_file list, string) result Lwt.t
+    ctx:Context.t -> repo_url:string -> number:int -> (Github_types.pull_request_file list, string) result Lwt.t
 
   val get_pr_diff : ctx:Context.t -> repo_url:string -> number:int -> (string, string) result Lwt.t
 
@@ -15,10 +15,10 @@ module type Github = sig
     ctx:Context.t -> repo_url:string -> path:string -> ref_:string -> (string option, string) result Lwt.t
 
   val create_pr_review :
-    ctx:Context.t -> repo_url:string -> number:int -> Github_types_t.create_review_req -> (unit, string) result Lwt.t
+    ctx:Context.t -> repo_url:string -> number:int -> Github_types.create_review_req -> (unit, string) result Lwt.t
 
   val create_commit_comment :
-    ctx:Context.t -> repo_url:string -> sha:string -> Github_types_t.commit_comment_req -> (unit, string) result Lwt.t
+    ctx:Context.t -> repo_url:string -> sha:string -> Github_types.commit_comment_req -> (unit, string) result Lwt.t
 end
 
 module type Claude = sig

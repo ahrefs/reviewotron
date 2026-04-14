@@ -45,14 +45,14 @@ module Github : Api.Github = struct
     | Error _ -> Lwt.return (Ok None)
 
   let create_pr_review ~ctx:_ ~repo_url ~number review =
-    let json = Github_types_j.string_of_create_review_req review in
+    let json = Melange_json.to_string (Github_types.create_review_req_to_json review) in
     let entry = Printf.sprintf "[create_pr_review] repo=%s number=%d\n%s\n" repo_url number json in
     Buffer.add_string write_log entry;
     log#info "%s" entry;
     Lwt.return (Ok ())
 
   let create_commit_comment ~ctx:_ ~repo_url ~sha comment =
-    let json = Github_types_j.string_of_commit_comment_req comment in
+    let json = Melange_json.to_string (Github_types.commit_comment_req_to_json comment) in
     let entry = Printf.sprintf "[create_commit_comment] repo=%s sha=%s\n%s\n" repo_url sha json in
     Buffer.add_string write_log entry;
     log#info "%s" entry;

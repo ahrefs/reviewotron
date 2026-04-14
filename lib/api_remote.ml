@@ -19,25 +19,27 @@ let parse_repo repo_url =
     None
 
 (** Parse a JSON array of pull_request_file objects.
-    Tries strict ATD parsing first; falls back to per-item parsing so one bad entry
+    Tries strict parsing first; falls back to per-item parsing so one bad entry
     doesn't crash the whole list. *)
 let parse_pr_files_json body =
-  try Github_types_j.pull_request_file_list_of_string body
+  match Melange_json.of_string body with
+  | exception _exn ->
+    log#warn "failed to parse PR files JSON: %s" body;
+    []
+  | json ->
+  try Melange_json.Primitives.list_of_json Github_types.pull_request_file_of_json json
   with _exn ->
     log#warn "strict PR files parse failed, trying per-item fallback";
-    (match Yojson.Safe.from_string body with
+    (match json with
     | `List items ->
       List.filter_map
         (fun item ->
-          try Some (Github_types_j.pull_request_file_of_string (Yojson.Safe.to_string item))
+          try Some (Github_types.pull_request_file_of_json item)
           with exn ->
             log#warn "skipping malformed PR file entry: %s" (Exn.str exn);
             None)
         items
-    | _ -> []
-    | exception Yojson.Json_error _ ->
-      log#warn "failed to parse PR files JSON: %s" body;
-      [])
+    | _ -> [])
 
 (** {2 GitHub API request plumbing} *)
 
@@ -80,7 +82,7 @@ module Github : Api.Github = struct
       Lwt.return (Ok (Context.default_config ()))
     | Error msg -> Lwt.return (Error (Printf.sprintf "failed to fetch config from %s: %s" repo_url msg))
     | Ok body ->
-    match Github_types_j.content_api_response_of_string body with
+    match Github_types.content_api_response_of_json (Melange_json.of_string body) with
     | exception exn -> Lwt.return (Error (Printf.sprintf "failed to parse content API response: %s" (Exn.str exn)))
     | response ->
     match response.encoding with
@@ -118,13 +120,13 @@ module Github : Api.Github = struct
 
   let create_pr_review ~ctx ~repo_url ~number review =
     let path = Printf.sprintf "/pulls/%d/reviews" number in
-    let body = Github_types_j.string_of_create_review_req review in
+    let body = Melange_json.to_string (Github_types.create_review_req_to_json review) in
     let%lwt result = github_post ~ctx ~repo_url ~path ~body () in
     Lwt.return (Result.map (fun (_body : string) -> ()) result)
 
   let create_commit_comment ~ctx ~repo_url ~sha comment =
     let path = Printf.sprintf "/commits/%s/comments" sha in
-    let body = Github_types_j.string_of_commit_comment_req comment in
+    let body = Melange_json.to_string (Github_types.commit_comment_req_to_json comment) in
     let%lwt result = github_post ~ctx ~repo_url ~path ~body () in
     Lwt.return (Result.map (fun (_body : string) -> ()) result)
 end

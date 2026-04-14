@@ -25,18 +25,6 @@
 
 (rule
  (targets
-  github_types_t.ml
-  github_types_t.mli
-  github_types_j.ml
-  github_types_j.mli)
- (deps github_types.atd)
- (action
-  (progn
-   (run %{bin:atdgen} -j %{deps})
-   (run %{bin:atdgen} -t %{deps}))))
-
-(rule
- (targets
   anthropic_types_t.ml
   anthropic_types_t.mli
   anthropic_types_j.ml
