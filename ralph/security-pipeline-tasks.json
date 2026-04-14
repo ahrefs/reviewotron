@@ -28,10 +28,8 @@
         "Update lib/dune to remove slack_types from atd processing",
         "Run make clean build test fmt"
       ],
-      "depends_on": [
-        "P0.1"
-      ],
-      "complete": false
+      "depends_on": ["P0.1"],
+      "complete": true
     },
     {
       "id": "P0.3",
@@ -46,9 +44,7 @@
         "Update lib/dune",
         "Run make clean build test fmt"
       ],
-      "depends_on": [
-        "P0.1"
-      ],
+      "depends_on": ["P0.1"],
       "complete": false
     },
     {
@@ -64,9 +60,7 @@
         "Update lib/dune",
         "Run make clean build test fmt"
       ],
-      "depends_on": [
-        "P0.1"
-      ],
+      "depends_on": ["P0.1"],
       "complete": false
     },
     {
@@ -82,9 +76,7 @@
         "Update lib/dune",
         "Run make clean build test fmt"
       ],
-      "depends_on": [
-        "P0.1"
-      ],
+      "depends_on": ["P0.1"],
       "complete": false
     },
     {
@@ -100,9 +92,7 @@
         "Update lib/dune",
         "Run make clean build test fmt"
       ],
-      "depends_on": [
-        "P0.1"
-      ],
+      "depends_on": ["P0.1"],
       "complete": false
     },
     {
@@ -116,13 +106,7 @@
         "Confirm anthropic_types.atd still builds via its own atd rule",
         "Run make clean build test fmt"
       ],
-      "depends_on": [
-        "P0.2",
-        "P0.3",
-        "P0.4",
-        "P0.5",
-        "P0.6"
-      ],
+      "depends_on": ["P0.2", "P0.3", "P0.4", "P0.5", "P0.6"],
       "complete": false
     },
     {
@@ -135,9 +119,7 @@
         "Add them to lib/dune libraries",
         "Run make clean build test fmt"
       ],
-      "depends_on": [
-        "P0.7"
-      ],
+      "depends_on": ["P0.7"],
       "complete": false
     },
     {
@@ -154,9 +136,7 @@
         "Return agent_result with parsed output and Usage.t token counts",
         "Run make clean build test fmt"
       ],
-      "depends_on": [
-        "P1.1"
-      ],
+      "depends_on": ["P1.1"],
       "complete": false
     },
     {
@@ -171,9 +151,7 @@
         "Wire reviewer.ml to use the new agent runner",
         "Run make clean build test fmt"
       ],
-      "depends_on": [
-        "P1.2"
-      ],
+      "depends_on": ["P1.2"],
       "complete": false
     },
     {
@@ -189,9 +167,7 @@
         "Verify no remaining references to Anthropic_types_t / Anthropic_types_j",
         "Run make clean build test fmt"
       ],
-      "depends_on": [
-        "P1.3"
-      ],
+      "depends_on": ["P1.3"],
       "complete": false
     },
     {
@@ -206,9 +182,7 @@
         "Add review_metadata type if not already defined",
         "Run make clean build test fmt"
       ],
-      "depends_on": [
-        "P1.4"
-      ],
+      "depends_on": ["P1.4"],
       "complete": false
     },
     {
@@ -222,9 +196,7 @@
         "Ensure the plugin returns findings in the standard type",
         "Run make clean build test fmt"
       ],
-      "depends_on": [
-        "P2.1"
-      ],
+      "depends_on": ["P2.1"],
       "complete": false
     },
     {
@@ -238,9 +210,7 @@
         "Update config_adapter.ml to parse new fields with sensible defaults",
         "Run make clean build test fmt"
       ],
-      "depends_on": [
-        "P2.1"
-      ],
+      "depends_on": ["P2.1"],
       "complete": false
     },
     {
@@ -256,10 +226,7 @@
         "Verify existing behavior is unchanged - same output as before",
         "Run make clean build test fmt"
       ],
-      "depends_on": [
-        "P2.2",
-        "P2.3"
-      ],
+      "depends_on": ["P2.2", "P2.3"],
       "complete": false
     },
     {
@@ -278,9 +245,7 @@
         "Create lib/security_types.mli",
         "Run make clean build test fmt"
       ],
-      "depends_on": [
-        "P2.4"
-      ],
+      "depends_on": ["P2.4"],
       "complete": false
     },
     {
@@ -296,9 +261,7 @@
         "Create lib/security_tools.mli",
         "Run make clean build test fmt"
       ],
-      "depends_on": [
-        "P3.1"
-      ],
+      "depends_on": ["P3.1"],
       "complete": false
     },
     {
@@ -315,9 +278,7 @@
         "Create lib/triage_agent.mli",
         "Run make clean build test fmt"
       ],
-      "depends_on": [
-        "P3.1"
-      ],
+      "depends_on": ["P3.1"],
       "complete": false
     },
     {
@@ -334,10 +295,7 @@
         "Create lib/security_review_plugin.mli",
         "Run make clean build test fmt"
       ],
-      "depends_on": [
-        "P3.2",
-        "P3.3"
-      ],
+      "depends_on": ["P3.2", "P3.3"],
       "complete": false
     },
     {
@@ -353,9 +311,7 @@
         "Verify triage returns no signals for safe diffs",
         "Run make clean build test fmt"
       ],
-      "depends_on": [
-        "P3.4"
-      ],
+      "depends_on": ["P3.4"],
       "complete": false
     },
     {
@@ -372,9 +328,7 @@
         "Create lib/analysis_agent.mli",
         "Run make clean build test fmt"
       ],
-      "depends_on": [
-        "P3.4"
-      ],
+      "depends_on": ["P3.4"],
       "complete": false
     },
     {
@@ -391,9 +345,7 @@
         "Wire into analysis_agent framework",
         "Run make clean build test fmt"
       ],
-      "depends_on": [
-        "P4.1"
-      ],
+      "depends_on": ["P4.1"],
       "complete": false
     },
     {
@@ -409,9 +361,7 @@
         "Wire into analysis_agent framework",
         "Run make clean build test fmt"
       ],
-      "depends_on": [
-        "P4.1"
-      ],
+      "depends_on": ["P4.1"],
       "complete": false
     },
     {
@@ -427,9 +377,7 @@
         "Wire into analysis_agent framework",
         "Run make clean build test fmt"
       ],
-      "depends_on": [
-        "P4.1"
-      ],
+      "depends_on": ["P4.1"],
       "complete": false
     },
     {
@@ -445,9 +393,7 @@
         "Wire into analysis_agent framework",
         "Run make clean build test fmt"
       ],
-      "depends_on": [
-        "P4.1"
-      ],
+      "depends_on": ["P4.1"],
       "complete": false
     },
     {
@@ -463,9 +409,7 @@
         "Wire into analysis_agent framework",
         "Run make clean build test fmt"
       ],
-      "depends_on": [
-        "P4.1"
-      ],
+      "depends_on": ["P4.1"],
       "complete": false
     },
     {
@@ -481,9 +425,7 @@
         "Wire into analysis_agent framework",
         "Run make clean build test fmt"
       ],
-      "depends_on": [
-        "P4.1"
-      ],
+      "depends_on": ["P4.1"],
       "complete": false
     },
     {
@@ -498,14 +440,7 @@
         "Collect all candidate_finding lists from analysis agents",
         "Run make clean build test fmt"
       ],
-      "depends_on": [
-        "P4.2",
-        "P4.3",
-        "P4.4",
-        "P4.5",
-        "P4.6",
-        "P4.7"
-      ],
+      "depends_on": ["P4.2", "P4.3", "P4.4", "P4.5", "P4.6", "P4.7"],
       "complete": false
     },
     {
@@ -522,9 +457,7 @@
         "Create lib/validator_agent.mli",
         "Run make clean build test fmt"
       ],
-      "depends_on": [
-        "P4.8"
-      ],
+      "depends_on": ["P4.8"],
       "complete": false
     },
     {
@@ -540,9 +473,7 @@
         "Log rejected findings for offline prompt tuning",
         "Run make clean build test fmt"
       ],
-      "depends_on": [
-        "P5.1"
-      ],
+      "depends_on": ["P5.1"],
       "complete": false
     },
     {
@@ -558,9 +489,7 @@
         "Add golden files for expected outputs",
         "Run make clean build test fmt"
       ],
-      "depends_on": [
-        "P5.2"
-      ],
+      "depends_on": ["P5.2"],
       "complete": false
     },
     {
@@ -578,9 +507,7 @@
         "Store cost in state.json alongside review record",
         "Run make clean build test fmt"
       ],
-      "depends_on": [
-        "P5.2"
-      ],
+      "depends_on": ["P5.2"],
       "complete": false
     },
     {
@@ -596,9 +523,7 @@
         "Create lib/security_memory.mli",
         "Run make clean build test fmt"
       ],
-      "depends_on": [
-        "P5.3"
-      ],
+      "depends_on": ["P5.3"],
       "complete": false
     },
     {
@@ -615,9 +540,7 @@
         "Create lib/memory_curator_agent.mli",
         "Run make clean build test fmt"
       ],
-      "depends_on": [
-        "P6.1"
-      ],
+      "depends_on": ["P6.1"],
       "complete": false
     },
     {
@@ -634,9 +557,7 @@
         "Write tests for queue append/read/truncation cycle",
         "Run make clean build test fmt"
       ],
-      "depends_on": [
-        "P6.2"
-      ],
+      "depends_on": ["P6.2"],
       "complete": false
     },
     {
@@ -652,9 +573,7 @@
         "Test token limit enforcement: memory exceeding limit gets compressed",
         "Run make clean build test fmt"
       ],
-      "depends_on": [
-        "P6.3"
-      ],
+      "depends_on": ["P6.3"],
       "complete": false
     },
     {
@@ -673,9 +592,7 @@
         "Include multi-language variants (OCaml primary, JS/Python secondary)",
         "Run make clean build test fmt"
       ],
-      "depends_on": [
-        "P5.3"
-      ],
+      "depends_on": ["P5.3"],
       "complete": false
     },
     {
@@ -690,9 +607,7 @@
         "These tests call Claude - mark them as on-demand (not CI)",
         "Run make clean build test fmt"
       ],
-      "depends_on": [
-        "P7.1"
-      ],
+      "depends_on": ["P7.1"],
       "complete": false
     },
     {
@@ -707,9 +622,7 @@
         "Create lib/quality_metrics.mli",
         "Run make clean build test fmt"
       ],
-      "depends_on": [
-        "P7.2"
-      ],
+      "depends_on": ["P7.2"],
       "complete": false
     },
     {
@@ -725,9 +638,7 @@
         "Iterate until metrics meet targets or diminishing returns",
         "Run make clean build test fmt"
       ],
-      "depends_on": [
-        "P7.3"
-      ],
+      "depends_on": ["P7.3"],
       "complete": false
     }
   ]

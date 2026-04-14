@@ -66,11 +66,3 @@
   (progn
    (run %{bin:atdgen} -j %{deps})
    (run %{bin:atdgen} -t %{deps}))))
-
-(rule
- (targets state_t.ml state_t.mli state_j.ml state_j.mli)
- (deps state.atd)
- (action
-  (progn
-   (run %{bin:atdgen} -j %{deps})
-   (run %{bin:atdgen} -t %{deps}))))

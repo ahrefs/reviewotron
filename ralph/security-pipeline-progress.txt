@@ -17,3 +17,24 @@ NOTES:
 - Next task (P0.2+) can start using `[@@deriving json]` on OCaml types to replace ATD files
 </task-result>
 
+---  P0.2: Migrate slack_types.atd to OCaml types with [@@deriving json] ---
+Completed: 2026-04-14 18:16:58
+<task-result>
+TASK_ID: P0.2
+STATUS: DONE
+FILES_CHANGED: lib/slack_types.ml (NEW), lib/slack_types.mli (NEW), lib/api.ml, lib/api_remote.ml, lib/review_format.ml, lib/review_format.mli, lib/api_local.ml, lib/dune, lib/slack_types.atd (DELETED)
+DECISIONS:
+- Used `[@@deriving json]` from melange-json-native on both .ml and .mli files
+- .mli uses `[@@deriving json]` to auto-generate val signatures (no manual listing)
+- .mli does NOT need `open Melange_json.Primitives` (the PPX generates fully-qualified signatures)
+- ATD `~field <default>` mapped to `[@json.default expr]`, ATD `?field` mapped to `[@json.option]`
+- Serialization at call sites uses composition: `Melange_json.to_string (X.foo_to_json x)` and `X.foo_of_json (Melange_json.of_string s)` rather than adding `[@@deriving json_string]` — only 2 call sites, not worth a separate deriver
+- All references changed from `Slack_types_t.` → `Slack_types.` and `Slack_types_j.` functions → `Slack_types.` + `Melange_json` composition
+- Did NOT change pre-existing code patterns outside the migration scope (exception handling, Option.default usage)
+NOTES:
+- This is the first module using melange-json-native `[@@deriving json]` in the codebase — establishes the pattern for subsequent ATD migrations
+- melange-json-native uses `Yojson.Basic.t` while ATD uses `Yojson.Safe.t` — these are distinct types and cannot be mixed in the same expression
+- All 54 existing tests pass, build clean, formatter clean
+- The `Melange_json.to_string`/`of_string` + `to_json`/`of_json` composition pattern should be used for all future ATD migrations in api_remote.ml
+- Next task (P0.3: state.atd migration) can follow the same pattern established here
+</task-result>

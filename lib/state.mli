@@ -25,4 +25,4 @@ val record_push_review : t -> repo_url:string -> after_sha:string -> unit
 val save : t -> unit
 
 (** Access the underlying state data (for testing). *)
-val data : t -> State_t.state
+val data : t -> State_types.state
