@@ -37,7 +37,7 @@ module type Slack = sig
     ctx:Context.t ->
     channel:string ->
     text:string ->
-    ?attachments:Slack_types_t.slack_attachment list ->
+    ?attachments:Slack_types.slack_attachment list ->
     unit ->
     unit Lwt.t
 end

@@ -233,8 +233,8 @@ module Slack : Api.Slack = struct
       log#info "Slack access token not configured, skipping message";
       Lwt.return_unit
     | Some access_token ->
-      let msg : Slack_types_t.slack_message = { channel; text; attachments } in
-      let body_str = Slack_types_j.string_of_slack_message msg in
+      let msg : Slack_types.slack_message = { channel; text; attachments } in
+      let body_str = Melange_json.to_string (Slack_types.slack_message_to_json msg) in
       let headers = [ Printf.sprintf "Authorization: Bearer %s" access_token ] in
       let%lwt result =
         http_request ~headers ~body:(`Raw ("application/json", body_str)) `POST "https://slack.com/api/chat.postMessage"
@@ -242,7 +242,7 @@ module Slack : Api.Slack = struct
       (match result with
       | Ok response_str ->
         (try
-           let resp = Slack_types_j.slack_api_response_of_string response_str in
+           let resp = Slack_types.slack_api_response_of_json (Melange_json.of_string response_str) in
            match resp.ok with
            | true -> log#info "Slack message sent to %s" channel
            | false ->

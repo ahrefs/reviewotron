@@ -1,0 +1,19 @@
+--- Iteration 1: P0.1 — Add melange-json-native dependency ---
+Completed at 2026-04-14 17:58:14
+<task-result>
+TASK_ID: P0.1
+STATUS: DONE
+FILES_CHANGED: dune-project, lib/dune, reviewotron.opam
+DECISIONS:
+- Used melange-json-native v2.0.0 (latest, compatible with dune 3.22.0, ppxlib 0.38.0, OCaml 4.14+)
+- Runtime library: `melange-json-native` added to lib/dune libraries
+- PPX: `melange-json-native.ppx` added to lib/dune preprocess pps
+- Placed alphabetically in dependency lists for consistency
+- Did not add to test/dune — tests don't directly use `[@@deriving json]` yet; they get it transitively via `reviewotron_lib`
+NOTES:
+- melange-json-native 2.0.0 is now installed in the project's opam switch and wired into the build
+- All 54 existing tests pass, build succeeds, formatting clean
+- The pre-existing AGENTS.md change on `security-review` branch was NOT committed by this task (it was already modified before this iteration)
+- Next task (P0.2+) can start using `[@@deriving json]` on OCaml types to replace ATD files
+</task-result>
+

@@ -21,4 +21,4 @@ val format_slack_attachment :
   pusher_name:string ->
   num_commits:int ->
   review:Review_types_t.review_output ->
-  Slack_types_t.slack_attachment
+  Slack_types.slack_attachment
