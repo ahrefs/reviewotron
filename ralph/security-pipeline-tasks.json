@@ -67,7 +67,7 @@
       "depends_on": [
         "P0.1"
       ],
-      "complete": false
+      "complete": true
     },
     {
       "id": "P0.5",

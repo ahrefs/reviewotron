@@ -64,7 +64,7 @@ module Claude : Api.Claude = struct
     let path = !claude_response_path in
     match read_mock_file path with
     | Ok json_str ->
-      (match Review_types_j.review_output_of_string json_str with
+      (match Review_types.review_output_of_json (Melange_json.of_string json_str) with
       | review -> Lwt.return (Ok review)
       | exception exn -> Lwt.return (Error (Printf.sprintf "failed to parse mock review: %s" (Exn.str exn))))
     | Error msg -> Lwt.return (Error msg)
