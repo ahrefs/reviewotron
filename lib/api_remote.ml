@@ -131,97 +131,15 @@ module Github : Api.Github = struct
     Lwt.return (Result.map (fun (_body : string) -> ()) result)
 end
 
-(** {2 Anthropic Claude API}
+(** {2 Agent runner — wraps ocaml-ai-sdk for AI agent execution} *)
 
-    We make direct HTTP calls to the Anthropic Messages API rather than using
-    the monorepo's [one_llm] library. [one_llm] has heavy internal dependencies
-    (o11y tracing, logstash, etc.) that are difficult to import from [experimental/].
-    When this app moves to [backend/], we should migrate to [one_llm]. *)
-
-let anthropic_api_url = "https://api.anthropic.com/v1/messages"
-
-(** Build the JSON request body for the Anthropic Messages API with tool_use. *)
-let build_anthropic_request ~model ~system ~user_msg ~max_tokens =
-  let tool =
-    Anthropic_types_t.
-      {
-        name = "submit_review";
-        description = Some "Submit a structured code review with findings for each issue found";
-        input_schema = Review_prompt.review_schema;
-      }
-  in
-  let tool_choice = Anthropic_types_t.{ type_ = "tool"; name = "submit_review" } in
-  let message = Anthropic_types_t.{ role = User; content = user_msg } in
-  let req =
-    Anthropic_types_t.
-      {
-        model;
-        messages = [ message ];
-        max_tokens;
-        system = Some system;
-        tools = Some [ tool ];
-        tool_choice = Some tool_choice;
-      }
-  in
-  Anthropic_types_j.string_of_req req
-
-(** Extract the tool_use input from Claude's response content blocks. *)
-let extract_tool_use_input (response : Anthropic_types_t.response_message) =
-  List.find_map
-    (function
-      | Anthropic_types_t.ToolUse tu when String.equal tu.name "submit_review" -> Some tu.input
-      | Text _ | ToolUse _ -> None)
-    response.content
-
-module Claude : Api.Claude = struct
-  (** Try to parse an error response from the Anthropic API.
-      Returns [Some message] if it's an error, [None] otherwise. *)
-  let try_parse_error response_str =
-    try
-      let resp = Anthropic_types_j.error_response_of_string response_str in
-      match resp.type_ with
-      | "error" -> Some resp.error.message
-      | _ -> None
-    with _exn -> None
-
-  let review_code ~ctx ~repo_url ~diff ~files ~pr_title ~description =
+module Agent_runner : Api.Agent_runner = struct
+  let run ~ctx ~repo_url ?model_id ~config ~input () =
     let secrets = Context.secrets ctx in
-    let config = Context.get_config ctx ~repo_url in
-    let system = Review_prompt.system_prompt ?override:config.system_prompt_override () in
-    let user_msg =
-      Review_prompt.build_user_message ~diff ~pr_title ~pr_description:description ~file_contents:files ()
-    in
-    let token_est = Review_prompt.estimate_prompt_tokens ~system ~user:user_msg in
-    log#info "Claude review request: ~%d estimated tokens" token_est;
-    let body_str = build_anthropic_request ~model:config.model ~system ~user_msg ~max_tokens:4096 in
-    let headers =
-      [
-        Printf.sprintf "x-api-key: %s" secrets.anthropic_api_key;
-        Printf.sprintf "anthropic-version: %s" secrets.anthropic_version;
-      ]
-    in
-    let%lwt result =
-      http_request ~verbose:false ~headers ~body:(`Raw ("application/json", body_str)) `POST anthropic_api_url
-    in
-    match result with
-    | Error e -> Lwt.return (Error (Printf.sprintf "Anthropic API request failed: %s" e))
-    | Ok response_str ->
-    match try_parse_error response_str with
-    | Some err_msg -> Lwt.return (Error (Printf.sprintf "Anthropic API error: %s" err_msg))
-    | None ->
-    match Anthropic_types_j.response_message_of_string response_str with
-    | exception exn -> Lwt.return (Error (Printf.sprintf "failed to parse Anthropic response: %s" (Exn.str exn)))
-    | response ->
-    match extract_tool_use_input response with
-    | None -> Lwt.return (Error "Claude did not return submit_review tool use")
-    | Some input_json ->
-    match Review_types.review_output_of_json (Yojson.Safe.to_basic input_json) with
-    | review ->
-      log#info "Claude review: %d findings, summary length %d" (List.length review.findings)
-        (String.length review.summary);
-      Lwt.return (Ok review)
-    | exception exn ->
-      Lwt.return (Error (Printf.sprintf "failed to parse review_output from tool_use input: %s" (Exn.str exn)))
+    let model_id = Option.default (Agent_runner.default_model_id config.Agent_runner.model_tier) model_id in
+    ignore (repo_url : string);
+    let model = Ai_provider_anthropic.language_model ~api_key:secrets.anthropic_api_key ~model:model_id () in
+    Agent_runner.run_agent ~model ~config ~input ()
 end
 
 (** {2 Slack API} *)

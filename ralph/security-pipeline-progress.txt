@@ -170,3 +170,26 @@ NOTES:
 - The `ai_provider_openai` sub-library is also available but not added (not needed per PRD)
 </task-result>
 
+=== P1.2: Implement generic run_agent function ===
+Completed: 2026-04-15 00:50:48
+<task-result>
+TASK_ID: P1.2
+STATUS: DONE
+FILES_CHANGED: lib/agent_runner.ml (NEW), lib/agent_runner.mli (NEW)
+DECISIONS:
+- `model_tier` has `[@@deriving json, jsonschema]` in .ml, `[@@deriving json]` + explicit `val model_tier_jsonschema` in .mli (ppx_deriving_jsonschema doesn't support sig_type_decl — same pattern as review_types.ml)
+- `agent_config` and `agent_result` are concrete types (not abstract) because callers construct and destructure them directly
+- `run_agent` takes `~model:Ai_provider.Language_model.t` directly — provider-agnostic, callers create the model instance with whatever credentials/provider they want
+- Tools passed as optional `?tools` parameter (not in `agent_config`) because `Core_tool.t` contains execute callbacks that can't be serialized
+- `agent_config` does NOT have `[@@deriving json]` because `output_schema : Yojson.Basic.t` field is incompatible with melange-json-native's ppx (no `Yojson_basic_t_to_json` in scope). Config is constructed in OCaml code, not deserialized.
+- Error handling wraps SDK exceptions (`Retry_error`, `Provider_error`) into `(_, string) result` per PRD spec. Local `fail` helper deduplicates the log+return pattern.
+- `default_model_id` uses explicit match on all 3 variants (no catch-all) per AGENTS.md
+- Uses `Option.default` (Devkit) instead of `Option.value` (stdlib) because `open Devkit` shadows stdlib's `Option`
+NOTES:
+- All 54 tests pass, build clean, formatter clean
+- `agent_result.model_id` stores the model ID string for downstream cost tracking (PRD Section 7.1 `agent_cost.model`)
+- `agent_result.usage` is `Ai_provider.Usage.t` with `input_tokens`, `output_tokens`, `total_tokens option` — real values from SDK, not estimates
+- The SDK handles multi-step tool loops, retries with exponential backoff, and structured output parsing internally — `run_agent` is a thin wrapper
+- Next task (P1.3) should refactor `Api.Claude` into `Api.Agent_runner` with the new signature, using this module
+- When P1.3 rewrites the general review to use `run_agent`, it will need to create the Anthropic model with `Ai_provider_anthropic.language_model ~api_key:secrets.anthropic_api_key ~model:config.model ()` (not the convenience `Ai_provider_anthropic.model` which reads from env var)
+

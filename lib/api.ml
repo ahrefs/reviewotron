@@ -21,15 +21,15 @@ module type Github = sig
     ctx:Context.t -> repo_url:string -> sha:string -> Github_types.commit_comment_req -> (unit, string) result Lwt.t
 end
 
-module type Claude = sig
-  val review_code :
+module type Agent_runner = sig
+  val run :
     ctx:Context.t ->
     repo_url:string ->
-    diff:string ->
-    files:(string * string) list ->
-    pr_title:string ->
-    description:string ->
-    (Review_types.review_output, string) result Lwt.t
+    ?model_id:string ->
+    config:Agent_runner.agent_config ->
+    input:string ->
+    unit ->
+    (Agent_runner.agent_result, string) result Lwt.t
 end
 
 module type Slack = sig
