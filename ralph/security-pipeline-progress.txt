@@ -193,3 +193,26 @@ NOTES:
 - Next task (P1.3) should refactor `Api.Claude` into `Api.Agent_runner` with the new signature, using this module
 - When P1.3 rewrites the general review to use `run_agent`, it will need to create the Anthropic model with `Ai_provider_anthropic.language_model ~api_key:secrets.anthropic_api_key ~model:config.model ()` (not the convenience `Ai_provider_anthropic.model` which reads from env var)
 
+=== P1.3: Refactor Api.Claude into Api.Agent_runner ===
+Completed: 2026-04-15 01:23:14
+<task-result>
+TASK_ID: P1.3
+STATUS: DONE
+FILES_CHANGED: lib/api.ml, lib/api_remote.ml, lib/reviewer.ml, lib/reviewer.mli, lib/api_local.ml, lib/dune, lib/anthropic_types.atd (DELETED), dune-project, reviewotron.opam, src/request_handler.ml, test/test.ml, test/test_helpers.ml
+DECISIONS:
+- `Api.Claude` renamed to `Api.Agent_runner` with generic signature: `run ~ctx ~repo_url ?model_id ~config ~input () -> (agent_result, string) result Lwt.t`
+- `?model_id:string` optional parameter allows repo config model override; falls back to `Agent_runner.default_model_id config.model_tier` when omitted
+- `Api_remote.Agent_runner.run` creates `Ai_provider_anthropic.language_model` from `secrets.anthropic_api_key` and resolved `model_id`
+- `reviewer.ml` gained `run_review_agent` helper that builds agent_config (`name="general_review"`, `model_tier=Standard`, `output_schema=review_output_jsonschema`, `max_steps=1`), calls `AI.run`, and parses the structured output JSON back to `review_output`
+- `Api_local.Agent_runner` mock returns raw JSON as `agent_result.output` with dummy `Usage.t { input_tokens=0; output_tokens=0; total_tokens=None }` — the reviewer now handles JSON→review_output parsing uniformly
+- `repo_url` kept in `Api.Agent_runner.run` signature (unused now, needed for future per-repo model routing and security memory); typed `ignore` in implementation
+- `anthropic_types.atd` deleted along with its dune rule; `atdgen` and `atdgen-runtime` removed from dune-project depends and lib/dune libraries — ATD is fully gone from the project
+- Used `Option.default` combinator for model_id fallback per AGENTS.md style (simplified during review)
+- `claude_response_path`/`set_claude_response_path`/`reset_claude_response_path` renamed to `agent_response_path`/`set_agent_response_path`/`reset_agent_response_path` in api_local.ml
+NOTES:
+- All 54 tests pass, build clean, formatter clean
+- `model_tier` in the general review agent_config is effectively overridden by `~model_id:config.model` from repo config — this is by design for Phase 1 (security agents in P3+ will use tier-based resolution without override)
+- `secrets.anthropic_version` field is now dead code — the SDK handles API versioning internally. Cleanup candidate for a future task.
+- `Review_prompt.estimate_prompt_tokens` is no longer called in production code (SDK tracks real usage) but is still tested. Could be removed if not needed.
+- Duplicated default model ID string `"claude-sonnet-4-5-20250929"` exists in both `config_types.ml` (`[@json.default]`) and `agent_runner.ml` (`default_model_id`). Can't easily deduplicate because `[@json.default]` requires a literal. Cross-reference comment would help.
+
