@@ -74,6 +74,66 @@ let test_config_ignores_removed_fields () =
   (check string) "api key" "sk-test" secrets.anthropic_api_key;
   (check int) "repo count" 1 (List.length secrets.repos)
 
+let test_config_review_plugins_defaults () =
+  let config = Config_types.config_of_json (Melange_json.of_string {|{}|}) in
+  (check bool) "general enabled" true config.review_plugins.general.enabled;
+  (check bool) "general prompt override" true (Option.is_none config.review_plugins.general.system_prompt_override);
+  (check bool) "security enabled" true config.review_plugins.security.enabled;
+  (check int) "vuln_classes count" 6 (List.length config.review_plugins.security.vuln_classes);
+  (check int) "memory_max_tokens" 5000 config.review_plugins.security.memory_max_tokens;
+  (check bool) "show_review_cost" false config.show_review_cost
+
+let test_config_review_plugins_explicit () =
+  let json =
+    {|{
+    "show_review_cost": true,
+    "review_plugins": {
+      "general": { "enabled": false },
+      "security": {
+        "enabled": true,
+        "vuln_classes": ["injection", "xss"],
+        "triage_model_tier": "standard",
+        "confidence_threshold": "high",
+        "memory_max_tokens": 10000
+      }
+    }
+  }|}
+  in
+  let config = Config_types.config_of_json (Melange_json.of_string json) in
+  (check bool) "show_review_cost" true config.show_review_cost;
+  (check bool) "general disabled" false config.review_plugins.general.enabled;
+  (check bool) "security enabled" true config.review_plugins.security.enabled;
+  (check int) "vuln_classes count" 2 (List.length config.review_plugins.security.vuln_classes);
+  (check int) "memory_max_tokens" 10000 config.review_plugins.security.memory_max_tokens
+
+let test_vuln_class_roundtrip () =
+  List.iter
+    (fun vc ->
+      let json = Config_types.vuln_class_to_json vc in
+      let parsed = Config_types.vuln_class_of_json json in
+      (check string) "roundtrip" (Config_types.vuln_class_to_string vc) (Config_types.vuln_class_to_string parsed))
+    Config_types.all_vuln_classes
+
+let test_security_plugin_config_roundtrip () =
+  let cfg : Config_types.security_plugin_config =
+    {
+      enabled = true;
+      vuln_classes = [ Injection; Xss ];
+      triage_model_tier = Fast;
+      analysis_model_tier = Standard;
+      validator_model_tier = Strong;
+      confidence_threshold = High;
+      memory_max_tokens = 3000;
+    }
+  in
+  let json = Config_types.security_plugin_config_to_json cfg in
+  let parsed = Config_types.security_plugin_config_of_json json in
+  (check bool) "enabled" true parsed.enabled;
+  (check int) "vuln_classes" 2 (List.length parsed.vuln_classes);
+  (check int) "memory_max_tokens" 3000 parsed.memory_max_tokens;
+  (check string) "confidence" "high" (Config_types.confidence_to_string parsed.confidence_threshold);
+  (check string) "validator tier" "strong" (Config_types.model_tier_to_string parsed.validator_model_tier)
+
 (** {2 Review prompt tests} *)
 
 let test_system_prompt_default () =
@@ -390,6 +450,10 @@ let () =
         [
           test_case "config defaults" `Quick test_config_defaults;
           test_case "config ignores removed fields" `Quick test_config_ignores_removed_fields;
+          test_case "review_plugins defaults" `Quick test_config_review_plugins_defaults;
+          test_case "review_plugins explicit" `Quick test_config_review_plugins_explicit;
+          test_case "vuln_class roundtrip" `Quick test_vuln_class_roundtrip;
+          test_case "security_plugin_config roundtrip" `Quick test_security_plugin_config_roundtrip;
         ] );
       ( "review_prompt",
         [

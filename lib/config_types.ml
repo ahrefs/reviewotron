@@ -2,6 +2,119 @@
 
 open Melange_json.Primitives
 
+(** Vulnerability class for security analysis routing. *)
+type vuln_class =
+  | Injection
+  | Xss
+  | Command_injection
+  | Authn
+  | Authz
+  | Ssrf
+
+let vuln_class_to_string = function
+  | Injection -> "injection"
+  | Xss -> "xss"
+  | Command_injection -> "command_injection"
+  | Authn -> "authn"
+  | Authz -> "authz"
+  | Ssrf -> "ssrf"
+
+let vuln_class_to_json vc = `String (vuln_class_to_string vc)
+
+let vuln_class_of_json = function
+  | `String "injection" -> Injection
+  | `String "xss" -> Xss
+  | `String "command_injection" -> Command_injection
+  | `String "authn" -> Authn
+  | `String "authz" -> Authz
+  | `String "ssrf" -> Ssrf
+  | json -> Melange_json.of_json_error ~json "expected a vuln_class string"
+
+(** All supported vulnerability classes. *)
+let all_vuln_classes = [ Injection; Xss; Command_injection; Authn; Authz; Ssrf ]
+
+(** Confidence level for triage signals and analysis findings. *)
+type confidence =
+  | High
+  | Medium
+  | Low
+
+let confidence_to_string = function
+  | High -> "high"
+  | Medium -> "medium"
+  | Low -> "low"
+
+let confidence_to_json c = `String (confidence_to_string c)
+
+let confidence_of_json = function
+  | `String "high" -> High
+  | `String "medium" -> Medium
+  | `String "low" -> Low
+  | json -> Melange_json.of_json_error ~json "expected a confidence string"
+
+(** Model performance tier for per-agent configuration in plugin settings.
+    Structurally identical to {!Agent_runner.model_tier} but defined
+    separately to avoid coupling config types to the agent runner. *)
+type model_tier =
+  | Fast
+  | Standard
+  | Strong
+
+let model_tier_to_string = function
+  | Fast -> "fast"
+  | Standard -> "standard"
+  | Strong -> "strong"
+
+let model_tier_to_json mt = `String (model_tier_to_string mt)
+
+let model_tier_of_json = function
+  | `String "fast" -> Fast
+  | `String "standard" -> Standard
+  | `String "strong" -> Strong
+  | json -> Melange_json.of_json_error ~json "expected a model_tier string"
+
+(** Configuration for the general review plugin. *)
+type general_plugin_config = {
+  enabled : bool; [@json.default true]
+  system_prompt_override : string option; [@json.option]
+}
+[@@deriving json] [@@json.allow_extra_fields]
+
+(** Configuration for the security review plugin. *)
+type security_plugin_config = {
+  enabled : bool; [@json.default true]
+  vuln_classes : vuln_class list; [@json.default all_vuln_classes]
+  triage_model_tier : model_tier; [@json.default Fast]
+  analysis_model_tier : model_tier; [@json.default Standard]
+  validator_model_tier : model_tier; [@json.default Standard]
+  confidence_threshold : confidence; [@json.default Medium]
+  memory_max_tokens : int; [@json.default 5000]
+}
+[@@deriving json] [@@json.allow_extra_fields]
+
+let default_general_plugin_config = { enabled = true; system_prompt_override = None }
+
+let default_security_plugin_config =
+  {
+    enabled = true;
+    vuln_classes = all_vuln_classes;
+    triage_model_tier = Fast;
+    analysis_model_tier = Standard;
+    validator_model_tier = Standard;
+    confidence_threshold = Medium;
+    memory_max_tokens = 5000;
+  }
+
+(** Aggregated review plugin configuration. *)
+type review_plugins_config = {
+  general : general_plugin_config; [@json.default default_general_plugin_config]
+  security : security_plugin_config; [@json.default default_security_plugin_config]
+}
+[@@deriving json] [@@json.allow_extra_fields]
+
+let default_review_plugins_config =
+  { general = default_general_plugin_config; security = default_security_plugin_config }
+
 type config = {
   max_diff_lines : int; [@json.default 2000]
   max_files : int; [@json.default 50]
@@ -14,6 +127,8 @@ type config = {
   review_pushes_to_develop : bool; [@json.default true]
   system_prompt_override : string option; [@json.option]
   slack_channel : string option; [@json.option]
+  show_review_cost : bool; [@json.default false]
+  review_plugins : review_plugins_config; [@json.default default_review_plugins_config]
 }
 [@@deriving json] [@@json.allow_extra_fields]
 
