@@ -216,3 +216,23 @@ NOTES:
 - `Review_prompt.estimate_prompt_tokens` is no longer called in production code (SDK tracks real usage) but is still tested. Could be removed if not needed.
 - Duplicated default model ID string `"claude-sonnet-4-5-20250929"` exists in both `config_types.ml` (`[@json.default]`) and `agent_runner.ml` (`default_model_id`). Can't easily deduplicate because `[@json.default]` requires a literal. Cross-reference comment would help.
 
+=== P1.4: Delete anthropic_types.atd and manual HTTP code ===
+Completed: 2026-04-15 01:39:27
+<task-result>
+TASK_ID: P1.4
+STATUS: DONE
+FILES_CHANGED: lib/config_types.ml, lib/config_types.mli, test/test.ml, test/test_helpers.ml, secrets.json.example
+DECISIONS:
+- P1.3 already completed the bulk of P1.4's planned work (deleting anthropic_types.atd, removing atdgen rules/deps, removing build_anthropic_request and HTTP code). P1.4 focused on the remaining cleanup.
+- Removed dead `anthropic_version` field from `secrets` type — the SDK handles API versioning internally, so this field had no consumers in production code
+- Added `[@@json.allow_extra_fields]` to the `secrets` type in config_types.ml so existing secrets JSON files containing the removed field still parse correctly (backward compatibility)
+- Updated `secrets.json.example` to remove the dead field from the user-facing example
+- Added a backward-compatibility regression test (`test_config_ignores_removed_fields`) that parses JSON containing the removed `anthropic_version` field and verifies it succeeds — guards against accidental removal of `[@@json.allow_extra_fields]`
+NOTES:
+- All 55 tests pass (32 reviewotron + 23 diff_parser), build clean, formatter clean
+- ATD is now completely gone from the project — no .atd files, no atdgen deps, no Anthropic_types_t/Anthropic_types_j references in source code
+- `secrets.anthropic_version` references remain only in historical plan docs (phase-1-skeleton.md, phase-3-claude-engine.md, phase-6-deployment.md) and progress notes — these are historical records, not code
+- `Review_prompt.estimate_prompt_tokens` is still in the codebase and tested but unused in production (SDK tracks real usage). It could be removed in a future cleanup task but is not part of P1.4's scope.
+- Phase 1 step 5 ("Delete anthropic_types.atd, manual HTTP code, build_anthropic_request") from the PRD is now fully complete across P1.3 + P1.4
+</task-result>
+
