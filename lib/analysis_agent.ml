@@ -155,13 +155,100 @@ These are safe patterns that may superficially resemble injection but are not ex
 let xss_section =
   {|## Vulnerability Class: Cross-Site Scripting (XSS)
 
-**Sources**: HTTP request parameters, URL fragments, user-stored data rendered in templates, WebSocket messages displayed in UI.
+This class covers reflected XSS (user input immediately rendered back in a response), stored XSS (user input persisted and later rendered to other users), and DOM-based XSS (client-side JavaScript reads a user-controlled DOM source and writes it to a dangerous sink without server involvement).
 
-**Sinks**: innerHTML assignments, dangerouslySetInnerHTML, server-side template rendering without escaping, DOM manipulation with user-controlled strings, document.write, eval with user strings.
+### Sources (User-Controlled Input)
 
-**Adequate sanitization**: Context-correct output encoding (HTML entity encoding for HTML context, JavaScript escaping for JS context, URL encoding for URL context). Trusted template engines with auto-escaping enabled.
+**Server-Side Sources (reflected and stored XSS):**
 
-**Inadequate sanitization**: Encoding for wrong context (URL encoding in HTML context), allowlist that permits script-bearing tags, sanitization applied after insertion into DOM.|}
+**OCaml / Dream:**
+- `Dream.query` — URL query parameters
+- `Dream.param` — route path parameters
+- `Dream.body` / `Dream.form` — POST body and form fields
+- `Dream.header` / `Dream.cookie` — HTTP headers and cookies
+- Database-retrieved user content rendered in HTML responses
+
+**JavaScript / Express:**
+- `req.params` — route parameters
+- `req.query` — URL query string
+- `req.body` — parsed request body
+- `req.headers` / `req.cookies` — HTTP headers and cookies
+- Database-retrieved user content rendered in templates or sent as HTML
+
+**Python / Django / Flask:**
+- `request.GET` / `request.POST` — Django query and form data
+- `request.data` / `request.query_params` — Django REST Framework
+- `request.args` / `request.form` / `request.json` — Flask
+- `request.headers` / `request.cookies` — both frameworks
+- Model fields containing user-generated content rendered in templates
+
+**Client-Side Sources (DOM-based XSS):**
+- `window.location` / `document.URL` / `document.documentURI` — full URL
+- `location.hash` / `location.search` / `location.href` — URL fragments and query strings
+- `document.referrer` — referrer header accessible in JS
+- `window.name` — cross-origin writable
+- `postMessage` event data (`event.data`) — messages from other windows/iframes
+- `document.cookie` — if set by attacker-controlled subdomain
+- Web Storage (`localStorage` / `sessionStorage`) — if populated from untrusted source
+
+### Sinks (Dangerous Operations)
+
+**Server-Side Template Rendering:**
+- **OCaml / Dream**: `Dream.html` with string concatenation or `Printf.sprintf` containing user data; raw string responses with `Content-Type: text/html`; `Tyxml.Html.Unsafe.data` or any raw HTML injection bypassing Tyxml's type safety
+- **Python / Django**: `mark_safe(user_input)`, `|safe` template filter on user data, `{% autoescape off %}` blocks containing user data, `HttpResponse(user_html)` with unescaped content
+- **Python / Flask / Jinja2**: `render_template_string(user_input)`, `Markup(user_input)`, `|safe` filter, `Environment(autoescape=False)` with user data in templates
+- **JavaScript / Express**: Template engines with unescaped output — EJS `<%- user_input %>`, Pug `!{user_input}`, Handlebars `{{{user_input}}}`
+
+**Client-Side DOM Manipulation:**
+- `element.innerHTML` / `element.outerHTML` — HTML parsing of assigned string
+- `element.insertAdjacentHTML()` — inserts HTML at specified position
+- `document.write()` / `document.writeln()` — writes HTML to document stream
+- `DOMParser.parseFromString()` followed by insertion into live DOM
+
+**Client-Side JavaScript Execution:**
+- `eval(user_string)` — direct code execution
+- `setTimeout(user_string, ...)` / `setInterval(user_string, ...)` — string form executes as code
+- `new Function(user_string)` — dynamic function creation
+- `javascript:` URI scheme in `href` or `src` attributes with user data
+
+**Framework-Specific Dangerous APIs:**
+- **React**: `dangerouslySetInnerHTML={{ __html: user_input }}`
+- **Vue**: `v-html="user_input"`
+- **Angular**: `[innerHTML]="user_input"`, `bypassSecurityTrustHtml(user_input)`
+- **Svelte**: `{@html user_input}`
+- **jQuery**: `.html(user_input)`, `.append(user_html_string)`, `$(user_selector)`
+
+### Sanitization Assessment
+
+**Adequate — these patterns prevent XSS by construction:**
+- Context-correct output encoding: HTML entity encoding (`&lt;`, `&gt;`, `&amp;`, `&quot;`, `&#x27;`) for HTML body context; JavaScript string escaping for inline JS context; URL encoding for URL parameter context
+- DOMPurify: `DOMPurify.sanitize(user_input)` with default configuration strips dangerous elements and attributes
+- Framework auto-escaping: React JSX expressions `{variable}` are auto-escaped; Django templates `{{ variable }}` auto-escape by default; Jinja2 with `autoescape=True`; OCaml Tyxml typed HTML construction (type system prevents raw HTML injection)
+- Server-side HTML sanitization libraries with allowlist approach (e.g., `nh3.clean()` or `bleach.clean()` in Python, `sanitize-html` in Node.js) when configured with a restrictive tag/attribute allowlist
+- Content Security Policy (CSP): a restrictive `script-src` directive (e.g., `script-src 'self'` without `'unsafe-inline'`) provides defense-in-depth by preventing inline script execution even if an XSS payload reaches the DOM. CSP alone is not sufficient mitigation — output encoding is still required — but its presence significantly reduces exploitability
+
+**Inadequate — these attempts at sanitization are insufficient:**
+- Encoding for wrong context (HTML entity encoding inside a JavaScript string literal, or inside a CSS `url()` value)
+- Blocklist-based filtering: removing `<script>` tags but not `<img onerror=...>`, `<svg onload=...>`, or other event handler vectors
+- Regex-based HTML stripping (cannot reliably parse HTML; bypasses via encoding, comments, or malformed tags)
+- Client-side-only validation/sanitization (attacker can bypass by sending requests directly)
+- `strip_tags()` / equivalent — misses attribute-based XSS vectors (`<div onmouseover=...>`)
+- Truncation or length limits as the sole defense (payloads can be short)
+- `encodeURIComponent` used as the sole defense for HTML context (produces percent-encoding, not HTML entities; does not protect in unquoted attributes or event handler contexts)
+
+### Common False Positive Patterns — DO NOT REPORT
+
+These are safe patterns that may superficially resemble XSS but are not exploitable:
+- React JSX expressions `{variable}` — React auto-escapes all interpolated values by default; only `dangerouslySetInnerHTML` bypasses this
+- Django template `{{ variable }}` — auto-escaped by default; only `|safe` filter or `{% autoescape off %}` disables escaping
+- Jinja2 templates with `autoescape=True` (the default in Flask) — `{{ variable }}` is auto-escaped
+- OCaml Tyxml typed HTML — the type system prevents injecting raw strings into HTML nodes; only `Unsafe.data` bypasses this
+- Content rendered as JSON API responses (`Content-Type: application/json`) — not interpreted as HTML by browsers
+- Plain text responses (`Content-Type: text/plain`) — browsers do not parse HTML in plain text
+- Static HTML strings with no user-controlled input (hardcoded markup)
+- `innerHTML` or `.html()` assigned from hardcoded constants, trusted configuration, or server-rendered content with no user input in the path
+- Escaped template output used in HTML attributes that are properly quoted (e.g., `<div title="{{ escaped_value }}">`)
+- User input used only in `textContent` / `innerText` assignments — these do not parse HTML|}
 
 let command_injection_section =
   {|## Vulnerability Class: Command Injection

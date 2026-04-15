@@ -464,3 +464,29 @@ DECISIONS:
 NOTES:
 - Total test count: 91 (23 diff_parser + 68 reviewotron), all passing, build clean, formatter clean
 
+=== P4.2: Implement injection analysis agent prompt ===
+Completed: 2026-04-15 05:20:36
+<task-result>
+TASK_ID: P4.2
+STATUS: DONE
+FILES_CHANGED: lib/analysis_agent.ml
+DECISIONS:
+- Expanded `injection_section` in-place rather than creating a separate prompt file — keeps all per-class sections colocated with the dispatch logic in `vuln_class_section`
+- Structured prompt with 4 sections mirroring shared_methodology's 4 steps: Sources, Sinks, Sanitization Assessment, False Positive Patterns
+- Sources catalog covers OCaml/Dream, JavaScript/Express, Python/Django/Flask with specific API entry points
+- Sinks organized by injection subtype (SQL, NoSQL, ORM) with per-language examples
+- Added "Common False Positive Patterns — DO NOT REPORT" section to reduce noise (Caqti type-safe binding, Django ORM queryset methods, Sequelize model methods, etc.)
+- Removed LDAP injection and SSTI from scope statement per review — no concrete sink catalogs for these, and SSTI is a distinct vuln class
+- Added second-order injection awareness to scope statement
+- Preserved "SQL/Query Injection" substring in title for test compatibility (test at test.ml:744)
+- Prompt grows from ~150 to ~900 tokens — modest increase justified by language-specific precision
+NOTES:
+- Total test count: 114 (23 diff_parser + 91 reviewotron), all passing, build clean, formatter clean
+- The other 5 sections (xss, command_injection, authn, authz, ssrf) remain as short placeholders — tasks P4.3-P4.7 will expand them to match this structure
+- No .mli changes needed — `injection_section` is internal, accessed only through the exposed `vuln_class_section`
+- No new tests needed — prompt quality is tested by corpus in Phase 7; infrastructure tests already validate the wiring
+</task-result>
+
+--- Iteration 21: P4.3 — UNCLEAR RESULT ---
+2026-04-15 05:26:54
+
