@@ -24,6 +24,9 @@ type confidence =
   | Medium
   | Low
 
+(** All supported confidence levels. *)
+val all_confidences : confidence list
+
 val confidence_to_string : confidence -> string
 val confidence_to_json : confidence -> Yojson.Basic.t
 val confidence_of_json : Yojson.Basic.t -> confidence

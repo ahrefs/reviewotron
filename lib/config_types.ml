@@ -44,6 +44,7 @@ let confidence_to_string = function
   | Medium -> "medium"
   | Low -> "low"
 
+let all_confidences = [ High; Medium; Low ]
 let confidence_to_json c = `String (confidence_to_string c)
 
 let confidence_of_json = function
