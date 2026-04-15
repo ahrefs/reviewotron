@@ -516,6 +516,99 @@ let test_triage_agent_output_schema_valid () =
     | `Assoc fields -> List.exists (fun (k, _) -> String.equal k "properties") fields
     | _ -> false)
 
+(** {2 Security review plugin tests} *)
+
+let make_triage_signal ~vuln_class ~confidence =
+  Security_types.
+    {
+      vuln_class;
+      confidence;
+      regions = [ { path = "test.ml"; start_line = 1; end_line = 10 } ];
+      rationale = "test signal";
+    }
+
+let test_security_confidence_rank () =
+  let open Security_review_plugin in
+  (check bool) "High > Medium" true (confidence_rank Config_types.High > confidence_rank Medium);
+  (check bool) "Medium > Low" true (confidence_rank Medium > confidence_rank Low);
+  (check bool) "High > Low" true (confidence_rank High > confidence_rank Low)
+
+let test_security_vuln_class_equal () =
+  let open Security_review_plugin in
+  (check bool) "same class" true (vuln_class_equal Config_types.Injection Injection);
+  (check bool) "different class" false (vuln_class_equal Injection Xss);
+  (check bool) "all classes equal themselves" true
+    (List.for_all
+       (fun vc -> vuln_class_equal vc vc)
+       Config_types.[ Injection; Xss; Command_injection; Authn; Authz; Ssrf ])
+
+let test_security_should_analyze_above_threshold () =
+  let security_config = Config_types.default_security_plugin_config in
+  (* Default threshold is Medium. High and Medium should always trigger. *)
+  let high_signal = make_triage_signal ~vuln_class:Injection ~confidence:High in
+  let medium_signal = make_triage_signal ~vuln_class:Xss ~confidence:Medium in
+  (check bool) "High >= Medium threshold" true (Security_review_plugin.should_analyze ~security_config high_signal);
+  (check bool) "Medium >= Medium threshold" true (Security_review_plugin.should_analyze ~security_config medium_signal)
+
+let test_security_should_analyze_below_threshold_in_config () =
+  let security_config = Config_types.default_security_plugin_config in
+  (* Default config has all vuln_classes. Low signal for a configured class should trigger. *)
+  let low_signal = make_triage_signal ~vuln_class:Injection ~confidence:Low in
+  (check bool) "Low in vuln_classes" true (Security_review_plugin.should_analyze ~security_config low_signal)
+
+let test_security_should_analyze_below_threshold_not_in_config () =
+  let security_config = { Config_types.default_security_plugin_config with vuln_classes = [ Xss; Ssrf ] } in
+  (* Low confidence for a class NOT in the restricted list should not trigger. *)
+  let low_injection = make_triage_signal ~vuln_class:Injection ~confidence:Low in
+  (check bool) "Low not in vuln_classes" false (Security_review_plugin.should_analyze ~security_config low_injection);
+  (* But Low for a class that IS in the list should still trigger. *)
+  let low_xss = make_triage_signal ~vuln_class:Xss ~confidence:Low in
+  (check bool) "Low in vuln_classes" true (Security_review_plugin.should_analyze ~security_config low_xss)
+
+let test_security_should_analyze_high_threshold () =
+  let security_config = { Config_types.default_security_plugin_config with confidence_threshold = High } in
+  (* With High threshold, only High triggers unconditionally. *)
+  let high_signal = make_triage_signal ~vuln_class:Injection ~confidence:High in
+  let medium_signal = make_triage_signal ~vuln_class:Injection ~confidence:Medium in
+  (check bool) "High >= High threshold" true (Security_review_plugin.should_analyze ~security_config high_signal);
+  (* Medium is below High threshold but Injection is in default vuln_classes. *)
+  (check bool) "Medium < High, but in vuln_classes" true
+    (Security_review_plugin.should_analyze ~security_config medium_signal)
+
+let test_security_should_analyze_high_threshold_restricted () =
+  let security_config =
+    { Config_types.default_security_plugin_config with confidence_threshold = High; vuln_classes = [ Xss ] }
+  in
+  (* Medium confidence for Injection (not in vuln_classes) should not trigger. *)
+  let medium_injection = make_triage_signal ~vuln_class:Injection ~confidence:Medium in
+  (check bool) "Medium < High, not in vuln_classes" false
+    (Security_review_plugin.should_analyze ~security_config medium_injection);
+  (* High confidence always triggers regardless of vuln_classes. *)
+  let high_injection = make_triage_signal ~vuln_class:Injection ~confidence:High in
+  (check bool) "High >= High threshold, even if not in vuln_classes" true
+    (Security_review_plugin.should_analyze ~security_config high_injection)
+
+let test_security_should_analyze_low_threshold () =
+  let security_config = { Config_types.default_security_plugin_config with confidence_threshold = Low } in
+  (* With Low threshold, everything triggers unconditionally. *)
+  let low_signal = make_triage_signal ~vuln_class:Injection ~confidence:Low in
+  (check bool) "Low >= Low threshold" true (Security_review_plugin.should_analyze ~security_config low_signal)
+
+let test_security_agent_model_tier () =
+  let open Security_review_plugin in
+  (check bool) "Fast maps correctly" true
+    (match agent_model_tier Config_types.Fast with
+    | Agent_runner.Fast -> true
+    | Standard | Strong -> false);
+  (check bool) "Standard maps correctly" true
+    (match agent_model_tier Standard with
+    | Standard -> true
+    | Fast | Strong -> false);
+  (check bool) "Strong maps correctly" true
+    (match agent_model_tier Strong with
+    | Strong -> true
+    | Fast | Standard -> false)
+
 (** {2 End-to-end reviewer tests} *)
 
 module R_test = Reviewer.Make (Api_local.Github) (Api_local.Agent_runner) (Api_local.Slack)
@@ -804,6 +897,21 @@ let () =
           test_case "build input with memory" `Quick test_triage_agent_build_input_with_memory;
           test_case "build input empty memory" `Quick test_triage_agent_build_input_empty_memory;
           test_case "output schema valid" `Quick test_triage_agent_output_schema_valid;
+        ] );
+      ( "security_plugin",
+        [
+          test_case "confidence rank ordering" `Quick test_security_confidence_rank;
+          test_case "vuln class equality" `Quick test_security_vuln_class_equal;
+          test_case "should analyze above threshold" `Quick test_security_should_analyze_above_threshold;
+          test_case "should analyze below threshold in config" `Quick
+            test_security_should_analyze_below_threshold_in_config;
+          test_case "should analyze below threshold not in config" `Quick
+            test_security_should_analyze_below_threshold_not_in_config;
+          test_case "should analyze high threshold" `Quick test_security_should_analyze_high_threshold;
+          test_case "should analyze high threshold restricted" `Quick
+            test_security_should_analyze_high_threshold_restricted;
+          test_case "should analyze low threshold" `Quick test_security_should_analyze_low_threshold;
+          test_case "agent model tier conversion" `Quick test_security_agent_model_tier;
         ] );
       ( "reviewer_e2e",
         [
