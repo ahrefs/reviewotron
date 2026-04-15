@@ -1671,6 +1671,186 @@ let test_security_e2e_disabled () =
   (check bool) "has general review" true (CCString.find ~sub:"The changes look generally good" write_log >= 0);
   (check bool) "no security category" true (CCString.find ~sub:{|"security"|} write_log < 0)
 
+(** {2 General review failure robustness tests} *)
+
+let test_pr_general_failure_no_findings () =
+  Test_helpers.reset_test_state ();
+  (* Map general_review agent to a nonexistent file so it fails.
+     Security triage returns safe (no signals), so no security findings either. *)
+  Api_local.set_agent_response_map
+    [
+      "general_review", "mock_api_responses/nonexistent_file.json";
+      "security_triage", "mock_api_responses/security/triage_safe.json";
+    ];
+  let ctx = Test_helpers.make_test_context () in
+  let payload = read_file "mock_payloads/pr_opened.json" in
+  let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let write_log = Api_local.get_write_log () in
+  (check bool) "review posted despite failure" true (CCString.find ~sub:"[create_pr_review]" write_log >= 0);
+  (check bool) "has failure notice" true (CCString.find ~sub:"Review failed" write_log >= 0);
+  (check bool) "has re-trigger message" true (CCString.find ~sub:"re-trigger the review" write_log >= 0);
+  (check bool) "has service logs hint" true (CCString.find ~sub:"check the service logs" write_log >= 0)
+
+let test_pr_general_failure_with_security_findings () =
+  Test_helpers.reset_test_state ();
+  (* General review agent fails, but security pipeline finds a confirmed vulnerability. *)
+  Api_local.set_agent_response_map
+    [
+      "general_review", "mock_api_responses/nonexistent_file.json";
+      "security_triage", "mock_api_responses/security/triage_injection.json";
+      "security_analysis_injection", "mock_api_responses/security/analysis_injection.json";
+      "security_validator", "mock_api_responses/security/validator_confirmed.json";
+    ];
+  let ctx = Test_helpers.make_test_context () in
+  let payload = read_file "mock_payloads/pr_opened.json" in
+  let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let write_log = Api_local.get_write_log () in
+  (check bool) "review posted despite general failure" true (CCString.find ~sub:"[create_pr_review]" write_log >= 0);
+  (check bool) "has partial failure notice" true (CCString.find ~sub:"Review partially failed" write_log >= 0);
+  (check bool) "has re-trigger suggestion" true (CCString.find ~sub:"re-trigger the review" write_log >= 0);
+  (check bool) "has security finding" true (CCString.find ~sub:"**[critical]** security" write_log >= 0);
+  (check bool) "finding on correct path" true (CCString.find ~sub:"src/main.ml" write_log >= 0)
+
+let test_push_general_failure () =
+  Test_helpers.reset_test_state ();
+  (* General review agent fails for push review. *)
+  Api_local.set_agent_response_map
+    [
+      "general_review", "mock_api_responses/nonexistent_file.json";
+      "security_triage", "mock_api_responses/security/triage_safe.json";
+    ];
+  let config = Config_types.config_of_json (Melange_json.of_string {|{"slack_channel": "dev-reviews"}|}) in
+  let ctx = Test_helpers.make_test_context ~config () in
+  let payload = read_file "mock_payloads/push_develop.json" in
+  let event = Test_helpers.parse_event_exn ~event_type:"push" ~body:payload in
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let write_log = Api_local.get_write_log () in
+  (* Slack message should be sent with failure notice *)
+  (check bool) "slack message sent" true (CCString.find ~sub:"[slack]" write_log >= 0);
+  (check bool) "slack mentions failure" true (CCString.find ~sub:"Code Review Failed" write_log >= 0);
+  let slack_msgs = Api_local.get_slack_messages () in
+  (check int) "one slack message" 1 (List.length slack_msgs)
+
+let test_push_general_failure_with_findings () =
+  Test_helpers.reset_test_state ();
+  (* General review agent fails but security pipeline finds a vulnerability.
+     Push reviews post commit comments for critical/warning findings. *)
+  Api_local.set_agent_response_map
+    [
+      "general_review", "mock_api_responses/nonexistent_file.json";
+      "security_triage", "mock_api_responses/security/triage_injection.json";
+      "security_analysis_injection", "mock_api_responses/security/analysis_injection.json";
+      "security_validator", "mock_api_responses/security/validator_confirmed.json";
+    ];
+  let config = Config_types.config_of_json (Melange_json.of_string {|{"slack_channel": "dev-reviews"}|}) in
+  let ctx = Test_helpers.make_test_context ~config () in
+  let payload = read_file "mock_payloads/push_develop.json" in
+  let event = Test_helpers.parse_event_exn ~event_type:"push" ~body:payload in
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let write_log = Api_local.get_write_log () in
+  (* Commit comments should be posted for security findings *)
+  (check bool) "commit comment posted" true (CCString.find ~sub:"[create_commit_comment]" write_log >= 0);
+  (* Slack message should indicate partial failure *)
+  (check bool) "slack message sent" true (CCString.find ~sub:"[slack]" write_log >= 0);
+  (check bool) "slack mentions failure" true (CCString.find ~sub:"Code Review Failed" write_log >= 0)
+
+(** {2 Security plugin failure notice tests} *)
+
+let test_pr_security_failure_notice () =
+  Test_helpers.reset_test_state ();
+  (* Map security_triage agent to a nonexistent file so it fails entirely.
+     General review succeeds normally. The security plugin is enabled by default,
+     so when triage produces no costs, run_plugins detects the error. *)
+  Api_local.set_agent_response_map
+    [
+      "general_review", "mock_api_responses/claude/review_response.json";
+      "security_triage", "mock_api_responses/nonexistent_security_triage.json";
+    ];
+  let ctx = Test_helpers.make_test_context () in
+  let payload = read_file "mock_payloads/pr_opened.json" in
+  let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let write_log = Api_local.get_write_log () in
+  (check bool) "review posted" true (CCString.find ~sub:"[create_pr_review]" write_log >= 0);
+  (check bool) "has general review summary" true (CCString.find ~sub:"The changes look generally good" write_log >= 0);
+  (check bool) "has security failure notice" true
+    (CCString.find ~sub:"security review plugin encountered an error" write_log >= 0);
+  (check bool) "has incompleteness warning" true
+    (CCString.find ~sub:"Security analysis may be incomplete" write_log >= 0)
+
+let test_push_security_failure_notice () =
+  Test_helpers.reset_test_state ();
+  Api_local.set_agent_response_map
+    [
+      "general_review", "mock_api_responses/claude/push_review_response.json";
+      "security_triage", "mock_api_responses/nonexistent_security_triage.json";
+    ];
+  let config = Config_types.config_of_json (Melange_json.of_string {|{"slack_channel": "dev-reviews"}|}) in
+  let ctx = Test_helpers.make_test_context ~config () in
+  let payload = read_file "mock_payloads/push_develop.json" in
+  let event = Test_helpers.parse_event_exn ~event_type:"push" ~body:payload in
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let write_log = Api_local.get_write_log () in
+  (check bool) "slack message sent" true (CCString.find ~sub:"[slack]" write_log >= 0);
+  (* The Slack attachment should include the security failure note *)
+  let slack_msgs = Api_local.get_slack_messages () in
+  (check int) "one slack message" 1 (List.length slack_msgs);
+  match slack_msgs with
+  | [] -> fail "expected at least one Slack message"
+  | (_channel, _text, attachments) :: _ ->
+  match attachments with
+  | None -> fail "expected Slack attachments"
+  | Some [] -> fail "expected at least one attachment"
+  | Some (att :: _) ->
+    (check bool) "attachment has security failure notice" true
+      (CCString.find ~sub:"security review plugin encountered an error" att.Slack_types.text >= 0)
+
+let test_pr_no_security_notice_when_disabled () =
+  Test_helpers.reset_test_state ();
+  (* Disable the security plugin. No security failure notice should appear. *)
+  let config =
+    Config_types.config_of_json (Melange_json.of_string {|{"review_plugins": {"security": {"enabled": false}}}|})
+  in
+  let ctx = Test_helpers.make_test_context ~config () in
+  let payload = read_file "mock_payloads/pr_opened.json" in
+  let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let write_log = Api_local.get_write_log () in
+  (check bool) "review posted" true (CCString.find ~sub:"[create_pr_review]" write_log >= 0);
+  (check bool) "no security failure notice" true
+    (CCString.find ~sub:"security review plugin encountered an error" write_log < 0)
+
+(** {2 GitHub API retry tests} *)
+
+let test_pr_review_retry_on_failure () =
+  Test_helpers.reset_test_state ();
+  (* Make the first create_pr_review call fail, then succeed on retry. *)
+  Api_local.set_fail_next_pr_review ();
+  let ctx = Test_helpers.make_test_context () in
+  let payload = read_file "mock_payloads/pr_opened.json" in
+  let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let write_log = Api_local.get_write_log () in
+  (* The review should still be posted after the retry *)
+  (check bool) "review posted after retry" true (CCString.find ~sub:"[create_pr_review]" write_log >= 0);
+  (check bool) "has summary" true (CCString.find ~sub:"The changes look generally good" write_log >= 0)
+
+let test_commit_comment_retry_on_failure () =
+  Test_helpers.reset_test_state ();
+  Api_local.set_agent_response_path "mock_api_responses/claude/push_review_response.json";
+  (* Make the first create_commit_comment call fail, then succeed on retry. *)
+  Api_local.set_fail_next_commit_comment ();
+  let config = Config_types.config_of_json (Melange_json.of_string {|{"slack_channel": "dev-reviews"}|}) in
+  let ctx = Test_helpers.make_test_context ~config () in
+  let payload = read_file "mock_payloads/push_develop.json" in
+  let event = Test_helpers.parse_event_exn ~event_type:"push" ~body:payload in
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let write_log = Api_local.get_write_log () in
+  (* The commit comment should still be posted after the retry *)
+  (check bool) "commit comment posted after retry" true (CCString.find ~sub:"[create_commit_comment]" write_log >= 0)
+
 let () =
   run "reviewotron"
     [
@@ -1885,5 +2065,26 @@ let () =
           test_case "safe diff produces no security findings" `Quick test_security_e2e_safe;
           test_case "rejected finding produces no security output" `Quick test_security_e2e_rejected;
           test_case "disabled plugin produces no security findings" `Quick test_security_e2e_disabled;
+        ] );
+      ( "general_failure_robustness",
+        [
+          test_case "PR review posted on general failure (no findings)" `Quick test_pr_general_failure_no_findings;
+          test_case "PR review posted on general failure (with security findings)" `Quick
+            test_pr_general_failure_with_security_findings;
+          test_case "push review posts Slack on general failure" `Quick test_push_general_failure;
+          test_case "push review posts comments on general failure with findings" `Quick
+            test_push_general_failure_with_findings;
+        ] );
+      ( "security_failure_notice",
+        [
+          test_case "PR review includes security failure notice on triage error" `Quick test_pr_security_failure_notice;
+          test_case "push review Slack includes security failure notice on triage error" `Quick
+            test_push_security_failure_notice;
+          test_case "no security failure notice when plugin disabled" `Quick test_pr_no_security_notice_when_disabled;
+        ] );
+      ( "github_api_retry",
+        [
+          test_case "PR review retries on first failure" `Quick test_pr_review_retry_on_failure;
+          test_case "commit comment retries on first failure" `Quick test_commit_comment_retry_on_failure;
         ] );
     ]
