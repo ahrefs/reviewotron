@@ -303,3 +303,26 @@ NOTES:
 - `ppx_enumerate` could eliminate the manual `all_vuln_classes` list but the ppx isn't in the dune config — adding it is out of scope for this task
 </task-result>
 
+=== P2.4: Build plugin orchestrator in reviewer.ml ===
+Completed: 2026-04-15 02:43:59
+<task-result>
+TASK_ID: P2.4
+STATUS: DONE
+FILES_CHANGED: lib/reviewer.ml
+DECISIONS:
+- Plugin orchestrator implemented as `run_plugins` function inside the `Make` functor — runs enabled plugins, collects findings, merges, deduplicates, returns `(review_output option, finding list)`
+- General plugin is run through `run_review` (not `Review_plugin.S.run`) because PR body/Slack formatting needs the full `review_output` (summary + overall_assessment), not just findings
+- Deduplication key is `(path, line, category)` — keeps the finding with higher severity rank when duplicates are found; results sorted by (path, line) for deterministic output
+- `severity_rank` function maps severity variants to numeric ranks (Critical=5, Warning=4, ... Other=0) for dedup comparison
+- `run_plugins` does NOT take `~diff` parameter (YAGNI — will be added in Phase 3 when security plugin needs parsed file diffs)
+- `execute_and_post_review` accepts `~config` from caller instead of re-fetching via `Context.get_config`
+- Used `Stdlib.Option.compare Int.compare` instead of polymorphic `compare` for type-safe line number comparison (Devkit shadows stdlib's `Option.compare`)
+- Used `Option.default` from Devkit (not `Option.value`) because `open Devkit` shadows stdlib
+NOTES:
+- All 59 tests pass (23 diff_parser + 36 reviewotron), build clean, formatter clean
+- Only lib/reviewer.ml changed — no interface changes to reviewer.mli, no new files
+- When the general plugin is disabled via config and no other plugins are enabled, both PR and push paths log an error and return early ("no review output produced")
+- The `run_plugins` return type `(review_output option * finding list)` means findings exist both inside the review_output and as a separate deduplicated list — callers should use the deduplicated list for comments. This design will benefit from a cleaner abstraction when Phase 3 adds the second plugin
+- The duplicated `match general_result | None -> error | Some -> proceed` pattern in both `execute_and_post_review` and `review_push` is a known duplication; deferring cleanup to Phase 3 when the return type can be redesigned
+- `severity_rank` lives in reviewer.ml for now; could be promoted to Review_types in a future cleanup pass
+
