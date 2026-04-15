@@ -516,3 +516,26 @@ NOTES:
 --- Iteration 23: P4.4 — UNCLEAR RESULT ---
 2026-04-15 05:47:20
 
+=== P4.4: Implement command injection analysis agent prompt ===
+Completed: 2026-04-15 06:09:20
+<task-result>
+TASK_ID: P4.4
+STATUS: DONE
+FILES_CHANGED: lib/analysis_agent.ml
+DECISIONS:
+- Expanded `command_injection_section` from 4-line placeholder to ~80-line comprehensive prompt following the same 4-section structure as injection_section and xss_section (Sources, Sinks, Sanitization Assessment, False Positive Patterns)
+- Key structural distinction: split sinks into "Shell-Mediated Execution" (highest risk, shell metacharacters interpreted) vs "Direct Process Execution" (no shell, but prog/args may be user-controlled) — this is the most important conceptual framework for command injection analysis
+- Added "Argument injection" special-case subsection covering dangerous flags in programs like git (--upload-pack), tar (--checkpoint-action), curl (-o) — often missed category
+- Sources catalog covers OCaml/Dream, JavaScript/Express, Python/Django/Flask, plus cross-language sources (second-order via DB, file paths, env vars, message queues)
+- Sanitization: adequate patterns include array-form exec, shlex.quote (Unix), Filename.quote (Unix), allowlist, library APIs, `--` separator; inadequate patterns include blocklist filtering, Filename.quote on Windows (detailed Win32 quoting issues), complex pipeline edge cases, wrong-context encoding, truncation
+- False positive patterns: hardcoded commands, array-form with safe programs, allowlist-validated enum selection, build/test-only code, log/debug string construction
+- Review fix 1: Added `Unix.open_process` (bidirectional variant) to complete the OCaml shell-mediated sinks family alongside open_process_in/out/full
+- Review fix 2: Added `subprocess.call` and `subprocess.check_call` list-form variants to Python direct execution sinks
+- Simplify fix: Added `subprocess.check_output` list-form to Python direct execution sinks for completeness
+NOTES:
+- Total test count: 91 (23 diff_parser + 68 reviewotron), all passing, build clean, formatter clean
+- The remaining 3 sections (authn, authz, ssrf) are still short placeholders — tasks P4.5-P4.7 will expand them
+- No .mli changes needed — `command_injection_section` is internal, accessed only through the exposed `vuln_class_section`
+- Prompt grows from ~150 to ~1000 tokens — consistent with injection (~900) and XSS (~950) sections
+</task-result>
+

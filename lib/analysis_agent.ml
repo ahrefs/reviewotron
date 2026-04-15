@@ -333,19 +333,90 @@ These are safe patterns that may superficially resemble command injection but ar
 let authn_section =
   {|## Vulnerability Class: Authentication (AuthN)
 
-**Sources**: Login credentials, session tokens, JWT tokens, API keys, OAuth tokens, password reset tokens — any authentication material.
+This class covers authentication bypass, weak credential handling, and insecure session management. Unlike injection or XSS — which are data-flow vulnerabilities with clear source→sink patterns — authentication vulnerabilities often manifest as **missing or incorrect security logic**: a JWT verified without checking expiry, a session not regenerated after login, a password compared with non-constant-time equality. Apply the source→sink→flow→sanitization methodology, but also look for required security steps that are absent.
 
-**Sinks**: Token validation functions, password comparison, session creation/validation, JWT verification, credential storage.
+### Sources (Authentication Material)
 
-**What to look for**:
-- Missing or weak token validation (no expiry check, no signature verification)
-- Hardcoded secrets or weak key generation
-- Plaintext password storage or weak hashing (MD5, SHA1 without salt)
-- Session fixation (no regeneration after authentication)
-- Missing rate limiting on authentication endpoints
-- Timing-safe comparison not used for token/password checks
+These are credentials, tokens, and session identifiers that enter the authentication boundary and must be properly validated before granting access.
 
-**Adequate mitigation**: Strong hashing (bcrypt, argon2), proper JWT verification with expiry, secure session management, constant-time comparison.|}
+**OCaml / Dream:**
+- `Dream.header "Authorization"` — Bearer tokens, Basic auth credentials
+- `Dream.cookie` — session cookies, remember-me tokens
+- `Dream.body` / `Dream.form` — login form credentials (username, password)
+- `Dream.query` / `Dream.param` — password reset tokens, email verification tokens in URLs
+- Custom JWT extraction from request headers or cookies
+
+**JavaScript / Express:**
+- `req.headers.authorization` / `req.get('Authorization')` — Bearer tokens, Basic auth
+- `req.cookies` / `req.signedCookies` — session cookies
+- `req.body.username` / `req.body.password` — login form credentials
+- `req.query.token` / `req.params.token` — reset and verification tokens in URLs
+- `req.session` — express-session data (session ID in cookie, data server-side)
+
+**Python / Django / Flask:**
+- `request.META['HTTP_AUTHORIZATION']` / `request.headers.get('Authorization')` — auth header
+- `request.COOKIES` (Django) / `request.cookies` (Flask) — session cookies
+- `request.POST` (Django) / `request.form` (Flask) — login form credentials
+- `request.GET` (Django) / `request.args` (Flask) — reset tokens, verification tokens in URLs
+
+### Sinks (Authentication Decision Points)
+
+**Token and JWT Verification:**
+- **OCaml**: `Jose.Jwt.verify` / `Jose.Jwt.unsafe_of_string` — JWT verification; custom token comparison functions; any function that extracts claims from a JWT and uses them for access decisions
+- **JavaScript**: `jwt.decode(token)` from `jsonwebtoken` — decodes WITHOUT verifying signature (dangerous if used for auth decisions); `jwt.verify(token, secret)` — verifies signature (correct, but check options for `algorithms`, `maxAge`, `audience`, `issuer`); `jose` library `jwtVerify` / `jwtDecrypt`
+- **Python**: `jwt.decode(token, options={"verify_signature": False})` from PyJWT — explicitly skipping verification; `jwt.decode(token, key, algorithms=[...])` — correct usage; `itsdangerous.URLSafeTimedSerializer` — signed token verification
+
+**Password Comparison and Storage:**
+- **OCaml**: Direct string comparison (`String.equal password hash`, `password = stored`) — not timing-safe and not hashing; `Bcrypt.verify` — correct usage
+- **JavaScript**: `password === storedHash` — non-timing-safe direct comparison; `bcrypt.compare(password, hash)` — correct; `crypto.createHash('md5')` / `crypto.createHash('sha1')` for passwords — weak hashing
+- **Python**: `password == stored_hash` — non-timing-safe; `hashlib.md5()` / `hashlib.sha1()` for passwords — weak hashing; `django.contrib.auth.hashers.check_password()` — correct; `werkzeug.security.check_password_hash()` — correct
+
+**Session Management:**
+- **OCaml**: `Dream.set_session_field` / `Dream.invalidate_session` — session lifecycle; custom session middleware
+- **JavaScript**: `req.session.regenerate()` — session regeneration (its absence after login is the bug); `req.session.destroy()` — logout; cookie options missing `secure`, `httpOnly`, `sameSite`
+- **Python**: `request.session.cycle_key()` — Django session regeneration (its absence after login is the bug); `session.clear()` / `session.flush()` — logout; `SESSION_COOKIE_SECURE` / `SESSION_COOKIE_HTTPONLY` settings
+
+**Auth Middleware and Decorators (absence is the vulnerability):**
+- **OCaml**: Dream middleware that checks auth state — look for routes defined without auth middleware in the pipeline (e.g., `Dream.get "/admin/users" handler` without an auth middleware wrapping that route or scope)
+- **JavaScript**: `passport.authenticate()`, custom `isAuthenticated` middleware — look for `router.get('/admin/...', handler)` without `passport.authenticate('session')` or an `isAuthenticated` check in the middleware chain
+- **Python**: `@login_required`, `@permission_required` decorators — look for view functions handling sensitive resources without these decorators; DRF `ViewSet` with `permission_classes = [AllowAny]` or `permission_classes = []` on endpoints that should require authentication
+
+**OAuth Flow Validation (when OAuth is present):**
+- Missing `state` parameter validation in OAuth callback endpoints — enables CSRF against the OAuth flow (attacker initiates OAuth, victim completes it, attacker's account gets linked)
+- `redirect_uri` constructed from user input without strict allowlist validation — enables open redirect or authorization code theft
+- Authorization code used without binding to the originating session
+
+### Sanitization Assessment
+
+**Adequate — these patterns implement authentication correctly:**
+- Password hashing with key-stretching algorithms: `bcrypt`, `argon2`, `scrypt` with appropriate work factors; Django's `make_password()` / `check_password()` (uses PBKDF2 with high iterations by default); Node.js `bcrypt.hash()` / `bcrypt.compare()`
+- JWT verification with full validation: `jwt.verify(token, secret, { algorithms: ['HS256'], maxAge: '1h' })` — checks signature, expiry, and restricts algorithms; PyJWT `jwt.decode(token, key, algorithms=['HS256'])` with `require=['exp']`
+- Timing-safe comparison: `crypto.timingSafeEqual(a, b)` in Node.js; `hmac.compare_digest(a, b)` in Python; `Eqaf.equal` in OCaml — constant-time comparison prevents timing attacks on token/secret comparison
+- Session regeneration after authentication state change: calling `req.session.regenerate()` (Express) or `request.session.cycle_key()` (Django) immediately after successful login
+- Secure cookie configuration: `secure: true`, `httpOnly: true`, `sameSite: 'strict'` or `'lax'` on session cookies
+- Framework authentication: passport.js strategies with proper configuration; Django `AuthenticationMiddleware` with `LoginRequiredMiddleware`; DRF `TokenAuthentication` / `JWTAuthentication` with proper settings
+
+**Inadequate — these patterns have authentication weaknesses:**
+- `jwt.decode()` without signature verification — attacker can forge arbitrary claims
+- JWT accepting `algorithm: 'none'` — allows unsigned tokens; or `algorithms` list including both symmetric and asymmetric (`['HS256', 'RS256']`) — enables algorithm confusion attacks where attacker signs HS256 token with the RS256 public key
+- MD5, SHA1, or unsalted SHA256 for password hashing — fast hashes enable brute force
+- Plain string equality (`==`, `===`, `String.equal`) for comparing secrets, tokens, or HMAC digests — timing side channel
+- Session not regenerated after login — enables session fixation if attacker can set a session ID before victim authenticates
+- Hardcoded secrets or signing keys in source code — keys should come from environment or secret management
+- Missing expiry check on JWTs or reset tokens — tokens valid indefinitely
+- Password reset tokens generated with weak randomness (`Math.random()`, `random.random()`) instead of cryptographic randomness (`crypto.randomBytes`, `secrets.token_urlsafe`, `os.urandom`)
+
+### Common False Positive Patterns — DO NOT REPORT
+
+These are safe patterns that may superficially resemble authentication vulnerabilities but are not exploitable:
+- `jwt.decode()` used only to read non-security-critical claims from an already-verified token (e.g., extracting display name for UI after verification happened upstream)
+- bcrypt or argon2 with work factors that seem low but are within accepted ranges — work factor tuning is a configuration choice, not a code vulnerability
+- Internal service-to-service authentication using shared secrets or mTLS — different trust model than user-facing auth
+- Rate limiting implemented at infrastructure level (reverse proxy, API gateway, WAF) rather than in application code — absence in app code does not mean it is missing
+- Session handling in test fixtures, mock implementations, or development-only code paths
+- Logout implementations that clear session state without explicit token revocation — this is standard practice when tokens have short expiry
+- Password complexity validation logic — input validation, not an authentication mechanism vulnerability
+- Token refresh flows where the refresh token has longer expiry than the access token — this is the intended design pattern|}
 
 let authz_section =
   {|## Vulnerability Class: Authorization (AuthZ)
