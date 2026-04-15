@@ -14,7 +14,9 @@
  (deps
   (glob_files mock_payloads/*.json)
   (glob_files_rec mock_api_responses/github/*)
-  (glob_files_rec mock_api_responses/claude/*))
+  (glob_files_rec mock_api_responses/claude/*)
+  (glob_files_rec mock_api_responses/triage/*)
+  (glob_files_rec security_corpus/injection/*))
  (preprocess
   (pps lwt_ppx)))
 

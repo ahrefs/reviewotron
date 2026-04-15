@@ -1,0 +1,17 @@
+{
+  "signals": [
+    {
+      "vuln_class": "injection",
+      "confidence": "high",
+      "regions": [
+        {
+          "path": "src/handlers/user.py",
+          "start_line": 13,
+          "end_line": 14
+        }
+      ],
+      "rationale": "SQL query constructed via string concatenation with user-controlled input from request.args.get('id'). The query string is built by concatenating the raw user_id value directly into the SQL statement without parameterization or escaping."
+    }
+  ],
+  "language_hints": ["python"]
+}
