@@ -175,12 +175,12 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
       Returns the general review output (if the general plugin is enabled),
       a deduplicated list of findings from all plugins, per-plugin review costs,
       and a boolean indicating whether the security plugin encountered an error. *)
-  let run_plugins ~ctx ~repo_url ~config ~diff ~diff_text ~metadata =
+  let run_plugins ~ctx ~repo_url ~config ~diff ~diff_text ~metadata ~debug_dir =
     let plugins_config = config.Config_types.review_plugins in
     (* Run enabled plugins concurrently — they are independent. *)
     let general_promise =
       if plugins_config.general.enabled then begin
-        let%lwt result, costs = General_plugin.run_review ~ctx ~repo_url ~diff_text ~metadata in
+        let%lwt result, costs = General_plugin.run_review ~ctx ~repo_url ~diff_text ~metadata ~debug_dir () in
         match result with
         | Ok review -> Lwt.return (Some review, costs)
         | Error msg ->
@@ -193,7 +193,7 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
       if plugins_config.security.enabled then
         Lwt.catch
           (fun () ->
-            let%lwt findings, costs = Security_plugin.run ~ctx ~repo_url ~diff ~diff_text ~metadata in
+            let%lwt findings, costs = Security_plugin.run ~ctx ~repo_url ~diff ~diff_text ~metadata ~debug_dir in
             Lwt.return (findings, costs, false))
           (fun exn ->
             log#error "security review plugin raised: %s" (Exn.str exn);
@@ -239,8 +239,13 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
   let execute_and_post_review ~ctx ~repo_url ~config ~number ~pr_title ~diff_text ~filtered_diff ~file_contents
     ~description ~head_sha =
     let metadata = Review_plugin.{ pr_number = number; pr_title; pr_description = description; file_contents } in
+    let debug_dir =
+      let slug = Security_memory.repo_slug repo_url in
+      let sha_prefix = String.sub head_sha 0 (min 8 (String.length head_sha)) in
+      Printf.sprintf "debug/%s/%s" slug sha_prefix
+    in
     let%lwt general_result, findings, review_costs, security_error =
-      run_plugins ~ctx ~repo_url ~config ~diff:filtered_diff ~diff_text ~metadata
+      run_plugins ~ctx ~repo_url ~config ~diff:filtered_diff ~diff_text ~metadata ~debug_dir
     in
     Cost_tracking.log_review_costs review_costs;
     let comments = List.filter_map (finding_to_comment ~diff:filtered_diff) findings in
@@ -359,8 +364,13 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
         in
         let pr_title = Printf.sprintf "Push to %s" push.ref_ in
         let metadata = Review_plugin.{ pr_number = 0; pr_title; pr_description = description; file_contents = [] } in
+        let debug_dir =
+          let slug = Security_memory.repo_slug repo_url in
+          let sha_prefix = String.sub push.after 0 (min 8 (String.length push.after)) in
+          Printf.sprintf "debug/%s/%s" slug sha_prefix
+        in
         let%lwt general_result, findings, review_costs, security_error =
-          run_plugins ~ctx ~repo_url ~config ~diff:filtered_diff ~diff_text:filtered_text ~metadata
+          run_plugins ~ctx ~repo_url ~config ~diff:filtered_diff ~diff_text:filtered_text ~metadata ~debug_dir
         in
         Cost_tracking.log_review_costs review_costs;
         let%lwt () = post_push_comments ~ctx ~repo_url ~sha:push.after findings in

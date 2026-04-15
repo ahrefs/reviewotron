@@ -49,7 +49,47 @@ let try_parse_json_text text =
     (* Try last match first — models output the structured result last *)
     matches |> List.rev |> List.find_map (fun inner -> try_parse (String.trim inner))
 
-let run_agent ~model ?tools ?(max_retries = 2) ~config ~input () =
+(** Recursively create a directory path, like [mkdir -p].
+    Silently succeeds if the directory already exists. *)
+let rec mkdir_p dir =
+  match Unix.stat dir with
+  | _ -> ()
+  | exception Unix.Unix_error (Unix.ENOENT, _, _) ->
+    mkdir_p (Filename.dirname dir);
+    (try Unix.mkdir dir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ())
+
+(** Write a debug dump of agent output when structured parsing fails.
+
+    Creates [dir/config.name.txt] with full step text for post-mortem
+    analysis.  Wraps all I/O in try/with so it never crashes the caller. *)
+let write_debug_dump ~dir ~config ~finish_reason ~(steps : Ai_core.Generate_text_result.step list)
+  ~(usage : Ai_provider.Usage.t) =
+  try
+    mkdir_p dir;
+    let filepath = Printf.sprintf "%s/%s.txt" dir config.name in
+    let buf = Buffer.create 4096 in
+    Buffer.add_string buf (Printf.sprintf "Agent: %s\n" config.name);
+    Buffer.add_string buf (Printf.sprintf "Finish reason: %s\n" (Ai_provider.Finish_reason.to_string finish_reason));
+    Buffer.add_string buf (Printf.sprintf "Tokens: %d input, %d output\n" usage.input_tokens usage.output_tokens);
+    Buffer.add_string buf (Printf.sprintf "Steps: %d\n" (List.length steps));
+    List.iteri
+      (fun i (step : Ai_core.Generate_text_result.step) ->
+        let text_len = String.length step.text in
+        let tool_call_count = List.length step.tool_calls in
+        Buffer.add_string buf
+          (Printf.sprintf "\n=== Step %d (text=%d chars, tool_calls=%d) ===\n" i text_len tool_call_count);
+        Buffer.add_string buf step.text;
+        Buffer.add_char buf '\n')
+      steps;
+    let oc = open_out filepath in
+    output_string oc (Buffer.contents buf);
+    close_out oc;
+    Some filepath
+  with exn ->
+    log#warn "failed to write debug dump for agent %s: %s" config.name (Printexc.to_string exn);
+    None
+
+let run_agent ~model ?tools ?(max_retries = 2) ?debug_dir ~config ~input () =
   let fail msg =
     log#error "%s" msg;
     Lwt.return_error msg
@@ -88,7 +128,14 @@ let run_agent ~model ?tools ?(max_retries = 2) ~config ~input () =
           Printf.sprintf "agent %s: no structured output returned (finish_reason=%s)" config.name
             (Ai_provider.Finish_reason.to_string result.finish_reason)
         in
-        log#warn "%s" msg;
+        (match debug_dir with
+        | Some dir ->
+          (match
+             write_debug_dump ~dir ~config ~finish_reason:result.finish_reason ~steps:result.steps ~usage:result.usage
+           with
+          | Some filepath -> log#warn "agent %s: parse failed, debug dump at %s" config.name filepath
+          | None -> log#warn "%s" msg)
+        | None -> log#warn "%s" msg);
         Lwt.return_error msg)
   with
   | Ai_core.Retry.Retry_error err ->

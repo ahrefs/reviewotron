@@ -41,7 +41,16 @@ val should_analyze : security_config:Config_types.security_plugin_config -> Secu
     Takes a GitHub API module (for file content fetching during analysis
     agent context expansion) and an agent runner. *)
 module Make (_ : Api.Github) (_ : Api.Agent_runner) : sig
-  include Review_plugin.S
+  val name : string
+
+  val run :
+    ctx:Context.t ->
+    repo_url:string ->
+    diff:Diff_parser.file_diff list ->
+    diff_text:string ->
+    metadata:Review_plugin.review_metadata ->
+    debug_dir:string ->
+    (Review_types.finding list * Cost_tracking.agent_cost list) Lwt.t
 
   (** Process the memory update queue: read pending entries, run the
       curator agent to incorporate them, save the updated memory file,
@@ -54,6 +63,7 @@ module Make (_ : Api.Github) (_ : Api.Agent_runner) : sig
     repo_url:string ->
     memory_dir:string ->
     security_config:Config_types.security_plugin_config ->
+    ?debug_dir:string ->
     unit ->
     Cost_tracking.agent_cost list Lwt.t
 end

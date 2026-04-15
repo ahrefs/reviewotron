@@ -94,7 +94,7 @@ module Github : Api.Github = struct
 end
 
 module Agent_runner : Api.Agent_runner = struct
-  let run ~ctx:_ ~repo_url:_ ?model_id:_ ?tools:_ ~config ~input:_ () =
+  let run ~ctx:_ ~repo_url:_ ?model_id:_ ?tools:_ ?debug_dir:_ ~config ~input:_ () =
     let path = Option.default !agent_response_path (List.assoc_opt config.Agent_runner.name !agent_response_map) in
     match read_mock_file path with
     | Ok json_str ->

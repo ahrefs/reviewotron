@@ -1851,6 +1851,61 @@ let test_commit_comment_retry_on_failure () =
   (* The commit comment should still be posted after the retry *)
   (check bool) "commit comment posted after retry" true (CCString.find ~sub:"[create_commit_comment]" write_log >= 0)
 
+(** {2 Debug dump tests} *)
+
+let test_write_debug_dump () =
+  let tmp_dir = Filename.temp_dir "reviewotron_debug_test" "" in
+  let dir = Printf.sprintf "%s/nested/subdir" tmp_dir in
+  let config : Agent_runner.agent_config =
+    { name = "test_agent"; system_prompt = "unused"; model_tier = Fast; output_schema = `Assoc []; max_steps = 3 }
+  in
+  let step0 : Ai_core.Generate_text_result.step =
+    {
+      text = "step zero text here";
+      reasoning = "";
+      tool_calls = [];
+      tool_results = [];
+      finish_reason = Ai_provider.Finish_reason.Tool_calls;
+      usage = { input_tokens = 0; output_tokens = 0; total_tokens = None };
+    }
+  in
+  let step1 : Ai_core.Generate_text_result.step =
+    {
+      text = "step one output with some JSON-like content";
+      reasoning = "";
+      tool_calls = [ { tool_call_id = "tc1"; tool_name = "read_file"; args = `Null } ];
+      tool_results = [];
+      finish_reason = Ai_provider.Finish_reason.Stop;
+      usage = { input_tokens = 0; output_tokens = 0; total_tokens = None };
+    }
+  in
+  let steps = [ step0; step1 ] in
+  let usage : Ai_provider.Usage.t = { input_tokens = 500; output_tokens = 200; total_tokens = Some 700 } in
+  let result =
+    Agent_runner.write_debug_dump ~dir ~config ~finish_reason:Ai_provider.Finish_reason.Length ~steps ~usage
+  in
+  (* Verify file was created *)
+  (match result with
+  | None -> Alcotest.fail "write_debug_dump returned None"
+  | Some filepath ->
+    (check string) "filepath" (Printf.sprintf "%s/test_agent.txt" dir) filepath;
+    let content = Std.input_file ~bin:true filepath in
+    (check bool) "contains agent name" true (CCString.find ~sub:"Agent: test_agent" content >= 0);
+    (check bool) "contains finish reason" true (CCString.find ~sub:"Finish reason: length" content >= 0);
+    (check bool) "contains input tokens" true (CCString.find ~sub:"500 input" content >= 0);
+    (check bool) "contains output tokens" true (CCString.find ~sub:"200 output" content >= 0);
+    (check bool) "contains step count" true (CCString.find ~sub:"Steps: 2" content >= 0);
+    (check bool) "contains step 0 header" true (CCString.find ~sub:"Step 0 (text=19 chars, tool_calls=0)" content >= 0);
+    (check bool) "contains step 0 text" true (CCString.find ~sub:"step zero text here" content >= 0);
+    (check bool) "contains step 1 header" true (CCString.find ~sub:"Step 1 (text=43 chars, tool_calls=1)" content >= 0);
+    (check bool) "contains step 1 text" true
+      (CCString.find ~sub:"step one output with some JSON-like content" content >= 0));
+  (* Cleanup *)
+  (try Sys.remove (Printf.sprintf "%s/test_agent.txt" dir) with Sys_error _ -> ());
+  (try Unix.rmdir dir with Unix.Unix_error _ -> ());
+  (try Unix.rmdir (Printf.sprintf "%s/nested" tmp_dir) with Unix.Unix_error _ -> ());
+  try Unix.rmdir tmp_dir with Unix.Unix_error _ -> ()
+
 let () =
   run "reviewotron"
     [
@@ -2087,4 +2142,5 @@ let () =
           test_case "PR review retries on first failure" `Quick test_pr_review_retry_on_failure;
           test_case "commit comment retries on first failure" `Quick test_commit_comment_retry_on_failure;
         ] );
+      "debug_dump", [ test_case "write debug dump creates file with expected content" `Quick test_write_debug_dump ];
     ]
