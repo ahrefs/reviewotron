@@ -236,3 +236,25 @@ NOTES:
 - Phase 1 step 5 ("Delete anthropic_types.atd, manual HTTP code, build_anthropic_request") from the PRD is now fully complete across P1.3 + P1.4
 </task-result>
 
+=== P2.1: Define Review_plugin module type ===
+Completed: 2026-04-15 01:55:29
+<task-result>
+TASK_ID: P2.1
+STATUS: DONE
+FILES_CHANGED: lib/review_plugin.ml (NEW), lib/review_plugin.mli (NEW)
+DECISIONS:
+- Module type named `S` inside `Review_plugin` module (idiomatic OCaml convention for the primary signature in a dedicated module) — consumers write `Review_plugin.S`
+- `review_metadata` type defined alongside the module type in `review_plugin.ml` (not in `review_types.ml`) because it's part of the plugin interface contract, not an agent output type
+- `review_metadata` includes `pr_number : int` in addition to `pr_title`, `pr_description`, and `file_contents` — plugins need this for logging and cost tracking
+- `file_contents` kept as `(string * string) list` (path, content pairs) to match the existing codebase pattern used by `fetch_key_files` and `format_file_content`
+- No `[@@deriving json]` on `review_metadata` — the type is constructed in OCaml code and passed in-memory, never serialized. Can be added later if tests need it.
+- `val run` returns `Review_types.finding list Lwt.t` per PRD spec (not `result`) — plugins handle errors internally and return empty list on failure
+- All parameters use labeled arguments per AGENTS.md (>2 params rule)
+NOTES:
+- All 55 tests pass (23 diff_parser + 32 reviewotron), build clean, formatter clean
+- The `.mli` has full doc comments on the module, the type, every record field, and both `val` declarations
+- P2.2 (wrap general review as plugin) will construct `review_metadata` in the orchestrator and pass it to the plugin's `run` function
+- The `file_contents` field is designed for the general review plugin; the security plugin (P3+) will ignore it and fetch files on-demand via tools
+- No changes to `lib/dune` needed — the new files are automatically included in the `reviewotron_lib` library
+</task-result>
+

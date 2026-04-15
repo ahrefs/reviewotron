@@ -129,37 +129,13 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
             })
         position
 
-  (** Run the general review agent and parse the structured output into {!Review_types.review_output}. *)
-  let run_review_agent ~ctx ~repo_url ~diff ~files ~pr_title ~description =
-    let config = Context.get_config ctx ~repo_url in
-    let system = Review_prompt.system_prompt ?override:config.system_prompt_override () in
-    let input = Review_prompt.build_user_message ~diff ~pr_title ~pr_description:description ~file_contents:files () in
-    let agent_config : Agent_runner.agent_config =
-      {
-        name = "general_review";
-        system_prompt = system;
-        model_tier = Standard;
-        output_schema = Review_types.review_output_jsonschema;
-        max_steps = 1;
-      }
-    in
-    let%lwt result = AI.run ~ctx ~repo_url ~model_id:config.model ~config:agent_config ~input () in
-    match result with
-    | Error _ as e -> Lwt.return e
-    | Ok agent_result ->
-    match Review_types.review_output_of_json agent_result.output with
-    | review ->
-      log#info "review agent: %d findings, summary length %d" (List.length review.findings)
-        (String.length review.summary);
-      Lwt.return (Ok review)
-    | exception exn -> Lwt.return (Error (Printf.sprintf "failed to parse review output: %s" (Exn.str exn)))
+  module General_plugin = General_review_plugin.Make (AI)
 
-  (** Run the general review agent and post the result as a GitHub PR review. *)
+  (** Run the general review plugin and post the result as a GitHub PR review. *)
   let execute_and_post_review ~ctx ~repo_url ~number ~pr_title ~diff_text ~filtered_diff ~file_contents ~description
     ~head_sha =
-    let%lwt review_result =
-      run_review_agent ~ctx ~repo_url ~diff:diff_text ~files:file_contents ~pr_title ~description
-    in
+    let metadata = Review_plugin.{ pr_number = number; pr_title; pr_description = description; file_contents } in
+    let%lwt review_result = General_plugin.run_review ~ctx ~repo_url ~diff_text ~metadata in
     match review_result with
     | Error msg ->
       log#error "review agent failed for PR #%d: %s" number msg;
@@ -260,7 +236,8 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
           |> String.concat "\n"
         in
         let pr_title = Printf.sprintf "Push to %s" push.ref_ in
-        let%lwt review_result = run_review_agent ~ctx ~repo_url ~diff:filtered_text ~files:[] ~pr_title ~description in
+        let metadata = Review_plugin.{ pr_number = 0; pr_title; pr_description = description; file_contents = [] } in
+        let%lwt review_result = General_plugin.run_review ~ctx ~repo_url ~diff_text:filtered_text ~metadata in
         (match review_result with
         | Error msg ->
           log#error "review agent failed for push %s: %s" push.after msg;
