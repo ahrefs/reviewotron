@@ -88,13 +88,69 @@ If you find no vulnerabilities, return an empty `findings` array with a note exp
 let injection_section =
   {|## Vulnerability Class: SQL/Query Injection
 
-**Sources**: HTTP request parameters, form fields, URL path segments, query strings, headers, cookies — any user-controlled string that could be interpolated into a query.
+This class covers all injection types where user-controlled data reaches a query interpreter: SQL injection, NoSQL injection, and ORM query injection. Also watch for second-order injection where user input stored in a database is later retrieved and used unsafely in a query.
 
-**Sinks**: Database query functions that accept string arguments, raw SQL execution, ORM raw query methods, string concatenation or interpolation into query strings.
+### Sources (User-Controlled Input)
 
-**Adequate sanitization**: Parameterized queries / prepared statements where user input is bound as a parameter (not interpolated into the query string). Type-safe query builders that prevent injection by construction.
+**OCaml / Dream:**
+- `Dream.query` — URL query parameters
+- `Dream.param` — route path parameters
+- `Dream.body` / `Dream.form` — POST body and form fields
+- `Dream.header` / `Dream.cookie` — HTTP headers and cookies
 
-**Inadequate sanitization**: Manual escaping, allowlist checks that can be bypassed, partial parameterization (some args parameterized, others interpolated).|}
+**JavaScript / Express:**
+- `req.params` — route parameters
+- `req.query` — URL query string
+- `req.body` — parsed request body
+- `req.headers` / `req.cookies` — HTTP headers and cookies
+- `req.get()` — header accessor
+
+**Python / Django / Flask:**
+- `request.GET` / `request.POST` — Django query and form data
+- `request.data` / `request.query_params` — Django REST Framework
+- `request.args` / `request.form` / `request.json` — Flask
+- `request.headers` / `request.cookies` — both frameworks
+
+### Sinks (Dangerous Operations)
+
+**SQL Injection:**
+- **OCaml**: String concatenation or interpolation into `Caqti_request.exec`, `Caqti_request.find`, `Caqti_request.collect`; any `Printf.sprintf` or `^` building a SQL string passed to a database function; `Petrol` raw query construction
+- **JavaScript**: `connection.query("SELECT ... " + input)`, `sequelize.query(raw_string)`, `knex.raw(user_string)`, template literal SQL with `${user_input}`, `pg` client `query` with string concat
+- **Python**: `cursor.execute("SELECT ... " + input)`, `cursor.execute("SELECT ... %s" % input)`, `cursor.execute(f"SELECT ... {input}")`, `django.db.connection.cursor()` with string formatting, `SQLAlchemy text()` with string interpolation, `engine.execute(raw_string)`
+
+**NoSQL Injection:**
+- **JavaScript**: `collection.find({field: user_input})` where `user_input` is a parsed object (e.g., `req.body` containing `{"$gt": ""}`) — MongoDB operator injection
+- **Python**: `pymongo collection.find(user_dict)`, `collection.aggregate(user_pipeline)` — MongoDB operator injection via user-constructed query objects
+- **Any language**: User input used as keys or operators in query objects without validation
+
+**ORM Query Injection:**
+- **Python**: `Model.objects.raw(user_string)`, `Model.objects.extra(where=[user_string])`, `RawSQL(user_string)`
+- **JavaScript**: `sequelize.literal(user_string)`, `Sequelize.where(Sequelize.literal(user_string))`
+
+### Sanitization Assessment
+
+**Adequate — these patterns prevent injection by construction:**
+- OCaml: Caqti type-safe request API using `Caqti_type` parameter binding (e.g., `Caqti_request.find Caqti_type.int Caqti_type.string "SELECT name FROM users WHERE id = ?"`)
+- JavaScript: Parameterized queries with `?` placeholders (e.g., `connection.query("SELECT ... WHERE id = ?", [input])`), ORM model methods with object conditions
+- Python: Parameterized queries with `%s` placeholder and tuple (e.g., `cursor.execute("SELECT ... WHERE id = %s", (input,))`), Django ORM queryset methods (`filter`, `exclude`, `get`, `annotate`), SQLAlchemy bound parameters via `bindparam` or `:name` syntax
+- Any language: Prepared statements where user input is bound as a parameter, never interpolated into the query string
+
+**Inadequate — these attempts at sanitization are insufficient:**
+- Manual string escaping (can miss edge cases, database-dialect-specific)
+- Escaping for the wrong database dialect (MySQL escaping used with PostgreSQL)
+- Partial parameterization (some arguments parameterized, others interpolated in the same query)
+- Allowlist checks on the value but not the structure (e.g., checking value is alphanumeric but allowing it to set the column name)
+- `parseInt` / `int()` type casting applied inconsistently across all paths
+
+### Common False Positive Patterns — DO NOT REPORT
+
+These are safe patterns that may superficially resemble injection but are not exploitable:
+- Caqti requests using type-safe parameter binding (even if the SQL string is built with `^`, the parameters are bound safely)
+- Django ORM calls like `filter()`, `exclude()`, `values()`, `annotate()` — these are parameterized by the framework
+- Sequelize/Knex model methods with object-form conditions (e.g., `Model.findOne({ where: { id: input } })`)
+- String concatenation used to build log messages, error messages, or debug output — not query strings
+- SQL table or column names from hardcoded constants, even if assembled via string concatenation
+- Query construction where ALL user-controlled values go through parameter binding, even if static query structure uses concatenation|}
 
 let xss_section =
   {|## Vulnerability Class: Cross-Site Scripting (XSS)
