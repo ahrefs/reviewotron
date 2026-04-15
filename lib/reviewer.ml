@@ -131,18 +131,74 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
 
   module General_plugin = General_review_plugin.Make (AI)
 
-  (** Run the general review plugin and post the result as a GitHub PR review. *)
-  let execute_and_post_review ~ctx ~repo_url ~number ~pr_title ~diff_text ~filtered_diff ~file_contents ~description
-    ~head_sha =
+  (** Numeric rank for severity — higher means more severe. *)
+  let severity_rank = function
+    | Review_types.Critical -> 5
+    | Warning -> 4
+    | Suggestion -> 3
+    | Nitpick -> 2
+    | Praise -> 1
+    | Other _ -> 0
+
+  (** Deduplicate findings by (path, line, category).
+      When two findings share the same key, the one with higher severity wins.
+      Note: findings at the same path with [line = None] and the same category are
+      considered duplicates even if they describe different issues — this is a known
+      simplification that becomes more relevant when multiple plugins overlap. *)
+  let deduplicate_findings findings =
+    let tbl = Hashtbl.create (List.length findings) in
+    List.iter
+      (fun (f : Review_types.finding) ->
+        let key = f.path, f.line, f.category in
+        match Hashtbl.find_opt tbl key with
+        | Some existing when severity_rank existing.Review_types.severity >= severity_rank f.severity -> ()
+        | Some _ | None -> Hashtbl.replace tbl key f)
+      findings;
+    Hashtbl.fold (fun _key finding acc -> finding :: acc) tbl []
+    |> List.sort (fun (a : Review_types.finding) (b : Review_types.finding) ->
+      match String.compare a.path b.path with
+      | 0 -> Stdlib.Option.compare Int.compare a.line b.line
+      | n -> n)
+
+  (** Run all enabled review plugins and collect findings.
+      Returns the general review output (if the general plugin is enabled) and a
+      deduplicated list of findings from all plugins. *)
+  let run_plugins ~ctx ~repo_url ~config ~diff_text ~metadata =
+    let plugins_config = config.Config_types.review_plugins in
+    (* Run the general plugin for its full review output (summary + findings). *)
+    let%lwt general_result =
+      if plugins_config.general.enabled then begin
+        let%lwt result = General_plugin.run_review ~ctx ~repo_url ~diff_text ~metadata in
+        match result with
+        | Ok review -> Lwt.return (Some review)
+        | Error msg ->
+          log#error "general review plugin failed: %s" msg;
+          Lwt.return None
+      end
+      else Lwt.return None
+    in
+    (* Collect findings from additional plugins via the Review_plugin.S interface.
+       Currently no additional plugins are registered — the security plugin will be
+       added in Phase 3. *)
+    let extra_findings = [] in
+    (* Merge general review findings with additional plugin findings. *)
+    let general_findings = Option.map (fun (r : Review_types.review_output) -> r.findings) general_result in
+    let all_findings = Option.default [] general_findings @ extra_findings in
+    let deduplicated = deduplicate_findings all_findings in
+    Lwt.return (general_result, deduplicated)
+
+  (** Run the plugin orchestrator and post the result as a GitHub PR review. *)
+  let execute_and_post_review ~ctx ~repo_url ~config ~number ~pr_title ~diff_text ~filtered_diff ~file_contents
+    ~description ~head_sha =
     let metadata = Review_plugin.{ pr_number = number; pr_title; pr_description = description; file_contents } in
-    let%lwt review_result = General_plugin.run_review ~ctx ~repo_url ~diff_text ~metadata in
-    match review_result with
-    | Error msg ->
-      log#error "review agent failed for PR #%d: %s" number msg;
+    let%lwt general_result, findings = run_plugins ~ctx ~repo_url ~config ~diff_text ~metadata in
+    match general_result with
+    | None ->
+      log#error "review failed for PR #%d: no review output produced" number;
       Lwt.return_unit
-    | Ok review ->
-      let comments = List.filter_map (finding_to_comment ~diff:filtered_diff) review.findings in
-      let unpositioned = List.length review.findings - List.length comments in
+    | Some review ->
+      let comments = List.filter_map (finding_to_comment ~diff:filtered_diff) findings in
+      let unpositioned = List.length findings - List.length comments in
       if unpositioned > 0 then log#info "PR #%d: %d findings could not be positioned in diff" number unpositioned;
       let review_body =
         match review.overall_assessment with
@@ -154,7 +210,6 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
       (match post_result with
       | Ok () -> log#info "posted review for PR #%d (%s): %d inline comments" number pr_title (List.length comments)
       | Error msg -> log#error "failed to post review for PR #%d: %s" number msg);
-      (* Record in state *)
       let state = Context.state ctx in
       State.record_pr_review state ~repo_url ~pr_number:number ~head_sha;
       State.save state;
@@ -184,8 +239,8 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
         let head_sha = pr.head.sha in
         let%lwt file_contents = fetch_key_files ~ctx ~repo_url ~diff:filtered_diff ~ref_:(Some head_sha) in
         let description = CCOption.get_or ~default:"" pr.body in
-        execute_and_post_review ~ctx ~repo_url ~number ~pr_title:pr.title ~diff_text:filtered_text ~filtered_diff
-          ~file_contents ~description ~head_sha)
+        execute_and_post_review ~ctx ~repo_url ~config ~number ~pr_title:pr.title ~diff_text:filtered_text
+          ~filtered_diff ~file_contents ~description ~head_sha)
 
   (** Post commit comments for critical/warning findings from a push review. *)
   let post_push_comments ~ctx ~repo_url ~sha findings =
@@ -237,13 +292,13 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
         in
         let pr_title = Printf.sprintf "Push to %s" push.ref_ in
         let metadata = Review_plugin.{ pr_number = 0; pr_title; pr_description = description; file_contents = [] } in
-        let%lwt review_result = General_plugin.run_review ~ctx ~repo_url ~diff_text:filtered_text ~metadata in
-        (match review_result with
-        | Error msg ->
-          log#error "review agent failed for push %s: %s" push.after msg;
+        let%lwt general_result, findings = run_plugins ~ctx ~repo_url ~config ~diff_text:filtered_text ~metadata in
+        (match general_result with
+        | None ->
+          log#error "review failed for push %s: no review output produced" push.after;
           Lwt.return_unit
-        | Ok review ->
-          let%lwt () = post_push_comments ~ctx ~repo_url ~sha:push.after review.findings in
+        | Some review ->
+          let%lwt () = post_push_comments ~ctx ~repo_url ~sha:push.after findings in
           let slack_text = Printf.sprintf ":robot_face: *Code Review* for push to `develop` by %s" push.pusher.name in
           let attachment =
             Review_format.format_slack_attachment ~compare_url:push.compare ~pusher_name:push.pusher.name
