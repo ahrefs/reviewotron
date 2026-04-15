@@ -253,13 +253,82 @@ These are safe patterns that may superficially resemble XSS but are not exploita
 let command_injection_section =
   {|## Vulnerability Class: Command Injection
 
-**Sources**: HTTP request parameters, file upload names, configuration values from user input, environment variables sourced from user-provided config.
+This class covers OS command injection where user-controlled data reaches a system shell or process execution function. The key distinction is between **shell-mediated execution** (where shell metacharacters like `;`, `|`, `&&`, `$()`, and backticks are interpreted by a shell) and **direct process execution** (where arguments are passed directly to `execve` without shell interpretation). Shell-mediated execution is far more dangerous because a single injected metacharacter can chain arbitrary commands.
 
-**Sinks**: exec, system, popen, spawn, backtick execution, Process/ProcessBuilder calls, shell invocations, Filename.quote (fragile escaping).
+### Sources (User-Controlled Input)
 
-**Adequate sanitization**: Avoiding shell invocation entirely (use array-form exec), strict allowlist of permitted values, language-native escaping functions used correctly.
+**OCaml / Dream:**
+- `Dream.query` — URL query parameters
+- `Dream.param` — route path parameters
+- `Dream.body` / `Dream.form` — POST body and form fields
+- `Dream.header` / `Dream.cookie` — HTTP headers and cookies
+- `Dream.upload` — uploaded file names (often used in file-processing commands)
 
-**Inadequate sanitization**: Filename.quote (bypassable on some platforms), partial escaping, allowlist with overly broad patterns.|}
+**JavaScript / Express:**
+- `req.params` — route parameters
+- `req.query` — URL query string
+- `req.body` — parsed request body
+- `req.headers` / `req.cookies` — HTTP headers and cookies
+- `req.file.originalname` / `req.files` — uploaded file names (multer, formidable)
+
+**Python / Django / Flask:**
+- `request.GET` / `request.POST` — Django query and form data
+- `request.data` / `request.query_params` — Django REST Framework
+- `request.args` / `request.form` / `request.json` — Flask
+- `request.headers` / `request.cookies` — both frameworks
+- `request.FILES` (Django) / `request.files` (Flask) — uploaded file names
+
+**Cross-language sources:**
+- Database-stored values later used in shell commands (second-order injection)
+- User-provided file paths or directory names passed to command-line tools
+- Environment variables sourced from user-editable configuration files
+- Message queue payloads, webhook bodies, or other inter-service inputs
+
+### Sinks (Dangerous Operations)
+
+**Shell-Mediated Execution (metacharacters interpreted — highest risk):**
+
+- **OCaml**: `Sys.command cmd` — passes `cmd` to `/bin/sh -c`; `Unix.open_process_in`, `Unix.open_process_out`, `Unix.open_process`, `Unix.open_process_full` — all invoke `/bin/sh -c` on the command string; `Lwt_process.shell cmd` — constructs a shell command for Lwt process functions; `Lwt_process.exec`, `Lwt_process.open_process_in` — Lwt-wrapped process execution (shell-mediated when using `Lwt_process.shell`)
+- **JavaScript**: `child_process.exec(cmd)` / `child_process.execSync(cmd)` — invokes shell; `child_process.spawn(cmd, args, { shell: true })` or `child_process.execFile(cmd, args, { shell: true })` — shell flag enables metacharacter interpretation
+- **Python**: `os.system(cmd)`, `os.popen(cmd)` — invoke shell; `subprocess.Popen(cmd, shell=True)`, `subprocess.call(cmd, shell=True)`, `subprocess.run(cmd, shell=True)`, `subprocess.check_call(cmd, shell=True)`, `subprocess.check_output(cmd, shell=True)` — `shell=True` enables shell interpretation; `commands.getoutput(cmd)` / `commands.getstatusoutput(cmd)` (legacy, Python 2)
+
+**Direct Process Execution (no shell, but program path or arguments may be user-controlled):**
+
+- **OCaml**: `Unix.create_process prog args` — no shell, but dangerous if `prog` is user-controlled; `Unix.execvp prog args` / `Unix.execve prog args env` — replaces current process with `prog`
+- **JavaScript**: `child_process.spawn(prog, args)` (without `shell: true`), `child_process.execFile(prog, args)` (without `shell: true`) — no shell, but dangerous if `prog` is user-controlled or if `args` contain values that the target program interprets as flags/options (argument injection)
+- **Python**: `subprocess.Popen([prog, arg1, arg2])`, `subprocess.run([prog, ...])`, `subprocess.call([prog, ...])`, `subprocess.check_call([prog, ...])`, `subprocess.check_output([prog, ...])` (all without `shell=True`) — no shell, but dangerous if `prog` is user-controlled; also vulnerable to argument injection if user controls arguments to programs that interpret them dangerously (e.g., `curl`, `rsync`, `tar`, `git`)
+
+**Argument injection (special case):**
+Even with array-form execution, user-controlled arguments to certain programs can be dangerous. For example, `git` accepts `--upload-pack` which can execute arbitrary commands, `tar` accepts `--checkpoint-action=exec=CMD`, and `curl` accepts `-o` to write files. Report these when user input flows into arguments of such programs.
+
+### Sanitization Assessment
+
+**Adequate — these patterns prevent command injection:**
+- Array-form / list-form process execution without shell invocation (e.g., `subprocess.run([prog, arg1, arg2])`, `child_process.spawn(prog, [arg1, arg2])`, `Unix.create_process prog [|prog; arg1; arg2|]`) — shell metacharacters are not interpreted
+- `shlex.quote(user_input)` in Python on Unix — correctly wraps input in single quotes with internal single-quote escaping for use in shell command strings
+- `Filename.quote` in OCaml on Unix — wraps in single quotes with correct escaping; safe for passing a single argument to a POSIX shell
+- Strict allowlist validation: user input is compared against a fixed set of known-safe values (e.g., selecting a format from `["pdf", "csv", "json"]`) before use in a command
+- Avoiding shell entirely by using library APIs instead of command-line tools (e.g., using a PDF library instead of shelling out to `wkhtmltopdf`)
+- `--` argument separator before user-controlled arguments to prevent flag injection (e.g., `["git", "checkout", "--", user_branch]`)
+
+**Inadequate — these attempts at sanitization are insufficient:**
+- Blocklist of shell metacharacters (e.g., filtering `;`, `|`, `&`) — incomplete, misses `$()`, backticks, newlines, or encoding bypasses
+- Custom regex-based escaping or character stripping — fragile, easy to miss edge cases
+- `Filename.quote` on Windows — the Win32 implementation uses double-quote escaping which does not protect against all `cmd.exe` metacharacters (`%VAR%` expansion, `^` escaping, `!` in delayed expansion contexts); Windows command-line quoting is fundamentally more complex than POSIX shell quoting
+- `shlex.quote` combined with `shell=True` and complex pipelines — quoting protects a single argument, but if the overall command template has structural injection points, quoting one part may not help
+- URL-encoding, HTML-encoding, or other context-incorrect encoding applied to shell arguments
+- Truncation or length limits as the sole defense (command injection payloads can be very short: `; id`)
+- Checking for path traversal (`../`) without checking for shell metacharacters — these are orthogonal concerns
+
+### Common False Positive Patterns — DO NOT REPORT
+
+These are safe patterns that may superficially resemble command injection but are not exploitable:
+- Array-form / list-form exec with hardcoded program and no shell invocation, where the target program has no dangerous flag-based execution: `subprocess.run(["cat", user_file])`, `child_process.spawn("echo", [user_input])`, `Unix.create_process "/usr/bin/wc" [|"wc"; "-l"; user_file|]` — no shell metacharacter interpretation occurs
+- Hardcoded shell commands with no user-controlled input: `Sys.command "make clean"`, `os.system("systemctl restart nginx")` — no injection vector
+- Commands where user input selects from a hardcoded enum or allowlist validated before use in the command (e.g., `match format with "pdf" | "csv" -> ... ` followed by use in a command)
+- `Sys.command` or `os.system` used only in build scripts, test fixtures, or development tooling — not reachable from user input in production
+- String concatenation building log messages, error messages, or debug output that happens to mention command names — not passed to an execution function
+- `Unix.create_process` / `Unix.execvp` with user input only in arguments (not the program path) where the target program does not support dangerous flag-based execution|}
 
 let authn_section =
   {|## Vulnerability Class: Authentication (AuthN)

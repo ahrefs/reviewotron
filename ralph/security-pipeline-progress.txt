@@ -490,3 +490,29 @@ NOTES:
 --- Iteration 21: P4.3 — UNCLEAR RESULT ---
 2026-04-15 05:26:54
 
+=== P4.3: Implement XSS analysis agent prompt ===
+Completed: 2026-04-15 05:36:54
+<task-result>
+TASK_ID: P4.3
+STATUS: DONE
+FILES_CHANGED: lib/analysis_agent.ml
+DECISIONS:
+- Expanded `xss_section` from 4-line placeholder to ~100-line comprehensive prompt following the same structure as `injection_section`
+- Organized sources into two categories: Server-Side Sources (reflected + stored XSS) and Client-Side Sources (DOM-based XSS) — clearer than three separate subsections per XSS type
+- Sources catalog covers OCaml/Dream, JavaScript/Express, Python/Django/Flask for server-side; canonical DOM sources (location, hash, postMessage, window.name, Web Storage) for client-side
+- Sinks organized into four groups: Server-Side Template Rendering, Client-Side DOM Manipulation, Client-Side JavaScript Execution, Framework-Specific Dangerous APIs
+- Framework coverage: React (dangerouslySetInnerHTML), Vue (v-html), Angular ([innerHTML]/bypassSecurityTrustHtml), Svelte ({@html}), jQuery (.html/.append/$)
+- Sanitization assessment: adequate patterns (context-correct encoding, DOMPurify, framework auto-escaping, allowlist sanitizers, CSP as defense-in-depth) and inadequate patterns (wrong-context encoding, blocklist filtering, regex stripping, client-only validation, strip_tags, truncation, encodeURIComponent alone)
+- False positive patterns include: React JSX auto-escaping, Django/Jinja2 auto-escaping, Tyxml type safety, JSON/plain-text responses, static HTML, textContent/innerText
+- Review fix 1: Moved `render_template_string` from Django bullet to Flask/Jinja2 bullet (it's a Flask function, not Django)
+- Review fix 2: Corrected `encodeURIComponent` description — it does encode `<>"` to percent-encoding, but the issue is it produces percent-encoding rather than HTML entities, and doesn't protect in unquoted attributes or event handler contexts
+NOTES:
+- Total test count: 91 (23 diff_parser + 68 reviewotron), all passing, build clean, formatter clean
+- The previous iteration (21) completed this work but was marked UNCLEAR — this iteration verified, reviewed, and fixed two minor accuracy issues
+- The other 4 sections (command_injection, authn, authz, ssrf) remain as short placeholders — tasks P4.4-P4.7 will expand them
+- No .mli changes needed — `xss_section` is internal, accessed only through the exposed `vuln_class_section`
+- Prompt grows from ~150 to ~950 tokens — modest increase justified by language-specific precision and false positive reduction
+
+--- Iteration 23: P4.4 — UNCLEAR RESULT ---
+2026-04-15 05:47:20
+
