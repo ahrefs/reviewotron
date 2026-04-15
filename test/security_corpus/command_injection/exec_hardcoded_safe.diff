@@ -1,0 +1,16 @@
+diff --git a/lib/handlers/system_info.ml b/lib/handlers/system_info.ml
+index 5678901..fghijkl 100644
+--- a/lib/handlers/system_info.ml
++++ b/lib/handlers/system_info.ml
+@@ -3,9 +3,18 @@ open Dream
+
+ let handle_system_info _request =
+-  Dream.respond "system info not implemented"
++  let uptime_exit = Sys.command "/usr/bin/uptime" in
++  let hostname_exit = Sys.command "/usr/bin/hostname" in
++  let status =
++    match uptime_exit, hostname_exit with
++    | 0, 0 -> "ok"
++    | _ -> "partial failure"
++  in
++  Dream.respond status

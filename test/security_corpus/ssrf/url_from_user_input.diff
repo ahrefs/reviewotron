@@ -1,0 +1,21 @@
+diff --git a/src/handlers/webhook.py b/src/handlers/webhook.py
+index 8901234..ijklmno 100644
+--- a/src/handlers/webhook.py
++++ b/src/handlers/webhook.py
+@@ -8,10 +8,16 @@ from flask import request, jsonify
+ import requests
+
+ def register_webhook(request):
+-    data = request.get_json()
+-    # TODO: implement webhook registration
+-    return jsonify({"status": "not implemented"})
++    data = request.get_json()
++    webhook_url = data.get('webhook_url')
++    if not webhook_url:
++        return jsonify({"error": "webhook_url required"}), 400
++    # Verify the webhook endpoint is reachable
++    response = requests.get(webhook_url, timeout=5)
++    if response.status_code != 200:
++        return jsonify({"error": "endpoint verification failed"}), 400
++    db.save_webhook(current_user.id, webhook_url)
++    return jsonify({"status": "registered"})

@@ -1,0 +1,23 @@
+diff --git a/lib/handlers/document.ml b/lib/handlers/document.ml
+index 7890123..hijklmn 100644
+--- a/lib/handlers/document.ml
++++ b/lib/handlers/document.ml
+@@ -10,12 +10,19 @@ open Dream
+
+ let handle_update_document request =
+   let current_user = Session.get_user request in
+-  match current_user with
+-  | None -> Dream.respond ~status:`Unauthorized "not authenticated"
+-  | Some _user -> Dream.respond "update not implemented"
++  match current_user with
++  | None -> Dream.respond ~status:`Unauthorized "not authenticated"
++  | Some user ->
++    let doc_id = Dream.query request "doc_id" in
++    (match doc_id with
++    | None -> Dream.respond ~status:`Bad_Request "missing doc_id"
++    | Some id ->
++      let%lwt body = Dream.body request in
++      let%lwt result = Db.update_document ~id ~body in
++      (match result with
++      | Ok () -> Dream.respond (Printf.sprintf "updated by %s" user.id)
++      | Error msg -> Dream.respond ~status:`Internal_Server_Error msg))
