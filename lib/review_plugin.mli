@@ -22,8 +22,9 @@ module type S = sig
 
   (** Run the plugin against a PR diff.
 
-      Returns a list of findings. An empty list means the plugin found nothing
-      noteworthy. Plugins handle their own errors internally — a failing plugin
+      Returns a list of findings paired with per-agent cost records.
+      An empty findings list means the plugin found nothing noteworthy.
+      Plugins handle their own errors internally — a failing plugin
       returns an empty list rather than propagating exceptions. *)
   val run :
     ctx:Context.t ->
@@ -31,5 +32,5 @@ module type S = sig
     diff:Diff_parser.file_diff list ->
     diff_text:string ->
     metadata:review_metadata ->
-    Review_types.finding list Lwt.t
+    (Review_types.finding list * Cost_tracking.agent_cost list) Lwt.t
 end

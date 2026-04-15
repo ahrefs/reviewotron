@@ -20,11 +20,13 @@ module Make (_ : Api.Agent_runner) : sig
       returns the complete {!Review_types.review_output} including the
       LLM-generated summary and overall assessment.
 
-      Returns [Error msg] on agent failure or output parse failure. *)
+      Returns [(result, costs)] where [result] is [Error msg] on agent
+      failure or output parse failure.  Costs are always returned, even
+      on failure, since tokens were still consumed. *)
   val run_review :
     ctx:Context.t ->
     repo_url:string ->
     diff_text:string ->
     metadata:Review_plugin.review_metadata ->
-    (Review_types.review_output, string) result Lwt.t
+    ((Review_types.review_output, string) result * Cost_tracking.agent_cost list) Lwt.t
 end

@@ -14,5 +14,5 @@ module type S = sig
     diff:Diff_parser.file_diff list ->
     diff_text:string ->
     metadata:review_metadata ->
-    Review_types.finding list Lwt.t
+    (Review_types.finding list * Cost_tracking.agent_cost list) Lwt.t
 end

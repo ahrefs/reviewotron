@@ -21,21 +21,21 @@ module Make (AI : Api.Agent_runner) = struct
     in
     let%lwt result = AI.run ~ctx ~repo_url ~model_id:config.model ~config:agent_config ~input () in
     match result with
-    | Error _ as e -> Lwt.return e
+    | Error _ as e -> Lwt.return (e, [])
     | Ok agent_result ->
-    match Review_types.review_output_of_json agent_result.output with
-    | review ->
-      log#info "review agent: %d findings, summary length %d" (List.length review.findings)
-        (String.length review.summary);
-      Lwt.return (Ok review)
-    | exception exn -> Lwt.return (Error (Printf.sprintf "failed to parse review output: %s" (Exn.str exn)))
+      let cost = Cost_tracking.of_agent_result ~agent_name:"general_review" ~files_fetched:0 agent_result in
+      (match Review_types.review_output_of_json agent_result.output with
+      | review ->
+        log#info "review agent: %d findings, summary length %d" (List.length review.findings)
+          (String.length review.summary);
+        Lwt.return (Ok review, [ cost ])
+      | exception exn -> Lwt.return (Error (Printf.sprintf "failed to parse review output: %s" (Exn.str exn)), [ cost ]))
 
-  (* General review uses the raw diff text, not parsed file diffs. *)
   let run ~ctx ~repo_url ~diff:_ ~diff_text ~metadata =
-    let%lwt result = run_review ~ctx ~repo_url ~diff_text ~metadata in
+    let%lwt result, costs = run_review ~ctx ~repo_url ~diff_text ~metadata in
     match result with
-    | Ok review -> Lwt.return review.findings
+    | Ok review -> Lwt.return (review.findings, costs)
     | Error msg ->
       log#error "general review plugin failed: %s" msg;
-      Lwt.return []
+      Lwt.return ([], costs)
 end

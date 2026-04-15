@@ -161,39 +161,54 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
       | 0 -> Stdlib.Option.compare Int.compare a.line b.line
       | n -> n)
 
-  (** Run all enabled review plugins and collect findings.
-      Returns the general review output (if the general plugin is enabled) and a
-      deduplicated list of findings from all plugins. *)
+  (** Run all enabled review plugins and collect findings and costs.
+      Returns the general review output (if the general plugin is enabled),
+      a deduplicated list of findings from all plugins, and per-plugin review costs. *)
   let run_plugins ~ctx ~repo_url ~config ~diff ~diff_text ~metadata =
     let plugins_config = config.Config_types.review_plugins in
     (* Run enabled plugins concurrently — they are independent. *)
     let general_promise =
       if plugins_config.general.enabled then begin
-        let%lwt result = General_plugin.run_review ~ctx ~repo_url ~diff_text ~metadata in
+        let%lwt result, costs = General_plugin.run_review ~ctx ~repo_url ~diff_text ~metadata in
         match result with
-        | Ok review -> Lwt.return (Some review)
+        | Ok review -> Lwt.return (Some review, costs)
         | Error msg ->
           log#error "general review plugin failed: %s" msg;
-          Lwt.return None
+          Lwt.return (None, costs)
       end
-      else Lwt.return None
+      else Lwt.return (None, [])
     in
     let security_promise =
       if plugins_config.security.enabled then Security_plugin.run ~ctx ~repo_url ~diff ~diff_text ~metadata
-      else Lwt.return []
+      else Lwt.return ([], [])
     in
-    let%lwt general_result, security_findings = Lwt.both general_promise security_promise in
+    let%lwt (general_result, general_costs), (security_findings, security_costs) =
+      Lwt.both general_promise security_promise
+    in
     (* Merge general review findings with additional plugin findings. *)
     let general_findings = Option.map (fun (r : Review_types.review_output) -> r.findings) general_result in
     let all_findings = Option.default [] general_findings @ security_findings in
     let deduplicated = deduplicate_findings all_findings in
-    Lwt.return (general_result, deduplicated)
+    let review_costs =
+      [
+        Cost_tracking.aggregate ~plugin:"general" general_costs;
+        Cost_tracking.aggregate ~plugin:"security" security_costs;
+      ]
+      |> List.filter (fun (rc : Cost_tracking.review_cost) ->
+        match rc.agents with
+        | [] -> false
+        | _ :: _ -> true)
+    in
+    Lwt.return (general_result, deduplicated, review_costs)
 
   (** Run the plugin orchestrator and post the result as a GitHub PR review. *)
   let execute_and_post_review ~ctx ~repo_url ~config ~number ~pr_title ~diff_text ~filtered_diff ~file_contents
     ~description ~head_sha =
     let metadata = Review_plugin.{ pr_number = number; pr_title; pr_description = description; file_contents } in
-    let%lwt general_result, findings = run_plugins ~ctx ~repo_url ~config ~diff:filtered_diff ~diff_text ~metadata in
+    let%lwt general_result, findings, review_costs =
+      run_plugins ~ctx ~repo_url ~config ~diff:filtered_diff ~diff_text ~metadata
+    in
+    Cost_tracking.log_review_costs review_costs;
     match general_result with
     | None ->
       log#error "review failed for PR #%d: no review output produced" number;
@@ -207,13 +222,16 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
         | "" -> review.summary
         | assessment -> Printf.sprintf "%s\n\n**Overall**: %s" review.summary assessment
       in
+      let review_body =
+        if config.show_review_cost then review_body ^ Cost_tracking.format_footer review_costs else review_body
+      in
       let review_req = Github_types.{ commit_id = Some head_sha; body = review_body; event = Comment; comments } in
       let%lwt post_result = GH.create_pr_review ~ctx ~repo_url ~number review_req in
       (match post_result with
       | Ok () -> log#info "posted review for PR #%d (%s): %d inline comments" number pr_title (List.length comments)
       | Error msg -> log#error "failed to post review for PR #%d: %s" number msg);
       let state = Context.state ctx in
-      State.record_pr_review state ~repo_url ~pr_number:number ~head_sha;
+      State.record_pr_review state ~repo_url ~pr_number:number ~head_sha ~review_costs;
       State.save state;
       Lwt.return_unit
 
@@ -294,9 +312,10 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
         in
         let pr_title = Printf.sprintf "Push to %s" push.ref_ in
         let metadata = Review_plugin.{ pr_number = 0; pr_title; pr_description = description; file_contents = [] } in
-        let%lwt general_result, findings =
+        let%lwt general_result, findings, review_costs =
           run_plugins ~ctx ~repo_url ~config ~diff:filtered_diff ~diff_text:filtered_text ~metadata
         in
+        Cost_tracking.log_review_costs review_costs;
         (match general_result with
         | None ->
           log#error "review failed for push %s: no review output produced" push.after;

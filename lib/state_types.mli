@@ -4,6 +4,7 @@ type review_record = {
   pr_number : int;
   head_sha : string;
   reviewed_at : string;
+  review_costs : Cost_tracking.review_cost list;
 }
 [@@deriving json]
 

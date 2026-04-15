@@ -46,10 +46,10 @@ let is_pr_reviewed t ~repo_url ~pr_number ~head_sha =
     (fun (r : State_types.review_record) -> Int.equal r.pr_number pr_number && String.equal r.head_sha head_sha)
     rs.pr_reviews
 
-let record_pr_review t ~repo_url ~pr_number ~head_sha =
+let record_pr_review t ~repo_url ~pr_number ~head_sha ~review_costs =
   let rs = find_repo_state t.data ~repo_url in
   let now = Time.gmt_string (Unix.gettimeofday ()) in
-  let record : State_types.review_record = { pr_number; head_sha; reviewed_at = now } in
+  let record : State_types.review_record = { pr_number; head_sha; reviewed_at = now; review_costs } in
   let pr_reviews = trim_list max_records_per_repo (record :: rs.pr_reviews) in
   let rs = { rs with State_types.pr_reviews } in
   t.data <- set_repo_state t.data ~repo_url rs
