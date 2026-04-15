@@ -215,6 +215,152 @@ let test_mock_claude_response () =
   (check bool) "has summary" true (String.length review.summary > 0);
   (check bool) "has assessment" true (String.length review.overall_assessment > 0)
 
+(** {2 Security types tests} *)
+
+let roundtrip to_json of_json v =
+  let json_str = Melange_json.to_string (to_json v) in
+  of_json (Melange_json.of_string json_str)
+
+let test_security_triage_output_roundtrip () =
+  let open Security_types in
+  let triage : triage_output =
+    {
+      signals =
+        [
+          {
+            vuln_class = Injection;
+            confidence = High;
+            regions = [ { path = "lib/db.ml"; start_line = 10; end_line = 20 } ];
+            rationale = "SQL string concatenation detected";
+          };
+          {
+            vuln_class = Xss;
+            confidence = Medium;
+            regions = [ { path = "lib/view.ml"; start_line = 5; end_line = 8 } ];
+            rationale = "Unescaped output in template";
+          };
+        ];
+      language_hints = [ "ocaml"; "javascript" ];
+      skip_reason = None;
+    }
+  in
+  let parsed = roundtrip triage_output_to_json triage_output_of_json triage in
+  (check int) "signals count" 2 (List.length parsed.signals);
+  (match parsed.signals with
+  | s :: _ ->
+    (check string) "vuln_class" "injection" (vuln_class_to_string s.vuln_class);
+    (check string) "confidence" "high" (confidence_to_string s.confidence);
+    (check int) "regions count" 1 (List.length s.regions)
+  | [] -> fail "expected at least one signal");
+  (check (option string)) "skip_reason" None parsed.skip_reason;
+  (check int) "language_hints" 2 (List.length parsed.language_hints)
+
+let test_security_triage_output_with_skip () =
+  let open Security_types in
+  let triage : triage_output = { signals = []; language_hints = []; skip_reason = Some "no code changes" } in
+  let parsed = roundtrip triage_output_to_json triage_output_of_json triage in
+  (check (option string)) "skip_reason" (Some "no code changes") parsed.skip_reason;
+  (check int) "signals empty" 0 (List.length parsed.signals)
+
+let test_security_candidate_finding_roundtrip () =
+  let open Security_types in
+  let finding : candidate_finding =
+    {
+      vuln_class = Command_injection;
+      source = { path = "lib/handler.ml"; line = 15; description = "HTTP query parameter cmd" };
+      sink = { path = "lib/exec.ml"; line = 42; description = "Unix.system call" };
+      flow =
+        [
+          { path = "lib/handler.ml"; line = 16; description = "Passed to process_command" };
+          { path = "lib/exec.ml"; line = 40; description = "Received as cmd argument" };
+        ];
+      sanitization = Missing;
+      confidence = High;
+      description = "User input flows to shell execution without sanitization";
+      suggested_fix = Some "Use Filename.quote or switch to execvp";
+    }
+  in
+  let parsed = roundtrip candidate_finding_to_json candidate_finding_of_json finding in
+  (check string) "vuln_class" "command_injection" (vuln_class_to_string parsed.vuln_class);
+  (check string) "source path" "lib/handler.ml" parsed.source.path;
+  (check int) "source line" 15 parsed.source.line;
+  (check string) "sink path" "lib/exec.ml" parsed.sink.path;
+  (check int) "flow steps" 2 (List.length parsed.flow);
+  (check (option string)) "suggested_fix" (Some "Use Filename.quote or switch to execvp") parsed.suggested_fix
+
+let test_security_sanitization_status_roundtrip () =
+  let open Security_types in
+  let cases =
+    [
+      Adequate, {|["Adequate"]|};
+      Inadequate "encoding not context-aware", {|["Inadequate","encoding not context-aware"]|};
+      Missing, {|["Missing"]|};
+      Unknown, {|["Unknown"]|};
+    ]
+  in
+  List.iter
+    (fun (status, expected_json) ->
+      let json_str = Melange_json.to_string (sanitization_status_to_json status) in
+      (check string) ("sanitization_status json " ^ expected_json) expected_json json_str;
+      let parsed = sanitization_status_of_json (Melange_json.of_string json_str) in
+      let re_json = Melange_json.to_string (sanitization_status_to_json parsed) in
+      (check string) ("sanitization_status roundtrip " ^ expected_json) json_str re_json)
+    cases
+
+let test_security_validation_verdict_roundtrip () =
+  let open Security_types in
+  let cases =
+    [
+      Confirmed, {|["Confirmed"]|};
+      Rejected "source is not user-controllable", {|["Rejected","source is not user-controllable"]|};
+    ]
+  in
+  List.iter
+    (fun (verdict, expected_json) ->
+      let json_str = Melange_json.to_string (validation_verdict_to_json verdict) in
+      (check string) ("verdict json " ^ expected_json) expected_json json_str;
+      let parsed = validation_verdict_of_json (Melange_json.of_string json_str) in
+      let re_json = Melange_json.to_string (validation_verdict_to_json parsed) in
+      (check string) ("verdict roundtrip " ^ expected_json) json_str re_json)
+    cases
+
+let test_security_validator_output_roundtrip () =
+  let open Security_types in
+  let output : validator_output =
+    {
+      results =
+        [
+          {
+            finding =
+              {
+                vuln_class = Ssrf;
+                source = { path = "lib/api.ml"; line = 10; description = "URL from user input" };
+                sink = { path = "lib/http.ml"; line = 30; description = "HTTP GET request" };
+                flow = [ { path = "lib/api.ml"; line = 12; description = "Passed to fetch_url" } ];
+                sanitization = Inadequate "URL validation missing scheme check";
+                confidence = Medium;
+                description = "User-controlled URL used in server-side request";
+                suggested_fix = None;
+              };
+            verdict = Confirmed;
+            evidence_notes = "Verified: URL constructed from query param without scheme validation";
+          };
+        ];
+    }
+  in
+  let parsed = roundtrip validator_output_to_json validator_output_of_json output in
+  (check int) "results count" 1 (List.length parsed.results);
+  match parsed.results with
+  | r :: _ ->
+    (check string) "finding vuln_class" "ssrf" (vuln_class_to_string r.finding.vuln_class);
+    (check (option string)) "suggested_fix" None r.finding.suggested_fix
+  | [] -> fail "expected at least one result"
+
+let test_security_triage_output_extra_fields () =
+  let json_str = {|{"signals":[],"language_hints":[],"skip_reason":null,"extra_field":"ignored","another":123}|} in
+  let parsed = Security_types.triage_output_of_json (Melange_json.of_string json_str) in
+  (check int) "signals empty" 0 (List.length parsed.signals)
+
 (** {2 End-to-end reviewer tests} *)
 
 module R_test = Reviewer.Make (Api_local.Github) (Api_local.Agent_runner) (Api_local.Slack)
@@ -468,6 +614,16 @@ let () =
         [
           test_case "review output roundtrip" `Quick test_review_output_roundtrip;
           test_case "mock claude response" `Quick test_mock_claude_response;
+        ] );
+      ( "security_types",
+        [
+          test_case "triage output roundtrip" `Quick test_security_triage_output_roundtrip;
+          test_case "triage output with skip" `Quick test_security_triage_output_with_skip;
+          test_case "candidate finding roundtrip" `Quick test_security_candidate_finding_roundtrip;
+          test_case "sanitization status roundtrip" `Quick test_security_sanitization_status_roundtrip;
+          test_case "validation verdict roundtrip" `Quick test_security_validation_verdict_roundtrip;
+          test_case "validator output roundtrip" `Quick test_security_validator_output_roundtrip;
+          test_case "triage output extra fields" `Quick test_security_triage_output_extra_fields;
         ] );
       ( "reviewer_e2e",
         [
