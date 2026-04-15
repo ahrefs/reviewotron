@@ -1287,6 +1287,85 @@ let test_memory_load_empty_file () =
       let loaded = Security_memory.load ~memory_dir:tmp_dir ~repo_url:"https://github.com/test/repo" in
       (check bool) "empty file returns None" true (Option.is_none loaded))
 
+(** {2 Memory curator agent tests} *)
+
+let test_curator_output_roundtrip () =
+  let open Security_types in
+  let output = { updated_memory = "# Security Memory: test/repo\n\n## Architecture\n- OCaml backend\n" } in
+  let parsed = roundtrip curator_output_to_json curator_output_of_json output in
+  (check string) "updated_memory" output.updated_memory parsed.updated_memory
+
+let test_curator_agent_config () =
+  let cfg = Memory_curator_agent.config ~model_tier:Fast in
+  (check string) "name" "memory_curator" cfg.name;
+  (check int) "max_steps" 1 cfg.max_steps;
+  (check bool) "has system prompt" true (String.length cfg.system_prompt > 0);
+  (check bool) "has output schema" true
+    (match cfg.output_schema with
+    | `Assoc _ -> true
+    | _ -> false)
+
+let test_curator_agent_config_model_tier () =
+  let fast = Memory_curator_agent.config ~model_tier:Fast in
+  let standard = Memory_curator_agent.config ~model_tier:Standard in
+  (check bool) "fast tier" true
+    (match fast.model_tier with
+    | Fast -> true
+    | Standard | Strong -> false);
+  (check bool) "standard tier" true
+    (match standard.model_tier with
+    | Standard -> true
+    | Fast | Strong -> false)
+
+let test_curator_agent_output_schema_valid () =
+  let cfg = Memory_curator_agent.config ~model_tier:Fast in
+  match cfg.output_schema with
+  | `Assoc fields ->
+    (check bool) "has type" true (List.mem_assoc "type" fields);
+    (check bool) "has properties" true (List.mem_assoc "properties" fields)
+  | _ -> fail "expected JSON object schema"
+
+let test_curator_build_input_no_memory () =
+  let input =
+    Memory_curator_agent.build_input ~repo_name:"org/monorepo" ~memory_max_tokens:5000
+      ~learnings:[ "Backend uses Dream framework"; "SQL goes through Caqti" ]
+      ()
+  in
+  (check bool) "contains repo name" true (Devkit.Stre.exists input "org/monorepo");
+  (check bool) "contains no existing memory" true (Devkit.Stre.exists input "No existing memory");
+  (check bool) "contains current token count" true (Devkit.Stre.exists input "Current: 0 tokens");
+  (check bool) "contains max token budget" true (Devkit.Stre.exists input "Maximum: 5000 tokens");
+  (check bool) "contains learning 1" true (Devkit.Stre.exists input "Backend uses Dream framework");
+  (check bool) "contains learning 2" true (Devkit.Stre.exists input "SQL goes through Caqti")
+
+let test_curator_build_input_with_memory () =
+  let existing = "# Security Memory: test/repo\n\n## Architecture\n- OCaml backend\n" in
+  let input =
+    Memory_curator_agent.build_input ~repo_name:"test/repo" ~memory_max_tokens:3000
+      ~learnings:[ "New endpoint added in lib/api.ml" ] ~current_memory:existing ()
+  in
+  (check bool) "contains existing memory" true (Devkit.Stre.exists input "OCaml backend");
+  (check bool) "contains Current Memory section" true (Devkit.Stre.exists input "## Current Memory");
+  (check bool) "no 'No existing memory' text" false (Devkit.Stre.exists input "No existing memory");
+  (check bool) "contains current token estimate" true (Devkit.Stre.exists input "Current: ~");
+  (check bool) "contains max token budget" true (Devkit.Stre.exists input "Maximum: 3000 tokens");
+  (check bool) "contains learning" true (Devkit.Stre.exists input "New endpoint added in lib/api.ml")
+
+let test_curator_build_input_empty_memory () =
+  let input =
+    Memory_curator_agent.build_input ~repo_name:"test/repo" ~memory_max_tokens:5000 ~learnings:[ "test learning" ]
+      ~current_memory:"" ()
+  in
+  (check bool) "empty memory treated as no memory" true (Devkit.Stre.exists input "No existing memory")
+
+let test_curator_build_input_empty_learnings () =
+  let input =
+    Memory_curator_agent.build_input ~repo_name:"test/repo" ~memory_max_tokens:5000 ~learnings:[]
+      ~current_memory:"# Security Memory\n" ()
+  in
+  (check bool) "contains New Learnings section" true (Devkit.Stre.exists input "## New Learnings");
+  (check bool) "contains existing memory" true (Devkit.Stre.exists input "# Security Memory")
+
 (** {2 Security pipeline end-to-end tests} *)
 
 let test_security_e2e_vulnerable () =
@@ -1535,6 +1614,17 @@ let () =
           test_case "load missing" `Quick test_memory_load_missing;
           test_case "save load roundtrip" `Quick test_memory_save_load_roundtrip;
           test_case "load empty file" `Quick test_memory_load_empty_file;
+        ] );
+      ( "memory_curator",
+        [
+          test_case "curator_output roundtrip" `Quick test_curator_output_roundtrip;
+          test_case "config" `Quick test_curator_agent_config;
+          test_case "config model tier" `Quick test_curator_agent_config_model_tier;
+          test_case "output schema valid" `Quick test_curator_agent_output_schema_valid;
+          test_case "build input no memory" `Quick test_curator_build_input_no_memory;
+          test_case "build input with memory" `Quick test_curator_build_input_with_memory;
+          test_case "build input empty memory" `Quick test_curator_build_input_empty_memory;
+          test_case "build input empty learnings" `Quick test_curator_build_input_empty_learnings;
         ] );
       ( "security_e2e",
         [

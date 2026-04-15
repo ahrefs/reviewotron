@@ -725,3 +725,26 @@ NOTES:
 --- Iteration 1: P6.1 — UNCLEAR RESULT ---
 2026-04-15 09:11:29
 
+=== P6.1: Define memory file format and storage ===
+Completed: 2026-04-15 09:24:34
+<task-result>
+TASK_ID: P6.1
+STATUS: DONE
+FILES_CHANGED: lib/security_memory.ml, lib/security_memory.mli
+DECISIONS:
+- Implementation was already completed by a prior iteration (the "unclear result" P6.1 attempt) — this iteration verified, reviewed, and polished the existing code
+- Collapsed duplicate `"https:"` / `"http:"` match arms in `repo_slug` into a single or-pattern per code quality review
+- Improved `.mli` docstring for `repo_slug` to document the full transformation (strips protocol/host, .git suffix, trailing slashes, replaces / with -)
+- Kept `repo_slug` and `memory_path` in the public `.mli` — they are directly tested (5 slug tests + 1 path test) and useful for the memory curator (P6.3) and queue mechanism (P6.4)
+- `load` returns `None` on missing files (`Sys_error _`) and empty files (`Int.equal len 0`) — graceful first-review handling
+- `save` uses `Files.save_as` for atomic writes and `Files.mkdir_p` for directory creation
+- Memory injection into agent prompts is handled by each agent's `build_input` function (triage, analysis, validator) via `?security_memory` parameter — the `## Repository Security Context` section is only added when memory content is non-empty
+- Hardcoded `"memory"` directory in `security_review_plugin.ml` line 239 matches PRD convention `memory/{repo_slug}.md` — can be made configurable later if needed
+NOTES:
+- Total test count: 115 (23 diff_parser + 92 reviewotron), all passing, build clean, formatter clean
+- 9 security_memory tests: 5 slug derivation, 1 path construction, 1 load-missing, 1 save-load roundtrip, 1 empty-file
+- The module is already wired into the full pipeline: `security_review_plugin.ml` calls `Security_memory.load` and threads the result through all three agent stages
+- P6.2 (memory loading injection) is effectively already done — all agents accept `?security_memory` and inject it as `## Repository Security Context`
+- P6.3 (memory curator agent) and P6.4 (update queue) are the remaining Phase 6 tasks
+</task-result>
+

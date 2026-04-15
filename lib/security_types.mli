@@ -187,3 +187,12 @@ type validator_output = { results : validated_finding list }
 val validator_output_to_json : validator_output -> Yojson.Basic.t
 val validator_output_of_json : Yojson.Basic.t -> validator_output
 val validator_output_jsonschema : Yojson.Basic.t
+
+(** {2 Memory curator types} *)
+
+(** Output from the memory curator agent. *)
+type curator_output = { updated_memory : string }
+
+val curator_output_to_json : curator_output -> Yojson.Basic.t
+val curator_output_of_json : Yojson.Basic.t -> curator_output
+val curator_output_jsonschema : Yojson.Basic.t

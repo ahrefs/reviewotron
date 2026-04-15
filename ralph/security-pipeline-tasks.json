@@ -599,7 +599,7 @@
       "depends_on": [
         "P5.3"
       ],
-      "complete": false
+      "complete": true
     },
     {
       "id": "P6.2",
