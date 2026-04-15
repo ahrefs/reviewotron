@@ -27,6 +27,20 @@ let agent_response_map : (string * string) list ref = ref []
 let set_agent_response_map entries = agent_response_map := entries
 let clear_agent_response_map () = agent_response_map := []
 
+(** When set to [true], the next [create_pr_review] call returns an error and
+    then resets the flag. Used to test retry-on-failure logic. *)
+let fail_next_pr_review = ref false
+
+let set_fail_next_pr_review () = fail_next_pr_review := true
+let reset_fail_next_pr_review () = fail_next_pr_review := false
+
+(** When set to [true], the next [create_commit_comment] call returns an error
+    and then resets the flag. Used to test retry-on-failure logic. *)
+let fail_next_commit_comment = ref false
+
+let set_fail_next_commit_comment () = fail_next_commit_comment := true
+let reset_fail_next_commit_comment () = fail_next_commit_comment := false
+
 module Github : Api.Github = struct
   let get_config ~ctx:_ ~repo_url:_ = Lwt.return (Ok (Context.default_config ()))
 
@@ -53,18 +67,30 @@ module Github : Api.Github = struct
     | Error _ -> Lwt.return (Ok None)
 
   let create_pr_review ~ctx:_ ~repo_url ~number review =
-    let json = Melange_json.to_string (Github_types.create_review_req_to_json review) in
-    let entry = Printf.sprintf "[create_pr_review] repo=%s number=%d\n%s\n" repo_url number json in
-    Buffer.add_string write_log entry;
-    log#info "%s" entry;
-    Lwt.return (Ok ())
+    if !fail_next_pr_review then begin
+      fail_next_pr_review := false;
+      Lwt.return (Error "simulated GitHub API failure for create_pr_review")
+    end
+    else begin
+      let json = Melange_json.to_string (Github_types.create_review_req_to_json review) in
+      let entry = Printf.sprintf "[create_pr_review] repo=%s number=%d\n%s\n" repo_url number json in
+      Buffer.add_string write_log entry;
+      log#info "%s" entry;
+      Lwt.return (Ok ())
+    end
 
   let create_commit_comment ~ctx:_ ~repo_url ~sha comment =
-    let json = Melange_json.to_string (Github_types.commit_comment_req_to_json comment) in
-    let entry = Printf.sprintf "[create_commit_comment] repo=%s sha=%s\n%s\n" repo_url sha json in
-    Buffer.add_string write_log entry;
-    log#info "%s" entry;
-    Lwt.return (Ok ())
+    if !fail_next_commit_comment then begin
+      fail_next_commit_comment := false;
+      Lwt.return (Error "simulated GitHub API failure for create_commit_comment")
+    end
+    else begin
+      let json = Melange_json.to_string (Github_types.commit_comment_req_to_json comment) in
+      let entry = Printf.sprintf "[create_commit_comment] repo=%s sha=%s\n%s\n" repo_url sha json in
+      Buffer.add_string write_log entry;
+      log#info "%s" entry;
+      Lwt.return (Ok ())
+    end
 end
 
 module Agent_runner : Api.Agent_runner = struct

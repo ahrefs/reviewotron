@@ -22,7 +22,9 @@ let reset_test_state () =
   Api_local.clear_write_log ();
   Api_local.clear_slack_messages ();
   Api_local.reset_agent_response_path ();
-  Api_local.clear_agent_response_map ()
+  Api_local.clear_agent_response_map ();
+  Api_local.reset_fail_next_pr_review ();
+  Api_local.reset_fail_next_commit_comment ()
 
 (** Build a minimal repository JSON object. *)
 let repo_json ?(name = "monorepo") ?(full_name = "ahrefs/monorepo") ?(url = "https://github.com/ahrefs/monorepo") () =

@@ -3,6 +3,16 @@ open Devkit
 let log = Log.from "reviewer"
 
 module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
+  (** Retry an Lwt operation once after a 1-second delay on failure.
+      The operation is passed as a thunk to ensure the retry executes fresh. *)
+  let retry_once ~label f =
+    match%lwt f () with
+    | Ok () as ok -> Lwt.return ok
+    | Error msg ->
+      log#warn "%s failed (will retry once): %s" label msg;
+      let%lwt () = Lwt_unix.sleep 1.0 in
+      f ()
+
   (** Fetch config from the repo and cache it in context. *)
   let fetch_config ~ctx ~repo_url =
     match%lwt GH.get_config ~ctx ~repo_url with
@@ -163,7 +173,8 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
 
   (** Run all enabled review plugins and collect findings and costs.
       Returns the general review output (if the general plugin is enabled),
-      a deduplicated list of findings from all plugins, and per-plugin review costs. *)
+      a deduplicated list of findings from all plugins, per-plugin review costs,
+      and a boolean indicating whether the security plugin encountered an error. *)
   let run_plugins ~ctx ~repo_url ~config ~diff ~diff_text ~metadata =
     let plugins_config = config.Config_types.review_plugins in
     (* Run enabled plugins concurrently — they are independent. *)
@@ -179,12 +190,30 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
       else Lwt.return (None, [])
     in
     let security_promise =
-      if plugins_config.security.enabled then Security_plugin.run ~ctx ~repo_url ~diff ~diff_text ~metadata
-      else Lwt.return ([], [])
+      if plugins_config.security.enabled then
+        Lwt.catch
+          (fun () ->
+            let%lwt findings, costs = Security_plugin.run ~ctx ~repo_url ~diff ~diff_text ~metadata in
+            Lwt.return (findings, costs, false))
+          (fun exn ->
+            log#error "security review plugin raised: %s" (Exn.str exn);
+            Lwt.return ([], [], true))
+      else Lwt.return ([], [], false)
     in
-    let%lwt (general_result, general_costs), (security_findings, security_costs) =
+    let%lwt (general_result, general_costs), (security_findings, security_costs, security_exn) =
       Lwt.both general_promise security_promise
     in
+    (* Detect security plugin failure: either it raised an exception, or it was
+       enabled but the triage agent failed entirely (no costs produced at all). *)
+    let security_error =
+      security_exn
+      || plugins_config.security.enabled
+         &&
+         match security_costs with
+         | [] -> true
+         | _ :: _ -> false
+    in
+    if security_error then log#warn "security review plugin encountered an error; results may be incomplete";
     (* Merge general review findings with additional plugin findings. *)
     let general_findings = Option.map (fun (r : Review_types.review_output) -> r.findings) general_result in
     let all_findings = Option.default [] general_findings @ security_findings in
@@ -199,41 +228,56 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
         | [] -> false
         | _ :: _ -> true)
     in
-    Lwt.return (general_result, deduplicated, review_costs)
+    Lwt.return (general_result, deduplicated, review_costs, security_error)
+
+  let security_error_notice =
+    "\n\n\
+     _Note: The security review plugin encountered an error and may not have completed. Security analysis may be \
+     incomplete._"
 
   (** Run the plugin orchestrator and post the result as a GitHub PR review. *)
   let execute_and_post_review ~ctx ~repo_url ~config ~number ~pr_title ~diff_text ~filtered_diff ~file_contents
     ~description ~head_sha =
     let metadata = Review_plugin.{ pr_number = number; pr_title; pr_description = description; file_contents } in
-    let%lwt general_result, findings, review_costs =
+    let%lwt general_result, findings, review_costs, security_error =
       run_plugins ~ctx ~repo_url ~config ~diff:filtered_diff ~diff_text ~metadata
     in
     Cost_tracking.log_review_costs review_costs;
-    match general_result with
-    | None ->
-      log#error "review failed for PR #%d: no review output produced" number;
-      Lwt.return_unit
-    | Some review ->
-      let comments = List.filter_map (finding_to_comment ~diff:filtered_diff) findings in
-      let unpositioned = List.length findings - List.length comments in
-      if unpositioned > 0 then log#info "PR #%d: %d findings could not be positioned in diff" number unpositioned;
-      let review_body =
-        match review.overall_assessment with
+    let comments = List.filter_map (finding_to_comment ~diff:filtered_diff) findings in
+    let unpositioned = List.length findings - List.length comments in
+    if unpositioned > 0 then log#info "PR #%d: %d findings could not be positioned in diff" number unpositioned;
+    let review_body =
+      match general_result with
+      | Some review ->
+        (match review.Review_types.overall_assessment with
         | "" -> review.summary
-        | assessment -> Printf.sprintf "%s\n\n**Overall**: %s" review.summary assessment
-      in
-      let review_body =
-        if config.show_review_cost then review_body ^ Cost_tracking.format_footer review_costs else review_body
-      in
-      let review_req = Github_types.{ commit_id = Some head_sha; body = review_body; event = Comment; comments } in
-      let%lwt post_result = GH.create_pr_review ~ctx ~repo_url ~number review_req in
-      (match post_result with
-      | Ok () -> log#info "posted review for PR #%d (%s): %d inline comments" number pr_title (List.length comments)
-      | Error msg -> log#error "failed to post review for PR #%d: %s" number msg);
-      let state = Context.state ctx in
-      State.record_pr_review state ~repo_url ~pr_number:number ~head_sha ~review_costs;
-      State.save state;
-      Lwt.return_unit
+        | assessment -> Printf.sprintf "%s\n\n**Overall**: %s" review.summary assessment)
+      | None ->
+        log#error "review failed for PR #%d: no review output produced" number;
+        (match findings with
+        | _ :: _ ->
+          "\xE2\x9A\xA0\xEF\xB8\x8F **Review partially failed** \xE2\x80\x94 the general code review agent encountered \
+           an error. Security findings (if any) are shown below. You may want to re-trigger the review."
+        | [] ->
+          "\xE2\x9A\xA0\xEF\xB8\x8F **Review failed** \xE2\x80\x94 the code review encountered an error and could not \
+           produce results. Please re-trigger the review. If this persists, check the service logs.")
+    in
+    let review_body = if security_error then review_body ^ security_error_notice else review_body in
+    let review_body =
+      if config.show_review_cost then review_body ^ Cost_tracking.format_footer review_costs else review_body
+    in
+    let review_req = Github_types.{ commit_id = Some head_sha; body = review_body; event = Comment; comments } in
+    let%lwt post_result =
+      retry_once ~label:(Printf.sprintf "create_pr_review PR #%d" number) (fun () ->
+        GH.create_pr_review ~ctx ~repo_url ~number review_req)
+    in
+    (match post_result with
+    | Ok () -> log#info "posted review for PR #%d (%s): %d inline comments" number pr_title (List.length comments)
+    | Error msg -> log#error "failed to post review for PR #%d after retry: %s" number msg);
+    let state = Context.state ctx in
+    State.record_pr_review state ~repo_url ~pr_number:number ~head_sha ~review_costs;
+    State.save state;
+    Lwt.return_unit
 
   (** Orchestrate a full PR review: fetch diff, run review agent, post review. *)
   let review_pr ~ctx (pr_notif : Github_types.pr_notification) =
@@ -276,10 +320,13 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
               line = finding.line;
             }
           in
-          let%lwt result = GH.create_commit_comment ~ctx ~repo_url ~sha comment in
+          let%lwt result =
+            retry_once ~label:(Printf.sprintf "create_commit_comment %s" sha) (fun () ->
+              GH.create_commit_comment ~ctx ~repo_url ~sha comment)
+          in
           (match result with
           | Ok () -> ()
-          | Error msg -> log#error "failed to post commit comment on %s: %s" sha msg);
+          | Error msg -> log#error "failed to post commit comment on %s after retry: %s" sha msg);
           Lwt.return_unit
         | Suggestion | Nitpick | Praise | Other _ ->
           (* Only post commit comments for critical/warning *)
@@ -312,30 +359,58 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
         in
         let pr_title = Printf.sprintf "Push to %s" push.ref_ in
         let metadata = Review_plugin.{ pr_number = 0; pr_title; pr_description = description; file_contents = [] } in
-        let%lwt general_result, findings, review_costs =
+        let%lwt general_result, findings, review_costs, security_error =
           run_plugins ~ctx ~repo_url ~config ~diff:filtered_diff ~diff_text:filtered_text ~metadata
         in
         Cost_tracking.log_review_costs review_costs;
-        (match general_result with
-        | None ->
-          log#error "review failed for push %s: no review output produced" push.after;
-          Lwt.return_unit
-        | Some review ->
-          let%lwt () = post_push_comments ~ctx ~repo_url ~sha:push.after findings in
-          let slack_text = Printf.sprintf ":robot_face: *Code Review* for push to `develop` by %s" push.pusher.name in
-          let attachment =
-            Review_format.format_slack_attachment ~compare_url:push.compare ~pusher_name:push.pusher.name
-              ~num_commits:(List.length push.commits) ~review
-          in
-          let%lwt () =
-            match config.slack_channel with
-            | None -> Lwt.return_unit
-            | Some channel -> SL.post_message ~ctx ~channel ~text:slack_text ~attachments:[ attachment ] ()
-          in
-          let state = Context.state ctx in
-          State.record_push_review state ~repo_url ~after_sha:push.after;
-          State.save state;
-          Lwt.return_unit))
+        let%lwt () = post_push_comments ~ctx ~repo_url ~sha:push.after findings in
+        let security_note = String.trim security_error_notice in
+        let slack_text, attachment =
+          match general_result with
+          | Some review ->
+            let text = Printf.sprintf ":robot_face: *Code Review* for push to `develop` by %s" push.pusher.name in
+            let att =
+              Review_format.format_slack_attachment ~compare_url:push.compare ~pusher_name:push.pusher.name
+                ~num_commits:(List.length push.commits) ~review
+            in
+            let att = if security_error then Slack_types.{ att with text = att.text ^ "\n" ^ security_note } else att in
+            text, att
+          | None ->
+            log#error "review failed for push %s: no review output produced" push.after;
+            let text = Printf.sprintf ":warning: *Code Review Failed* for push to `develop` by %s" push.pusher.name in
+            let failure_text =
+              match findings with
+              | _ :: _ ->
+                "\xE2\x9A\xA0\xEF\xB8\x8F Review partially failed \xE2\x80\x94 the general code review agent \
+                 encountered an error. Security findings were posted as commit comments."
+              | [] ->
+                "\xE2\x9A\xA0\xEF\xB8\x8F Review failed \xE2\x80\x94 the code review encountered an error and could \
+                 not produce results. Check the service logs."
+            in
+            let failure_text = if security_error then failure_text ^ " " ^ security_note else failure_text in
+            let att =
+              Slack_types.
+                {
+                  color = "#dc3545";
+                  title =
+                    Printf.sprintf "Push by %s \xE2\x80\x94 %d commits" push.pusher.name (List.length push.commits);
+                  title_link = push.compare;
+                  text = failure_text;
+                  fields = [];
+                  footer = Some "reviewotron";
+                }
+            in
+            text, att
+        in
+        let%lwt () =
+          match config.slack_channel with
+          | None -> Lwt.return_unit
+          | Some channel -> SL.post_message ~ctx ~channel ~text:slack_text ~attachments:[ attachment ] ()
+        in
+        let state = Context.state ctx in
+        State.record_push_review state ~repo_url ~after_sha:push.after;
+        State.save state;
+        Lwt.return_unit)
 
   let process_event ctx ~event =
     let%lwt () =
