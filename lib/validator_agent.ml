@@ -46,6 +46,10 @@ The analysis agent's assessment of sanitization (Adequate, Inadequate, Missing, 
 - If marked "Adequate": this should already have been filtered out by the analysis agent — but if it appears, verify it genuinely is adequate.
 - If marked "Unknown": check whether the path can be resolved with additional file fetching. If it can and sanitization exists, reject the finding.
 
+**SQL injection sanitization**: String manipulation of user input before SQL concatenation (e.g., `replace("'", "")`, `strip()`, regex filtering, `int()` casting applied inconsistently) is NEVER adequate sanitization for SQL injection. The only adequate mitigation is parameterized queries where user input is bound as a parameter, never interpolated into the query string. If the analysis agent marks sanitization as `Inadequate` for a finding where user input goes through string manipulation before SQL concatenation, CONFIRM the finding — the presence of string manipulation does not make the sanitization adequate.
+
+**JWT validation**: HMAC or RSA signature verification alone is NOT complete JWT validation. A token with a valid signature can still be expired (missing `exp` check). Signature verification and expiry checking are orthogonal — both are required. If the analysis agent reports a missing expiry check on a JWT verifier, do not reject the finding merely because signature verification is present. Verify directly whether the code reads the `exp` claim from the payload and compares it to the current time.
+
 ## Tool Usage
 
 You have access to `get_file_content` to spot-check evidence claims. Use it to:

@@ -335,6 +335,8 @@ let authn_section =
 
 This class covers authentication bypass, weak credential handling, and insecure session management. Unlike injection or XSS — which are data-flow vulnerabilities with clear source→sink patterns — authentication vulnerabilities often manifest as **missing or incorrect security logic**: a JWT verified without checking expiry, a session not regenerated after login, a password compared with non-constant-time equality. Apply the source→sink→flow→sanitization methodology, but also look for required security steps that are absent.
 
+**Tracing missing checks**: For a custom JWT verifier, trace the token from receipt (source) through parsing to each claim extracted. The vulnerability is any required check that is NOT performed. For example: JWT token from Authorization header → split on '.' → Base64-decode payload → parse JSON → extract `sub` claim → [exp claim NEVER extracted or compared to current time] → return `Ok user_id`. The missing step (exp validation) is the finding. Your "flow" terminates at where the absent check SHOULD be.
+
 ### Sources (Authentication Material)
 
 These are credentials, tokens, and session identifiers that enter the authentication boundary and must be properly validated before granting access.
@@ -362,7 +364,7 @@ These are credentials, tokens, and session identifiers that enter the authentica
 ### Sinks (Authentication Decision Points)
 
 **Token and JWT Verification:**
-- **OCaml**: `Jose.Jwt.verify` / `Jose.Jwt.unsafe_of_string` — JWT verification; custom token comparison functions; any function that extracts claims from a JWT and uses them for access decisions
+- **OCaml**: `Jose.Jwt.verify` / `Jose.Jwt.unsafe_of_string` — JWT verification; custom token comparison functions; any function that extracts claims from a JWT and uses them for access decisions. Custom implementations using `Base64.decode_exn`, `Yojson.Basic.from_string`, and `Yojson.Basic.Util.member` are also sinks — check whether `exp` is extracted and compared to the current time.
 - **JavaScript**: `jwt.decode(token)` from `jsonwebtoken` — decodes WITHOUT verifying signature (dangerous if used for auth decisions); `jwt.verify(token, secret)` — verifies signature (correct, but check options for `algorithms`, `maxAge`, `audience`, `issuer`); `jose` library `jwtVerify` / `jwtDecrypt`
 - **Python**: `jwt.decode(token, options={"verify_signature": False})` from PyJWT — explicitly skipping verification; `jwt.decode(token, key, algorithms=[...])` — correct usage; `itsdangerous.URLSafeTimedSerializer` — signed token verification
 
@@ -455,7 +457,7 @@ These are request parameters that identify resources or actions, combined with t
 - **Python**: `Model.objects.get(pk=pk)` without ownership filter; DRF `ViewSet` with `queryset = Model.objects.all()` and no `get_queryset()` override to scope by user; `session.query(Model).get(id)` in SQLAlchemy without ownership check
 
 **Data Mutation Operations (update, delete without ownership):**
-- **OCaml**: `Db.update ~id` or `Db.delete ~id` using a user-supplied ID without verifying the current user owns the resource
+- **OCaml**: `Db.update ~id` or `Db.delete ~id` using a user-supplied ID without verifying the current user owns the resource. Watch for the pattern where the authenticated user object (from `Session.get_user` or middleware) is in scope but absent from the DB call — `user.id` appears only in logging or response formatting rather than as a filter condition.
 - **JavaScript**: `Model.findByIdAndUpdate(req.params.id, req.body)` / `Model.findByIdAndDelete(req.params.id)` — modifies or deletes any resource; `db.query("DELETE FROM resources WHERE id = $1", [req.params.id])` without ownership condition
 - **Python**: `Model.objects.filter(pk=pk).update(...)` / `Model.objects.filter(pk=pk).delete()` without ownership scoping; `instance.delete()` after `get_object()` without ownership validation
 
