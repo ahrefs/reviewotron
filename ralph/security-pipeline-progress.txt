@@ -441,3 +441,26 @@ NOTES:
 - `test/dune` deps updated with `security_corpus/injection/*` and `mock_api_responses/triage/*` globs
 </task-result>
 
+=== P4.1: Build shared analysis agent framework ===
+Completed: 2026-04-15 05:04:23
+<task-result>
+TASK_ID: P4.1
+STATUS: DONE
+FILES_CHANGED: lib/analysis_agent.ml (NEW), lib/analysis_agent.mli (NEW), lib/api.ml, lib/api_remote.ml, lib/api_local.ml, test/test.ml
+DECISIONS:
+- Module follows `Triage_agent` pattern: `config` + `build_input` + `tools` functions
+- `config ~vuln_class ~model_tier ~language_hints` requires all params explicitly — no defaults, forces caller to make conscious choices from security plugin config
+- `max_steps = 10` for analysis agents (multi-step tool loop for demand-driven context expansion via `get_file_content`)
+- Per-class prompt sections extracted as named string constants (`injection_section`, `xss_section`, etc.) with exhaustive match dispatch in `vuln_class_section` — compiler warns when new variants are added
+- `build_system_prompt` uses `String.concat "\n\n"` joining preamble + methodology + class section + tools/output instructions — cleaner than imperative Buffer for static structure
+- `build_input` uses `Buffer` (dynamic structure with conditional sections) — consistent with `Triage_agent.build_input` pattern
+- Language hints appended as a note to per-class sections via string concatenation (not `Printf.sprintf` format strings, since named constants are `string` not `format`)
+- Agent name pattern: `"security_analysis_{vuln_class}"` for logging clarity
+- Output schema: `Security_types.analysis_output_jsonschema` (PPX-derived, no manual JSON)
+- Extended `Api.Agent_runner` module type with `?tools:(string * Ai_core.Core_tool.t) list` parameter — minimal change, backward compatible (optional param)
+- `api_remote.ml` passes `?tools` through to `Agent_runner.run_agent`; `api_local.ml` accepts and ignores tools in mock
+- `append_regions` writes directly into caller's buffer (avoids intermediate allocation identified in efficiency review)
+- 13 new tests: config defaults, per-class naming, model tier passthrough, prompt methodology presence, per-class section presence, language hint parameterization, build_input (minimal/with memory/empty memory), tools, output schema, shared methodology, vuln_class_section coverage
+NOTES:
+- Total test count: 91 (23 diff_parser + 68 reviewotron), all passing, build clean, formatter clean
+
