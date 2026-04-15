@@ -10,7 +10,6 @@ let make_test_context ?state ?(config = Config_types.config_of_json (Melange_jso
       repos =
         [ { url = test_repo_url; auth = Some (GH_token "test-token"); gh_hook_secret = None; config_override = None } ];
       anthropic_api_key = "sk-test";
-      anthropic_version = "2023-06-01";
       slack_access_token = None;
     }
   in

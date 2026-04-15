@@ -89,7 +89,6 @@ let repo_config_of_json (json : Yojson.Basic.t) : repo_config =
 type secrets = {
   repos : repo_config list;
   anthropic_api_key : string;
-  anthropic_version : string; [@json.default "2023-06-01"]
   slack_access_token : string option; [@json.option]
 }
-[@@deriving json]
+[@@deriving json] [@@json.allow_extra_fields]

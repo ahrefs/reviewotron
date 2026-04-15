@@ -60,7 +60,18 @@ let test_config_defaults () =
   in
   let secrets = Config_types.secrets_of_json (Melange_json.of_string json) in
   (check string) "api key" "sk-test" secrets.anthropic_api_key;
-  (check string) "version default" "2023-06-01" secrets.anthropic_version;
+  (check int) "repo count" 1 (List.length secrets.repos)
+
+let test_config_ignores_removed_fields () =
+  let json =
+    {|{
+    "repos": [{"url": "https://github.com/org/repo", "gh_token": "tok"}],
+    "anthropic_api_key": "sk-test",
+    "anthropic_version": "2023-06-01"
+  }|}
+  in
+  let secrets = Config_types.secrets_of_json (Melange_json.of_string json) in
+  (check string) "api key" "sk-test" secrets.anthropic_api_key;
   (check int) "repo count" 1 (List.length secrets.repos)
 
 (** {2 Review prompt tests} *)
@@ -375,7 +386,11 @@ let () =
           test_case "valid signature" `Quick test_hmac_signature_valid;
           test_case "invalid signature" `Quick test_hmac_signature_invalid;
         ] );
-      "config", [ test_case "config defaults" `Quick test_config_defaults ];
+      ( "config",
+        [
+          test_case "config defaults" `Quick test_config_defaults;
+          test_case "config ignores removed fields" `Quick test_config_ignores_removed_fields;
+        ] );
       ( "review_prompt",
         [
           test_case "default system prompt" `Quick test_system_prompt_default;

@@ -40,7 +40,6 @@ val repo_config_of_json : Yojson.Basic.t -> repo_config
 type secrets = {
   repos : repo_config list;
   anthropic_api_key : string;
-  anthropic_version : string;
   slack_access_token : string option;
 }
 [@@deriving json]
