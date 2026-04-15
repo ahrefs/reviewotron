@@ -699,3 +699,29 @@ NOTES:
 - Agent call ordering in the mock is handled by name-based dispatch (not call order), making tests robust against future Lwt scheduling changes
 </task-result>
 
+=== P5.4: Implement per-agent cost tracking ===
+Completed: 2026-04-15 08:47:22
+<task-result>
+TASK_ID: P5.4
+STATUS: DONE
+FILES_CHANGED: lib/cost_tracking.ml, lib/cost_tracking.mli, lib/reviewer.ml, test/test.ml
+DECISIONS:
+- Cost tracking module was already implemented by prior iterations (P4.x/P5.x) as a dependency for wiring security plugin costs — this iteration's focus was adding unit tests, fixing review issues, and quality hardening
+- Exposed `estimate_cost` in the `.mli` — useful public function for estimating cost from tokens + model ID without constructing a full agent_result
+- Fixed "1 agents" grammar bug in `format_footer` — added `pluralize` helper for correct singular/plural
+- Fixed misleading docstring on `pricing_table` — changed "longest prefix first" to "first match wins" (matches actual `List.find_opt` behavior)
+- Filtered empty plugin entries from `review_costs` in `reviewer.ml`'s `run_plugins` — disabled plugins no longer produce zero-agent entries in state.json
+- Replaced `List.nth` with pattern matching in test per AGENTS.md style
+- Extracted shared test fixtures (`triage_agent_cost`, `analysis_agent_cost`, `general_agent_cost`) to eliminate ~60 lines of duplicated agent_cost record construction across 4 tests
+- Tests that previously hand-built `review_cost` records now use `Cost_tracking.aggregate` to construct them, ensuring totals are consistent with agent data
+- Push reviews do not store costs (push_review_record has no review_costs field) — flagged as follow-up but out of scope for P5.4 since it requires a state_types schema change
+NOTES:
+- Total test count: 106 (23 diff_parser + 83 reviewotron), all passing, build clean, formatter clean
+- 11 new cost_tracking tests: estimate_cost for Sonnet/Haiku/Opus/unknown, of_agent_result, aggregate, format_footer (normal + empty plugin), JSON roundtrip for agent_cost and review_cost, state persistence roundtrip with costs
+- Pricing table covers claude-opus-4, claude-sonnet-4, claude-haiku-4 prefixes — PRD §7.4 note about prompt caching token fields is not applicable yet (SDK Usage.t doesn't expose them)
+- Phase 6 (repo security memory) is the next major implementation phase
+</task-result>
+
+--- Iteration 1: P6.1 — UNCLEAR RESULT ---
+2026-04-15 09:11:29
+

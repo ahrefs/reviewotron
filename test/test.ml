@@ -1236,6 +1236,57 @@ let test_state_roundtrip_with_costs () =
         (check (float 1e-6)) "total_cost" 0.021 rc.total_estimated_cost_usd
       | [] -> Alcotest.fail "expected at least one review cost")
 
+(** {2 Security memory tests} *)
+
+let test_repo_slug_basic () =
+  (check string) "github url" "ahrefs-monorepo" (Security_memory.repo_slug "https://github.com/ahrefs/monorepo")
+
+let test_repo_slug_with_git_suffix () =
+  (check string) "git suffix" "ahrefs-monorepo" (Security_memory.repo_slug "https://github.com/ahrefs/monorepo.git")
+
+let test_repo_slug_trailing_slash () =
+  (check string) "trailing slash" "ahrefs-monorepo" (Security_memory.repo_slug "https://github.com/ahrefs/monorepo/")
+
+let test_repo_slug_http () =
+  (check string) "http url" "ahrefs-monorepo" (Security_memory.repo_slug "http://github.com/ahrefs/monorepo")
+
+let test_repo_slug_bare () = (check string) "bare path" "ahrefs-monorepo" (Security_memory.repo_slug "ahrefs/monorepo")
+
+let test_memory_path () =
+  let path = Security_memory.memory_path ~memory_dir:"memory" ~repo_url:"https://github.com/ahrefs/monorepo" in
+  (check string) "memory path" "memory/ahrefs-monorepo.md" path
+
+let test_memory_load_missing () =
+  let result = Security_memory.load ~memory_dir:"nonexistent_dir_for_test" ~repo_url:"https://github.com/test/repo" in
+  (check bool) "missing file returns None" true (Option.is_none result)
+
+let test_memory_save_load_roundtrip () =
+  let tmp_dir = Filename.temp_dir "reviewotron_memory_" "_test" in
+  Fun.protect
+    ~finally:(fun () ->
+      let path = Security_memory.memory_path ~memory_dir:tmp_dir ~repo_url:"https://github.com/test/repo" in
+      (try Sys.remove path with Sys_error _ -> ());
+      try Unix.rmdir tmp_dir with Unix.Unix_error _ -> ())
+    (fun () ->
+      let content = "# Security Memory: test/repo\n\n## Architecture\n- Backend: OCaml\n" in
+      Security_memory.save ~memory_dir:tmp_dir ~repo_url:"https://github.com/test/repo" ~content;
+      let loaded = Security_memory.load ~memory_dir:tmp_dir ~repo_url:"https://github.com/test/repo" in
+      match loaded with
+      | Some s -> (check string) "roundtrip content" content s
+      | None -> Alcotest.fail "expected Some content after save")
+
+let test_memory_load_empty_file () =
+  let tmp_dir = Filename.temp_dir "reviewotron_memory_" "_test" in
+  Fun.protect
+    ~finally:(fun () ->
+      let path = Security_memory.memory_path ~memory_dir:tmp_dir ~repo_url:"https://github.com/test/repo" in
+      (try Sys.remove path with Sys_error _ -> ());
+      try Unix.rmdir tmp_dir with Unix.Unix_error _ -> ())
+    (fun () ->
+      Security_memory.save ~memory_dir:tmp_dir ~repo_url:"https://github.com/test/repo" ~content:"";
+      let loaded = Security_memory.load ~memory_dir:tmp_dir ~repo_url:"https://github.com/test/repo" in
+      (check bool) "empty file returns None" true (Option.is_none loaded))
+
 (** {2 Security pipeline end-to-end tests} *)
 
 let test_security_e2e_vulnerable () =
@@ -1472,6 +1523,18 @@ let () =
           test_case "agent_cost JSON roundtrip" `Quick test_agent_cost_json_roundtrip;
           test_case "review_cost JSON roundtrip" `Quick test_review_cost_json_roundtrip;
           test_case "state roundtrip with costs" `Quick test_state_roundtrip_with_costs;
+        ] );
+      ( "security_memory",
+        [
+          test_case "repo slug basic" `Quick test_repo_slug_basic;
+          test_case "repo slug git suffix" `Quick test_repo_slug_with_git_suffix;
+          test_case "repo slug trailing slash" `Quick test_repo_slug_trailing_slash;
+          test_case "repo slug http" `Quick test_repo_slug_http;
+          test_case "repo slug bare path" `Quick test_repo_slug_bare;
+          test_case "memory path" `Quick test_memory_path;
+          test_case "load missing" `Quick test_memory_load_missing;
+          test_case "save load roundtrip" `Quick test_memory_save_load_roundtrip;
+          test_case "load empty file" `Quick test_memory_load_empty_file;
         ] );
       ( "security_e2e",
         [
