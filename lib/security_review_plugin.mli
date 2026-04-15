@@ -2,8 +2,9 @@
 
     Runs a triage agent to identify security-relevant regions in the diff,
     then routes signals to per-class analysis agents based on confidence
-    and repo configuration.  Currently analysis agents are stubbed (Phase 4
-    will implement them).
+    and repo configuration.  Analysis agents run in parallel (one per
+    vulnerability class) and their candidate findings are converted to
+    review findings.
 
     The plugin follows a two-gate structure:
     - Signals at or above the confidence threshold always trigger analysis.
@@ -36,8 +37,8 @@ val should_analyze : security_config:Config_types.security_plugin_config -> Secu
 
 (** Security review plugin functor.
 
-    Takes a GitHub API module (for file content fetching in future analysis
-    agents) and an agent runner. *)
+    Takes a GitHub API module (for file content fetching during analysis
+    agent context expansion) and an agent runner. *)
 module Make (_ : Api.Github) (_ : Api.Agent_runner) : sig
   include Review_plugin.S
 end

@@ -585,3 +585,26 @@ NOTES:
 - The remaining 1 section (ssrf) is still a short placeholder — task P4.7 will expand it
 - No .mli changes needed — `authz_section` is internal, accessed only through the exposed `vuln_class_section`
 
+=== P4.7: Implement SSRF analysis agent prompt ===
+Completed: 2026-04-15 06:49:16
+<task-result>
+TASK_ID: P4.7
+STATUS: DONE
+FILES_CHANGED: lib/analysis_agent.ml
+DECISIONS:
+- Expanded `ssrf_section` from 15-line placeholder to ~95-line comprehensive prompt following the same 5-section structure as injection, XSS, command injection, AuthN, and AuthZ sections (intro paragraph, Sources, Sinks, Sanitization Assessment, False Positive Patterns)
+- Opening paragraph explains SSRF attack model (server-side outbound requests to unintended destinations), explicitly mentions blind SSRF, DNS rebinding TOCTOU gap, and cloud metadata endpoints — the three most important SSRF-specific concepts
+- Sources section titled "(User-Controlled URL Input)" — covers URLs, hostnames, redirect targets, webhook URLs, and file-embedded URLs
+- Cross-language second-order sources include XXE→SSRF chains, SVG external references, OAuth/SAML redirect URLs, and message queue payloads — important vectors that simpler prompts miss
+- Sinks organized into per-language HTTP client catalogs plus cross-language patterns (image processing pipelines, webhook delivery, URL preview/unfurling, PDF generation from URLs)
+- Redirect entries (Dream.redirect, res.redirect, redirect) include explicit clarification that they are only SSRF sinks if the server subsequently fetches the redirect target — resolves potential ambiguity with the False Positive section's redirect entry
+- Sanitization covers 6 adequate patterns (URL allowlist, scheme restriction, resolved-IP validation at connection time, egress proxy, redirect re-validation, cloud metadata protection) and 8 inadequate patterns (DNS rebinding, string matching, hostname-only validation, incomplete scheme blocking, regex URL parsing, IP encoding bypasses, redirect hop skipping, Host header override)
+- Cloud metadata section covers AWS IMDSv2, GCP Metadata-Flavor header, and Azure Metadata header — not just AWS
+- IP encoding bypass list is comprehensive: 0x7f000001, 2130706433, 0177.0.0.1, 127.1, 0, [::], [::ffff:127.0.0.1]
+- Review fix 1: Added `Piaf.Client.Oneshot.get` / `Piaf.Client.Oneshot.post` alongside persistent client API forms for accuracy
+- Review fix 2: Added `node-fetch` explicit mention alongside native Fetch API for Node.js < 18 coverage
+- Review fix 3: Added qualifying notes to all three redirect sink entries clarifying they are only SSRF when server follows the redirect
+- Review fix 4: Expanded cloud metadata from AWS-only to include GCP and Azure endpoint protections
+- Framework coverage: OCaml/Dream + Cohttp + Piaf + Ezcurl, JavaScript/Express + fetch + node-fetch + axios + got + superagent + needle + http/https, Python/Django/Flask + requests + httpx + aiohttp + urllib + urllib3
+NOTES:
+
