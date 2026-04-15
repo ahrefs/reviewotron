@@ -525,7 +525,7 @@
       "depends_on": [
         "P4.8"
       ],
-      "complete": false
+      "complete": true
     },
     {
       "id": "P5.2",
@@ -543,7 +543,7 @@
       "depends_on": [
         "P5.1"
       ],
-      "complete": false
+      "complete": true
     },
     {
       "id": "P5.3",
@@ -561,7 +561,7 @@
       "depends_on": [
         "P5.2"
       ],
-      "complete": false
+      "complete": true
     },
     {
       "id": "P5.4",

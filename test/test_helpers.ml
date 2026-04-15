@@ -21,7 +21,8 @@ let make_test_context ?state ?(config = Config_types.config_of_json (Melange_jso
 let reset_test_state () =
   Api_local.clear_write_log ();
   Api_local.clear_slack_messages ();
-  Api_local.reset_agent_response_path ()
+  Api_local.reset_agent_response_path ();
+  Api_local.clear_agent_response_map ()
 
 (** Build a minimal repository JSON object. *)
 let repo_json ?(name = "monorepo") ?(full_name = "ahrefs/monorepo") ?(url = "https://github.com/ahrefs/monorepo") () =

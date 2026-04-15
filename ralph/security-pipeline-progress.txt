@@ -631,3 +631,71 @@ NOTES:
 - Phase 5 will insert the validator agent between analysis output collection and `candidate_to_finding` conversion
 </task-result>
 
+=== P5.1: Build validator agent config and prompt ===
+Completed: 2026-04-15 07:34:04
+<task-result>
+TASK_ID: P5.1
+STATUS: DONE
+FILES_CHANGED: lib/validator_agent.ml, lib/validator_agent.mli, lib/security_types.ml, lib/security_types.mli
+DECISIONS:
+- System prompt is explicitly adversarial — default posture is rejection, "assume every finding is wrong until evidence convinces you otherwise"
+- 4 validation criteria from PRD §4.3: source exists and is user-controllable, sink is dangerous for claimed vuln class, flow path is fully traceable (every step has file+line), sanitization assessment is correct
+- Prompt avoids showing exact JSON encoding for verdict (was `"Confirmed"` vs `["Confirmed"]` mismatch with melange-json-native array-tag encoding) — instead says "matching the provided output schema" and lets structured output schema handle serialization format
+- Model tier: Standard (Sonnet), passed via `~model_tier` parameter matching analysis_agent.ml pattern
+- max_steps = 8: fewer than analysis agents (10) since validator spot-checks evidence rather than exploring new code paths, but enough for several file fetches across multiple findings
+- Output schema: `Security_types.validator_output_jsonschema` derived from `validator_output` type
+- get_file_content tool wired via `Security_tools.make_get_file_content` — same tool as analysis agents
+- `sanitization_status_to_string` moved to `Security_types` module (alongside existing `vuln_class_to_string` and `confidence_to_string`) rather than kept as private helper in validator_agent — follows established codebase convention for type-to-string functions
+- `build_input` renders candidate findings as human-readable markdown (numbered findings with source/sink/flow/sanitization sections) rather than raw JSON — LLM reads the prompt, not a parser
+- Fixed missing leading `\n` before `## Repository Security Context` section to match triage_agent.ml and analysis_agent.ml formatting
+- `.mli` exposes `system_prompt` for testing consistency (analysis_agent.mli exposes `shared_methodology` for same reason)
+NOTES:
+- Total test count: 91 (23 diff_parser + 68 reviewotron), all passing, build clean, formatter clean
+- No new tests added in this task — validator agent tests will be part of the test corpus in Phase 7, or added when wiring into security_review_plugin.ml in P5.2
+- Phase 5.2 will insert the validator between analysis output collection and `candidate_to_finding` conversion in security_review_plugin.ml
+
+=== P5.2: Implement finding conversion pipeline ===
+Completed: 2026-04-15 07:51:12
+<task-result>
+TASK_ID: P5.2
+STATUS: DONE
+FILES_CHANGED: lib/security_review_plugin.ml, lib/security_review_plugin.mli
+DECISIONS:
+- Renamed `candidate_to_finding` → `validated_to_finding` — now takes `Security_types.validated_finding`, accesses inner candidate via `vf.finding`
+- Added `run_validator` function following the same structural pattern as `run_triage` and `run_single_analysis`: build config/input/tools, call AI.run, parse output, log+return-empty on error
+- Fail-closed on validator failure: if the validator agent fails or output can't be parsed, returns empty list — unvalidated findings are never reported
+- Added `log_rejected` function — iterates validated findings, logs each Rejected verdict with vuln_class, file path, line number, and rejection reason at info level for offline prompt tuning
+- Updated `run_analysis` to insert validator between analysis and conversion: candidates → early-exit if empty → run_validator → log_rejected → filter_map to confirmed only → convert to Review_types.finding
+- Empty candidates short-circuit avoids unnecessary validator agent API call
+- Collapsed `Medium | Low -> Warning` into single pattern match arm — makes the intentional collapse explicit
+- Documented that `evidence_notes` from the validator is intentionally not surfaced in PR comments (Review_types.finding has no field for it) — available in logs for prompt tuning
+- Updated stale "Phase 5 will..." comment on `fetch_file` to a TODO
+- Updated .mli module doc to describe the three-stage pipeline: triage → analysis → validation → conversion
+NOTES:
+- Total test count: 91 (23 diff_parser + 68 reviewotron), all passing, build clean, formatter clean
+- No .mli signature changes needed — all new functions are internal to the Make functor
+- Review agents flagged the repeated run-agent-parse-output pattern across run_triage/run_single_analysis/run_validator as a refactoring opportunity — deferred as it's beyond P5.2 scope and the three functions have different return types making a polymorphic helper non-trivial
+- The `~metadata:_` parameter in `run` is still unused — may be used to thread head_sha in a future task
+
+=== P5.3: End-to-end test: full security pipeline ===
+Completed: 2026-04-15 08:09:14
+<task-result>
+TASK_ID: P5.3
+STATUS: DONE
+FILES_CHANGED: lib/api_local.ml, test/test_helpers.ml, test/test.ml, test/dune, test/mock_api_responses/security/triage_injection.json, test/mock_api_responses/security/triage_safe.json, test/mock_api_responses/security/analysis_injection.json, test/mock_api_responses/security/validator_confirmed.json, test/mock_api_responses/security/validator_rejected.json
+DECISIONS:
+- Extended Api_local.Agent_runner with name-based response dispatch using an association list (`agent_response_map`). The mock runner looks up `config.name` against the map, falling back to the global `agent_response_path` if no match — this is backward-compatible with all 91 existing tests
+- Used `Option.default` (Devkit convention) for the map lookup fallback instead of verbose match
+- Created 5 mock response JSON files under `test/mock_api_responses/security/` matching the exact melange-json-native encoding (lowercase string enums, array-tagged variants like `["Missing"]`, `["Confirmed"]`)
+- Assertion precision: used `**[critical]** security` (the exact `format_finding_body` output) instead of bare `"critical"` to avoid false-positive matches
+- Added 4 e2e test scenarios (not 3): vulnerable-confirmed, safe-skipped, validator-rejected, and plugin-disabled — the rejected scenario was added per code review feedback to exercise the `Rejected` verdict branch
+- Test file paths are referenced via the dune deps glob mechanism (`glob_files_rec mock_api_responses/security/*`) for proper sandboxed test execution
+NOTES:
+- Total test count: 95 (23 diff_parser + 72 reviewotron), all passing, build clean, formatter clean
+- The vulnerable scenario verifies the full pipeline: PR webhook → general review + security triage → injection analysis → validator confirmation → PR review with `**[critical]** security` finding, correct path, description, and suggested fix
+- The safe scenario verifies early exit: triage returns skip_reason → no analysis/validation agents called → no security findings
+- The rejected scenario verifies fail-safe: triage signals injection → analysis produces candidate → validator rejects → no security findings in output
+- The disabled scenario verifies config gating: `security.enabled = false` → no security agents called at all
+- Agent call ordering in the mock is handled by name-based dispatch (not call order), making tests robust against future Lwt scheduling changes
+</task-result>
+

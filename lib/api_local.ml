@@ -19,6 +19,14 @@ let agent_response_path = ref "mock_api_responses/claude/review_response.json"
 let set_agent_response_path path = agent_response_path := path
 let reset_agent_response_path () = agent_response_path := "mock_api_responses/claude/review_response.json"
 
+(** Name-based response dispatch for multi-agent tests.
+    Maps agent config names to response file paths. When set, the agent runner
+    looks up config.name in this map before falling back to [agent_response_path]. *)
+let agent_response_map : (string * string) list ref = ref []
+
+let set_agent_response_map entries = agent_response_map := entries
+let clear_agent_response_map () = agent_response_map := []
+
 module Github : Api.Github = struct
   let get_config ~ctx:_ ~repo_url:_ = Lwt.return (Ok (Context.default_config ()))
 
@@ -60,8 +68,8 @@ module Github : Api.Github = struct
 end
 
 module Agent_runner : Api.Agent_runner = struct
-  let run ~ctx:_ ~repo_url:_ ?model_id:_ ?tools:_ ~config:_ ~input:_ () =
-    let path = !agent_response_path in
+  let run ~ctx:_ ~repo_url:_ ?model_id:_ ?tools:_ ~config ~input:_ () =
+    let path = Option.default !agent_response_path (List.assoc_opt config.Agent_runner.name !agent_response_map) in
     match read_mock_file path with
     | Ok json_str ->
       let output = Melange_json.of_string json_str in

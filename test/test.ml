@@ -1050,7 +1050,7 @@ let test_state_save_load_roundtrip () =
     (fun () ->
       let state = State.create ~filepath:tmp_path () in
       let repo = "https://github.com/test/repo" in
-      State.record_pr_review state ~repo_url:repo ~pr_number:1 ~head_sha:"abc123";
+      State.record_pr_review state ~repo_url:repo ~pr_number:1 ~head_sha:"abc123" ~review_costs:[];
       State.record_push_review state ~repo_url:repo ~after_sha:"def456";
       State.save state;
       let loaded = State.load ~filepath:tmp_path in
@@ -1066,6 +1066,78 @@ let test_state_empty_load () =
   Sys.remove tmp_path;
   let loaded = State.load ~filepath:tmp_path in
   (check bool) "no pr reviewed" false (State.is_pr_reviewed loaded ~repo_url:"x" ~pr_number:1 ~head_sha:"abc")
+
+(** {2 Security pipeline end-to-end tests} *)
+
+let test_security_e2e_vulnerable () =
+  Test_helpers.reset_test_state ();
+  Api_local.set_agent_response_map
+    [
+      "general_review", "mock_api_responses/claude/review_response.json";
+      "security_triage", "mock_api_responses/security/triage_injection.json";
+      "security_analysis_injection", "mock_api_responses/security/analysis_injection.json";
+      "security_validator", "mock_api_responses/security/validator_confirmed.json";
+    ];
+  let ctx = Test_helpers.make_test_context () in
+  let payload = read_file "mock_payloads/pr_opened.json" in
+  let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let write_log = Api_local.get_write_log () in
+  (check bool) "review posted" true (CCString.find ~sub:"[create_pr_review]" write_log >= 0);
+  (check bool) "has general review summary" true (CCString.find ~sub:"The changes look generally good" write_log >= 0);
+  (check bool) "has security finding" true (CCString.find ~sub:"**[critical]** security" write_log >= 0);
+  (check bool) "has injection description" true
+    (CCString.find ~sub:"SQL query string without parameterization" write_log >= 0);
+  (check bool) "finding on correct path" true (CCString.find ~sub:"src/main.ml" write_log >= 0);
+  (check bool) "has suggested fix" true (CCString.find ~sub:"Caqti prepared statements" write_log >= 0)
+
+let test_security_e2e_safe () =
+  Test_helpers.reset_test_state ();
+  Api_local.set_agent_response_map
+    [
+      "general_review", "mock_api_responses/claude/review_response.json";
+      "security_triage", "mock_api_responses/security/triage_safe.json";
+    ];
+  let ctx = Test_helpers.make_test_context () in
+  let payload = read_file "mock_payloads/pr_opened.json" in
+  let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let write_log = Api_local.get_write_log () in
+  (check bool) "review posted" true (CCString.find ~sub:"[create_pr_review]" write_log >= 0);
+  (check bool) "has general review" true (CCString.find ~sub:"The changes look generally good" write_log >= 0);
+  (check bool) "no security category" true (CCString.find ~sub:{|"security"|} write_log < 0)
+
+let test_security_e2e_rejected () =
+  Test_helpers.reset_test_state ();
+  Api_local.set_agent_response_map
+    [
+      "general_review", "mock_api_responses/claude/review_response.json";
+      "security_triage", "mock_api_responses/security/triage_injection.json";
+      "security_analysis_injection", "mock_api_responses/security/analysis_injection.json";
+      "security_validator", "mock_api_responses/security/validator_rejected.json";
+    ];
+  let ctx = Test_helpers.make_test_context () in
+  let payload = read_file "mock_payloads/pr_opened.json" in
+  let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let write_log = Api_local.get_write_log () in
+  (check bool) "review posted" true (CCString.find ~sub:"[create_pr_review]" write_log >= 0);
+  (check bool) "has general review" true (CCString.find ~sub:"The changes look generally good" write_log >= 0);
+  (check bool) "no security findings after rejection" true (CCString.find ~sub:{|"security"|} write_log < 0)
+
+let test_security_e2e_disabled () =
+  Test_helpers.reset_test_state ();
+  let config =
+    Config_types.config_of_json (Melange_json.of_string {|{"review_plugins": {"security": {"enabled": false}}}|})
+  in
+  let ctx = Test_helpers.make_test_context ~config () in
+  let payload = read_file "mock_payloads/pr_opened.json" in
+  let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let write_log = Api_local.get_write_log () in
+  (check bool) "review posted" true (CCString.find ~sub:"[create_pr_review]" write_log >= 0);
+  (check bool) "has general review" true (CCString.find ~sub:"The changes look generally good" write_log >= 0);
+  (check bool) "no security category" true (CCString.find ~sub:{|"security"|} write_log < 0)
 
 let () =
   run "reviewotron"
@@ -1217,5 +1289,12 @@ let () =
         [
           test_case "save/load roundtrip" `Quick test_state_save_load_roundtrip;
           test_case "load from non-existent file" `Quick test_state_empty_load;
+        ] );
+      ( "security_e2e",
+        [
+          test_case "vulnerable diff produces security finding" `Quick test_security_e2e_vulnerable;
+          test_case "safe diff produces no security findings" `Quick test_security_e2e_safe;
+          test_case "rejected finding produces no security output" `Quick test_security_e2e_rejected;
+          test_case "disabled plugin produces no security findings" `Quick test_security_e2e_disabled;
         ] );
     ]
