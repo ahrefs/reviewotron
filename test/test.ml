@@ -361,6 +361,86 @@ let test_security_triage_output_extra_fields () =
   let parsed = Security_types.triage_output_of_json (Melange_json.of_string json_str) in
   (check int) "signals empty" 0 (List.length parsed.signals)
 
+(** {2 Security tools tests} *)
+
+let test_security_tools_params_roundtrip () =
+  let open Security_tools in
+  let params : get_file_content_params = { path = "lib/auth.ml" } in
+  let parsed = roundtrip get_file_content_params_to_json get_file_content_params_of_json params in
+  (check string) "path" "lib/auth.ml" parsed.path
+
+let test_security_tools_result_with_content () =
+  let open Security_tools in
+  let result : get_file_content_result = { content = Some "let x = 42"; error = None } in
+  let parsed = roundtrip get_file_content_result_to_json get_file_content_result_of_json result in
+  (check (option string)) "content" (Some "let x = 42") parsed.content;
+  (check (option string)) "error" None parsed.error
+
+let test_security_tools_result_with_error () =
+  let open Security_tools in
+  let result : get_file_content_result = { content = None; error = Some "File not found: foo.ml" } in
+  let parsed = roundtrip get_file_content_result_to_json get_file_content_result_of_json result in
+  (check (option string)) "content" None parsed.content;
+  (check (option string)) "error" (Some "File not found: foo.ml") parsed.error
+
+let test_security_tools_result_empty () =
+  let open Security_tools in
+  let result : get_file_content_result = { content = None; error = None } in
+  let parsed = roundtrip get_file_content_result_to_json get_file_content_result_of_json result in
+  (check (option string)) "content" None parsed.content;
+  (check (option string)) "error" None parsed.error
+
+let test_security_tools_result_missing_fields () =
+  let json_str = "{}" in
+  let parsed = Security_tools.get_file_content_result_of_json (Melange_json.of_string json_str) in
+  (check (option string)) "content" None parsed.content;
+  (check (option string)) "error" None parsed.error
+
+let test_security_tools_execute_success () =
+  let fetch_file _path = Lwt.return (Ok (Some "file content here")) in
+  let _name, tool = Security_tools.make_get_file_content ~fetch_file in
+  let args = `Assoc [ "path", `String "lib/auth.ml" ] in
+  let execute = CCOption.get_exn_or __LOC__ tool.execute in
+  let result_json = Lwt_main.run (execute args) in
+  let result = Security_tools.get_file_content_result_of_json result_json in
+  (check (option string)) "content" (Some "file content here") result.content;
+  (check (option string)) "error" None result.error
+
+let test_security_tools_execute_not_found () =
+  let fetch_file _path = Lwt.return (Ok None) in
+  let _name, tool = Security_tools.make_get_file_content ~fetch_file in
+  let args = `Assoc [ "path", `String "nonexistent.ml" ] in
+  let execute = CCOption.get_exn_or __LOC__ tool.execute in
+  let result_json = Lwt_main.run (execute args) in
+  let result = Security_tools.get_file_content_result_of_json result_json in
+  (check (option string)) "content" None result.content;
+  (check bool) "has error" true (Option.is_some result.error)
+
+let test_security_tools_execute_api_error () =
+  let fetch_file _path = Lwt.return (Error "rate limited") in
+  let _name, tool = Security_tools.make_get_file_content ~fetch_file in
+  let args = `Assoc [ "path", `String "lib/db.ml" ] in
+  let execute = CCOption.get_exn_or __LOC__ tool.execute in
+  let result_json = Lwt_main.run (execute args) in
+  let result = Security_tools.get_file_content_result_of_json result_json in
+  (check (option string)) "content" None result.content;
+  (check (option string)) "error" (Some "rate limited") result.error
+
+let test_security_tools_execute_invalid_params () =
+  let fetch_file _path = Lwt.return (Ok (Some "should not reach")) in
+  let _name, tool = Security_tools.make_get_file_content ~fetch_file in
+  let args = `Assoc [ "wrong_key", `Int 42 ] in
+  let execute = CCOption.get_exn_or __LOC__ tool.execute in
+  let result_json = Lwt_main.run (execute args) in
+  let result = Security_tools.get_file_content_result_of_json result_json in
+  (check (option string)) "content" None result.content;
+  (check bool) "has error" true (Option.is_some result.error)
+
+let test_security_tools_tool_name () =
+  let fetch_file _path = Lwt.return (Ok None) in
+  let name, _tool = Security_tools.make_get_file_content ~fetch_file in
+  (check string) "tool name" "get_file_content" name
+
 (** {2 End-to-end reviewer tests} *)
 
 module R_test = Reviewer.Make (Api_local.Github) (Api_local.Agent_runner) (Api_local.Slack)
@@ -624,6 +704,19 @@ let () =
           test_case "validation verdict roundtrip" `Quick test_security_validation_verdict_roundtrip;
           test_case "validator output roundtrip" `Quick test_security_validator_output_roundtrip;
           test_case "triage output extra fields" `Quick test_security_triage_output_extra_fields;
+        ] );
+      ( "security_tools",
+        [
+          test_case "params roundtrip" `Quick test_security_tools_params_roundtrip;
+          test_case "result with content" `Quick test_security_tools_result_with_content;
+          test_case "result with error" `Quick test_security_tools_result_with_error;
+          test_case "result empty" `Quick test_security_tools_result_empty;
+          test_case "result missing fields" `Quick test_security_tools_result_missing_fields;
+          test_case "execute success" `Quick test_security_tools_execute_success;
+          test_case "execute not found" `Quick test_security_tools_execute_not_found;
+          test_case "execute API error" `Quick test_security_tools_execute_api_error;
+          test_case "execute invalid params" `Quick test_security_tools_execute_invalid_params;
+          test_case "tool name" `Quick test_security_tools_tool_name;
         ] );
       ( "reviewer_e2e",
         [

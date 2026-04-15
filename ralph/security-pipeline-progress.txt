@@ -326,3 +326,26 @@ NOTES:
 - The duplicated `match general_result | None -> error | Some -> proceed` pattern in both `execute_and_post_review` and `review_push` is a known duplication; deferring cleanup to Phase 3 when the return type can be redesigned
 - `severity_rank` lives in reviewer.ml for now; could be promoted to Review_types in a future cleanup pass
 
+=== P3.1: Define security pipeline types ===
+Completed: 2026-04-15 03:00:16
+<task-result>
+TASK_ID: P3.1
+STATUS: DONE
+FILES_CHANGED: lib/security_types.ml (NEW), lib/security_types.mli (NEW), test/test.ml
+DECISIONS:
+- `vuln_class` and `confidence` are re-exported from `Config_types` via type equality syntax (`type vuln_class = Config_types.vuln_class = ...`) preserving structural compatibility between modules
+- `to_json`/`of_json`/`to_string` for enums delegated to Config_types (no duplication); `jsonschema` defined locally as `{ "type": "string" }` matching the pattern in `review_types.ml`
+- All record types use `[@@deriving json, jsonschema]` for automatic serialization and schema generation
+- `sanitization_status` and `validation_verdict` (variants with payloads) use derived serialization — melange-json-native's array-tag format (`["Inadequate", "reason"]`, `["Rejected", "reason"]`)
+- `[@@json.allow_extra_fields]` applied to `triage_output`, `candidate_finding`, `analysis_output`, `validator_output` — the types that are LLM structured output targets (extra fields from LLM are common and harmless)
+- `[@@json.option]` on `skip_reason` and `suggested_fix` option fields so they're omitted from JSON when None
+- `source_evidence`, `sink_evidence`, `flow_step` kept as separate types despite identical structure — PRD specifies them separately, and distinct types provide safety (prevents accidentally swapping source for sink)
+- `@jsonschema.description` annotations on variant constructors omitted — verified that ppx_deriving_jsonschema does not support constructor-level descriptions (no tests or implementation for it in the ppx source)
+- 7 roundtrip tests covering: triage_output (with and without skip_reason), candidate_finding (all fields), sanitization_status (all 4 variants with exact JSON verification), validation_verdict (both variants), validator_output (nested structure), extra fields tolerance
+NOTES:
+- Total test count: 66 (23 diff_parser + 43 reviewotron), all passing, build clean, formatter clean
+- `to_string` functions also re-exported for convenience — downstream code (logging, prompt generation, routing) will need them without reaching through to Config_types
+- No changes to `lib/dune` needed — new files auto-included in `reviewotron_lib`
+- P3.2 (get_file_content tool) will likely need to import `Security_types` for agent output schemas
+- P3.3 (triage agent config) will use `triage_output_jsonschema` as the structured output schema and `vuln_class`/`confidence` constructors for routing logic
+
