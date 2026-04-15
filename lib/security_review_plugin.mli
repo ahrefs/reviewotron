@@ -50,6 +50,7 @@ module Make (_ : Api.Github) (_ : Api.Agent_runner) : sig
     diff_text:string ->
     metadata:Review_plugin.review_metadata ->
     debug_dir:string ->
+    head_sha:string ->
     (Review_types.finding list * Cost_tracking.agent_cost list) Lwt.t
 
   (** Process the memory update queue: read pending entries, run the

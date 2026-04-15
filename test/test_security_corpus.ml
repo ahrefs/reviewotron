@@ -66,7 +66,8 @@ let run_pipeline ~ctx ~diff_text ~diff =
     { pr_number = 0; pr_title = "corpus test"; pr_description = ""; file_contents = [] }
   in
   let findings, _costs =
-    Lwt_main.run (SP.run ~ctx ~repo_url:corpus_repo_url ~diff ~diff_text ~metadata ~debug_dir:"debug/corpus")
+    Lwt_main.run
+      (SP.run ~ctx ~repo_url:corpus_repo_url ~diff ~diff_text ~metadata ~debug_dir:"debug/corpus" ~head_sha:"HEAD")
   in
   findings
 
