@@ -1,0 +1,5 @@
+{
+  "signals": [],
+  "language_hints": ["ocaml"],
+  "skip_reason": "No security-relevant patterns detected in the diff."
+}
