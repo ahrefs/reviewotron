@@ -421,18 +421,90 @@ These are safe patterns that may superficially resemble authentication vulnerabi
 let authz_section =
   {|## Vulnerability Class: Authorization (AuthZ)
 
-**Sources**: User role/permission claims, resource identifiers in requests, path parameters identifying resources.
+This class covers authorization bypass, privilege escalation, and insecure direct object references (IDOR). Unlike authentication (which asks "who are you?"), authorization asks "are you allowed to do this?" Authorization vulnerabilities assume the user IS authenticated but can access resources or perform actions beyond their granted permissions. These vulnerabilities often manifest as **missing checks** — an endpoint that retrieves a resource by ID without verifying the requester owns it, or a mutation endpoint that lacks a role guard. Apply the source→sink→flow→sanitization methodology, but recognize that the "sanitization" here is the authorization check itself, and its absence is the vulnerability.
 
-**Sinks**: Resource access functions, data retrieval by ID, administrative operations, permission-gated actions.
+### Sources (Resource Identifiers and Permission Context)
 
-**What to look for**:
-- Missing ownership checks (user A can access user B's resources via direct ID reference)
-- Missing role/permission checks on new endpoints
-- Inconsistent authorization between similar endpoints
-- IDOR (Insecure Direct Object Reference) — resource accessed by ID without verifying the requester owns it
-- Privilege escalation paths (regular user can reach admin functions)
+These are request parameters that identify resources or actions, combined with the authenticated user's identity and role claims. The vulnerability arises when the resource identifier flows to a data operation without being validated against the user's permissions.
 
-**Adequate mitigation**: Ownership verification on every resource access, role-based access control consistently applied, authorization middleware on all protected routes.|}
+**OCaml / Dream:**
+- `Dream.param` — resource ID in URL path (e.g., `/users/:id/profile`, `/orders/:order_id`)
+- `Dream.query` — resource identifiers or filter parameters in query string
+- `Dream.body` / `Dream.form` — resource IDs or ownership-relevant fields in POST/PUT body
+- Role/permission claims extracted from session or JWT middleware (e.g., `Dream.session_field "role"`)
+
+**JavaScript / Express:**
+- `req.params.id` / `req.params.resourceId` — resource identifiers in URL path
+- `req.query.userId` / `req.query.tenantId` — resource identifiers in query string
+- `req.body.resourceId` / `req.body.userId` — resource identifiers in request body
+- `req.user` — authenticated user object from passport or JWT middleware (contains role, permissions, user ID)
+- `req.headers['x-tenant-id']` — tenant identifiers in custom headers
+
+**Python / Django / Flask:**
+- `self.kwargs['pk']` / `self.kwargs['id']` — path parameters in Django class-based views
+- `request.query_params` (DRF) / `request.GET` (Django) / `request.args` (Flask) — query parameters with resource IDs
+- `request.data` (DRF) / `request.POST` (Django) / `request.form` (Flask) — body parameters with resource IDs
+- `request.user` — authenticated user object (Django/DRF); `g.user` or `current_user` (Flask-Login)
+- URL path parameters via `<int:pk>` (Django) or `<int:id>` (Flask) route definitions
+
+### Sinks (Authorization Decision Points)
+
+**Resource Access by Identifier (IDOR Risk):**
+- **OCaml**: Database queries that fetch a resource by user-supplied ID without scoping to the current user — e.g., `Db.find ~id:(Dream.param request "id")` without adding an `owner_id` condition; Caqti queries with `WHERE id = ?` but no `AND owner_id = ?`
+- **JavaScript**: `Model.findById(req.params.id)` / `Model.findOne({ _id: req.params.id })` — fetches any resource regardless of ownership; `db.query("SELECT * FROM resources WHERE id = $1", [req.params.id])` without ownership filter
+- **Python**: `Model.objects.get(pk=pk)` without ownership filter; DRF `ViewSet` with `queryset = Model.objects.all()` and no `get_queryset()` override to scope by user; `session.query(Model).get(id)` in SQLAlchemy without ownership check
+
+**Data Mutation Operations (update, delete without ownership):**
+- **OCaml**: `Db.update ~id` or `Db.delete ~id` using a user-supplied ID without verifying the current user owns the resource
+- **JavaScript**: `Model.findByIdAndUpdate(req.params.id, req.body)` / `Model.findByIdAndDelete(req.params.id)` — modifies or deletes any resource; `db.query("DELETE FROM resources WHERE id = $1", [req.params.id])` without ownership condition
+- **Python**: `Model.objects.filter(pk=pk).update(...)` / `Model.objects.filter(pk=pk).delete()` without ownership scoping; `instance.delete()` after `get_object()` without ownership validation
+
+**Administrative and Privileged Operations:**
+- **OCaml**: Route handlers for admin paths (`/admin/...`) without middleware that checks the user's role or permissions; Dream route groups without an authorization middleware in the middleware pipeline
+- **JavaScript**: Express routes for admin functionality without role-checking middleware (e.g., `router.delete('/users/:id', handler)` without `requireRole('admin')` middleware)
+- **Python**: Django views without `@permission_required` or `@user_passes_test` decorators; DRF ViewSets with `permission_classes = []` or `permission_classes = [IsAuthenticated]` on admin-only endpoints (should be `IsAdminUser` or a custom permission); Flask routes without `@roles_required` or equivalent
+
+**Bulk and Cross-Tenant Operations:**
+- Endpoints that accept lists of resource IDs without validating ownership of each ID
+- Export or reporting endpoints that aggregate data across users/tenants without scoping
+- Search or filter endpoints where a user-supplied `tenant_id` or `org_id` parameter overrides the authenticated user's tenant
+
+**Mass Assignment (privilege escalation via field overwriting):**
+- **JavaScript**: `Model.findByIdAndUpdate(id, req.body)` — user can set `role: "admin"` or `isAdmin: true` in the request body if all fields are accepted
+- **Python**: `serializer.save()` in DRF where the serializer includes fields like `role`, `is_staff`, `is_superuser`, `tenant_id` that should not be user-writable; `Model.objects.create(**request.data)` passing unfiltered user input
+- **OCaml**: Deserializing user-supplied JSON directly into a record type that includes privilege-relevant fields (e.g., `user_of_yojson body_json` where the type includes a `role` field) without filtering before persistence
+
+### Sanitization Assessment
+
+**Adequate — these patterns implement authorization correctly:**
+- Ownership-scoped database queries: every query for user resources includes the authenticated user's ID as a filter condition (e.g., `Model.objects.filter(owner=request.user, pk=pk)` in Django, `WHERE id = ? AND owner_id = ?` with the current user's ID in SQL)
+- DRF `get_queryset()` override that scopes to the authenticated user: `return Model.objects.filter(owner=self.request.user)` — all detail/update/delete operations go through this scoped queryset
+- Authorization middleware applied at the route or router level covering all child routes (e.g., Dream middleware pipeline wrapping a scope, Express `router.use(requireAuth)` before all route handlers)
+- RBAC framework integration: DRF permission classes (`IsAdminUser`, custom `IsOwner`), CASL abilities in Express, casbin policies — consistently applied to all endpoints
+- Explicit field allowlists for mass assignment: DRF serializer with explicit `fields` list excluding privilege fields; Express/Mongoose handlers that destructure or pick only allowed fields from `req.body` before passing to the update operation; strong parameters pattern
+- Tenant isolation at the query layer: tenant ID derived from the authenticated session (not from user input), applied to all database queries via middleware, query scoping, or row-level security
+
+**Inadequate — these patterns have authorization weaknesses:**
+- Client-side-only authorization: hiding UI elements (buttons, menu items) without server-side checks — attackers bypass the UI entirely
+- Role check without ownership check: verifying the user is authenticated or has a role, but not verifying they own the specific resource they are accessing
+- Inconsistent authorization across HTTP methods: checking permissions on GET but not on PUT/PATCH/DELETE for the same resource, or protecting the list endpoint but not the detail endpoint
+- User-supplied tenant or organization ID: accepting `tenant_id` from the request instead of deriving it from the authenticated session — allows cross-tenant access
+- Authorization check in the wrong order: fetching the resource first, then checking authorization — may leak information about resource existence through timing or error differences
+- Blanket `IsAuthenticated` permission on endpoints that need ownership or role checks — authentication is not authorization
+- Mass assignment without field filtering: accepting all user-supplied fields including privilege-escalation fields like `role`, `is_admin`, `is_staff`, `tenant_id`
+- UUIDs or random resource identifiers as the sole authorization mechanism: obscurity reduces discoverability but does not prevent access if an attacker obtains or guesses a valid ID
+
+### Common False Positive Patterns — DO NOT REPORT
+
+These are safe patterns that may superficially resemble authorization vulnerabilities but are not exploitable:
+- Public resources intentionally accessible to all authenticated users: shared dashboards, public profiles, published content, system-wide settings — verify these are designed to be public before dismissing
+- Authorization enforced at a higher scope than the individual route: middleware applied at the router, scope, or application level that covers all child routes — check the middleware pipeline, not just the individual handler
+- Read-only endpoints for non-sensitive, non-personal data: public API endpoints serving catalog data, documentation, or configuration that does not vary by user
+- Internal service-to-service calls that bypass user-level authorization by design: requests authenticated via mTLS, service accounts, or internal API keys with their own authorization model
+- Django admin views with `@staff_member_required` — the admin site has its own permission model where staff/superuser overrides are intentional
+- DRF ViewSets where `get_queryset()` already scopes to the user but the `queryset` class attribute shows `Model.objects.all()` — the class attribute is used for router registration and schema generation, not for actual data queries when `get_queryset()` is overridden
+- Test fixtures, seed data scripts, or management commands that operate without user context — these run in a privileged context by design
+- Authorization logic delegated to a separate authorization service (e.g., OPA, Authzed/SpiceDB, Ory Keto) called via the network — the check may not be visible in the application code|}
 
 let ssrf_section =
   {|## Vulnerability Class: Server-Side Request Forgery (SSRF)

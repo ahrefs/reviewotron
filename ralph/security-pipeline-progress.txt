@@ -539,3 +539,26 @@ NOTES:
 - Prompt grows from ~150 to ~1000 tokens — consistent with injection (~900) and XSS (~950) sections
 </task-result>
 
+=== P4.5: Implement AuthN analysis agent prompt ===
+Completed: 2026-04-15 06:17:17
+<task-result>
+TASK_ID: P4.5
+STATUS: DONE
+FILES_CHANGED: lib/analysis_agent.ml
+DECISIONS:
+- Expanded `authn_section` from 15-line placeholder to ~95-line comprehensive prompt following the same 5-section structure as injection, XSS, and command injection sections (intro paragraph, Sources, Sinks, Sanitization Assessment, False Positive Patterns)
+- Opening paragraph explicitly calls out that AuthN vulnerabilities differ from data-flow vulns: they often manifest as **missing or incorrect security logic** rather than dangerous data flows. Instructs the agent to look for absent security steps alongside the standard source→sink methodology
+- Sources section renamed from "(User-Controlled Input)" to "(Authentication Material)" — more accurate for AuthN context; bridge text explains these are "credentials, tokens, and session identifiers that enter the authentication boundary"
+- Sinks organized into 5 subtypes: Token/JWT Verification, Password Comparison and Storage, Session Management, Auth Middleware/Decorators (with concrete code-pattern examples per framework), and OAuth Flow Validation
+- Auth Middleware subsection includes concrete examples per framework (Dream route without middleware, Express router without passport, Django view without decorators, DRF ViewSet with AllowAny) — addresses review feedback that abstract "look for missing middleware" is too vague for LLMs
+- Added OAuth subsection covering state parameter validation (CSRF), redirect_uri allowlisting, and authorization code session binding — addresses review feedback that OAuth-specific attacks were missing from original placeholder
+- Removed specific bcrypt work factor threshold (`>= 10`) from Adequate section to avoid contradiction with False Positive section's "work factor tuning is a configuration choice" — replaced with "appropriate work factors"
+- Framework coverage: OCaml/Dream + Jose library, JavaScript/Express + passport + jsonwebtoken + express-session, Python/Django + Flask + PyJWT + werkzeug + itsdangerous
+NOTES:
+- Total test count: 91 (23 diff_parser + 68 reviewotron), all passing, build clean, formatter clean
+- The remaining 2 sections (authz, ssrf) are still short placeholders — tasks P4.6-P4.7 will expand them
+- No .mli changes needed — `authn_section` is internal, accessed only through the exposed `vuln_class_section`
+- Prompt grows from ~150 tokens to ~1000 tokens — consistent with injection (~900), XSS (~950), command injection (~1000) sections
+- Code review, simplify review (3 agents: reuse, quality, efficiency), and quality gates all passed cleanly
+</task-result>
+
