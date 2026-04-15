@@ -562,3 +562,26 @@ NOTES:
 - Code review, simplify review (3 agents: reuse, quality, efficiency), and quality gates all passed cleanly
 </task-result>
 
+=== P4.6: Implement AuthZ analysis agent prompt ===
+Completed: 2026-04-15 06:33:03
+<task-result>
+TASK_ID: P4.6
+STATUS: DONE
+FILES_CHANGED: lib/analysis_agent.ml
+DECISIONS:
+- Expanded `authz_section` from 15-line placeholder to ~90-line comprehensive prompt following the same 5-section structure as injection, XSS, command injection, and AuthN sections (intro paragraph, Sources, Sinks, Sanitization Assessment, False Positive Patterns)
+- Opening paragraph explicitly distinguishes AuthZ from AuthN: "who are you?" vs "are you allowed to do this?" — and notes that AuthZ vulnerabilities manifest as missing checks where the "sanitization" is the authorization check itself
+- Sources section renamed to "(Resource Identifiers and Permission Context)" to reflect that AuthZ sources are resource IDs combined with the user's identity/role claims, not just raw user input
+- Sinks organized into 5 subtypes: Resource Access by Identifier (IDOR Risk), Data Mutation Operations, Administrative/Privileged Operations, Bulk/Cross-Tenant Operations, Mass Assignment — richer taxonomy than other sections, justified by the nature of authorization vulnerabilities
+- Mass Assignment subsection covers JavaScript (Mongoose findByIdAndUpdate with unfiltered req.body), Python (DRF serializer with privilege fields, unfiltered create), and OCaml (deserializing JSON into record with role field)
+- Framework coverage: OCaml/Dream (including Dream.session_field for role claims), JavaScript/Express (including req.user from passport, x-tenant-id headers), Python/Django/DRF/Flask/SQLAlchemy/Flask-Login
+- Review fix 1: Removed incorrect `Dream.field` reference — `Dream.field` is a request-level typed variable accessor, not for multipart forms
+- Review fix 2: Replaced incorrect Mongoose `select: false` claim (that's a read-side control, not mass assignment defense) with correct pattern: destructure/pick allowed fields from req.body
+- Review fix 3: Corrected DRF `queryset` class attribute description from "only used for schema generation" to "used for router registration and schema generation"
+- Review fix 4: Made OCaml mass assignment bullet more concrete with `user_of_yojson body_json` example
+- Added UUID-as-sole-defense to Inadequate patterns per plan requirement for IDOR via predictable IDs
+NOTES:
+- Total test count: 91 (23 diff_parser + 68 reviewotron), all passing, build clean, formatter clean
+- The remaining 1 section (ssrf) is still a short placeholder — task P4.7 will expand it
+- No .mli changes needed — `authz_section` is internal, accessed only through the exposed `vuln_class_section`
+

@@ -509,20 +509,98 @@ These are safe patterns that may superficially resemble authorization vulnerabil
 let ssrf_section =
   {|## Vulnerability Class: Server-Side Request Forgery (SSRF)
 
-**Sources**: URL parameters, webhook configuration URLs, redirect targets, any user-controlled string used to construct an outbound HTTP request.
+This class covers vulnerabilities where user-controlled input influences the target of an outbound HTTP request made by the server. The attacker's goal is to make the server send requests to unintended destinations: internal services (databases, admin panels, caches), cloud instance metadata endpoints (e.g., AWS IMDSv1 at 169.254.169.254), private network hosts, or arbitrary external servers. SSRF is dangerous even when the response is not returned to the attacker ("blind SSRF") — the server's request alone can trigger actions on internal services, scan ports, or exfiltrate data via DNS. Apply the source→sink→flow→sanitization methodology, and pay special attention to URL construction, redirect following, and the gap between URL validation time and request time (DNS rebinding).
 
-**Sinks**: HTTP client calls (fetch, axios, curl, http.get, Cohttp, Piaf), URL construction for outbound requests, redirect responses.
+### Sources (User-Controlled URL Input)
 
-**What to look for**:
-- User-controlled URLs passed directly to HTTP clients
-- URL construction via string concatenation with user input
-- Open redirects that could be chained with SSRF
-- Missing URL validation / allowlist for outbound requests
-- DNS rebinding potential (validation at resolution time, request at different time)
+These are request parameters, stored values, or uploaded content that supply a URL, hostname, or URL component used to construct an outbound request.
 
-**Adequate mitigation**: URL allowlist with domain and protocol validation, blocking internal/private IP ranges, using a proxy with egress filtering.
+**OCaml / Dream:**
+- `Dream.query` — URL or hostname in query parameters (e.g., `?url=...`, `?callback=...`, `?redirect=...`)
+- `Dream.param` — URL-like path parameters (e.g., `/proxy/:target_url`)
+- `Dream.body` / `Dream.form` — URLs in POST body (webhook registration endpoints, "import from URL" features, avatar URL fields)
+- `Dream.header` — headers like `X-Forwarded-Host` or `Referer` used to construct outbound URLs
 
-**Inadequate mitigation**: Blocklist of known-bad IPs (bypassable via DNS rebinding, IPv6, or alternate encodings), validation of URL string without resolving.|}
+**JavaScript / Express:**
+- `req.query.url` / `req.query.callback` / `req.query.redirect` — URL in query string
+- `req.body.webhookUrl` / `req.body.imageUrl` / `req.body.feedUrl` — URLs in request body (webhook configs, media imports, RSS feeds)
+- `req.params` — URL-like path parameters
+- `req.headers.referer` / `req.headers['x-forwarded-host']` — headers used to construct request targets
+
+**Python / Django / Flask:**
+- `request.GET['url']` / `request.POST['url']` — URL parameters (Django)
+- `request.data['webhook_url']` / `request.data['import_url']` — body URLs (DRF)
+- `request.args['callback']` / `request.json['url']` — URL parameters (Flask)
+- `request.META['HTTP_REFERER']` / `request.META['HTTP_X_FORWARDED_HOST']` — headers used in URL construction (Django)
+
+**Cross-language second-order sources:**
+- URLs stored in database and later fetched (webhook configurations, user-configured integration endpoints, avatar URLs, import settings)
+- URLs in user-uploaded files: XML external entity references (XXE→SSRF chain), SVG with external image/stylesheet references, HTML with resource links, YAML/JSON config files with URL fields
+- Redirect URLs from OAuth or SAML flows that are followed server-side
+- URLs from message queues or event payloads that trigger server-side fetches
+
+### Sinks (Outbound Request Operations)
+
+**OCaml:**
+- `Cohttp_lwt_unix.Client.get` / `Client.post` / `Client.call` — Cohttp HTTP client making requests to user-influenced URIs
+- `Piaf.Client.get` / `Piaf.Client.post` / `Piaf.Client.Oneshot.get` / `Piaf.Client.Oneshot.post` — Piaf HTTP/2 client (both persistent and one-shot APIs)
+- `Ezcurl.get` / `Ezcurl.post` — curl bindings for OCaml
+- Any function that accepts a `Uri.t` constructed from user input and issues an outbound HTTP request
+- `Dream.redirect` — only an SSRF sink if the server subsequently fetches the redirect target; if only the client's browser follows the redirect, it is an open redirect issue, not SSRF (see False Positive Patterns)
+
+**JavaScript / Node.js:**
+- `fetch(url)` / `fetch(new URL(userInput))` — native Fetch API (Node.js >= 18) or `node-fetch` package (older Node.js; follows redirects by default)
+- `axios.get(url)` / `axios.post(url)` / `axios(config)` / `axios.request({ url })` — axios client
+- `http.get(url)` / `http.request(url)` / `https.get(url)` — Node.js built-in HTTP modules
+- `got(url)` / `superagent.get(url)` / `needle.get(url)` — popular HTTP libraries
+- `res.redirect(userInput)` — Express redirect; only SSRF if the server later fetches the redirect target (otherwise open redirect, not SSRF)
+
+**Python:**
+- `requests.get(url)` / `requests.post(url)` / `requests.request(method, url)` — requests library
+- `urllib.request.urlopen(url)` / `urllib.request.Request(url)` — stdlib
+- `httpx.get(url)` / `httpx.AsyncClient().get(url)` — httpx async/sync client
+- `aiohttp.ClientSession().get(url)` — aiohttp async client
+- `urllib3.PoolManager().request(method, url)` — urllib3
+- `redirect(url)` (Django) / `redirect(url)` (Flask) — redirect responses; only SSRF if the server later fetches the target (otherwise open redirect, not SSRF)
+
+**Cross-language sink patterns:**
+- Image/media processing pipelines that download from a user-supplied URL (thumbnail generation, avatar fetching, OG image scraping)
+- Webhook delivery systems that POST to user-registered callback URLs
+- "Import from URL" features that fetch and parse remote content (RSS/Atom feeds, CSV imports, API integrations)
+- URL preview/unfurling (link previews in chat applications, OpenGraph metadata fetching)
+- PDF generation from user-supplied URLs (e.g., headless browser navigating to a URL)
+
+### Sanitization Assessment
+
+**Adequate — these patterns prevent SSRF effectively:**
+- URL allowlist with explicit domain matching: the target hostname is checked against a hardcoded list of permitted domains using exact match or controlled suffix matching (e.g., allowing `*.example.com` via proper domain-level comparison, not string suffix)
+- Scheme restriction to `http` and `https` only, rejecting `file://`, `gopher://`, `dict://`, `ftp://`, `data://`, and all other schemes — applied before the request is made
+- Resolved-IP validation at connection time: the application resolves the hostname and validates the resulting IP address is not in private ranges (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 127.0.0.0/8, 169.254.0.0/16, ::1, fc00::/7, fe80::/10) using a custom DNS resolver or socket-level hook that enforces the check at connection time, preventing DNS rebinding
+- Dedicated egress proxy with network-level restrictions (e.g., Smokescreen, an HTTP proxy that blocks requests to internal IPs regardless of DNS resolution)
+- Redirect validation: when following redirects, each redirect target is re-validated against the same allowlist/IP restrictions — the HTTP client is configured to not follow redirects automatically, or a redirect hook re-checks each hop
+- Cloud metadata endpoint protection: AWS IMDSv2 enforcement (requires a PUT request with a token header) with IMDSv1 disabled; GCP metadata requires `Metadata-Flavor: Google` header; Azure IMDS requires `Metadata: true` header — these mitigate cloud metadata SSRF at 169.254.169.254, but are defense-in-depth (the application should still prevent requests to internal IPs)
+
+**Inadequate — these patterns have SSRF weaknesses:**
+- IP address blocklist without DNS rebinding protection: checking the hostname's resolved IP before the request but using a separate resolution for the actual connection — attacker's DNS server returns a public IP for the validation check, then a private IP for the actual request (time-of-check/time-of-use)
+- URL string matching or substring checks (e.g., `url.includes('localhost')`, `url.startsWith('http')`) — trivially bypassable with `http://localhost@evil.com`, `http://evil.com#localhost`, URL encoding, or alternate IP representations
+- Hostname validation without IP resolution: checking the hostname string but not the IP it resolves to — attacker registers a domain pointing to 127.0.0.1 or an internal IP
+- Incomplete scheme blocking: blocking `file://` but allowing `gopher://` (can be used to send arbitrary TCP data) or `dict://` (can probe services)
+- Regex-based URL parsing: URL syntax is complex and regex implementations frequently disagree with actual HTTP client URL parsers, creating bypass opportunities
+- Blocklist of known-bad IP addresses without covering all representations: blocking `127.0.0.1` but not `0x7f000001`, `2130706433`, `0177.0.0.1`, `127.1`, `0`, `[::]`, or IPv6-mapped IPv4 like `[::ffff:127.0.0.1]`
+- Redirect following without re-validating each hop: initial URL passes validation, but a redirect leads to an internal address
+- Validating the URL but allowing the user to also control HTTP headers (e.g., `Host` header override that routes the request to a different backend)
+
+### Common False Positive Patterns — DO NOT REPORT
+
+These are safe patterns that may superficially resemble SSRF but are not exploitable:
+- Hardcoded URLs or URLs assembled from application constants and environment variables set at deployment time — no user control at runtime means no SSRF
+- Outbound requests to fixed, known API endpoints where only a path segment or query parameter (not the scheme+host) is user-controlled and path traversal does not apply (e.g., `https://api.stripe.com/v1/charges/` + charge_id)
+- URL construction where the base URL (scheme + host + port) is hardcoded and the user-controlled portion is a path parameter that is validated or URL-encoded before appending
+- Webhook delivery systems where URLs are validated at registration time by an admin-only endpoint and the stored URL is used as-is for delivery — the trust boundary was enforced at write time
+- Health check or monitoring endpoints that call fixed internal URLs defined in application configuration
+- Test fixtures, seed data scripts, or development-only code that uses localhost URLs — not reachable in production
+- Requests routed through a properly configured egress proxy (e.g., Smokescreen, Envoy with egress filtering) that blocks internal destinations at the network level
+- `Dream.redirect` / `res.redirect()` / `redirect()` returning a redirect response to the client (the browser follows the redirect, not the server) — this is an open redirect issue, not SSRF, unless the server subsequently follows the redirect itself|}
 
 let vuln_class_section vuln_class ~language_hints =
   let language_note =
