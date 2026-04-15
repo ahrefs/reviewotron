@@ -608,3 +608,26 @@ DECISIONS:
 - Framework coverage: OCaml/Dream + Cohttp + Piaf + Ezcurl, JavaScript/Express + fetch + node-fetch + axios + got + superagent + needle + http/https, Python/Django/Flask + requests + httpx + aiohttp + urllib + urllib3
 NOTES:
 
+=== P4.8: Wire analysis agents into security plugin and remove stubs ===
+Completed: 2026-04-15 07:17:46
+<task-result>
+TASK_ID: P4.8
+STATUS: DONE
+FILES_CHANGED: lib/security_review_plugin.ml, lib/security_review_plugin.mli
+DECISIONS:
+- Named the Github functor parameter `(GH : Api.Github)` instead of `(_ : Api.Github)` to enable file content fetching for analysis agents' `get_file_content` tool
+- `group_by_vuln_class` groups triage signals by vuln class using `List.partition` (single-pass per element instead of `find_opt` + `filter` double-scan), producing `(vuln_class * triage_signal list) list` for one-agent-per-class invocation
+- `fetch_file` uses `"HEAD"` as git ref — resolves to default branch. Known limitation: won't fetch PR branch files. Phase 5 will thread the PR head SHA for branch-accurate context expansion
+- Each analysis agent promise is wrapped in `Lwt.catch` for resilience — one agent crashing (unexpected exception) never poisons the batch; other agents' findings are preserved
+- Analysis agents run in parallel via `Lwt.all` on independently-wrapped promises, matching PRD requirement for parallel per-class execution
+- `candidate_to_finding` converts candidate findings to review findings using sink location (path + line) as the finding position, since the sink is where the vulnerability manifests
+- `severity_of_confidence` maps High → Critical, Medium/Low → Warning per PRD §4.3 post-validation severity mapping. Phase 5 validator will gate which findings reach this conversion
+- Bound `vuln_class_to_string` once as `vc_name` in `run_single_analysis` to avoid 3 repeated calls
+- `.mli` keeps `(_ : Api.Github)` anonymous parameter convention consistent with `reviewer.mli` and `general_review_plugin.mli`
+NOTES:
+- Total test count: 91 (23 diff_parser + 68 reviewotron), all passing, build clean, formatter clean
+- No .mli signature changes needed — all new functions are internal to the `Make` functor
+- The `run` function's `~metadata:_` is still unused — Phase 5 may use it to thread head_sha or PR number
+- Phase 5 will insert the validator agent between analysis output collection and `candidate_to_finding` conversion
+</task-result>
+

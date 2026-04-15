@@ -123,6 +123,7 @@ type sanitization_status =
   | Missing
   | Unknown
 
+val sanitization_status_to_string : sanitization_status -> string
 val sanitization_status_to_json : sanitization_status -> Yojson.Basic.t
 val sanitization_status_of_json : Yojson.Basic.t -> sanitization_status
 val sanitization_status_jsonschema : Yojson.Basic.t
