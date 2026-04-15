@@ -1,6 +1,9 @@
 (library
  (name reviewotron_lib)
  (libraries
+  ocaml-ai-sdk.ai_core
+  ocaml-ai-sdk.ai_provider
+  ocaml-ai-sdk.ai_provider_anthropic
   atdgen-runtime
   base64
   containers
