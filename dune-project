@@ -19,8 +19,6 @@
  (depends
   (ocaml (>= 4.14))
   (alcotest :with-test)
-  atdgen
-  atdgen-runtime
   base64
   cmdliner
   containers

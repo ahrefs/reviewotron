@@ -2,7 +2,7 @@ open Devkit
 
 let log = Log.from "reviewer"
 
-module Make (GH : Api.Github) (AI : Api.Claude) (SL : Api.Slack) = struct
+module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
   (** Fetch config from the repo and cache it in context. *)
   let fetch_config ~ctx ~repo_url =
     match%lwt GH.get_config ~ctx ~repo_url with
@@ -129,13 +129,40 @@ module Make (GH : Api.Github) (AI : Api.Claude) (SL : Api.Slack) = struct
             })
         position
 
-  (** Call Claude for a review and post the result as a GitHub PR review. *)
+  (** Run the general review agent and parse the structured output into {!Review_types.review_output}. *)
+  let run_review_agent ~ctx ~repo_url ~diff ~files ~pr_title ~description =
+    let config = Context.get_config ctx ~repo_url in
+    let system = Review_prompt.system_prompt ?override:config.system_prompt_override () in
+    let input = Review_prompt.build_user_message ~diff ~pr_title ~pr_description:description ~file_contents:files () in
+    let agent_config : Agent_runner.agent_config =
+      {
+        name = "general_review";
+        system_prompt = system;
+        model_tier = Standard;
+        output_schema = Review_types.review_output_jsonschema;
+        max_steps = 1;
+      }
+    in
+    let%lwt result = AI.run ~ctx ~repo_url ~model_id:config.model ~config:agent_config ~input () in
+    match result with
+    | Error _ as e -> Lwt.return e
+    | Ok agent_result ->
+    match Review_types.review_output_of_json agent_result.output with
+    | review ->
+      log#info "review agent: %d findings, summary length %d" (List.length review.findings)
+        (String.length review.summary);
+      Lwt.return (Ok review)
+    | exception exn -> Lwt.return (Error (Printf.sprintf "failed to parse review output: %s" (Exn.str exn)))
+
+  (** Run the general review agent and post the result as a GitHub PR review. *)
   let execute_and_post_review ~ctx ~repo_url ~number ~pr_title ~diff_text ~filtered_diff ~file_contents ~description
     ~head_sha =
-    let%lwt review_result = AI.review_code ~ctx ~repo_url ~diff:diff_text ~files:file_contents ~pr_title ~description in
+    let%lwt review_result =
+      run_review_agent ~ctx ~repo_url ~diff:diff_text ~files:file_contents ~pr_title ~description
+    in
     match review_result with
     | Error msg ->
-      log#error "Claude review failed for PR #%d: %s" number msg;
+      log#error "review agent failed for PR #%d: %s" number msg;
       Lwt.return_unit
     | Ok review ->
       let comments = List.filter_map (finding_to_comment ~diff:filtered_diff) review.findings in
@@ -157,7 +184,7 @@ module Make (GH : Api.Github) (AI : Api.Claude) (SL : Api.Slack) = struct
       State.save state;
       Lwt.return_unit
 
-  (** Orchestrate a full PR review: fetch diff, call Claude, post review. *)
+  (** Orchestrate a full PR review: fetch diff, run review agent, post review. *)
   let review_pr ~ctx (pr_notif : Github_types.pr_notification) =
     let repo_url = pr_notif.repository.url in
     let number = pr_notif.number in
@@ -208,7 +235,7 @@ module Make (GH : Api.Github) (AI : Api.Claude) (SL : Api.Slack) = struct
           Lwt.return_unit)
       findings
 
-  (** Orchestrate a full push review: fetch diff, call Claude, post comments + Slack. *)
+  (** Orchestrate a full push review: fetch diff, run review agent, post comments + Slack. *)
   let review_push ~ctx (push : Github_types.commit_pushed_notification) =
     let repo_url = push.repository.url in
     log#info "reviewing push to %s in %s" push.ref_ push.repository.full_name;
@@ -233,10 +260,10 @@ module Make (GH : Api.Github) (AI : Api.Claude) (SL : Api.Slack) = struct
           |> String.concat "\n"
         in
         let pr_title = Printf.sprintf "Push to %s" push.ref_ in
-        let%lwt review_result = AI.review_code ~ctx ~repo_url ~diff:filtered_text ~files:[] ~pr_title ~description in
+        let%lwt review_result = run_review_agent ~ctx ~repo_url ~diff:filtered_text ~files:[] ~pr_title ~description in
         (match review_result with
         | Error msg ->
-          log#error "Claude review failed for push %s: %s" push.after msg;
+          log#error "review agent failed for push %s: %s" push.after msg;
           Lwt.return_unit
         | Ok review ->
           let%lwt () = post_push_comments ~ctx ~repo_url ~sha:push.after review.findings in

@@ -12,12 +12,12 @@ let write_log = Buffer.create 4096
 let get_write_log () = Buffer.contents write_log
 let clear_write_log () = Buffer.clear write_log
 
-(** Configurable mock response path for Claude reviews.
+(** Configurable mock response path for agent reviews.
     Set this before running a test to control which mock response is returned. *)
-let claude_response_path = ref "mock_api_responses/claude/review_response.json"
+let agent_response_path = ref "mock_api_responses/claude/review_response.json"
 
-let set_claude_response_path path = claude_response_path := path
-let reset_claude_response_path () = claude_response_path := "mock_api_responses/claude/review_response.json"
+let set_agent_response_path path = agent_response_path := path
+let reset_agent_response_path () = agent_response_path := "mock_api_responses/claude/review_response.json"
 
 module Github : Api.Github = struct
   let get_config ~ctx:_ ~repo_url:_ = Lwt.return (Ok (Context.default_config ()))
@@ -59,14 +59,14 @@ module Github : Api.Github = struct
     Lwt.return (Ok ())
 end
 
-module Claude : Api.Claude = struct
-  let review_code ~ctx:_ ~repo_url:_ ~diff:_ ~files:_ ~pr_title:_ ~description:_ =
-    let path = !claude_response_path in
+module Agent_runner : Api.Agent_runner = struct
+  let run ~ctx:_ ~repo_url:_ ?model_id:_ ~config:_ ~input:_ () =
+    let path = !agent_response_path in
     match read_mock_file path with
     | Ok json_str ->
-      (match Review_types.review_output_of_json (Melange_json.of_string json_str) with
-      | review -> Lwt.return (Ok review)
-      | exception exn -> Lwt.return (Error (Printf.sprintf "failed to parse mock review: %s" (Exn.str exn))))
+      let output = Melange_json.of_string json_str in
+      let usage : Ai_provider.Usage.t = { input_tokens = 0; output_tokens = 0; total_tokens = None } in
+      Lwt.return (Ok Agent_runner.{ output; usage; steps_count = 1; model_id = "mock" })
     | Error msg -> Lwt.return (Error msg)
 end
 

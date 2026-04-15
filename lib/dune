@@ -4,7 +4,6 @@
   ocaml-ai-sdk.ai_core
   ocaml-ai-sdk.ai_provider
   ocaml-ai-sdk.ai_provider_anthropic
-  atdgen-runtime
   base64
   containers
   curl
@@ -25,15 +24,3 @@
   yojson)
  (preprocess
   (pps lwt_ppx melange-json-native.ppx ppx_deriving_jsonschema)))
-
-(rule
- (targets
-  anthropic_types_t.ml
-  anthropic_types_t.mli
-  anthropic_types_j.ml
-  anthropic_types_j.mli)
- (deps anthropic_types.atd)
- (action
-  (progn
-   (run %{bin:atdgen} -j %{deps})
-   (run %{bin:atdgen} -t %{deps}))))

@@ -146,7 +146,7 @@ let test_mock_claude_response () =
 
 (** {2 End-to-end reviewer tests} *)
 
-module R_test = Reviewer.Make (Api_local.Github) (Api_local.Claude) (Api_local.Slack)
+module R_test = Reviewer.Make (Api_local.Github) (Api_local.Agent_runner) (Api_local.Slack)
 
 let test_pr_review_e2e () =
   Test_helpers.reset_test_state ();
@@ -204,7 +204,7 @@ let test_pr_all_ignored_paths_skipped () =
 
 let test_pr_empty_findings_review () =
   Test_helpers.reset_test_state ();
-  Api_local.set_claude_response_path "mock_api_responses/claude/empty_findings_response.json";
+  Api_local.set_agent_response_path "mock_api_responses/claude/empty_findings_response.json";
   let ctx = Test_helpers.make_test_context () in
   let payload = read_file "mock_payloads/pr_opened.json" in
   let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
@@ -231,7 +231,7 @@ let test_pr_large_diff_skipped () =
 
 let test_push_review_e2e () =
   Test_helpers.reset_test_state ();
-  Api_local.set_claude_response_path "mock_api_responses/claude/push_review_response.json";
+  Api_local.set_agent_response_path "mock_api_responses/claude/push_review_response.json";
   let config = Config_types.config_of_json (Melange_json.of_string {|{"slack_channel": "dev-reviews"}|}) in
   let ctx = Test_helpers.make_test_context ~config () in
   let payload = read_file "mock_payloads/push_develop.json" in
@@ -296,7 +296,7 @@ let test_duplicate_pr_prevention () =
 
 let test_duplicate_push_prevention () =
   Test_helpers.reset_test_state ();
-  Api_local.set_claude_response_path "mock_api_responses/claude/push_review_response.json";
+  Api_local.set_agent_response_path "mock_api_responses/claude/push_review_response.json";
   let state = State.create () in
   let config = Config_types.config_of_json (Melange_json.of_string {|{"slack_channel": "dev-reviews"}|}) in
   let ctx = Test_helpers.make_test_context ~state ~config () in
