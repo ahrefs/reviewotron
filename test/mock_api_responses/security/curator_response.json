@@ -1,0 +1,3 @@
+{
+  "updated_memory": "# Security Memory: test/repo\n\n## Architecture\n- OCaml backend with Dream web framework\n\n## Known Safe Patterns\n- Db.query uses parameterized statements\n\n## Known Risk Areas\n- lib/export/csv.ml builds shell commands\n"
+}
