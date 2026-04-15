@@ -175,7 +175,7 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
       Returns the general review output (if the general plugin is enabled),
       a deduplicated list of findings from all plugins, per-plugin review costs,
       and a boolean indicating whether the security plugin encountered an error. *)
-  let run_plugins ~ctx ~repo_url ~config ~diff ~diff_text ~metadata ~debug_dir =
+  let run_plugins ~ctx ~repo_url ~config ~diff ~diff_text ~metadata ~debug_dir ~head_sha =
     let plugins_config = config.Config_types.review_plugins in
     (* Run enabled plugins concurrently — they are independent. *)
     let general_promise =
@@ -193,7 +193,9 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
       if plugins_config.security.enabled then
         Lwt.catch
           (fun () ->
-            let%lwt findings, costs = Security_plugin.run ~ctx ~repo_url ~diff ~diff_text ~metadata ~debug_dir in
+            let%lwt findings, costs =
+              Security_plugin.run ~ctx ~repo_url ~diff ~diff_text ~metadata ~debug_dir ~head_sha
+            in
             Lwt.return (findings, costs, false))
           (fun exn ->
             log#error "security review plugin raised: %s" (Exn.str exn);
@@ -245,7 +247,7 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
       Printf.sprintf "debug/%s/%s" slug sha_prefix
     in
     let%lwt general_result, findings, review_costs, security_error =
-      run_plugins ~ctx ~repo_url ~config ~diff:filtered_diff ~diff_text ~metadata ~debug_dir
+      run_plugins ~ctx ~repo_url ~config ~diff:filtered_diff ~diff_text ~metadata ~debug_dir ~head_sha
     in
     Cost_tracking.log_review_costs review_costs;
     let comments = List.filter_map (finding_to_comment ~diff:filtered_diff) findings in
@@ -371,6 +373,7 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
         in
         let%lwt general_result, findings, review_costs, security_error =
           run_plugins ~ctx ~repo_url ~config ~diff:filtered_diff ~diff_text:filtered_text ~metadata ~debug_dir
+            ~head_sha:push.after
         in
         Cost_tracking.log_review_costs review_costs;
         let%lwt () = post_push_comments ~ctx ~repo_url ~sha:push.after findings in
