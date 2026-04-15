@@ -1067,6 +1067,175 @@ let test_state_empty_load () =
   let loaded = State.load ~filepath:tmp_path in
   (check bool) "no pr reviewed" false (State.is_pr_reviewed loaded ~repo_url:"x" ~pr_number:1 ~head_sha:"abc")
 
+(** {2 Cost tracking tests} *)
+
+(** Shared test fixtures for cost tracking tests. *)
+
+let triage_agent_cost : Cost_tracking.agent_cost =
+  {
+    agent_name = "triage";
+    model = "claude-haiku-4-5-20251001";
+    input_tokens = 1000;
+    output_tokens = 200;
+    turns = 1;
+    files_fetched = 0;
+    estimated_cost_usd = 0.0016;
+  }
+
+let analysis_agent_cost : Cost_tracking.agent_cost =
+  {
+    agent_name = "injection_analysis";
+    model = "claude-sonnet-4-5-20250929";
+    input_tokens = 5000;
+    output_tokens = 1000;
+    turns = 4;
+    files_fetched = 3;
+    estimated_cost_usd = 0.030;
+  }
+
+let general_agent_cost : Cost_tracking.agent_cost =
+  {
+    agent_name = "general_review";
+    model = "claude-sonnet-4-5-20250929";
+    input_tokens = 3000;
+    output_tokens = 800;
+    turns = 1;
+    files_fetched = 0;
+    estimated_cost_usd = 0.021;
+  }
+
+let test_estimate_cost_sonnet () =
+  (* Sonnet: $3/M input, $15/M output *)
+  let cost =
+    Cost_tracking.estimate_cost ~model_id:"claude-sonnet-4-5-20250929" ~input_tokens:1_000_000 ~output_tokens:1_000_000
+  in
+  (check (float 1e-6)) "sonnet 1M in + 1M out" 18.0 cost
+
+let test_estimate_cost_haiku () =
+  (* Haiku: $0.80/M input, $4/M output *)
+  let cost =
+    Cost_tracking.estimate_cost ~model_id:"claude-haiku-4-5-20251001" ~input_tokens:500_000 ~output_tokens:100_000
+  in
+  (* 500k * 0.80/1M + 100k * 4.0/1M = 0.40 + 0.40 = 0.80 *)
+  (check (float 1e-6)) "haiku 500k in + 100k out" 0.80 cost
+
+let test_estimate_cost_opus () =
+  (* Opus: $15/M input, $75/M output *)
+  let cost =
+    Cost_tracking.estimate_cost ~model_id:"claude-opus-4-6-20260414" ~input_tokens:100_000 ~output_tokens:10_000
+  in
+  (* 100k * 15/1M + 10k * 75/1M = 1.50 + 0.75 = 2.25 *)
+  (check (float 1e-6)) "opus 100k in + 10k out" 2.25 cost
+
+let test_estimate_cost_unknown_model () =
+  let cost = Cost_tracking.estimate_cost ~model_id:"gpt-4o-unknown" ~input_tokens:1000 ~output_tokens:1000 in
+  (check (float 1e-6)) "unknown model zero cost" 0.0 cost
+
+let test_of_agent_result () =
+  let usage : Ai_provider.Usage.t = { input_tokens = 2000; output_tokens = 500; total_tokens = Some 2500 } in
+  let result : Agent_runner.agent_result =
+    { output = `Null; usage; steps_count = 3; model_id = "claude-sonnet-4-5-20250929" }
+  in
+  let cost = Cost_tracking.of_agent_result ~agent_name:"test_agent" ~files_fetched:2 result in
+  (check string) "agent_name" "test_agent" cost.agent_name;
+  (check string) "model" "claude-sonnet-4-5-20250929" cost.model;
+  (check int) "input_tokens" 2000 cost.input_tokens;
+  (check int) "output_tokens" 500 cost.output_tokens;
+  (check int) "turns" 3 cost.turns;
+  (check int) "files_fetched" 2 cost.files_fetched;
+  (* 2000 * 3/1M + 500 * 15/1M = 0.006 + 0.0075 = 0.0135 *)
+  (check (float 1e-6)) "estimated_cost_usd" 0.0135 cost.estimated_cost_usd
+
+let test_aggregate () =
+  let rc = Cost_tracking.aggregate ~plugin:"security" [ triage_agent_cost; analysis_agent_cost ] in
+  (check string) "plugin" "security" rc.plugin;
+  (check int) "total_input" 6000 rc.total_input_tokens;
+  (check int) "total_output" 1200 rc.total_output_tokens;
+  (check (float 1e-6)) "total_cost" 0.0316 rc.total_estimated_cost_usd;
+  (check int) "agent_count" 2 (List.length rc.agents)
+
+let test_format_footer () =
+  let rc1 = Cost_tracking.aggregate ~plugin:"general" [ general_agent_cost ] in
+  let rc2 = Cost_tracking.aggregate ~plugin:"security" [ triage_agent_cost; analysis_agent_cost ] in
+  let footer = Cost_tracking.format_footer [ rc1; rc2 ] in
+  (check bool) "contains agent count" true (CCString.find ~sub:"3 agents" footer >= 0);
+  (check bool) "contains general" true (CCString.find ~sub:"general: 1 agent" footer >= 0);
+  (check bool) "contains security" true (CCString.find ~sub:"security: 2 agents" footer >= 0);
+  (check bool) "contains cost" true (CCString.find ~sub:"$0.05" footer >= 0)
+
+let test_format_footer_empty_plugin () =
+  let rc : Cost_tracking.review_cost =
+    {
+      plugin = "security";
+      agents = [];
+      total_input_tokens = 0;
+      total_output_tokens = 0;
+      total_estimated_cost_usd = 0.0;
+    }
+  in
+  let footer = Cost_tracking.format_footer [ rc ] in
+  (check bool) "contains 0 agents" true (CCString.find ~sub:"0 agents" footer >= 0);
+  (check bool) "does not list empty plugin" true (CCString.find ~sub:"security:" footer < 0)
+
+let test_agent_cost_json_roundtrip () =
+  let cost : Cost_tracking.agent_cost =
+    {
+      agent_name = "triage";
+      model = "claude-haiku-4-5-20251001";
+      input_tokens = 1234;
+      output_tokens = 567;
+      turns = 2;
+      files_fetched = 1;
+      estimated_cost_usd = 0.00327;
+    }
+  in
+  let json = Cost_tracking.agent_cost_to_json cost in
+  let decoded = Cost_tracking.agent_cost_of_json json in
+  (check string) "agent_name" cost.agent_name decoded.agent_name;
+  (check string) "model" cost.model decoded.model;
+  (check int) "input_tokens" cost.input_tokens decoded.input_tokens;
+  (check int) "output_tokens" cost.output_tokens decoded.output_tokens;
+  (check int) "turns" cost.turns decoded.turns;
+  (check int) "files_fetched" cost.files_fetched decoded.files_fetched;
+  (check (float 1e-10)) "estimated_cost_usd" cost.estimated_cost_usd decoded.estimated_cost_usd
+
+let test_review_cost_json_roundtrip () =
+  let cost = Cost_tracking.aggregate ~plugin:"security" [ triage_agent_cost ] in
+  let json = Cost_tracking.review_cost_to_json cost in
+  let decoded = Cost_tracking.review_cost_of_json json in
+  (check string) "plugin" cost.plugin decoded.plugin;
+  (check int) "total_input" cost.total_input_tokens decoded.total_input_tokens;
+  (check int) "total_output" cost.total_output_tokens decoded.total_output_tokens;
+  (check (float 1e-10)) "total_cost" cost.total_estimated_cost_usd decoded.total_estimated_cost_usd;
+  (check int) "agents count" (List.length cost.agents) (List.length decoded.agents)
+
+let test_state_roundtrip_with_costs () =
+  let tmp_path = Filename.temp_file "reviewotron_cost_state_" ".json" in
+  Fun.protect
+    ~finally:(fun () -> Sys.remove tmp_path)
+    (fun () ->
+      let state = State.create ~filepath:tmp_path () in
+      let repo = "https://github.com/test/repo" in
+      let review_costs = [ Cost_tracking.aggregate ~plugin:"general" [ general_agent_cost ] ] in
+      State.record_pr_review state ~repo_url:repo ~pr_number:1 ~head_sha:"abc123" ~review_costs;
+      State.save state;
+      let loaded = State.load ~filepath:tmp_path in
+      let data = State.data loaded in
+      let repo_state =
+        match List.assoc_opt repo data.repos with
+        | Some rs -> rs
+        | None -> Alcotest.fail "repo not found in loaded state"
+      in
+      match repo_state.pr_reviews with
+      | [] -> Alcotest.fail "no pr reviews found"
+      | review :: _ ->
+      match review.State_types.review_costs with
+      | rc :: _ ->
+        (check string) "plugin" "general" rc.plugin;
+        (check int) "total_input" 3000 rc.total_input_tokens;
+        (check (float 1e-6)) "total_cost" 0.021 rc.total_estimated_cost_usd
+      | [] -> Alcotest.fail "expected at least one review cost")
+
 (** {2 Security pipeline end-to-end tests} *)
 
 let test_security_e2e_vulnerable () =
@@ -1289,6 +1458,20 @@ let () =
         [
           test_case "save/load roundtrip" `Quick test_state_save_load_roundtrip;
           test_case "load from non-existent file" `Quick test_state_empty_load;
+        ] );
+      ( "cost_tracking",
+        [
+          test_case "estimate cost sonnet" `Quick test_estimate_cost_sonnet;
+          test_case "estimate cost haiku" `Quick test_estimate_cost_haiku;
+          test_case "estimate cost opus" `Quick test_estimate_cost_opus;
+          test_case "estimate cost unknown model" `Quick test_estimate_cost_unknown_model;
+          test_case "of_agent_result" `Quick test_of_agent_result;
+          test_case "aggregate" `Quick test_aggregate;
+          test_case "format footer" `Quick test_format_footer;
+          test_case "format footer empty plugin" `Quick test_format_footer_empty_plugin;
+          test_case "agent_cost JSON roundtrip" `Quick test_agent_cost_json_roundtrip;
+          test_case "review_cost JSON roundtrip" `Quick test_review_cost_json_roundtrip;
+          test_case "state roundtrip with costs" `Quick test_state_roundtrip_with_costs;
         ] );
       ( "security_e2e",
         [

@@ -1,0 +1,44 @@
+(** Per-agent and per-review cost tracking.
+
+    Computes estimated USD cost from token usage and model pricing.
+    The pricing table is a single, easily-updated record in the codebase. *)
+
+type agent_cost = {
+  agent_name : string;
+  model : string;
+  input_tokens : int;
+  output_tokens : int;
+  turns : int;
+  files_fetched : int;
+  estimated_cost_usd : float;
+}
+[@@deriving json]
+
+type review_cost = {
+  plugin : string;
+  agents : agent_cost list;
+  total_input_tokens : int;
+  total_output_tokens : int;
+  total_estimated_cost_usd : float;
+}
+[@@deriving json]
+
+(** Estimate the USD cost for a given model and token counts.
+    Returns [0.0] if the model ID is not recognized (with a warning logged). *)
+val estimate_cost : model_id:string -> input_tokens:int -> output_tokens:int -> float
+
+(** Build an {!agent_cost} from an agent result.
+
+    @param agent_name identifies the agent (e.g. ["triage"], ["injection_analysis"])
+    @param files_fetched number of [get_file_content] tool calls the agent made *)
+val of_agent_result : agent_name:string -> files_fetched:int -> Agent_runner.agent_result -> agent_cost
+
+(** Aggregate a list of per-agent costs into a per-plugin summary. *)
+val aggregate : plugin:string -> agent_cost list -> review_cost
+
+(** Format an optional PR footer showing review cost.
+    Returns a markdown string like ["Review cost: 3 agents, ~$0.42"]. *)
+val format_footer : review_cost list -> string
+
+(** Log all agent costs at info level. *)
+val log_review_costs : review_cost list -> unit

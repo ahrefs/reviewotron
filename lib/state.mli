@@ -12,8 +12,9 @@ val load : filepath:string -> t
 (** Check if this exact PR + SHA combination was already reviewed. *)
 val is_pr_reviewed : t -> repo_url:string -> pr_number:int -> head_sha:string -> bool
 
-(** Record that a PR was reviewed. *)
-val record_pr_review : t -> repo_url:string -> pr_number:int -> head_sha:string -> unit
+(** Record that a PR was reviewed, including per-plugin cost data. *)
+val record_pr_review :
+  t -> repo_url:string -> pr_number:int -> head_sha:string -> review_costs:Cost_tracking.review_cost list -> unit
 
 (** Check if this push (by after SHA) was already reviewed. *)
 val is_push_reviewed : t -> repo_url:string -> after_sha:string -> bool
