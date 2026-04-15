@@ -349,3 +349,26 @@ NOTES:
 - P3.2 (get_file_content tool) will likely need to import `Security_types` for agent output schemas
 - P3.3 (triage agent config) will use `triage_output_jsonschema` as the structured output schema and `vuln_class`/`confidence` constructors for routing logic
 
+=== P3.2: Implement get_file_content tool ===
+Completed: 2026-04-15 03:16:28
+<task-result>
+TASK_ID: P3.2
+STATUS: DONE
+FILES_CHANGED: lib/security_tools.ml (NEW), lib/security_tools.mli (NEW), test/test.ml
+DECISIONS:
+- Tool factory pattern: `make_get_file_content ~fetch_file` takes a callback closure `(string -> (string option, string) result Lwt.t)` and returns `(string * Ai_core.Core_tool.t)` — a named tool pair ready for `Agent_runner.run_agent ~tools`
+- The `fetch_file` callback abstracts away `ctx`, `repo_url`, and `ref_` — the security plugin will capture those in a closure when constructing the tool, keeping the tool module decoupled from API types
+- Three-state return contract: `Ok (Some content)` = success, `Ok None` = not found, `Error msg` = API error — each maps to a typed `get_file_content_result` with `content` and `error` option fields
+- Param parsing errors from malformed JSON are caught via `Melange_json.Of_json_error (Json_error msg | Unexpected_variant msg)` — exhaustive over the error type's variants — and returned as structured error results rather than exceptions
+- `[@json.option]` on result fields means missing JSON keys parse as `None` (defensive for LLM responses) and `None` values serialize as `null` (not omitted)
+- `[@jsonschema.description]` annotations on all fields provide context in the JSON Schema exposed to Claude agents
+- `[@@deriving json]` in `.mli` and `val jsonschema : Yojson.Basic.t` in `.mli` — `ppx_deriving_jsonschema` does not support `.mli` derivation, matching the pattern in `review_types.mli` and `security_types.mli`
+- 10 new tests: 5 serialization (params roundtrip, result with content/error/empty, missing fields parsing), 4 execute integration (success, not found, API error, invalid params), 1 structural (tool name)
+NOTES:
+- Total test count: 76 (23 diff_parser + 53 reviewotron), all passing, build clean, formatter clean
+- No changes to `lib/dune` needed — new files auto-included in `reviewotron_lib`
+- The `Core_tool.execute_tool` in the SDK catches exceptions from the execute callback and wraps them as `is_error = true` tool results — so even if `fetch_file` raises, the agent loop continues safely
+- P3.3 (triage agent config) will construct the tool via `Security_tools.make_get_file_content ~fetch_file:(fun path -> Github.get_file_content ~ctx ~repo_url ~path ~ref_ ())` or similar
+- P3.4 (security plugin skeleton) will pass the tool list to `Agent_runner.run_agent ~tools:["get_file_content", tool]`
+- `open Melange_json.Primitives` in `.ml` is required for ppx-generated code (`string_of_json`, etc.) — same pattern as `review_types.ml` and `security_types.ml`
+

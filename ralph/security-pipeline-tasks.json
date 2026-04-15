@@ -299,7 +299,7 @@
       "depends_on": [
         "P3.1"
       ],
-      "complete": false
+      "complete": true
     },
     {
       "id": "P3.3",

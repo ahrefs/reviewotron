@@ -441,6 +441,81 @@ let test_security_tools_tool_name () =
   let name, _tool = Security_tools.make_get_file_content ~fetch_file in
   (check string) "tool name" "get_file_content" name
 
+(** {2 Triage agent tests} *)
+
+let test_triage_agent_config () =
+  let cfg = Triage_agent.config ~model_tier:Fast in
+  (check string) "name" "security_triage" cfg.name;
+  (check int) "max_steps" 1 cfg.max_steps;
+  (check bool) "has system prompt" true (String.length cfg.system_prompt > 0);
+  (check bool) "has output schema" true
+    (match cfg.output_schema with
+    | `Assoc _ -> true
+    | _ -> false)
+
+let test_triage_agent_config_model_tier () =
+  let fast = Triage_agent.config ~model_tier:Fast in
+  let standard = Triage_agent.config ~model_tier:Standard in
+  let strong = Triage_agent.config ~model_tier:Strong in
+  (check bool) "fast tier" true
+    (match fast.model_tier with
+    | Fast -> true
+    | Standard | Strong -> false);
+  (check bool) "standard tier" true
+    (match standard.model_tier with
+    | Standard -> true
+    | Fast | Strong -> false);
+  (check bool) "strong tier" true
+    (match strong.model_tier with
+    | Strong -> true
+    | Fast | Standard -> false)
+
+let test_triage_agent_detect_languages () =
+  let langs =
+    Triage_agent.detect_languages
+      [ "lib/auth.ml"; "lib/auth.mli"; "src/app.tsx"; "src/utils.ts"; "scripts/deploy.sh"; "README.md" ]
+  in
+  (check (list string)) "detected" [ "OCaml"; "Shell"; "TSX"; "TypeScript" ] langs
+
+let test_triage_agent_detect_languages_empty () =
+  let langs = Triage_agent.detect_languages [] in
+  (check (list string)) "empty" [] langs
+
+let test_triage_agent_detect_languages_unknown () =
+  let langs = Triage_agent.detect_languages [ "Makefile"; "README"; ".gitignore"; "data.parquet" ] in
+  (check (list string)) "unknown only" [] langs
+
+let test_triage_agent_build_input_minimal () =
+  let input = Triage_agent.build_input ~diff_text:"diff content" ~file_paths:[ "lib/foo.ml" ] () in
+  (check bool) "contains diff" true (Devkit.Stre.exists input "diff content");
+  (check bool) "contains file path" true (Devkit.Stre.exists input "lib/foo.ml");
+  (check bool) "contains OCaml hint" true (Devkit.Stre.exists input "OCaml");
+  (check bool) "no security memory section" false (Devkit.Stre.exists input "Repository Security Context")
+
+let test_triage_agent_build_input_with_memory () =
+  let input =
+    Triage_agent.build_input ~diff_text:"diff content" ~file_paths:[ "lib/foo.ml" ]
+      ~security_memory:"Known safe: Db.query uses parameterized queries" ()
+  in
+  (check bool) "contains memory" true (Devkit.Stre.exists input "Known safe: Db.query uses parameterized queries");
+  (check bool) "has security memory section" true (Devkit.Stre.exists input "Repository Security Context")
+
+let test_triage_agent_build_input_empty_memory () =
+  let input = Triage_agent.build_input ~diff_text:"diff content" ~file_paths:[ "lib/foo.ml" ] ~security_memory:"" () in
+  (check bool) "no security memory section for empty" false (Devkit.Stre.exists input "Repository Security Context")
+
+let test_triage_agent_output_schema_valid () =
+  let cfg = Triage_agent.config ~model_tier:Fast in
+  let schema = cfg.output_schema in
+  (check bool) "schema has type" true
+    (match schema with
+    | `Assoc fields -> List.exists (fun (k, _) -> String.equal k "type") fields
+    | _ -> false);
+  (check bool) "schema has properties" true
+    (match schema with
+    | `Assoc fields -> List.exists (fun (k, _) -> String.equal k "properties") fields
+    | _ -> false)
+
 (** {2 End-to-end reviewer tests} *)
 
 module R_test = Reviewer.Make (Api_local.Github) (Api_local.Agent_runner) (Api_local.Slack)
@@ -717,6 +792,18 @@ let () =
           test_case "execute API error" `Quick test_security_tools_execute_api_error;
           test_case "execute invalid params" `Quick test_security_tools_execute_invalid_params;
           test_case "tool name" `Quick test_security_tools_tool_name;
+        ] );
+      ( "triage_agent",
+        [
+          test_case "config defaults" `Quick test_triage_agent_config;
+          test_case "config model tier" `Quick test_triage_agent_config_model_tier;
+          test_case "detect languages" `Quick test_triage_agent_detect_languages;
+          test_case "detect languages empty" `Quick test_triage_agent_detect_languages_empty;
+          test_case "detect languages unknown" `Quick test_triage_agent_detect_languages_unknown;
+          test_case "build input minimal" `Quick test_triage_agent_build_input_minimal;
+          test_case "build input with memory" `Quick test_triage_agent_build_input_with_memory;
+          test_case "build input empty memory" `Quick test_triage_agent_build_input_empty_memory;
+          test_case "output schema valid" `Quick test_triage_agent_output_schema_valid;
         ] );
       ( "reviewer_e2e",
         [
