@@ -149,3 +149,24 @@ NOTES:
 - Phase 0 is now complete — all non-Anthropic ATD files have been migrated to melange-json-native with [@@deriving json]
 </task-result>
 
+=== P1.1: Add ocaml-ai-sdk dependencies ===
+Completed: 2026-04-15 00:33:24
+<task-result>
+TASK_ID: P1.1
+STATUS: DONE
+FILES_CHANGED: dune-project, lib/dune, reviewotron.opam (auto-generated)
+DECISIONS:
+- Used `ocaml-ai-sdk` (no version constraint) in dune-project depends — the package is pinned locally from `/home/me/code/opensource/ocaml-ai-sdk` via `opam pin`
+- Used public library names in lib/dune (`ocaml-ai-sdk.ai_core`, `ocaml-ai-sdk.ai_provider`, `ocaml-ai-sdk.ai_provider_anthropic`) — internal names (`ai_core`, `ai_provider`, `ai_provider_anthropic`) don't resolve for external packages
+- Added all three sub-libraries even though `ai_core` transitively depends on `ai_provider` — explicit is better for documenting direct dependencies
+- No changes to `(preprocess ...)` stanza — the SDK doesn't require additional PPX processors beyond what reviewotron already has (`lwt_ppx`, `melange-json-native.ppx`, `ppx_deriving_jsonschema`)
+NOTES:
+- `opam pin add ocaml-ai-sdk /home/me/code/opensource/ocaml-ai-sdk --no-action -y` was run, then `opam install ocaml-ai-sdk -y`
+- 24 transitive packages were installed: cohttp-lwt-unix, lwt_ssl, jsonschema, ppx_deriving, ppx_deriving_yojson, conduit-lwt-unix, ssl, uri, etc.
+- The SDK version is 0.2, pinned from local git+file:// source
+- All 54 tests pass, build clean, formatter clean
+- The SDK uses `cohttp-lwt-unix` for HTTP while reviewotron uses `curl` — both coexist without conflict
+- Next task (P1.2) should build the generic `run_agent` function using `Generate_text.generate` from `ai_core`
+- The `ai_provider_openai` sub-library is also available but not added (not needed per PRD)
+</task-result>
+
