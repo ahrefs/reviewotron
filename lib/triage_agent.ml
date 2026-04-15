@@ -30,8 +30,12 @@ HTML template rendering with unescaped variables, string interpolation into mark
 ### authn
 Authentication middleware changes, session handling, token validation or generation, password hashing or comparison, login/logout flows, JWT creation or verification, API key validation, OAuth flows, credential storage.
 
+Custom JWT implementations (code that manually splits tokens on `.`, Base64-decodes the payload, and extracts claims from parsed JSON) — **medium to high confidence** signal. These bespoke implementations frequently omit required checks (expiry, algorithm restriction, issuer/audience). Use high confidence if no expiry check is visible; use medium if the implementation looks complete but warrants deeper analysis.
+
 ### authz
 Permission checks, role guards, resource ownership validation, access control lists, middleware that gates access by role or permission, changes to who-can-access-what logic, missing authorization checks on new endpoints.
+
+Database mutation operations (update, delete) where a user-supplied resource identifier flows to the operation but the authenticated user's identity is not used as a filter or ownership condition — this is an IDOR (Insecure Direct Object Reference) pattern.
 
 ### ssrf
 HTTP client calls, URL construction from user inputs, redirect handling, webhook URL configuration, any pattern where user input influences the target of an outbound HTTP request.
