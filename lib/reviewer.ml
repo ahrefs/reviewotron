@@ -130,6 +130,7 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
         position
 
   module General_plugin = General_review_plugin.Make (AI)
+  module Security_plugin = Security_review_plugin.Make (GH) (AI)
 
   (** Numeric rank for severity — higher means more severe. *)
   let severity_rank = function
@@ -163,10 +164,10 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
   (** Run all enabled review plugins and collect findings.
       Returns the general review output (if the general plugin is enabled) and a
       deduplicated list of findings from all plugins. *)
-  let run_plugins ~ctx ~repo_url ~config ~diff_text ~metadata =
+  let run_plugins ~ctx ~repo_url ~config ~diff ~diff_text ~metadata =
     let plugins_config = config.Config_types.review_plugins in
-    (* Run the general plugin for its full review output (summary + findings). *)
-    let%lwt general_result =
+    (* Run enabled plugins concurrently — they are independent. *)
+    let general_promise =
       if plugins_config.general.enabled then begin
         let%lwt result = General_plugin.run_review ~ctx ~repo_url ~diff_text ~metadata in
         match result with
@@ -177,13 +178,14 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
       end
       else Lwt.return None
     in
-    (* Collect findings from additional plugins via the Review_plugin.S interface.
-       Currently no additional plugins are registered — the security plugin will be
-       added in Phase 3. *)
-    let extra_findings = [] in
+    let security_promise =
+      if plugins_config.security.enabled then Security_plugin.run ~ctx ~repo_url ~diff ~diff_text ~metadata
+      else Lwt.return []
+    in
+    let%lwt general_result, security_findings = Lwt.both general_promise security_promise in
     (* Merge general review findings with additional plugin findings. *)
     let general_findings = Option.map (fun (r : Review_types.review_output) -> r.findings) general_result in
-    let all_findings = Option.default [] general_findings @ extra_findings in
+    let all_findings = Option.default [] general_findings @ security_findings in
     let deduplicated = deduplicate_findings all_findings in
     Lwt.return (general_result, deduplicated)
 
@@ -191,7 +193,7 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
   let execute_and_post_review ~ctx ~repo_url ~config ~number ~pr_title ~diff_text ~filtered_diff ~file_contents
     ~description ~head_sha =
     let metadata = Review_plugin.{ pr_number = number; pr_title; pr_description = description; file_contents } in
-    let%lwt general_result, findings = run_plugins ~ctx ~repo_url ~config ~diff_text ~metadata in
+    let%lwt general_result, findings = run_plugins ~ctx ~repo_url ~config ~diff:filtered_diff ~diff_text ~metadata in
     match general_result with
     | None ->
       log#error "review failed for PR #%d: no review output produced" number;
@@ -284,7 +286,7 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
       | Error (`Too_large total_lines) ->
         log#info "push %s skipped: %d diff lines exceeds limit of %d" push.after total_lines config.max_diff_lines;
         Lwt.return_unit
-      | Ok (_filtered_diff, filtered_text) ->
+      | Ok (filtered_diff, filtered_text) ->
         let description =
           push.commits
           |> List.map (fun (c : Github_types.commit) -> Printf.sprintf "- %s" c.message)
@@ -292,7 +294,9 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
         in
         let pr_title = Printf.sprintf "Push to %s" push.ref_ in
         let metadata = Review_plugin.{ pr_number = 0; pr_title; pr_description = description; file_contents = [] } in
-        let%lwt general_result, findings = run_plugins ~ctx ~repo_url ~config ~diff_text:filtered_text ~metadata in
+        let%lwt general_result, findings =
+          run_plugins ~ctx ~repo_url ~config ~diff:filtered_diff ~diff_text:filtered_text ~metadata
+        in
         (match general_result with
         | None ->
           log#error "review failed for push %s: no review output produced" push.after;

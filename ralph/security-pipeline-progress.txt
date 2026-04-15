@@ -372,3 +372,26 @@ NOTES:
 - P3.4 (security plugin skeleton) will pass the tool list to `Agent_runner.run_agent ~tools:["get_file_content", tool]`
 - `open Melange_json.Primitives` in `.ml` is required for ppx-generated code (`string_of_json`, etc.) — same pattern as `review_types.ml` and `security_types.ml`
 
+=== P3.3: Build triage agent config and prompt ===
+Completed: 2026-04-15 03:32:37
+<task-result>
+TASK_ID: P3.3
+STATUS: DONE
+FILES_CHANGED: lib/triage_agent.ml (NEW), lib/triage_agent.mli (NEW), test/test.ml
+DECISIONS:
+- Module structure follows `review_prompt.ml` pattern: static system prompt + `config` function + `build_input` function for user message assembly
+- `config ~model_tier` requires explicit model tier from caller (no default) — forces the security plugin to make an explicit decision from `security_plugin_config.triage_model_tier`, which is the cleaner design
+- `detect_languages` exposed in `.mli` for reuse by future analysis agents (they need language hints from triage output, but this utility is also useful for constructing their inputs)
+- `language_of_extension` kept private — implementation detail, not useful outside this module
+- `build_input` injects pre-computed language hints into the user message AND the system prompt asks the LLM to produce `language_hints` in output — intentional dual path: extension-based hints give the LLM context, LLM's output may detect additional languages from diff content (e.g. embedded SQL)
+- System prompt biases toward over-flagging per PRD 4.1: "cheap to spawn an analysis agent that finds nothing, costly to skip one that would have found something"
+- `max_steps = 1` (single-shot, no tools) per PRD 4.1
+- Output schema is `Security_types.triage_output_jsonschema` (derived from types, no manual JSON)
+- Used `Printf.bprintf` for direct buffer writes (cleaner than `Buffer.add_string` + `Printf.sprintf`)
+- Empty security memory (`Some ""`) treated same as `None` — consistent with existing pattern in `review_prompt.ml`
+- 9 new tests: config defaults, model tier passthrough (all 3 tiers), detect_languages (normal/empty/unknown+unrecognized extensions), build_input (minimal/with memory/empty memory), output schema structure validation
+NOTES:
+- Total test count: 85 (23 diff_parser + 62 reviewotron), all passing, build clean, formatter clean
+- No changes to `lib/dune` needed — new files auto-included in `reviewotron_lib`
+- P3.4 (security plugin skeleton) will call `Triage_agent.config ~model_tier:security_config.triage_model_tier` and `Triage_agent.build_input ~diff_text ~file_paths ?security_memory ()`, then pass the result to `AI.run ~config ~input`
+
