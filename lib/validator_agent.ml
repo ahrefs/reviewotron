@@ -50,6 +50,8 @@ The analysis agent's assessment of sanitization (Adequate, Inadequate, Missing, 
 
 **JWT validation**: HMAC or RSA signature verification alone is NOT complete JWT validation. A token with a valid signature can still be expired (missing `exp` check). Signature verification and expiry checking are orthogonal — both are required. If the analysis agent reports a missing expiry check on a JWT verifier, do not reject the finding merely because signature verification is present. Verify directly whether the code reads the `exp` claim from the payload and compares it to the current time.
 
+**Stored XSS via component props**: When a frontend component renders user-generated content fields (e.g., `bio`, `about_me`, `description`, `comment`, `message`) through a dangerous sink like `dangerouslySetInnerHTML` or `innerHTML`, the component prop IS the source. Do not reject the finding merely because the diff does not show the API endpoint that populates the prop. User-generated content fields are user-controlled by definition — the vulnerability is in the rendering pattern. The relevant question is whether sanitization (e.g., DOMPurify, server-side HTML encoding) is applied before or during rendering, not whether you can trace the prop back to an HTTP request handler.
+
 ## Tool Usage
 
 You have access to `get_file_content` to spot-check evidence claims. Use it to:
@@ -57,6 +59,8 @@ You have access to `get_file_content` to spot-check evidence claims. Use it to:
 - Check flow steps that cross file boundaries
 - Look for framework-level sanitization the analysis agent may have missed
 - Resolve "Unknown" sanitization status by examining the full code path
+
+**Important**: `get_file_content` fetches files from the repository's default branch. It may return empty or not-found for files that exist only in the PR branch (new files, renamed files) or for files in the diff that haven't been merged yet. **The diff provided to you IS the primary source of truth.** If a finding references a file and line that are visible in the diff, the diff content is sufficient evidence — do not reject a finding solely because `get_file_content` could not fetch the file. Only use the tool for files NOT visible in the diff (e.g., to check an imported module's implementation or verify framework-level sanitization).
 
 Do NOT use the tool to search for new vulnerabilities. Your scope is strictly validation of existing findings.
 

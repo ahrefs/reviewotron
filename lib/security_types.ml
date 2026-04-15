@@ -27,7 +27,12 @@ type vuln_class = Config_types.vuln_class =
 let vuln_class_to_string = Config_types.vuln_class_to_string
 let vuln_class_to_json = Config_types.vuln_class_to_json
 let vuln_class_of_json = Config_types.vuln_class_of_json
-let vuln_class_jsonschema = `Assoc [ "type", `String "string" ]
+let vuln_class_jsonschema =
+  `Assoc
+    [
+      "type", `String "string";
+      "enum", `List (List.map (fun vc -> `String (Config_types.vuln_class_to_string vc)) Config_types.all_vuln_classes);
+    ]
 
 type confidence = Config_types.confidence =
   | High
@@ -37,7 +42,12 @@ type confidence = Config_types.confidence =
 let confidence_to_string = Config_types.confidence_to_string
 let confidence_to_json = Config_types.confidence_to_json
 let confidence_of_json = Config_types.confidence_of_json
-let confidence_jsonschema = `Assoc [ "type", `String "string" ]
+let confidence_jsonschema =
+  `Assoc
+    [
+      "type", `String "string";
+      "enum", `List (List.map (fun c -> `String (Config_types.confidence_to_string c)) Config_types.all_confidences);
+    ]
 
 (** {2 Triage types} *)
 
