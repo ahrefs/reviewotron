@@ -93,6 +93,12 @@ type sanitization_status =
   | Unknown
 [@@deriving json, jsonschema]
 
+let sanitization_status_to_string : sanitization_status -> string = function
+  | Adequate -> "Adequate"
+  | Inadequate reason -> Printf.sprintf "Inadequate (%s)" reason
+  | Missing -> "Missing"
+  | Unknown -> "Unknown"
+
 type candidate_finding = {
   vuln_class : vuln_class;
   source : source_evidence;
