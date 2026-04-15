@@ -129,3 +129,23 @@ NOTES:
 - All 54 tests pass, build clean, formatter clean
 </task-result>
 
+=== P0.7: Remove ATD build dependencies from dune ===
+Completed: 2026-04-15 00:17:03
+<task-result>
+TASK_ID: P0.7
+STATUS: DONE
+FILES_CHANGED: (none)
+DECISIONS:
+- No code changes needed — previous migrations (P0.2-P0.6) each removed their own ATD rule from lib/dune when deleting their respective .atd file
+- `atdgen-runtime` in lib/dune libraries MUST STAY — anthropic_types generated code depends on it at runtime
+- `atdgen` in dune-project dependencies MUST STAY — needed as build-time tool for `%{bin:atdgen}` in the anthropic_types rule
+- The anthropic_types.atd rule in lib/dune is the only remaining ATD rule and MUST STAY until Phase 1 (ocaml-ai-sdk integration)
+- This task was designed anticipating batch cleanup, but incremental cleanup during each migration made it a verification-only task
+NOTES:
+- All 54 tests pass, build clean, formatter clean
+- Only `lib/anthropic_types.atd` remains as an ATD file in the project
+- `Anthropic_types_t` and `Anthropic_types_j` are referenced only in `lib/api_remote.ml` (lines 146-212) — Phase 1 will replace these with ocaml-ai-sdk types
+- When Phase 1 deletes anthropic_types.atd, it should also: (1) remove the rule stanza from lib/dune, (2) remove `atdgen-runtime` from lib/dune libraries, (3) remove both `atdgen` and `atdgen-runtime` from dune-project depends, (4) run `dune build` to regenerate the opam file
+- Phase 0 is now complete — all non-Anthropic ATD files have been migrated to melange-json-native with [@@deriving json]
+</task-result>
+

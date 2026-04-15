@@ -33,6 +33,7 @@
   (lwt_ppx (< 6.0))
   melange-json-native
   (mirage-crypto-pk (< 2.1.0))
+  ocaml-ai-sdk
   (mirage-crypto-rng (< 2.1.0))
   ppx_deriving_jsonschema
   ptime
