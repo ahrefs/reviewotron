@@ -3,8 +3,9 @@
     Runs a triage agent to identify security-relevant regions in the diff,
     then routes signals to per-class analysis agents based on confidence
     and repo configuration.  Analysis agents run in parallel (one per
-    vulnerability class) and their candidate findings are converted to
-    review findings.
+    vulnerability class).  Candidate findings are passed through a
+    validator agent that adversarially filters false positives; only
+    confirmed findings are converted to review findings.
 
     The plugin follows a two-gate structure:
     - Signals at or above the confidence threshold always trigger analysis.
