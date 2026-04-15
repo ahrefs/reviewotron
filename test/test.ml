@@ -609,6 +609,78 @@ let test_security_agent_model_tier () =
     | Strong -> true
     | Fast | Standard -> false)
 
+(** {2 Security corpus triage tests} *)
+
+let parse_single_diff ~fixture ~expected_path =
+  let diff_text = read_file fixture in
+  let diffs = Diff_parser.parse diff_text in
+  match diffs with
+  | [ fd ] ->
+    (check string) "correct file path" expected_path fd.path;
+    (check bool) "has hunks" true (fd.hunks <> []);
+    diff_text
+  | _ -> fail (Printf.sprintf "expected 1 file diff, got %d" (List.length diffs))
+
+let parse_triage_file path = read_file path |> Melange_json.of_string |> Security_types.triage_output_of_json
+
+let test_triage_corpus_injection_diff_valid () =
+  ignore
+    (parse_single_diff ~fixture:"security_corpus/injection/sql_concat_vulnerable.diff"
+       ~expected_path:"src/handlers/user.py"
+      : string)
+
+let test_triage_corpus_safe_diff_valid () =
+  ignore
+    (parse_single_diff ~fixture:"security_corpus/injection/sql_parameterized_safe.diff"
+       ~expected_path:"src/handlers/user.py"
+      : string)
+
+let test_triage_corpus_injection_build_input () =
+  let diff_text = read_file "security_corpus/injection/sql_concat_vulnerable.diff" in
+  let diffs = Diff_parser.parse diff_text in
+  let file_paths = List.map (fun (fd : Diff_parser.file_diff) -> fd.path) diffs in
+  let input = Triage_agent.build_input ~diff_text ~file_paths () in
+  (check bool) "contains file path" true (CCString.find ~sub:"src/handlers/user.py" input >= 0);
+  (check bool) "contains language hint" true (CCString.find ~sub:"Python" input >= 0);
+  (check bool) "contains diff" true (CCString.find ~sub:"SELECT * FROM users" input >= 0)
+
+let test_triage_corpus_injection_response () =
+  let triage = parse_triage_file "mock_api_responses/triage/injection_vulnerable.json" in
+  (match triage.signals with
+  | [ signal ] ->
+    (check bool) "vuln class is injection" true (Security_review_plugin.vuln_class_equal signal.vuln_class Injection);
+    (check bool) "confidence is high" true
+      (match signal.confidence with
+      | High -> true
+      | Medium | Low -> false)
+  | signals -> fail (Printf.sprintf "expected 1 signal, got %d" (List.length signals)));
+  (check bool) "has python hint" true (List.exists (String.equal "python") triage.language_hints);
+  (check bool) "no skip reason" true (Option.is_none triage.skip_reason)
+
+let test_triage_corpus_safe_response () =
+  let triage = parse_triage_file "mock_api_responses/triage/safe_no_signals.json" in
+  (check int) "no signals" 0 (List.length triage.signals);
+  (check bool) "has skip reason" true (Option.is_some triage.skip_reason);
+  (check bool) "skip reason mentions parameterized" true
+    (match triage.skip_reason with
+    | Some reason -> CCString.find ~sub:"parameterized" reason >= 0
+    | None -> false)
+
+let test_triage_corpus_injection_routing () =
+  let triage = parse_triage_file "mock_api_responses/triage/injection_vulnerable.json" in
+  let security_config = Config_types.default_security_plugin_config in
+  let actionable = List.filter (Security_review_plugin.should_analyze ~security_config) triage.signals in
+  match actionable with
+  | [ signal ] ->
+    (check bool) "injection routed" true (Security_review_plugin.vuln_class_equal signal.vuln_class Injection)
+  | signals -> fail (Printf.sprintf "expected 1 actionable signal, got %d" (List.length signals))
+
+let test_triage_corpus_safe_skip () =
+  let triage = parse_triage_file "mock_api_responses/triage/safe_no_signals.json" in
+  let security_config = Config_types.default_security_plugin_config in
+  let actionable = List.filter (Security_review_plugin.should_analyze ~security_config) triage.signals in
+  (check int) "no actionable signals" 0 (List.length actionable)
+
 (** {2 End-to-end reviewer tests} *)
 
 module R_test = Reviewer.Make (Api_local.Github) (Api_local.Agent_runner) (Api_local.Slack)
@@ -912,6 +984,16 @@ let () =
             test_security_should_analyze_high_threshold_restricted;
           test_case "should analyze low threshold" `Quick test_security_should_analyze_low_threshold;
           test_case "agent model tier conversion" `Quick test_security_agent_model_tier;
+        ] );
+      ( "triage_corpus",
+        [
+          test_case "injection diff valid" `Quick test_triage_corpus_injection_diff_valid;
+          test_case "safe diff valid" `Quick test_triage_corpus_safe_diff_valid;
+          test_case "injection build input" `Quick test_triage_corpus_injection_build_input;
+          test_case "injection response parseable" `Quick test_triage_corpus_injection_response;
+          test_case "safe response parseable" `Quick test_triage_corpus_safe_response;
+          test_case "injection routing" `Quick test_triage_corpus_injection_routing;
+          test_case "safe skip" `Quick test_triage_corpus_safe_skip;
         ] );
       ( "reviewer_e2e",
         [
