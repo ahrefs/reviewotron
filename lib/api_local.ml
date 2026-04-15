@@ -60,7 +60,7 @@ module Github : Api.Github = struct
 end
 
 module Agent_runner : Api.Agent_runner = struct
-  let run ~ctx:_ ~repo_url:_ ?model_id:_ ~config:_ ~input:_ () =
+  let run ~ctx:_ ~repo_url:_ ?model_id:_ ?tools:_ ~config:_ ~input:_ () =
     let path = !agent_response_path in
     match read_mock_file path with
     | Ok json_str ->

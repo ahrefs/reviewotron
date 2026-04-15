@@ -134,12 +134,12 @@ end
 (** {2 Agent runner — wraps ocaml-ai-sdk for AI agent execution} *)
 
 module Agent_runner : Api.Agent_runner = struct
-  let run ~ctx ~repo_url ?model_id ~config ~input () =
+  let run ~ctx ~repo_url ?model_id ?tools ~config ~input () =
     let secrets = Context.secrets ctx in
     let model_id = Option.default (Agent_runner.default_model_id config.Agent_runner.model_tier) model_id in
     ignore (repo_url : string);
     let model = Ai_provider_anthropic.language_model ~api_key:secrets.anthropic_api_key ~model:model_id () in
-    Agent_runner.run_agent ~model ~config ~input ()
+    Agent_runner.run_agent ~model ?tools ~config ~input ()
 end
 
 (** {2 Slack API} *)
