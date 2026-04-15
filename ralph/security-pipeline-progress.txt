@@ -258,3 +258,26 @@ NOTES:
 - No changes to `lib/dune` needed — the new files are automatically included in the `reviewotron_lib` library
 </task-result>
 
+=== P2.2: Wrap general review in General_review_plugin ===
+Completed: 2026-04-15 02:11:33
+<task-result>
+TASK_ID: P2.2
+STATUS: DONE
+FILES_CHANGED: lib/general_review_plugin.ml (NEW), lib/general_review_plugin.mli (NEW), lib/reviewer.ml
+DECISIONS:
+- `General_review_plugin` is a functor `Make(AI : Api.Agent_runner)` producing a module that satisfies `Review_plugin.S` plus an extended `run_review` function returning full `Review_types.review_output`
+- `name = "general"` matching the config key `review_plugins.general` from the PRD
+- `run_review` is the core function (moved from `reviewer.ml`'s `run_review_agent`); `run` wraps it, extracting just findings and returning `[]` on error per PRD plugin contract
+- `run` accepts `~diff:_` (unused) because `Review_plugin.S` requires it; the general review uses raw diff text, not parsed file diffs
+- In `reviewer.ml`, `module General_plugin = General_review_plugin.Make(AI)` instantiates the plugin inside the `Reviewer.Make` functor; both `execute_and_post_review` and `review_push` construct `Review_plugin.review_metadata` and call `General_plugin.run_review`
+- `reviewer.ml` calls `run_review` (not `run`) to get the full `review_output` including `summary` and `overall_assessment` — preserves existing behavior for PR review body and Slack attachment formatting
+- Push review path uses `pr_number = 0` as sentinel (pre-existing design from P2.1's `review_metadata` type)
+NOTES:
+- All 55 tests pass (23 diff_parser + 32 reviewotron), build clean, formatter clean
+- `run_review_agent` is fully deleted from `reviewer.ml` — all review agent logic now lives in `General_review_plugin`
+- The `.mli` documents that `run_review` is a transitional API for use while the full plugin pipeline is being built (P2.4)
+- When P2.4 builds the orchestrator, it will call plugins through the `Review_plugin.S` view (using `run`), and the summary/overall_assessment handling in `execute_and_post_review` will need redesign
+- No changes to `lib/dune` needed — new files auto-included in `reviewotron_lib`
+- No changes to `reviewer.mli` — external interface (`process_event`) unchanged
+</task-result>
+

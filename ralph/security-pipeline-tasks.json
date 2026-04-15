@@ -225,7 +225,7 @@
       "depends_on": [
         "P2.1"
       ],
-      "complete": false
+      "complete": true
     },
     {
       "id": "P2.3",
