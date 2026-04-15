@@ -196,3 +196,17 @@ type curator_output = { updated_memory : string }
 val curator_output_to_json : curator_output -> Yojson.Basic.t
 val curator_output_of_json : Yojson.Basic.t -> curator_output
 val curator_output_jsonschema : Yojson.Basic.t
+
+(** {2 Memory queue types} *)
+
+(** A queued memory update from a completed review.
+    Appended to the queue file in JSONL format for later processing by the curator. *)
+type memory_update = {
+  timestamp : string;
+  review_id : string;
+  learnings : string list;
+  stale_entries : string list;
+}
+
+val memory_update_to_json : memory_update -> Yojson.Basic.t
+val memory_update_of_json : Yojson.Basic.t -> memory_update

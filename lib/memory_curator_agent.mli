@@ -26,3 +26,6 @@ val config : model_tier:Agent_runner.model_tier -> Agent_runner.agent_config
     @param current_memory Optional existing memory file contents. *)
 val build_input :
   repo_name:string -> memory_max_tokens:int -> learnings:string list -> ?current_memory:string -> unit -> string
+
+(** Rough token estimate: ~4 characters per token. *)
+val estimate_tokens : string -> int
