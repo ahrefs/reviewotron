@@ -1,0 +1,17 @@
+diff --git a/src/handlers/user.py b/src/handlers/user.py
+index 2345678..bcdefgh 100644
+--- a/src/handlers/user.py
++++ b/src/handlers/user.py
+@@ -10,10 +10,14 @@ from flask import request, jsonify
+
+ def search_users(request):
+     name = request.args.get('name')
+-    users = db.find_users_by_name(name)
+-    return jsonify(users)
++    safe_name = name.replace("'", "")
++    query = "SELECT * FROM users WHERE name LIKE '%" + safe_name + "%'"
++    cursor = db.execute(query)
++    users = cursor.fetchall()
++    if not users:
++        return jsonify([])
++    return jsonify([dict(u) for u in users])

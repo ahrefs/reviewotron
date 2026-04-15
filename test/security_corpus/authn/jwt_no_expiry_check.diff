@@ -1,0 +1,25 @@
+diff --git a/lib/auth/jwt_middleware.ml b/lib/auth/jwt_middleware.ml
+index 6789012..ghijklm 100644
+--- a/lib/auth/jwt_middleware.ml
++++ b/lib/auth/jwt_middleware.ml
+@@ -8,12 +8,21 @@ open Dream
+
+ let verify_token token =
+-  (* TODO: implement JWT verification *)
+-  Error "not implemented"
++  match String.split_on_char '.' token with
++  | [ header; payload_b64; signature_b64 ] ->
++    let payload_json = Base64.decode_exn payload_b64 in
++    let payload = Yojson.Basic.from_string payload_json in
++    let user_id =
++      Yojson.Basic.Util.(payload |> member "sub" |> to_string)
++    in
++    let expected_sig = Hmac.sign secret_key (header ^ "." ^ payload_b64) in
++    if String.equal expected_sig signature_b64 then
++      Ok user_id
++    else
++      Error "invalid signature"
++  | _ -> Error "malformed token"
+
+ let middleware next_handler request =
+   match Dream.header request "Authorization" with
