@@ -106,3 +106,26 @@ NOTES:
 - All 54 tests pass, build clean, formatter clean
 </task-result>
 
+=== P0.6: Migrate github_types.atd to OCaml types with [@@deriving json] ===
+Completed: 2026-04-15 00:09:55
+<task-result>
+TASK_ID: P0.6
+STATUS: DONE
+FILES_CHANGED: lib/github_types.ml (NEW), lib/github_types.mli (NEW), lib/github_types.atd (DELETED), lib/github.ml, lib/github.mli, lib/api.ml, lib/api_remote.ml, lib/api_local.ml, lib/reviewer.ml, lib/github_auth.ml, lib/dune, src/request_handler.ml, src/reviewotron.ml
+DECISIONS:
+- `diff_side` and `review_event` have manual `to_json`/`of_json` because they are bare string enums ("LEFT", "COMMENT") incompatible with melange-json-native's array-based variant encoding. Justified under PRD "no manual JSON unless impossible."
+- `create_review_req` uses `[@@deriving of_json]` + manual `create_review_req_to_json` because ATD omits empty default-valued fields (`comments: []`) and the test suite asserts this behavior. `[@json.drop_default]` only works with `[@json.option]` (option types), not lists, so manual serialization is necessary.
+- `[@json.option]` handles both ATD's `?field: type nullable` and `?field: type option` patterns correctly — melange-json-native's `option_of_json` maps `Null` → `None`
+- `[@json.key "html_url"]` and `[@json.key "ref"]` handle field renames (ATD's `<ocaml name="...">`)
+- `[@json.allow_extra_fields]` on all GitHub response types (matching ATD's default ignore-unknown-fields behavior)
+- `[@json.option] [@json.drop_default]` on optional request fields (`review_comment_req`, `commit_comment_req`) to match ATD's omit-when-None serialization behavior
+- Type aliases `commit_hash` and `pr_action` need `[@@deriving json]` so the PPX can find `commit_hash_of_json`/`commit_hash_to_json` when they appear in derived record types
+- `parse_pr_files_json` refactored to parse JSON string once, reuse the JSON tree for both strict and fallback paths (eliminating redundant `Yojson.Basic.from_string` call)
+NOTES:
+- This is the largest ATD migration (22 types, 13 files changed) — github_types.atd was the most-referenced ATD file in the codebase
+- Only `anthropic_types.atd` remains as an ATD file (Phase 1 will replace it with ocaml-ai-sdk)
+- The `diff_side_to_string`/`review_event_to_string` pattern reuses the same approach from review_types.ml (severity_to_string/finding_category_to_string). When Phase 3+ adds more string-encoded enums (vuln_class, confidence), consider factoring out a shared `string_enum_to_json`/`string_enum_of_json` helper.
+- `Melange_json.of_string` returns `Yojson.Basic.t` — the fallback in `parse_pr_files_json` no longer needs `Yojson.Basic.from_string` since we reuse the already-parsed tree
+- All 54 tests pass, build clean, formatter clean
+</task-result>
+
