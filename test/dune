@@ -22,6 +22,18 @@
   (pps lwt_ppx)))
 
 (test
+ (name test_security_corpus)
+ (modules test_security_corpus)
+ (libraries reviewotron_lib devkit alcotest extlib lwt lwt.unix)
+ (deps
+  (glob_files_rec security_corpus/injection/*)
+  (glob_files_rec security_corpus/xss/*)
+  (glob_files_rec security_corpus/command_injection/*)
+  (glob_files_rec security_corpus/authn/*)
+  (glob_files_rec security_corpus/authz/*)
+  (glob_files_rec security_corpus/ssrf/*)))
+
+(test
  (name test_diff_parser)
  (modules test_diff_parser)
  (libraries reviewotron_lib alcotest extlib fmt)
