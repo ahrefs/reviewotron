@@ -281,3 +281,25 @@ NOTES:
 - No changes to `reviewer.mli` — external interface (`process_event`) unchanged
 </task-result>
 
+=== P2.3: Extend config with review_plugins section ===
+Completed: 2026-04-15 02:27:51
+<task-result>
+TASK_ID: P2.3
+STATUS: DONE
+FILES_CHANGED: lib/config_types.ml, lib/config_types.mli, test/test.ml
+DECISIONS:
+- Defined `vuln_class`, `confidence`, and `model_tier` enum types in `config_types.ml` with custom string-based JSON serialization (lowercase strings like `"injection"`, `"fast"`, `"medium"`) suitable for human-authored `.reviewotron.json` config files
+- `model_tier` is structurally identical to `Agent_runner.model_tier` but defined separately to keep `config_types` as a leaf module with no dependencies on agent_runner — the dependency direction (agent code depends on config, not vice versa) is preserved
+- All plugin config record types (`general_plugin_config`, `security_plugin_config`, `review_plugins_config`) use `[@@deriving json] [@@json.allow_extra_fields]` with `[@json.default]` on every field, so existing configs without `review_plugins` continue to parse correctly
+- Default values (`default_general_plugin_config`, `default_security_plugin_config`, `default_review_plugins_config`) are explicit record literals rather than JSON round-trips, making them grep-friendly and independent of the serialization layer
+- `all_vuln_classes` convenience value is exposed for use as default and for iteration
+- Added `show_review_cost : bool` with `[@json.default false]` to the `config` type per PRD section 5.1
+- 4 new tests: defaults verification, explicit config parsing, vuln_class roundtrip, security_plugin_config roundtrip
+NOTES:
+- Total test count: 59 (23 diff_parser + 36 reviewotron), all passing
+- P3.1 (security pipeline types) will need to decide how to handle `vuln_class` and `confidence` which now exist in `config_types` — options: (a) re-export from config_types, (b) add `[@@deriving jsonschema]` to the config_types versions since security pipeline types need JSON Schema for structured output, or (c) define separate types in security_types with a conversion function
+- A `Config_types.model_tier → Agent_runner.model_tier` mapping function will be needed when the security plugin constructs agent configs (Phase 3+) — trivial to add at that point
+- String enum serialization pattern (to_string → to_json, of_json with string matching) is repeated 3 times here and also exists for `severity` and `finding_category` in review_types.ml — a shared `string_enum_to_json`/`string_enum_of_json` combinator could DRY this up in a future cleanup pass
+- `ppx_enumerate` could eliminate the manual `all_vuln_classes` list but the ppx isn't in the dune config — adding it is out of scope for this task
+</task-result>
+
