@@ -135,3 +135,11 @@ type validated_finding = {
 type validator_output = { results : validated_finding list } [@@deriving json, jsonschema] [@@json.allow_extra_fields]
 
 type curator_output = { updated_memory : string } [@@deriving json, jsonschema] [@@json.allow_extra_fields]
+
+type memory_update = {
+  timestamp : string;
+  review_id : string;
+  learnings : string list;
+  stale_entries : string list;
+}
+[@@deriving json] [@@json.allow_extra_fields]

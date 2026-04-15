@@ -233,10 +233,108 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) = struct
           (List.length validated - List.length confirmed);
         Lwt.return (List.map validated_to_finding confirmed, analysis_costs @ validator_costs))
 
-  let run ~ctx ~repo_url ~diff ~diff_text ~metadata:_ =
+  (** Merge learnings and stale entries from all queued updates.
+
+      Stale entries are prefixed with ["STALE: "] so the curator knows
+      to remove them from the memory file. *)
+  let collect_queue_learnings (updates : Security_types.memory_update list) =
+    List.concat_map
+      (fun (u : Security_types.memory_update) ->
+        u.learnings @ List.map (fun entry -> "STALE: " ^ entry) u.stale_entries)
+      updates
+
+  (** Process the memory update queue: read pending entries, run the
+      curator agent to incorporate them into the memory file, and
+      truncate the queue.
+
+      Returns the curator agent cost, or an empty list if there were
+      no pending updates or the curator failed. *)
+  let process_memory_queue ~ctx ~repo_url ~memory_dir ~security_config () =
+    let updates = Security_memory.read_updates ~memory_dir ~repo_url in
+    match updates with
+    | [] ->
+      log#info "memory queue: no pending updates";
+      Lwt.return []
+    | _ :: _ ->
+      log#info "memory queue: %d pending updates" (List.length updates);
+      let learnings = collect_queue_learnings updates in
+      let current_memory = Security_memory.load ~memory_dir ~repo_url in
+      let memory_max_tokens = security_config.Config_types.memory_max_tokens in
+      let repo_name = Security_memory.repo_slug repo_url in
+      (* Curator uses the triage model tier (both are Fast by default per PRD §4.4) *)
+      let curator_config =
+        Memory_curator_agent.config ~model_tier:(agent_model_tier security_config.triage_model_tier)
+      in
+      let input = Memory_curator_agent.build_input ~repo_name ~memory_max_tokens ~learnings ?current_memory () in
+      let%lwt result = AI.run ~ctx ~repo_url ~config:curator_config ~input () in
+      (match result with
+      | Error msg ->
+        log#error "memory curator agent failed: %s" msg;
+        Lwt.return []
+      | Ok agent_result ->
+        let cost = Cost_tracking.of_agent_result ~agent_name:"memory_curator" ~files_fetched:0 agent_result in
+        (match Security_types.curator_output_of_json agent_result.output with
+        | output ->
+          let estimated = Memory_curator_agent.estimate_tokens output.updated_memory in
+          if estimated > memory_max_tokens then
+            log#warn "curator output exceeds token limit (%d > %d), saving anyway" estimated memory_max_tokens;
+          Security_memory.save ~memory_dir ~repo_url ~content:output.updated_memory;
+          Security_memory.truncate_queue ~memory_dir ~repo_url;
+          log#info "memory updated and queue truncated";
+          Lwt.return [ cost ]
+        | exception exn ->
+          log#error "failed to parse curator output: %s" (Exn.str exn);
+          Lwt.return [ cost ]))
+
+  (** Collect learnings from a completed review for the memory queue.
+
+      Extracts useful context that the curator can incorporate into the
+      repo security memory: detected languages, triaged vuln classes,
+      reviewed file names, and confirmed finding locations. *)
+  let collect_review_learnings ~(triage_output : Security_types.triage_output) ~file_paths
+    ~(findings : Review_types.finding list) =
+    let lang_hints =
+      match triage_output.language_hints with
+      | [] -> []
+      | hints -> [ Printf.sprintf "Language hints: %s" (String.concat ", " hints) ]
+    in
+    let vuln_classes =
+      let classes =
+        triage_output.signals
+        |> List.map (fun (s : Security_types.triage_signal) -> Security_types.vuln_class_to_string s.vuln_class)
+        |> List.sort_uniq String.compare
+      in
+      match classes with
+      | [] -> []
+      | _ -> [ Printf.sprintf "Triage flagged: %s" (String.concat ", " classes) ]
+    in
+    let file_list =
+      match file_paths with
+      | [] -> []
+      | _ ->
+        let sample =
+          if List.compare_length_with file_paths 10 > 0 then CCList.take 10 file_paths @ [ "..." ] else file_paths
+        in
+        [ Printf.sprintf "Reviewed files: %s" (String.concat ", " sample) ]
+    in
+    let finding_notes =
+      List.map
+        (fun (f : Review_types.finding) ->
+          let line_suffix =
+            match f.line with
+            | None -> ""
+            | Some l -> Printf.sprintf ":%d" l
+          in
+          Printf.sprintf "Confirmed security finding at %s%s" f.path line_suffix)
+        findings
+    in
+    lang_hints @ vuln_classes @ file_list @ finding_notes
+
+  let run ~ctx ~repo_url ~diff ~diff_text ~metadata =
     let config = Context.get_config ctx ~repo_url in
     let security_config = config.review_plugins.security in
-    let security_memory = Security_memory.load ~memory_dir:"memory" ~repo_url in
+    let memory_dir = "memory" in
+    let security_memory = Security_memory.load ~memory_dir ~repo_url in
     let file_paths = List.map (fun (fd : Diff_parser.file_diff) -> fd.path) diff in
     let%lwt triage_result, triage_costs =
       run_triage ~ctx ~repo_url ~security_config ~diff_text ~file_paths ?security_memory ()
@@ -253,5 +351,26 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) = struct
         run_analysis ~ctx ~repo_url ~security_config ~diff_text ~file_paths ~language_hints:triage_output.language_hints
           ?security_memory triage_output.signals
       in
+      let update =
+        Security_types.
+          {
+            timestamp = Time.gmt_string (Unix.gettimeofday ());
+            review_id = Printf.sprintf "PR-%d" metadata.Review_plugin.pr_number;
+            learnings = collect_review_learnings ~triage_output ~file_paths ~findings;
+            stale_entries = [];
+          }
+      in
+      Security_memory.append_update ~memory_dir ~repo_url ~update;
+      (* Fire the curator asynchronously — not in the critical review path.
+         Background_pool is not available in this codebase; Lwt.async matches
+         the existing pattern in request_handler.ml. *)
+      Lwt.async (fun () ->
+        try%lwt
+          let%lwt costs = process_memory_queue ~ctx ~repo_url ~memory_dir ~security_config () in
+          ignore (costs : Cost_tracking.agent_cost list);
+          Lwt.return_unit
+        with exn ->
+          log#error "memory curator async task raised: %s" (Exn.str exn);
+          Lwt.return_unit);
       Lwt.return (findings, triage_costs @ analysis_costs)
 end

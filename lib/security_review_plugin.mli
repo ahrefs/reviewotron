@@ -42,4 +42,18 @@ val should_analyze : security_config:Config_types.security_plugin_config -> Secu
     agent context expansion) and an agent runner. *)
 module Make (_ : Api.Github) (_ : Api.Agent_runner) : sig
   include Review_plugin.S
+
+  (** Process the memory update queue: read pending entries, run the
+      curator agent to incorporate them, save the updated memory file,
+      and truncate the queue.
+
+      Returns the curator agent cost, or an empty list if there were
+      no pending updates or the curator failed. *)
+  val process_memory_queue :
+    ctx:Context.t ->
+    repo_url:string ->
+    memory_dir:string ->
+    security_config:Config_types.security_plugin_config ->
+    unit ->
+    Cost_tracking.agent_cost list Lwt.t
 end
