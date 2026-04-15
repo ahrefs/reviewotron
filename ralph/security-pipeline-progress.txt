@@ -418,3 +418,26 @@ NOTES:
 - The `Api.Agent_runner` interface does not currently support `~tools` parameter — Phase 4 will need to extend it for analysis agents that use `get_file_content`
 - `Lwt.both` in `run_plugins` was identified by efficiency review as the key optimization; the previous sequential approach left the security plugin waiting for the general plugin to finish
 
+=== P3.5: Test triage against initial corpus diffs ===
+Completed: 2026-04-15 04:32:03
+<task-result>
+TASK_ID: P3.5
+STATUS: DONE
+FILES_CHANGED: test/security_corpus/injection/sql_concat_vulnerable.diff (NEW), test/security_corpus/injection/sql_parameterized_safe.diff (NEW), test/mock_api_responses/triage/injection_vulnerable.json (NEW), test/mock_api_responses/triage/safe_no_signals.json (NEW), test/dune, test/test.ml
+DECISIONS:
+- Corpus diffs use Python (Flask) as the target language — realistic SQL injection patterns, and Python is well-supported by the triage agent's language detection (.py → "Python")
+- Vulnerable diff shows SQL string concatenation with `request.args.get('id')` as the source and `db.execute(query)` as the sink — clear injection pattern
+- Safe diff shows parameterized queries with `db.execute(query, (user_id,))` — same file structure as vulnerable diff for controlled comparison
+- Mock triage JSON uses lowercase variant names (`"injection"`, `"high"`) matching melange-json-native's `[@@deriving json]` serialization format
+- Tests are infrastructure-level (deterministic, no Claude calls), not LLM quality tests — corpus diffs serve dual purpose: now for pipeline testing, later (Phase 7) for agent prompt quality testing
+- Extracted `parse_single_diff` and `parse_triage_file` helpers to eliminate duplicate code across tests (identified during simplify review)
+- Used pattern matching on single-element lists `| [ x ] -> ... | _ -> fail ...` instead of banned `List.hd` per AGENTS.md style guide
+- 7 tests cover: diff validity (2), build_input assembly (1), triage response parsing (2), routing logic (1), safe skip (1)
+NOTES:
+- Total test count: 101 (23 diff_parser + 78 reviewotron), all passing, build clean, formatter clean
+- The `language_hints` in mock JSON uses lowercase `"python"` (LLM output format), while `detect_languages` produces capitalized `"Python"` — both are valid, as `language_hints` comes from the LLM, not from `detect_languages`
+- The corpus structure follows PRD 8.2: `test/security_corpus/injection/` with vulnerable and safe variants
+- Phase 7 will expand the corpus with XSS, command injection, authn, authz, and SSRF categories
+- `test/dune` deps updated with `security_corpus/injection/*` and `mock_api_responses/triage/*` globs
+</task-result>
+

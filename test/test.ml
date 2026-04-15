@@ -681,6 +681,175 @@ let test_triage_corpus_safe_skip () =
   let actionable = List.filter (Security_review_plugin.should_analyze ~security_config) triage.signals in
   (check int) "no actionable signals" 0 (List.length actionable)
 
+(** {2 Analysis agent tests} *)
+
+let test_analysis_agent_config () =
+  let cfg = Analysis_agent.config ~vuln_class:Injection ~model_tier:Standard ~language_hints:[ "Python" ] in
+  (check string) "name" "security_analysis_injection" cfg.name;
+  (check int) "max_steps" 10 cfg.max_steps;
+  (check bool) "has system prompt" true (String.length cfg.system_prompt > 0);
+  (check bool) "has output schema" true
+    (match cfg.output_schema with
+    | `Assoc _ -> true
+    | _ -> false)
+
+let test_analysis_agent_config_per_class () =
+  let injection = Analysis_agent.config ~vuln_class:Injection ~model_tier:Standard ~language_hints:[] in
+  let xss = Analysis_agent.config ~vuln_class:Xss ~model_tier:Standard ~language_hints:[] in
+  let cmd = Analysis_agent.config ~vuln_class:Command_injection ~model_tier:Standard ~language_hints:[] in
+  let authn = Analysis_agent.config ~vuln_class:Authn ~model_tier:Standard ~language_hints:[] in
+  let authz = Analysis_agent.config ~vuln_class:Authz ~model_tier:Standard ~language_hints:[] in
+  let ssrf = Analysis_agent.config ~vuln_class:Ssrf ~model_tier:Standard ~language_hints:[] in
+  (check string) "injection name" "security_analysis_injection" injection.name;
+  (check string) "xss name" "security_analysis_xss" xss.name;
+  (check string) "cmd name" "security_analysis_command_injection" cmd.name;
+  (check string) "authn name" "security_analysis_authn" authn.name;
+  (check string) "authz name" "security_analysis_authz" authz.name;
+  (check string) "ssrf name" "security_analysis_ssrf" ssrf.name;
+  (* Each agent has a distinct system prompt *)
+  (check bool) "injection prompt differs from xss" true (not (String.equal injection.system_prompt xss.system_prompt))
+
+let test_analysis_agent_config_model_tier () =
+  let fast = Analysis_agent.config ~vuln_class:Injection ~model_tier:Fast ~language_hints:[] in
+  let standard = Analysis_agent.config ~vuln_class:Injection ~model_tier:Standard ~language_hints:[] in
+  let strong = Analysis_agent.config ~vuln_class:Injection ~model_tier:Strong ~language_hints:[] in
+  (check bool) "fast tier" true
+    (match fast.model_tier with
+    | Fast -> true
+    | Standard | Strong -> false);
+  (check bool) "standard tier" true
+    (match standard.model_tier with
+    | Standard -> true
+    | Fast | Strong -> false);
+  (check bool) "strong tier" true
+    (match strong.model_tier with
+    | Strong -> true
+    | Fast | Standard -> false)
+
+let test_analysis_agent_prompt_contains_methodology () =
+  let cfg = Analysis_agent.config ~vuln_class:Injection ~model_tier:Standard ~language_hints:[] in
+  (check bool) "source identification" true (Devkit.Stre.exists cfg.system_prompt "Source Identification");
+  (check bool) "sink identification" true (Devkit.Stre.exists cfg.system_prompt "Sink Identification");
+  (check bool) "data flow tracing" true (Devkit.Stre.exists cfg.system_prompt "Data Flow Tracing");
+  (check bool) "sanitization evaluation" true (Devkit.Stre.exists cfg.system_prompt "Sanitization Evaluation");
+  (check bool) "get_file_content tool" true (Devkit.Stre.exists cfg.system_prompt "get_file_content")
+
+let test_analysis_agent_prompt_contains_class_section () =
+  let injection = Analysis_agent.config ~vuln_class:Injection ~model_tier:Standard ~language_hints:[] in
+  let xss = Analysis_agent.config ~vuln_class:Xss ~model_tier:Standard ~language_hints:[] in
+  let cmd = Analysis_agent.config ~vuln_class:Command_injection ~model_tier:Standard ~language_hints:[] in
+  let authn = Analysis_agent.config ~vuln_class:Authn ~model_tier:Standard ~language_hints:[] in
+  let authz = Analysis_agent.config ~vuln_class:Authz ~model_tier:Standard ~language_hints:[] in
+  let ssrf = Analysis_agent.config ~vuln_class:Ssrf ~model_tier:Standard ~language_hints:[] in
+  (check bool) "injection section" true (Devkit.Stre.exists injection.system_prompt "SQL/Query Injection");
+  (check bool) "xss section" true (Devkit.Stre.exists xss.system_prompt "Cross-Site Scripting");
+  (check bool) "cmd section" true (Devkit.Stre.exists cmd.system_prompt "Command Injection");
+  (check bool) "authn section" true (Devkit.Stre.exists authn.system_prompt "Authentication");
+  (check bool) "authz section" true (Devkit.Stre.exists authz.system_prompt "Authorization");
+  (check bool) "ssrf section" true (Devkit.Stre.exists ssrf.system_prompt "Server-Side Request Forgery")
+
+let test_analysis_agent_language_hints () =
+  let with_hints =
+    Analysis_agent.config ~vuln_class:Injection ~model_tier:Standard ~language_hints:[ "Python"; "JavaScript" ]
+  in
+  let without_hints = Analysis_agent.config ~vuln_class:Injection ~model_tier:Standard ~language_hints:[] in
+  (check bool) "prompt contains Python" true (Devkit.Stre.exists with_hints.system_prompt "Python");
+  (check bool) "prompt contains JavaScript" true (Devkit.Stre.exists with_hints.system_prompt "JavaScript");
+  (check bool) "no language note without hints" false
+    (Devkit.Stre.exists without_hints.system_prompt "Languages detected in this diff")
+
+let test_analysis_agent_build_input_minimal () =
+  let signal : Security_types.triage_signal =
+    {
+      vuln_class = Injection;
+      confidence = High;
+      regions = [ { path = "app.py"; start_line = 10; end_line = 20 } ];
+      rationale = "SQL string concatenation";
+    }
+  in
+  let input =
+    Analysis_agent.build_input ~diff_text:"diff content" ~triage_signals:[ signal ] ~file_paths:[ "app.py" ] ()
+  in
+  (check bool) "contains diff" true (Devkit.Stre.exists input "diff content");
+  (check bool) "contains file path" true (Devkit.Stre.exists input "app.py");
+  (check bool) "contains rationale" true (Devkit.Stre.exists input "SQL string concatenation");
+  (check bool) "contains confidence" true (Devkit.Stre.exists input "high");
+  (check bool) "contains regions" true (Devkit.Stre.exists input "lines 10");
+  (check bool) "no security memory section" false (Devkit.Stre.exists input "Repository Security Context")
+
+let test_analysis_agent_build_input_with_memory () =
+  let signal : Security_types.triage_signal =
+    {
+      vuln_class = Xss;
+      confidence = Medium;
+      regions = [ { path = "template.html"; start_line = 5; end_line = 15 } ];
+      rationale = "Unescaped template variable";
+    }
+  in
+  let input =
+    Analysis_agent.build_input ~diff_text:"diff content" ~triage_signals:[ signal ] ~file_paths:[ "template.html" ]
+      ~security_memory:"Known safe: Html.escape_text used consistently" ()
+  in
+  (check bool) "contains memory" true (Devkit.Stre.exists input "Known safe: Html.escape_text used consistently");
+  (check bool) "has security memory section" true (Devkit.Stre.exists input "Repository Security Context")
+
+let test_analysis_agent_build_input_empty_memory () =
+  let signal : Security_types.triage_signal =
+    {
+      vuln_class = Injection;
+      confidence = High;
+      regions = [ { path = "app.py"; start_line = 1; end_line = 5 } ];
+      rationale = "test";
+    }
+  in
+  let input =
+    Analysis_agent.build_input ~diff_text:"diff" ~triage_signals:[ signal ] ~file_paths:[ "app.py" ] ~security_memory:""
+      ()
+  in
+  (check bool) "no security memory section for empty" false (Devkit.Stre.exists input "Repository Security Context")
+
+let test_analysis_agent_tools () =
+  let fetch_file _path = Lwt.return_ok (Some "file content") in
+  let tool_list = Analysis_agent.tools ~fetch_file in
+  (check int) "one tool" 1 (List.length tool_list);
+  match tool_list with
+  | [ (name, _tool) ] -> (check string) "tool name" "get_file_content" name
+  | _ -> fail "expected exactly one tool"
+
+let test_analysis_agent_output_schema () =
+  let cfg = Analysis_agent.config ~vuln_class:Injection ~model_tier:Standard ~language_hints:[] in
+  let schema = cfg.output_schema in
+  (check bool) "schema has type" true
+    (match schema with
+    | `Assoc fields -> List.exists (fun (k, _) -> String.equal k "type") fields
+    | _ -> false);
+  (check bool) "schema has properties" true
+    (match schema with
+    | `Assoc fields -> List.exists (fun (k, _) -> String.equal k "properties") fields
+    | _ -> false)
+
+let test_analysis_agent_shared_methodology () =
+  let methodology = Analysis_agent.shared_methodology in
+  (check bool) "step 1" true (Devkit.Stre.exists methodology "Step 1");
+  (check bool) "step 2" true (Devkit.Stre.exists methodology "Step 2");
+  (check bool) "step 3" true (Devkit.Stre.exists methodology "Step 3");
+  (check bool) "step 4" true (Devkit.Stre.exists methodology "Step 4")
+
+let test_analysis_agent_vuln_class_section_all_classes () =
+  let classes : Security_types.vuln_class list = [ Injection; Xss; Command_injection; Authn; Authz; Ssrf ] in
+  List.iter
+    (fun vc ->
+      let section = Analysis_agent.vuln_class_section vc ~language_hints:[] in
+      (check bool)
+        (Printf.sprintf "%s non-empty" (Security_types.vuln_class_to_string vc))
+        true
+        (String.length section > 0);
+      (check bool)
+        (Printf.sprintf "%s has sources or sinks" (Security_types.vuln_class_to_string vc))
+        true
+        (Devkit.Stre.exists section "Source" || Devkit.Stre.exists section "What to look for"))
+    classes
+
 (** {2 End-to-end reviewer tests} *)
 
 module R_test = Reviewer.Make (Api_local.Github) (Api_local.Agent_runner) (Api_local.Slack)
@@ -994,6 +1163,22 @@ let () =
           test_case "safe response parseable" `Quick test_triage_corpus_safe_response;
           test_case "injection routing" `Quick test_triage_corpus_injection_routing;
           test_case "safe skip" `Quick test_triage_corpus_safe_skip;
+        ] );
+      ( "analysis_agent",
+        [
+          test_case "config defaults" `Quick test_analysis_agent_config;
+          test_case "config per class" `Quick test_analysis_agent_config_per_class;
+          test_case "config model tier" `Quick test_analysis_agent_config_model_tier;
+          test_case "prompt methodology" `Quick test_analysis_agent_prompt_contains_methodology;
+          test_case "prompt class section" `Quick test_analysis_agent_prompt_contains_class_section;
+          test_case "language hints" `Quick test_analysis_agent_language_hints;
+          test_case "build input minimal" `Quick test_analysis_agent_build_input_minimal;
+          test_case "build input with memory" `Quick test_analysis_agent_build_input_with_memory;
+          test_case "build input empty memory" `Quick test_analysis_agent_build_input_empty_memory;
+          test_case "tools" `Quick test_analysis_agent_tools;
+          test_case "output schema" `Quick test_analysis_agent_output_schema;
+          test_case "shared methodology" `Quick test_analysis_agent_shared_methodology;
+          test_case "vuln class sections" `Quick test_analysis_agent_vuln_class_section_all_classes;
         ] );
       ( "reviewer_e2e",
         [
