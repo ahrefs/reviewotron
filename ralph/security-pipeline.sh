@@ -122,7 +122,7 @@ while true; do
   # Pass last 80 lines of progress for context
   PROGRESS_TAIL=$(tail -80 "$PROGRESS_FILE" 2>/dev/null || echo "(no progress yet)")
 
-  result=$(claude -p --dangerously-skip-permissions \
+  result=$(claude --model sonnet -p --dangerously-skip-permissions \
 "@docs/plans/2026-04-14-security-review-pipeline-prd.md
 @AGENTS.md
 
