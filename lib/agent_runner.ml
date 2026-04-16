@@ -19,13 +19,37 @@ type agent_config = {
 type agent_result = {
   output : Yojson.Basic.t;
   usage : Ai_provider.Usage.t;
+  cache_read_input_tokens : int;
+  cache_creation_input_tokens : int;
   steps_count : int;
   model_id : string;
 }
 
+(** Extract cache token counts from the raw Anthropic response body.
+    The SDK's [Usage.t] only has [input_tokens] and [output_tokens]; cache
+    breakdowns live in the provider response JSON under [usage].
+
+    TODO: get these from the provider response headers directly once
+    ocaml-ai-sdk populates [response_info.headers] (currently empty). *)
+let extract_cache_tokens (response_body : Yojson.Basic.t) =
+  let int_field obj key =
+    match List.assoc_opt key obj with
+    | Some (`Int n) -> n
+    | _ -> 0
+  in
+  match response_body with
+  | `Assoc fields ->
+    (match List.assoc_opt "usage" fields with
+    | Some (`Assoc usage_fields) ->
+      let cache_read = int_field usage_fields "cache_read_input_tokens" in
+      let cache_creation = int_field usage_fields "cache_creation_input_tokens" in
+      cache_read, cache_creation
+    | _ -> 0, 0)
+  | _ -> 0, 0
+
 let default_model_id = function
   | Fast -> "claude-haiku-4-5-20251001"
-  | Standard -> "claude-sonnet-4-5-20250929"
+  | Standard -> "claude-sonnet-4-6-20260414"
   | Strong -> "claude-opus-4-6-20260414"
 
 let code_fence_re = Re2.create_exn {|```\w*\s*\n([\s\S]*?)\n```|}
@@ -104,10 +128,14 @@ let run_agent ~model ?tools ?(max_retries = 2) ?debug_dir ~config ~input () =
         ~max_steps:config.max_steps ~max_retries ()
     in
     let steps_count = List.length result.steps in
+    let cache_read_input_tokens, cache_creation_input_tokens = extract_cache_tokens result.response.body in
     log#info "agent %s: finished (%d steps, %d input tokens, %d output tokens)" config.name steps_count
       result.usage.input_tokens result.usage.output_tokens;
+    let make_result output =
+      { output; usage = result.usage; cache_read_input_tokens; cache_creation_input_tokens; steps_count; model_id }
+    in
     match result.output with
-    | Some output -> Lwt.return_ok { output; usage = result.usage; steps_count; model_id }
+    | Some output -> Lwt.return_ok (make_result output)
     | None ->
       (* SDK failed to parse — try stripping markdown code fences from raw text.
          For multi-step agents, the last step's text is most likely to contain
@@ -122,7 +150,7 @@ let run_agent ~model ?tools ?(max_retries = 2) ?debug_dir ~config ~input () =
       (match List.find_map try_parse_json_text step_texts with
       | Some output ->
         log#info "agent %s: recovered structured output from code-fenced text" config.name;
-        Lwt.return_ok { output; usage = result.usage; steps_count; model_id }
+        Lwt.return_ok (make_result output)
       | None ->
         let msg =
           Printf.sprintf "agent %s: no structured output returned (finish_reason=%s)" config.name

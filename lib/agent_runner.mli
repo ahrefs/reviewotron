@@ -28,6 +28,8 @@ type agent_config = {
 type agent_result = {
   output : Yojson.Basic.t;
   usage : Ai_provider.Usage.t;
+  cache_read_input_tokens : int;
+  cache_creation_input_tokens : int;
   steps_count : int;
   model_id : string;
 }
@@ -35,7 +37,7 @@ type agent_result = {
 (** Default model ID for a tier.
 
     - [Fast] → [claude-haiku-4-5-20251001]
-    - [Standard] → [claude-sonnet-4-5-20250929]
+    - [Standard] → [claude-sonnet-4-6-20260414]
     - [Strong] → [claude-opus-4-6-20260414] *)
 val default_model_id : model_tier -> string
 
@@ -61,7 +63,7 @@ val write_debug_dump :
     with token usage.
 
     @param model Language model instance (create via provider, e.g.
-      [Ai_provider_anthropic.model "claude-sonnet-4-5-20250929"])
+      [Ai_provider_anthropic.model "claude-sonnet-4-6-20260414"])
     @param tools Named tool definitions for context expansion
     @param max_retries Per-call retry count (default 2)
     @param debug_dir Directory for debug dumps on parse failure

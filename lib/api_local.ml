@@ -100,7 +100,17 @@ module Agent_runner : Api.Agent_runner = struct
     | Ok json_str ->
       let output = Melange_json.of_string json_str in
       let usage : Ai_provider.Usage.t = { input_tokens = 0; output_tokens = 0; total_tokens = None } in
-      Lwt.return (Ok Agent_runner.{ output; usage; steps_count = 1; model_id = "mock" })
+      Lwt.return
+        (Ok
+           Agent_runner.
+             {
+               output;
+               usage;
+               cache_read_input_tokens = 0;
+               cache_creation_input_tokens = 0;
+               steps_count = 1;
+               model_id = "mock";
+             })
     | Error msg -> Lwt.return (Error msg)
 end
 
