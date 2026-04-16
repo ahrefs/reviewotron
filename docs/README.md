@@ -184,7 +184,7 @@ Each repo can have a `.reviewotron.json` file in its root. This is fetched from 
   "max_diff_lines": 2000,
   "max_files": 50,
   "max_tokens_per_review": 100000,
-  "model": "claude-sonnet-4-6-20260414",
+  "model": "claude-sonnet-4-6",
   "ignored_paths": ["*.test.js", "vendor/"],
   "ignored_authors": ["dependabot[bot]"],
   "auto_review_pr_open": true,
@@ -218,7 +218,7 @@ Each repo can have a `.reviewotron.json` file in its root. This is fetched from 
 | `max_diff_lines` | `2000` | Maximum total diff lines to review. PRs exceeding this are skipped. |
 | `max_files` | `50` | Maximum files (currently used for informational purposes). |
 | `max_tokens_per_review` | `100000` | Token budget hint for the review agent. |
-| `model` | `claude-sonnet-4-6-20260414` | Model ID for the general review agent. |
+| `model` | `claude-sonnet-4-6` | Model ID for the general review agent. |
 | `ignored_paths` | `[]` | Glob patterns for files to exclude from review. Supports `*` and `**` wildcards. |
 | `ignored_authors` | `[]` | GitHub usernames whose PRs/pushes should be skipped. |
 | `auto_review_pr_open` | `true` | Review PRs when they are opened, reopened, or marked ready. |
@@ -255,8 +255,8 @@ Each repo can have a `.reviewotron.json` file in its root. This is fetched from 
 | Tier | Model | Typical Use |
 |------|-------|-------------|
 | `"fast"` | `claude-haiku-4-5-20251001` | Triage, memory curator |
-| `"standard"` | `claude-sonnet-4-6-20260414` | Analysis agents, validator, general review |
-| `"strong"` | `claude-opus-4-6-20260414` | Reserved for complex codebases |
+| `"standard"` | `claude-sonnet-4-6` | Analysis agents, validator, general review |
+| `"strong"` | `claude-opus-4-6` | Reserved for complex codebases |
 
 #### Vulnerability Classes
 

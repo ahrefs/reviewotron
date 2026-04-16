@@ -35,10 +35,11 @@ type agent_result = {
 }
 
 (** Default model ID for a tier.
+    Uses {!Ai_provider_anthropic.Model_catalog} to resolve correct model IDs.
 
-    - [Fast] → [claude-haiku-4-5-20251001]
-    - [Standard] → [claude-sonnet-4-6-20260414]
-    - [Strong] → [claude-opus-4-6-20260414] *)
+    - [Fast] → [Claude_haiku_4_5]
+    - [Standard] → [Claude_sonnet_4_6]
+    - [Strong] → [Claude_opus_4_6] *)
 val default_model_id : model_tier -> string
 
 (** Write a debug dump of agent output when structured parsing fails.
@@ -63,7 +64,7 @@ val write_debug_dump :
     with token usage.
 
     @param model Language model instance (create via provider, e.g.
-      [Ai_provider_anthropic.model "claude-sonnet-4-6-20260414"])
+      [Ai_provider_anthropic.language_model ~model:"claude-sonnet-4-6" ()])
     @param tools Named tool definitions for context expansion
     @param max_retries Per-call retry count (default 2)
     @param debug_dir Directory for debug dumps on parse failure
