@@ -120,7 +120,7 @@ type config = {
   max_diff_lines : int; [@json.default 2000]
   max_files : int; [@json.default 50]
   max_tokens_per_review : int; [@json.default 100000]
-  model : string; [@json.default "claude-sonnet-4-5-20250929"]
+  model : string; [@json.default "claude-sonnet-4-6-20260414"]
   ignored_paths : string list; [@json.default []]
   ignored_authors : string list; [@json.default []]
   auto_review_pr_open : bool; [@json.default true]

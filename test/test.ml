@@ -1084,70 +1084,104 @@ let triage_agent_cost : Cost_tracking.agent_cost =
     model = "claude-haiku-4-5-20251001";
     input_tokens = 1000;
     output_tokens = 200;
+    cache_read_input_tokens = 0;
+    cache_creation_input_tokens = 0;
     turns = 1;
     files_fetched = 0;
-    estimated_cost_usd = 0.0016;
+    (* 1000 * 1.0/1M + 200 * 5.0/1M = 0.001 + 0.001 = 0.002 *)
+    estimated_cost_usd = 0.002;
   }
 
 let analysis_agent_cost : Cost_tracking.agent_cost =
   {
     agent_name = "injection_analysis";
-    model = "claude-sonnet-4-5-20250929";
+    model = "claude-sonnet-4-6-20260414";
     input_tokens = 5000;
     output_tokens = 1000;
+    cache_read_input_tokens = 0;
+    cache_creation_input_tokens = 0;
     turns = 4;
     files_fetched = 3;
+    (* 5000 * 3/1M + 1000 * 15/1M = 0.015 + 0.015 = 0.030 *)
     estimated_cost_usd = 0.030;
   }
 
 let general_agent_cost : Cost_tracking.agent_cost =
   {
     agent_name = "general_review";
-    model = "claude-sonnet-4-5-20250929";
+    model = "claude-sonnet-4-6-20260414";
     input_tokens = 3000;
     output_tokens = 800;
+    cache_read_input_tokens = 0;
+    cache_creation_input_tokens = 0;
     turns = 1;
     files_fetched = 0;
+    (* 3000 * 3/1M + 800 * 15/1M = 0.009 + 0.012 = 0.021 *)
     estimated_cost_usd = 0.021;
   }
 
 let test_estimate_cost_sonnet () =
   (* Sonnet: $3/M input, $15/M output *)
   let cost =
-    Cost_tracking.estimate_cost ~model_id:"claude-sonnet-4-5-20250929" ~input_tokens:1_000_000 ~output_tokens:1_000_000
+    Cost_tracking.estimate_cost ~model_id:"claude-sonnet-4-6-20260414" ~input_tokens:1_000_000 ~output_tokens:1_000_000
+      ~cache_read_input_tokens:0 ~cache_creation_input_tokens:0
   in
   (check (float 1e-6)) "sonnet 1M in + 1M out" 18.0 cost
 
 let test_estimate_cost_haiku () =
-  (* Haiku: $0.80/M input, $4/M output *)
+  (* Haiku: $1/M input, $5/M output *)
   let cost =
     Cost_tracking.estimate_cost ~model_id:"claude-haiku-4-5-20251001" ~input_tokens:500_000 ~output_tokens:100_000
+      ~cache_read_input_tokens:0 ~cache_creation_input_tokens:0
   in
-  (* 500k * 0.80/1M + 100k * 4.0/1M = 0.40 + 0.40 = 0.80 *)
-  (check (float 1e-6)) "haiku 500k in + 100k out" 0.80 cost
+  (* 500k * 1.0/1M + 100k * 5.0/1M = 0.50 + 0.50 = 1.00 *)
+  (check (float 1e-6)) "haiku 500k in + 100k out" 1.00 cost
 
 let test_estimate_cost_opus () =
-  (* Opus: $15/M input, $75/M output *)
+  (* Opus: $5/M input, $25/M output *)
   let cost =
     Cost_tracking.estimate_cost ~model_id:"claude-opus-4-6-20260414" ~input_tokens:100_000 ~output_tokens:10_000
+      ~cache_read_input_tokens:0 ~cache_creation_input_tokens:0
   in
-  (* 100k * 15/1M + 10k * 75/1M = 1.50 + 0.75 = 2.25 *)
-  (check (float 1e-6)) "opus 100k in + 10k out" 2.25 cost
+  (* 100k * 5/1M + 10k * 25/1M = 0.50 + 0.25 = 0.75 *)
+  (check (float 1e-6)) "opus 100k in + 10k out" 0.75 cost
 
 let test_estimate_cost_unknown_model () =
-  let cost = Cost_tracking.estimate_cost ~model_id:"gpt-4o-unknown" ~input_tokens:1000 ~output_tokens:1000 in
+  let cost =
+    Cost_tracking.estimate_cost ~model_id:"gpt-4o-unknown" ~input_tokens:1000 ~output_tokens:1000
+      ~cache_read_input_tokens:0 ~cache_creation_input_tokens:0
+  in
   (check (float 1e-6)) "unknown model zero cost" 0.0 cost
+
+let test_estimate_cost_with_cache () =
+  (* Sonnet: $3/M input, $15/M output, $3.75/M cache write, $0.30/M cache read *)
+  let cost =
+    Cost_tracking.estimate_cost ~model_id:"claude-sonnet-4-6-20260414" ~input_tokens:10_000 ~output_tokens:5_000
+      ~cache_read_input_tokens:100_000 ~cache_creation_input_tokens:50_000
+  in
+  (* 10k * 3/1M + 5k * 15/1M + 50k * 3.75/1M + 100k * 0.30/1M
+     = 0.03 + 0.075 + 0.1875 + 0.03 = 0.3225 *)
+  (check (float 1e-6)) "sonnet with cache" 0.3225 cost
 
 let test_of_agent_result () =
   let usage : Ai_provider.Usage.t = { input_tokens = 2000; output_tokens = 500; total_tokens = Some 2500 } in
   let result : Agent_runner.agent_result =
-    { output = `Null; usage; steps_count = 3; model_id = "claude-sonnet-4-5-20250929" }
+    {
+      output = `Null;
+      usage;
+      cache_read_input_tokens = 0;
+      cache_creation_input_tokens = 0;
+      steps_count = 3;
+      model_id = "claude-sonnet-4-6-20260414";
+    }
   in
   let cost = Cost_tracking.of_agent_result ~agent_name:"test_agent" ~files_fetched:2 result in
   (check string) "agent_name" "test_agent" cost.agent_name;
-  (check string) "model" "claude-sonnet-4-5-20250929" cost.model;
+  (check string) "model" "claude-sonnet-4-6-20260414" cost.model;
   (check int) "input_tokens" 2000 cost.input_tokens;
   (check int) "output_tokens" 500 cost.output_tokens;
+  (check int) "cache_read" 0 cost.cache_read_input_tokens;
+  (check int) "cache_write" 0 cost.cache_creation_input_tokens;
   (check int) "turns" 3 cost.turns;
   (check int) "files_fetched" 2 cost.files_fetched;
   (* 2000 * 3/1M + 500 * 15/1M = 0.006 + 0.0075 = 0.0135 *)
@@ -1158,7 +1192,8 @@ let test_aggregate () =
   (check string) "plugin" "security" rc.plugin;
   (check int) "total_input" 6000 rc.total_input_tokens;
   (check int) "total_output" 1200 rc.total_output_tokens;
-  (check (float 1e-6)) "total_cost" 0.0316 rc.total_estimated_cost_usd;
+  (* triage: 0.002 + analysis: 0.030 = 0.032 *)
+  (check (float 1e-6)) "total_cost" 0.032 rc.total_estimated_cost_usd;
   (check int) "agent_count" 2 (List.length rc.agents)
 
 let test_format_footer () =
@@ -1191,6 +1226,8 @@ let test_agent_cost_json_roundtrip () =
       model = "claude-haiku-4-5-20251001";
       input_tokens = 1234;
       output_tokens = 567;
+      cache_read_input_tokens = 8000;
+      cache_creation_input_tokens = 2000;
       turns = 2;
       files_fetched = 1;
       estimated_cost_usd = 0.00327;
@@ -1202,6 +1239,8 @@ let test_agent_cost_json_roundtrip () =
   (check string) "model" cost.model decoded.model;
   (check int) "input_tokens" cost.input_tokens decoded.input_tokens;
   (check int) "output_tokens" cost.output_tokens decoded.output_tokens;
+  (check int) "cache_read" cost.cache_read_input_tokens decoded.cache_read_input_tokens;
+  (check int) "cache_write" cost.cache_creation_input_tokens decoded.cache_creation_input_tokens;
   (check int) "turns" cost.turns decoded.turns;
   (check int) "files_fetched" cost.files_fetched decoded.files_fetched;
   (check (float 1e-10)) "estimated_cost_usd" cost.estimated_cost_usd decoded.estimated_cost_usd
@@ -2070,6 +2109,7 @@ let () =
           test_case "estimate cost haiku" `Quick test_estimate_cost_haiku;
           test_case "estimate cost opus" `Quick test_estimate_cost_opus;
           test_case "estimate cost unknown model" `Quick test_estimate_cost_unknown_model;
+          test_case "estimate cost with cache" `Quick test_estimate_cost_with_cache;
           test_case "of_agent_result" `Quick test_of_agent_result;
           test_case "aggregate" `Quick test_aggregate;
           test_case "format footer" `Quick test_format_footer;

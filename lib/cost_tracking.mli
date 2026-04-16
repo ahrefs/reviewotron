@@ -8,6 +8,8 @@ type agent_cost = {
   model : string;
   input_tokens : int;
   output_tokens : int;
+  cache_read_input_tokens : int;
+  cache_creation_input_tokens : int;
   turns : int;
   files_fetched : int;
   estimated_cost_usd : float;
@@ -24,8 +26,16 @@ type review_cost = {
 [@@deriving json]
 
 (** Estimate the USD cost for a given model and token counts.
+    Includes cache write (1.25x base input) and cache read (0.1x base input)
+    pricing when cache tokens are present.
     Returns [0.0] if the model ID is not recognized (with a warning logged). *)
-val estimate_cost : model_id:string -> input_tokens:int -> output_tokens:int -> float
+val estimate_cost :
+  model_id:string ->
+  input_tokens:int ->
+  output_tokens:int ->
+  cache_read_input_tokens:int ->
+  cache_creation_input_tokens:int ->
+  float
 
 (** Build an {!agent_cost} from an agent result.
 
