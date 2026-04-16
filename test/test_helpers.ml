@@ -7,8 +7,7 @@ let test_repo_url = "https://github.com/org/monorepo"
 let make_test_context ?state ?(config = Config_types.config_of_json (Melange_json.of_string "{}")) () =
   let secrets : Config_types.secrets =
     {
-      repos =
-        [ { url = test_repo_url; auth = Some (GH_token "test-token"); gh_hook_secret = None; config_override = None } ];
+      repos = [ { url = test_repo_url; auth = Some (GH_token "test-token"); gh_hook_secret = None } ];
       anthropic_api_key = "sk-test";
       slack_access_token = None;
     }

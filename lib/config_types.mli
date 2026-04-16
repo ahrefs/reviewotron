@@ -115,7 +115,6 @@ type repo_config = {
   url : string;
   auth : repo_auth option;
   gh_hook_secret : string option;
-  config_override : config option;
 }
 
 val repo_config_to_json : repo_config -> Yojson.Basic.t

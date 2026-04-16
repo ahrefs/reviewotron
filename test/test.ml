@@ -4,6 +4,13 @@ open Alcotest
 
 let read_file path = Std.input_file ~bin:true path
 
+let security_enabled_config =
+  Config_types.config_of_json (Melange_json.of_string {|{"review_plugins": {"security": {"enabled": true}}}|})
+
+let security_enabled_slack_config =
+  Config_types.config_of_json
+    (Melange_json.of_string {|{"slack_channel": "dev-reviews", "review_plugins": {"security": {"enabled": true}}}|})
+
 let test_parse_pr_opened () =
   let body = read_file "mock_payloads/pr_opened.json" in
   match Github.parse_event ~event_type:"pull_request" ~body with
@@ -78,7 +85,7 @@ let test_config_review_plugins_defaults () =
   let config = Config_types.config_of_json (Melange_json.of_string {|{}|}) in
   (check bool) "general enabled" true config.review_plugins.general.enabled;
   (check bool) "general prompt override" true (Option.is_none config.review_plugins.general.system_prompt_override);
-  (check bool) "security enabled" true config.review_plugins.security.enabled;
+  (check bool) "security disabled by default" false config.review_plugins.security.enabled;
   (check int) "vuln_classes count" 6 (List.length config.review_plugins.security.vuln_classes);
   (check int) "memory_max_tokens" 5000 config.review_plugins.security.memory_max_tokens;
   (check bool) "show_review_cost" false config.show_review_cost
@@ -1610,7 +1617,7 @@ let test_security_e2e_vulnerable () =
       "security_analysis_injection", "mock_api_responses/security/analysis_injection.json";
       "security_validator", "mock_api_responses/security/validator_confirmed.json";
     ];
-  let ctx = Test_helpers.make_test_context () in
+  let ctx = Test_helpers.make_test_context ~config:security_enabled_config () in
   let payload = read_file "mock_payloads/pr_opened.json" in
   let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
   Lwt_main.run (R_test.process_event ctx ~event);
@@ -1630,7 +1637,7 @@ let test_security_e2e_safe () =
       "general_review", "mock_api_responses/claude/review_response.json";
       "security_triage", "mock_api_responses/security/triage_safe.json";
     ];
-  let ctx = Test_helpers.make_test_context () in
+  let ctx = Test_helpers.make_test_context ~config:security_enabled_config () in
   let payload = read_file "mock_payloads/pr_opened.json" in
   let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
   Lwt_main.run (R_test.process_event ctx ~event);
@@ -1648,7 +1655,7 @@ let test_security_e2e_rejected () =
       "security_analysis_injection", "mock_api_responses/security/analysis_injection.json";
       "security_validator", "mock_api_responses/security/validator_rejected.json";
     ];
-  let ctx = Test_helpers.make_test_context () in
+  let ctx = Test_helpers.make_test_context ~config:security_enabled_config () in
   let payload = read_file "mock_payloads/pr_opened.json" in
   let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
   Lwt_main.run (R_test.process_event ctx ~event);
@@ -1682,7 +1689,7 @@ let test_pr_general_failure_no_findings () =
       "general_review", "mock_api_responses/nonexistent_file.json";
       "security_triage", "mock_api_responses/security/triage_safe.json";
     ];
-  let ctx = Test_helpers.make_test_context () in
+  let ctx = Test_helpers.make_test_context ~config:security_enabled_config () in
   let payload = read_file "mock_payloads/pr_opened.json" in
   let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
   Lwt_main.run (R_test.process_event ctx ~event);
@@ -1702,7 +1709,7 @@ let test_pr_general_failure_with_security_findings () =
       "security_analysis_injection", "mock_api_responses/security/analysis_injection.json";
       "security_validator", "mock_api_responses/security/validator_confirmed.json";
     ];
-  let ctx = Test_helpers.make_test_context () in
+  let ctx = Test_helpers.make_test_context ~config:security_enabled_config () in
   let payload = read_file "mock_payloads/pr_opened.json" in
   let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
   Lwt_main.run (R_test.process_event ctx ~event);
@@ -1721,7 +1728,7 @@ let test_push_general_failure () =
       "general_review", "mock_api_responses/nonexistent_file.json";
       "security_triage", "mock_api_responses/security/triage_safe.json";
     ];
-  let config = Config_types.config_of_json (Melange_json.of_string {|{"slack_channel": "dev-reviews"}|}) in
+  let config = security_enabled_slack_config in
   let ctx = Test_helpers.make_test_context ~config () in
   let payload = read_file "mock_payloads/push_develop.json" in
   let event = Test_helpers.parse_event_exn ~event_type:"push" ~body:payload in
@@ -1744,7 +1751,7 @@ let test_push_general_failure_with_findings () =
       "security_analysis_injection", "mock_api_responses/security/analysis_injection.json";
       "security_validator", "mock_api_responses/security/validator_confirmed.json";
     ];
-  let config = Config_types.config_of_json (Melange_json.of_string {|{"slack_channel": "dev-reviews"}|}) in
+  let config = security_enabled_slack_config in
   let ctx = Test_helpers.make_test_context ~config () in
   let payload = read_file "mock_payloads/push_develop.json" in
   let event = Test_helpers.parse_event_exn ~event_type:"push" ~body:payload in
@@ -1761,14 +1768,14 @@ let test_push_general_failure_with_findings () =
 let test_pr_security_failure_notice () =
   Test_helpers.reset_test_state ();
   (* Map security_triage agent to a nonexistent file so it fails entirely.
-     General review succeeds normally. The security plugin is enabled by default,
-     so when triage produces no costs, run_plugins detects the error. *)
+     General review succeeds normally. When triage produces no costs,
+     run_plugins detects the error. *)
   Api_local.set_agent_response_map
     [
       "general_review", "mock_api_responses/claude/review_response.json";
       "security_triage", "mock_api_responses/nonexistent_security_triage.json";
     ];
-  let ctx = Test_helpers.make_test_context () in
+  let ctx = Test_helpers.make_test_context ~config:security_enabled_config () in
   let payload = read_file "mock_payloads/pr_opened.json" in
   let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
   Lwt_main.run (R_test.process_event ctx ~event);
@@ -1787,7 +1794,7 @@ let test_push_security_failure_notice () =
       "general_review", "mock_api_responses/claude/push_review_response.json";
       "security_triage", "mock_api_responses/nonexistent_security_triage.json";
     ];
-  let config = Config_types.config_of_json (Melange_json.of_string {|{"slack_channel": "dev-reviews"}|}) in
+  let config = security_enabled_slack_config in
   let ctx = Test_helpers.make_test_context ~config () in
   let payload = read_file "mock_payloads/push_develop.json" in
   let event = Test_helpers.parse_event_exn ~event_type:"push" ~body:payload in
