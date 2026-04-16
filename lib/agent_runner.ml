@@ -47,10 +47,12 @@ let extract_cache_tokens (response_body : Yojson.Basic.t) =
     | _ -> 0, 0)
   | _ -> 0, 0
 
-let default_model_id = function
-  | Fast -> "claude-haiku-4-5-20251001"
-  | Standard -> "claude-sonnet-4-6-20260414"
-  | Strong -> "claude-opus-4-6-20260414"
+let default_model_id =
+  let open Ai_provider_anthropic.Model_catalog in
+  function
+  | Fast -> to_model_id Claude_haiku_4_5
+  | Standard -> to_model_id Claude_sonnet_4_6
+  | Strong -> to_model_id Claude_opus_4_6
 
 let code_fence_re = Re2.create_exn {|```\w*\s*\n([\s\S]*?)\n```|}
 
