@@ -83,7 +83,7 @@ type general_plugin_config = {
 
 (** Configuration for the security review plugin. *)
 type security_plugin_config = {
-  enabled : bool; [@json.default true]
+  enabled : bool; [@json.default false]
   vuln_classes : vuln_class list; [@json.default all_vuln_classes]
   triage_model_tier : model_tier; [@json.default Fast]
   analysis_model_tier : model_tier; [@json.default Standard]
@@ -97,7 +97,7 @@ let default_general_plugin_config = { enabled = true; system_prompt_override = N
 
 let default_security_plugin_config =
   {
-    enabled = true;
+    enabled = false;
     vuln_classes = all_vuln_classes;
     triage_model_tier = Fast;
     analysis_model_tier = Standard;
@@ -154,7 +154,6 @@ type repo_config = {
   url : string;
   auth : repo_auth option;
   gh_hook_secret : string option;
-  config_override : config option;
 }
 
 (** Normalize legacy [gh_token] field into [auth] variant representation. *)
@@ -179,7 +178,6 @@ let repo_config_to_json (rc : repo_config) : Yojson.Basic.t =
   let fields = [ "url", `String rc.url ] in
   let fields = cons_opt_field "auth" repo_auth_to_json rc.auth fields in
   let fields = cons_opt_field "gh_hook_secret" string_to_json rc.gh_hook_secret fields in
-  let fields = cons_opt_field "config_override" config_to_json rc.config_override fields in
   `Assoc (List.rev fields)
 
 let nullable_field name parse fields =
@@ -198,8 +196,7 @@ let repo_config_of_json (json : Yojson.Basic.t) : repo_config =
     in
     let auth = nullable_field "auth" repo_auth_of_json fields in
     let gh_hook_secret = nullable_field "gh_hook_secret" string_of_json fields in
-    let config_override = nullable_field "config_override" config_of_json fields in
-    { url; auth; gh_hook_secret; config_override }
+    { url; auth; gh_hook_secret }
   | _ -> Melange_json.of_json_error ~json "expected a JSON object"
 
 type secrets = {
