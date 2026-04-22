@@ -23,7 +23,7 @@ depends: [
   "lwt_ppx" {< "6.0"}
   "melange-json-native"
   "mirage-crypto-pk" {< "2.1.0"}
-  "ocaml-ai-sdk"
+  "ocaml-ai-sdk" {= "0.3"}
   "mirage-crypto-rng" {< "2.1.0"}
   "ppx_deriving_jsonschema"
   "ptime"
@@ -50,4 +50,6 @@ build: [
 dev-repo: "git+https://github.com/ahrefs/reviewotron.git"
 pin-depends: [
   ["devkit.dev" "https://github.com/ahrefs/devkit/archive/8319a1419088506ac2862c444f62bf60ccfa34d6.tar.gz"]
+  ["ocaml-ai-sdk.0.3" "https://github.com/ahrefs/ocaml-ai-sdk/archive/5d606fd683bcec6132789d671bfbe038a8be4930.tar.gz"]
+  ["ppx_deriving_jsonschema.dev" "https://github.com/ahrefs/ppx_deriving_jsonschema/archive/6bd6b79e3ff8a839a6257df93f0e9266aaaa0318.tar.gz"]
 ]
