@@ -59,7 +59,9 @@ Produce a JSON object with this structure:
 
 If the repository security context is provided, use it to calibrate your signals — known safe patterns reduce confidence, known risk areas increase it.
 
-Be thorough. Scan every file in the diff. Do not skip files based on extension alone — configuration files, scripts, and templates can all contain security-relevant changes.|}
+Be thorough. Scan every file in the diff. Do not skip files based on extension alone — configuration files, scripts, and templates can all contain security-relevant changes.
+
+Your final response must be a single JSON object matching the schema. Do not wrap it in markdown code fences, and do not include any prose before or after it.|}
 
 let language_of_extension ext =
   match ext with

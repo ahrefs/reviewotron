@@ -30,12 +30,12 @@
             "description": "Passed to Db.exec as raw SQL"
           }
         ],
-        "sanitization": ["Missing"],
+        "sanitization": "missing",
         "confidence": "high",
         "description": "User-controlled input from HTTP query parameter is concatenated directly into a SQL query string without parameterization.",
         "suggested_fix": "Use Caqti prepared statements with typed parameters instead of string concatenation."
       },
-      "verdict": ["Confirmed"],
+      "verdict": "confirmed",
       "evidence_notes": "Source is user-controllable (Dream.query parameter). Sink is Db.exec with string concatenation. Flow path fully traced with file and line evidence. No sanitization present."
     }
   ]

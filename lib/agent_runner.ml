@@ -54,27 +54,6 @@ let default_model_id =
   | Standard -> to_model_id Claude_sonnet_4_6
   | Strong -> to_model_id Claude_opus_4_6
 
-let code_fence_re = Re2.create_exn {|```\w*\s*\n([\s\S]*?)\n```|}
-
-(** Try to extract JSON from text that may be wrapped in markdown code fences.
-    Models sometimes return [```json ... ```] despite being told not to, often
-    preceded by reasoning text.  We extract the {b last} fenced JSON block since
-    models typically reason first and output the structured result last. *)
-let try_parse_json_text text =
-  let try_parse s = try Some (Yojson.Basic.from_string s) with Yojson.Json_error _ -> None in
-  let trimmed = String.trim text in
-  match try_parse trimmed with
-  | Some _ as ok -> ok
-  | None ->
-    (* Extract all ```...``` fenced blocks, try each from last to first *)
-    let matches =
-      match Re2.get_matches code_fence_re trimmed with
-      | Error _ -> []
-      | Ok ms -> List.filter_map (fun m -> Re2.Match.get ~sub:(`Index 1) m) ms
-    in
-    (* Try last match first — models output the structured result last *)
-    matches |> List.rev |> List.find_map (fun inner -> try_parse (String.trim inner))
-
 (** Recursively create a directory path, like [mkdir -p].
     Silently succeeds if the directory already exists. *)
 let rec mkdir_p dir =
@@ -139,34 +118,19 @@ let run_agent ~model ?tools ?(max_retries = 2) ?debug_dir ~config ~input () =
     match result.output with
     | Some output -> Lwt.return_ok (make_result output)
     | None ->
-      (* SDK failed to parse — try stripping markdown code fences from raw text.
-         For multi-step agents, the last step's text is most likely to contain
-         the structured output (earlier steps may contain reasoning text).
-         Try each step's text individually (reverse order = last first). *)
-      let step_texts =
-        result.steps
-        |> List.rev
-        |> List.filter_map (fun (s : Ai_core.Generate_text_result.step) ->
-          if String.equal s.text "" then None else Some s.text)
+      let msg =
+        Printf.sprintf "agent %s: no structured output returned (finish_reason=%s)" config.name
+          (Ai_provider.Finish_reason.to_string result.finish_reason)
       in
-      (match List.find_map try_parse_json_text step_texts with
-      | Some output ->
-        log#info "agent %s: recovered structured output from code-fenced text" config.name;
-        Lwt.return_ok (make_result output)
-      | None ->
-        let msg =
-          Printf.sprintf "agent %s: no structured output returned (finish_reason=%s)" config.name
-            (Ai_provider.Finish_reason.to_string result.finish_reason)
-        in
-        (match debug_dir with
-        | Some dir ->
-          (match
-             write_debug_dump ~dir ~config ~finish_reason:result.finish_reason ~steps:result.steps ~usage:result.usage
-           with
-          | Some filepath -> log#warn "agent %s: parse failed, debug dump at %s" config.name filepath
-          | None -> log#warn "%s" msg)
-        | None -> log#warn "%s" msg);
-        Lwt.return_error msg)
+      (match debug_dir with
+      | Some dir ->
+        (match
+           write_debug_dump ~dir ~config ~finish_reason:result.finish_reason ~steps:result.steps ~usage:result.usage
+         with
+        | Some filepath -> log#warn "agent %s: parse failed, debug dump at %s" config.name filepath
+        | None -> log#warn "%s" msg)
+      | None -> log#warn "%s" msg);
+      Lwt.return_error msg
   with
   | Ai_core.Retry.Retry_error err ->
     fail

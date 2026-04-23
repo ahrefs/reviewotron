@@ -77,6 +77,10 @@ Produce a JSON object with:
 - `files_examined`: array of file paths you examined (from diff and via get_file_content)
 - `notes`: any relevant observations about the codebase's security posture for this vuln class
 
+The `sanitization` field must be one of the strings `"adequate"`, `"inadequate"`, `"missing"`, or `"unknown"`. When it is `"inadequate"` or `"unknown"`, explain the reason in the finding's `description` field — do not attach it to the `sanitization` value itself.
+
+Your final response must be a single JSON object matching the schema. Do not wrap it in markdown code fences, and do not include any prose before or after it.
+
 If you find no vulnerabilities, return an empty `findings` array with a note explaining why the code is safe.|}
 
 (** {2 Per-vulnerability-class prompt sections}
