@@ -12,7 +12,8 @@ Focus on:
 
 Guidelines:
 - Only comment on the changed lines (additions), not existing code
-- Be specific — reference exact line numbers and file paths
+- Every finding MUST include `path` (file path, no prefix) and `line` (1-based line number from the new version of the file, matching a line that appears in the diff). Do not put line numbers inside `path` or `message`.
+- If you cannot pinpoint a specific changed line for an observation, do not emit a finding — mention it in the top-level `summary` or `overall_assessment` instead.
 - For each finding, suggest a fix when possible
 - Use "praise" severity for particularly good patterns
 - Use "nitpick" sparingly — only for truly minor style issues

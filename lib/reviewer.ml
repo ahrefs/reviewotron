@@ -213,9 +213,8 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
     | None -> None
     | Some fd ->
     match finding.line with
-    | None -> None
-    | Some line when line <= 0 -> None
-    | Some line ->
+    | line when line <= 0 -> None
+    | line ->
       let position =
         match Diff_parser.line_to_position fd ~line ~side:Right with
         | Some _ as pos -> pos
@@ -264,7 +263,7 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
     Hashtbl.fold (fun _key finding acc -> finding :: acc) tbl []
     |> List.sort (fun (a : Review_types.finding) (b : Review_types.finding) ->
       match String.compare a.path b.path with
-      | 0 -> Stdlib.Option.compare Int.compare a.line b.line
+      | 0 -> Int.compare a.line b.line
       | n -> n)
 
   (** Run all enabled review plugins and collect findings and costs.
@@ -363,12 +362,7 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
       | [] -> ""
       | _ :: _ ->
         let to_bullet (f : Review_types.finding) =
-          let location =
-            match f.line with
-            | Some line -> Printf.sprintf "%s:%d" f.path line
-            | None -> f.path
-          in
-          Printf.sprintf "- `%s` %s" location f.message
+          Printf.sprintf "- `%s:%d` %s" f.path f.line f.message
         in
         let shown = CCList.take 10 unpositioned_findings in
         let hidden = List.length unpositioned_findings - List.length shown in
@@ -457,7 +451,7 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
               body = Review_format.format_finding_body finding;
               path = Some finding.path;
               position = None;
-              line = finding.line;
+              line = Some finding.line;
             }
           in
           let%lwt result =

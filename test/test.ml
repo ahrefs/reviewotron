@@ -259,7 +259,7 @@ let test_review_output_roundtrip () =
         [
           {
             path = "src/main.ml";
-            line = Some 42;
+            line = 42;
             end_line = None;
             severity = Warning;
             category = Error_handling;
@@ -276,7 +276,7 @@ let test_review_output_roundtrip () =
   (check int) "findings count" 1 (List.length parsed.findings);
   let f = List.hd parsed.findings in
   (check string) "finding path" "src/main.ml" f.path;
-  (check (option int)) "finding line" (Some 42) f.line
+  (check int) "finding line" 42 f.line
 
 let test_mock_claude_response () =
   let json_str = read_file "mock_api_responses/claude/review_response.json" in

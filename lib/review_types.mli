@@ -40,7 +40,7 @@ val finding_category_jsonschema : Yojson.Basic.t
 
 type finding = {
   path : string;
-  line : int option;
+  line : int;
   end_line : int option;
   severity : severity;
   category : finding_category;
