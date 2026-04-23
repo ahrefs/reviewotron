@@ -102,7 +102,10 @@ let finding_category_jsonschema =
 
 type finding = {
   path : string; [@jsonschema.description "File path relative to repo root"]
-  line : int option; [@json.option] [@jsonschema.description "Line number in the new version of the file"]
+  line : int;
+     [@jsonschema.description
+       "Line number (1-based) in the new version of the file. Must be a line that actually appears in the diff; \
+        findings without a specific changed line should not be emitted."]
   end_line : int option; [@json.option] [@jsonschema.description "End line for multi-line findings"]
   severity : severity; [@jsonschema.description "Severity: critical, warning, suggestion, nitpick, or praise"]
   category : finding_category;

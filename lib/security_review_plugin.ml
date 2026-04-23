@@ -136,7 +136,7 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) = struct
     let f = vf.finding in
     {
       path = f.sink.path;
-      line = Some f.sink.line;
+      line = f.sink.line;
       end_line = None;
       severity = severity_of_confidence f.confidence;
       category = Security;
@@ -322,13 +322,7 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) = struct
     in
     let finding_notes =
       List.map
-        (fun (f : Review_types.finding) ->
-          let line_suffix =
-            match f.line with
-            | None -> ""
-            | Some l -> Printf.sprintf ":%d" l
-          in
-          Printf.sprintf "Confirmed security finding at %s%s" f.path line_suffix)
+        (fun (f : Review_types.finding) -> Printf.sprintf "Confirmed security finding at %s:%d" f.path f.line)
         findings
     in
     lang_hints @ vuln_classes @ file_list @ finding_notes
