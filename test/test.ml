@@ -148,14 +148,19 @@ let test_system_prompt_security_disabled () =
   (check bool) "non-empty" true (String.length prompt > 0);
   (check bool) "contains focus" true (CCString.find ~sub:"Focus on:" prompt >= 0);
   (check bool) "mentions security in scope" true (CCString.find ~sub:"Security vulnerabilities" prompt >= 0);
-  (check bool) "does not tell agent to skip security" true (CCString.find ~sub:"Do NOT emit security findings" prompt < 0)
+  (check bool) "does not tell agent to skip security" true
+    (CCString.find ~sub:"Do NOT emit findings on any of those topics" prompt < 0)
 
 let test_system_prompt_security_enabled () =
   let prompt = Review_prompt.system_prompt ~security_covered_elsewhere:true () in
   (check bool) "non-empty" true (String.length prompt > 0);
-  (check bool) "contains focus" true (CCString.find ~sub:"Focus on:" prompt >= 0);
-  (check bool) "does not include security in the focus list" true (CCString.find ~sub:"Security vulnerabilities" prompt < 0);
-  (check bool) "tells agent to skip security" true (CCString.find ~sub:"Do NOT emit security findings" prompt >= 0)
+  (check bool) "states scope" true (CCString.find ~sub:"Your scope is" prompt >= 0);
+  (check bool) "does not include security in the focus list" true
+    (CCString.find ~sub:"Security vulnerabilities (injection" prompt < 0);
+  (check bool) "tells agent to skip security topics in any category" true
+    (CCString.find ~sub:"Do NOT emit findings on any of those topics" prompt >= 0);
+  (check bool) "names the specific topics that are out of scope" true
+    (CCString.find ~sub:"command injection" prompt >= 0)
 
 let test_system_prompt_dedup_guidelines () =
   let prompt = Review_prompt.system_prompt ~security_covered_elsewhere:true () in
@@ -975,7 +980,9 @@ let test_analysis_agent_shared_methodology () =
   (check bool) "step 1" true (Devkit.Stre.exists methodology "Step 1");
   (check bool) "step 2" true (Devkit.Stre.exists methodology "Step 2");
   (check bool) "step 3" true (Devkit.Stre.exists methodology "Step 3");
-  (check bool) "step 4" true (Devkit.Stre.exists methodology "Step 4")
+  (check bool) "step 4" true (Devkit.Stre.exists methodology "Step 4");
+  (check bool) "requires rendering sink input verbatim" true
+    (Devkit.Stre.exists methodology "Render the sink's actual input")
 
 let test_analysis_agent_vuln_class_section_all_classes () =
   let classes : Security_types.vuln_class list = [ Injection; Xss; Command_injection; Authn; Authz; Ssrf ] in

@@ -32,6 +32,21 @@ Find dangerous operations for the vulnerability class you are analyzing. A sink 
 
 For each sink, record the file path, line number, and a description of what dangerous operation occurs.
 
+**Render the sink's actual input.** Before claiming a sink is reached unsafely, quote the exact argument expression from the source (verbatim — including template literals, array element positions, wrapping helper calls, and any string construction that happens at the call site). Then state, in plain prose, the concrete string the sink receives at runtime. Do not paraphrase, do not abstract, and do not skip this step.
+
+Example — if the code is:
+```
+await runPipeline([
+  { cmd: "openssl", args: ["enc", "-pass", `pass:${opts.passphrase}`, "-out", encPath] },
+]);
+```
+and `runPipeline` applies `shellQuote` to each `args` element, then before reasoning about injection you must note:
+- `args[2]` is the single JS string `"pass:" + opts.passphrase` (template-literal concatenation happens BEFORE the array is passed).
+- `shellQuote` receives that single string as one argument and wraps the whole thing in double quotes.
+- The string the shell sees is literally `"pass:<passphrase contents>"`, with `pass:` inside the quoted token, not outside it.
+
+Only after writing down what the sink actually receives should you reason about whether the escaping is adequate. Models frequently mis-model JS template literals as if the prefix were outside the quoted token — writing the input out explicitly prevents that class of false positive.
+
 ### Step 3 — Data Flow Tracing
 
 Trace whether each source can reach each sink. Follow the data through:

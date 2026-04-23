@@ -12,13 +12,21 @@ let focus_with_security =
 - Code clarity and maintainability|}
 
 let focus_without_security =
-  {|Focus on:
-- Bugs and logic errors
-- Performance issues
-- Error handling gaps
-- Code clarity and maintainability
+  {|Your scope is: logic bugs, correctness, performance, error handling, code clarity, and non-security-related documentation gaps.
 
-Security is handled by a separate, specialized review pipeline (triage → analysis → validator) that runs in parallel with this review. Do NOT emit security findings here — duplicating them creates noise. Never use category `security`. If, during your review, you spot a critical security concern that you suspect the dedicated pipeline may miss, mention it briefly in the top-level `summary` and do not attach an inline finding.|}
+A separate, specialized security review pipeline (triage → analysis → validator) is running in parallel and covers ALL security topics, including:
+- injection (SQL, NoSQL, ORM, template)
+- XSS and HTML rendering of user-controlled data
+- command injection (shell, exec, subprocess, process spawn, file-descriptor-based execution)
+- authentication (credential handling, session management, JWT and token validation, password hashing)
+- authorization and access control (ownership checks, role/permission guards, IDOR, mass assignment)
+- SSRF and any code that constructs outbound requests from user input
+- any code path where user-controlled input reaches a dangerous sink (shell, query, HTML, process exec, file path, URL, auth decision, deserialization)
+- secret handling, process-list exposure of credentials, timing side channels
+
+Do NOT emit findings on any of those topics, in any category. This means: no "bug" finding about an escaping helper, no "logic" finding about an auth check, no "error-handling" finding about a shell command. If the code change touches shell commands, subprocess calls, HTML rendering, URL construction, crypto, auth middleware, or credential handling, assume the security pipeline is covering it and stay silent on the security dimension — even if you would have framed the finding as a bug.
+
+One narrow escape hatch: if you believe a critical security concern would genuinely be missed by a source→sink→flow analysis (for example, a broader architectural issue), mention it briefly in the top-level `summary`. Do not attach an inline finding.|}
 
 let guidelines =
   {|Guidelines:
