@@ -267,6 +267,65 @@ let test_prompt_token_estimation () =
   (check bool) "estimate within 2x of chars/4" true (estimate <= char_count / 2);
   (check bool) "estimate at least chars/8" true (estimate >= char_count / 8)
 
+(** {2 Dedup tests} *)
+
+let mk_finding ~path ~line ?(end_line = None) ?(severity = Review_types.Warning)
+  ?(category = Review_types.Security) ?(message = "msg") ?(suggested_fix = None) () : Review_types.finding =
+  { path; line; end_line; severity; category; message; suggested_fix }
+
+let finding_by_message msg (f : Review_types.finding) = String.equal f.message msg
+
+let test_dedup_same_line_prefers_security () =
+  let general = mk_finding ~path:"a.ml" ~line:10 ~message:"general" () in
+  let security = mk_finding ~path:"a.ml" ~line:10 ~message:"security" () in
+  let out = Reviewer.deduplicate_findings [ Reviewer.From_general, general; Reviewer.From_security, security ] in
+  (check int) "single finding" 1 (List.length out);
+  (check bool) "security wins" true (List.exists (finding_by_message "security") out)
+
+let test_dedup_same_line_same_source_higher_severity_wins () =
+  let low = mk_finding ~path:"a.ml" ~line:10 ~severity:Suggestion ~message:"low" () in
+  let high = mk_finding ~path:"a.ml" ~line:10 ~severity:Critical ~message:"high" () in
+  let out = Reviewer.deduplicate_findings [ Reviewer.From_general, low; Reviewer.From_general, high ] in
+  (check int) "single finding" 1 (List.length out);
+  (check bool) "higher severity wins" true (List.exists (finding_by_message "high") out)
+
+let test_dedup_near_line_collapse_same_category () =
+  let a = mk_finding ~path:"a.ml" ~line:8 ~severity:Warning ~message:"a" () in
+  let b = mk_finding ~path:"a.ml" ~line:10 ~severity:Critical ~message:"b" () in
+  let c = mk_finding ~path:"a.ml" ~line:30 ~severity:Warning ~message:"c" () in
+  let out =
+    Reviewer.deduplicate_findings
+      [ Reviewer.From_general, a; Reviewer.From_general, b; Reviewer.From_general, c ]
+  in
+  (check int) "two findings (a+b collapsed, c kept)" 2 (List.length out);
+  (check bool) "critical survives collapse" true (List.exists (finding_by_message "b") out);
+  (check bool) "far-apart finding kept" true (List.exists (finding_by_message "c") out);
+  (check bool) "weaker near-line dropped" false (List.exists (finding_by_message "a") out)
+
+let test_dedup_near_line_different_category_both_kept () =
+  let a = mk_finding ~path:"a.ml" ~line:8 ~category:Review_types.Security ~message:"a" () in
+  let b = mk_finding ~path:"a.ml" ~line:10 ~category:Review_types.Performance ~message:"b" () in
+  let out = Reviewer.deduplicate_findings [ Reviewer.From_general, a; Reviewer.From_general, b ] in
+  (check int) "both kept" 2 (List.length out)
+
+let test_dedup_security_not_near_line_collapsed () =
+  (* Security-plugin findings are exempted from near-line collapse because the
+     validator already filters for uniqueness. *)
+  let a = mk_finding ~path:"a.ml" ~line:8 ~message:"a" () in
+  let b = mk_finding ~path:"a.ml" ~line:10 ~message:"b" () in
+  let out = Reviewer.deduplicate_findings [ Reviewer.From_security, a; Reviewer.From_security, b ] in
+  (check int) "both kept" 2 (List.length out)
+
+let test_dedup_sorts_by_path_then_line () =
+  let a = mk_finding ~path:"b.ml" ~line:5 ~message:"b5" () in
+  let b = mk_finding ~path:"a.ml" ~line:20 ~message:"a20" () in
+  let c = mk_finding ~path:"a.ml" ~line:10 ~message:"a10" () in
+  let out =
+    Reviewer.deduplicate_findings [ Reviewer.From_general, a; Reviewer.From_general, b; Reviewer.From_general, c ]
+  in
+  let messages = List.map (fun (f : Review_types.finding) -> f.message) out in
+  (check (list string)) "sorted by path then line" [ "a10"; "a20"; "b5" ] messages
+
 (** {2 Review types tests} *)
 
 let test_review_output_roundtrip () =
@@ -2065,6 +2124,16 @@ let () =
       ( "anthropic_schema_compat",
         [ test_case "structured output schemas compatible" `Quick test_anthropic_structured_output_schemas_compatible ]
       );
+      ( "dedup",
+        [
+          test_case "same line prefers security" `Quick test_dedup_same_line_prefers_security;
+          test_case "same line same source higher severity wins" `Quick
+            test_dedup_same_line_same_source_higher_severity_wins;
+          test_case "near line collapse same category" `Quick test_dedup_near_line_collapse_same_category;
+          test_case "near line different category both kept" `Quick test_dedup_near_line_different_category_both_kept;
+          test_case "security findings not near-line collapsed" `Quick test_dedup_security_not_near_line_collapsed;
+          test_case "sorts by path then line" `Quick test_dedup_sorts_by_path_then_line;
+        ] );
       ( "review_types",
         [
           test_case "review output roundtrip" `Quick test_review_output_roundtrip;
