@@ -29,7 +29,20 @@ module Make (AI : Api.Agent_runner) = struct
       let cost = Cost_tracking.of_agent_result ~agent_name:"general_review" ~files_fetched:0 agent_result in
       (match Review_types.review_output_of_json agent_result.output with
       | review ->
-        log#info "review agent: %d findings, summary length %d" (List.length review.findings)
+        let counts = Hashtbl.create 8 in
+        List.iter
+          (fun (f : Review_types.finding) ->
+            let key = Review_types.finding_category_to_string f.category in
+            let n = try Hashtbl.find counts key with Not_found -> 0 in
+            Hashtbl.replace counts key (n + 1))
+          review.findings;
+        let dist =
+          Hashtbl.fold (fun k v acc -> (k, v) :: acc) counts []
+          |> List.sort (fun (a, _) (b, _) -> String.compare a b)
+          |> List.map (fun (k, v) -> Printf.sprintf "%s=%d" k v)
+          |> String.concat " "
+        in
+        log#info "review agent: %d findings (%s), summary length %d" (List.length review.findings) dist
           (String.length review.summary);
         Lwt.return (Ok review, [ cost ])
       | exception exn -> Lwt.return (Error (Printf.sprintf "failed to parse review output: %s" (Exn.str exn)), [ cost ]))
