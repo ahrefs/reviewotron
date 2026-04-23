@@ -2,6 +2,101 @@ open Devkit
 
 let log = Log.from "reviewer"
 
+(** Origin of a finding, used to break ties during deduplication. *)
+type finding_source =
+  | From_general
+  | From_security
+
+(** Numeric rank for severity — higher means more severe.  Shared between dedup
+    and the legacy {!module-type:Make} functor. *)
+let severity_rank = function
+  | Review_types.Critical -> 5
+  | Warning -> 4
+  | Suggestion -> 3
+  | Nitpick -> 2
+  | Praise -> 1
+  | Other _ -> 0
+
+(** Prefer the security-plugin finding when two findings land on the same
+    (path, line).  Security findings go through triage → analysis → validator
+    and carry a source/sink/flow evidence chain; if both plugins spotted the
+    same line, the security plugin's rendering is strictly more useful. *)
+let pick_for_same_line (_sa, fa) (sb, fb) =
+  match _sa, sb with
+  | From_security, From_general -> _sa, fa
+  | From_general, From_security -> sb, fb
+  | From_general, From_general | From_security, From_security ->
+    if severity_rank fa.Review_types.severity >= severity_rank fb.Review_types.severity then _sa, fa else sb, fb
+
+(** First pass: collapse duplicates at the exact same (path, line). *)
+let collapse_same_line sourced_findings =
+  let tbl = Hashtbl.create (List.length sourced_findings) in
+  List.iter
+    (fun (source, (f : Review_types.finding)) ->
+      let key = f.path, f.line in
+      match Hashtbl.find_opt tbl key with
+      | None -> Hashtbl.add tbl key (source, f)
+      | Some existing -> Hashtbl.replace tbl key (pick_for_same_line existing (source, f)))
+    sourced_findings;
+  Hashtbl.fold (fun _ v acc -> v :: acc) tbl []
+
+(** Two findings from the same source, same path, and same category are
+    treated as describing one issue when their lines are within [window]
+    of each other.  The more severe one survives.  The security plugin is
+    exempted — validated findings are already filtered for uniqueness. *)
+let near_line_window = 3
+
+let collapse_near_lines sourced_findings =
+  let by_path = Hashtbl.create 16 in
+  List.iter
+    (fun ((_, f) as sf : finding_source * Review_types.finding) ->
+      let bucket = try Hashtbl.find by_path f.path with Not_found -> [] in
+      Hashtbl.replace by_path f.path (sf :: bucket))
+    sourced_findings;
+  let keep = ref [] in
+  Hashtbl.iter
+    (fun _path bucket ->
+      let sorted = List.sort (fun (_, a) (_, b) -> Int.compare a.Review_types.line b.Review_types.line) bucket in
+      let rec sweep acc = function
+        | [] -> acc
+        | (src, f) :: rest when src = From_security -> sweep ((src, f) :: acc) rest
+        | (src, f) :: rest ->
+          let collides (src', f') =
+            src' = src
+            && f'.Review_types.category = f.Review_types.category
+            && abs (f'.Review_types.line - f.line) <= near_line_window
+          in
+          let colliding, others = List.partition collides rest in
+          let best =
+            List.fold_left
+              (fun (bsrc, bf) (csrc, cf) ->
+                if severity_rank cf.Review_types.severity > severity_rank bf.Review_types.severity then csrc, cf
+                else bsrc, bf)
+              (src, f) colliding
+          in
+          sweep (best :: acc) others
+      in
+      let kept = sweep [] sorted in
+      keep := kept @ !keep)
+    by_path;
+  !keep
+
+(** Deduplicate findings across plugins.  Two passes:
+    1. exact same [(path, line)] → prefer the security plugin's finding if
+       present, else keep the more severe one.
+    2. same source, same path, same [category], lines within {!near_line_window}
+       → keep only the highest-severity one.  Security-plugin findings are
+       exempted since the validator already filters them. *)
+let deduplicate_findings sourced_findings =
+  sourced_findings
+  |> collapse_same_line
+  |> collapse_near_lines
+  |> List.map snd
+  |> List.sort (fun (a : Review_types.finding) (b : Review_types.finding) ->
+    match String.compare a.path b.path with
+    | 0 -> Int.compare a.line b.line
+    | n -> n)
+
 module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
   (** Retry an Lwt operation once after a 1-second delay on failure.
       The operation is passed as a thunk to ensure the retry executes fresh. *)
@@ -232,34 +327,6 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
   module General_plugin = General_review_plugin.Make (AI)
   module Security_plugin = Security_review_plugin.Make (GH) (AI)
 
-  (** Numeric rank for severity — higher means more severe. *)
-  let severity_rank = function
-    | Review_types.Critical -> 5
-    | Warning -> 4
-    | Suggestion -> 3
-    | Nitpick -> 2
-    | Praise -> 1
-    | Other _ -> 0
-
-  (** Deduplicate findings by (path, line, category).
-      When two findings share the same key, the one with higher severity wins.
-      Note: findings at the same path with [line = None] and the same category are
-      considered duplicates even if they describe different issues — this is a known
-      simplification that becomes more relevant when multiple plugins overlap. *)
-  let deduplicate_findings findings =
-    let tbl = Hashtbl.create (List.length findings) in
-    List.iter
-      (fun (f : Review_types.finding) ->
-        let key = f.path, f.line, f.category in
-        match Hashtbl.find_opt tbl key with
-        | Some existing when severity_rank existing.Review_types.severity >= severity_rank f.severity -> ()
-        | Some _ | None -> Hashtbl.replace tbl key f)
-      findings;
-    Hashtbl.fold (fun _key finding acc -> finding :: acc) tbl []
-    |> List.sort (fun (a : Review_types.finding) (b : Review_types.finding) ->
-      match String.compare a.path b.path with
-      | 0 -> Int.compare a.line b.line
-      | n -> n)
 
   (** Run all enabled review plugins and collect findings and costs.
       Returns the general review output (if the general plugin is enabled),
@@ -306,10 +373,14 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
          | _ :: _ -> false
     in
     if security_error then log#warn "security review plugin encountered an error; results may be incomplete";
-    (* Merge general review findings with additional plugin findings. *)
+    (* Merge general review findings with additional plugin findings, tagging
+       each with its source so deduplication can prefer the security plugin. *)
     let general_findings = Option.map (fun (r : Review_types.review_output) -> r.findings) general_result in
-    let all_findings = Option.default [] general_findings @ security_findings in
-    let deduplicated = deduplicate_findings all_findings in
+    let sourced =
+      List.map (fun f -> From_general, f) (Option.default [] general_findings)
+      @ List.map (fun f -> From_security, f) security_findings
+    in
+    let deduplicated = deduplicate_findings sourced in
     let review_costs =
       [
         Cost_tracking.aggregate ~plugin:"general" general_costs;
