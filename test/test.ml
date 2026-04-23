@@ -143,15 +143,33 @@ let test_security_plugin_config_roundtrip () =
 
 (** {2 Review prompt tests} *)
 
-let test_system_prompt_default () =
-  let prompt = Review_prompt.system_prompt () in
+let test_system_prompt_security_disabled () =
+  let prompt = Review_prompt.system_prompt ~security_covered_elsewhere:false () in
   (check bool) "non-empty" true (String.length prompt > 0);
-  (check bool) "contains focus" true (CCString.find ~sub:"Focus on:" prompt >= 0)
+  (check bool) "contains focus" true (CCString.find ~sub:"Focus on:" prompt >= 0);
+  (check bool) "mentions security in scope" true (CCString.find ~sub:"Security vulnerabilities" prompt >= 0);
+  (check bool) "does not tell agent to skip security" true (CCString.find ~sub:"Do NOT emit security findings" prompt < 0)
+
+let test_system_prompt_security_enabled () =
+  let prompt = Review_prompt.system_prompt ~security_covered_elsewhere:true () in
+  (check bool) "non-empty" true (String.length prompt > 0);
+  (check bool) "contains focus" true (CCString.find ~sub:"Focus on:" prompt >= 0);
+  (check bool) "does not include security in the focus list" true (CCString.find ~sub:"Security vulnerabilities" prompt < 0);
+  (check bool) "tells agent to skip security" true (CCString.find ~sub:"Do NOT emit security findings" prompt >= 0)
+
+let test_system_prompt_dedup_guidelines () =
+  let prompt = Review_prompt.system_prompt ~security_covered_elsewhere:true () in
+  (check bool) "mentions same root cause" true (CCString.find ~sub:"same root cause" prompt >= 0);
+  (check bool) "mentions summary for refactor suggestions" true
+    (CCString.find ~sub:"recommended alternative implementation" prompt >= 0);
+  (check bool) "mentions documentation nits" true (CCString.find ~sub:"documentation nits" prompt >= 0)
 
 let test_system_prompt_override () =
   let custom = "You are a custom reviewer" in
-  let prompt = Review_prompt.system_prompt ~override:custom () in
-  (check string) "override used" custom prompt
+  let prompt = Review_prompt.system_prompt ~override:custom ~security_covered_elsewhere:true () in
+  (check string) "override used" custom prompt;
+  let prompt2 = Review_prompt.system_prompt ~override:custom ~security_covered_elsewhere:false () in
+  (check string) "override bypasses the security clause switch" custom prompt2
 
 let test_build_user_message () =
   let diff = "diff --git a/foo.ml b/foo.ml\n+let x = 1" in
@@ -239,7 +257,7 @@ let test_anthropic_structured_output_schemas_compatible () =
     fail (Printf.sprintf "generated structured output schemas violate Anthropic constraints:\n%s" issue_preview)
 
 let test_prompt_token_estimation () =
-  let system = Review_prompt.system_prompt () in
+  let system = Review_prompt.system_prompt ~security_covered_elsewhere:false () in
   let diff = "diff --git a/foo.ml b/foo.ml\n+let x = 1" in
   let user = Review_prompt.build_user_message ~diff ~pr_title:"Test" () in
   let estimate = Review_prompt.estimate_prompt_tokens ~system ~user in
@@ -2035,7 +2053,9 @@ let () =
         ] );
       ( "review_prompt",
         [
-          test_case "default system prompt" `Quick test_system_prompt_default;
+          test_case "system prompt with security disabled" `Quick test_system_prompt_security_disabled;
+          test_case "system prompt with security enabled" `Quick test_system_prompt_security_enabled;
+          test_case "system prompt has dedup guidelines" `Quick test_system_prompt_dedup_guidelines;
           test_case "system prompt override" `Quick test_system_prompt_override;
           test_case "build user message" `Quick test_build_user_message;
           test_case "build user message no description" `Quick test_build_user_message_no_description;

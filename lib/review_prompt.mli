@@ -5,8 +5,15 @@
 val review_schema : Yojson.Safe.t
 
 (** System prompt instructing Claude how to review code.
-    Uses [override] if provided, otherwise the default prompt. *)
-val system_prompt : ?override:string -> unit -> string
+
+    If [override] is provided, it is returned verbatim (the caller takes
+    full control).  Otherwise the prompt is assembled from static parts
+    plus a security clause selected by [security_covered_elsewhere]:
+
+    - [true]: the general review is told NOT to emit security findings
+      because a specialized security review pipeline is running.
+    - [false]: the general review is told to include security in scope. *)
+val system_prompt : ?override:string -> security_covered_elsewhere:bool -> unit -> string
 
 (** Build the user message containing the diff and context.
     [file_contents] is a list of [(path, content)] pairs for additional context. *)
