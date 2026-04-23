@@ -17,7 +17,9 @@ Guidelines:
 - Use "praise" severity for particularly good patterns
 - Use "nitpick" sparingly — only for truly minor style issues
 - Be concise — one clear sentence per finding
-- If the code looks good, say so briefly with few or no findings|}
+- If the code looks good, say so briefly with few or no findings
+
+Your final response must be a single JSON object matching the schema. Do not wrap it in markdown code fences, and do not include any prose before or after it.|}
 
 let review_schema : Yojson.Safe.t = (Review_types.review_output_jsonschema :> Yojson.Safe.t)
 

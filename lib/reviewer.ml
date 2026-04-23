@@ -116,20 +116,116 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
     | _ -> Ok (filtered_diff, Diff_parser.to_string filtered_diff)
 
   (** Map a finding to a GitHub review comment, if it can be positioned in the diff. *)
+  let rec drop_known_path_prefixes path =
+    let len = String.length path in
+    match () with
+    | () when len >= 2 && String.sub path 0 2 = "./" -> drop_known_path_prefixes (String.sub path 2 (len - 2))
+    | () when len >= 2 && String.sub path 0 2 = "a/" -> drop_known_path_prefixes (String.sub path 2 (len - 2))
+    | () when len >= 2 && String.sub path 0 2 = "b/" -> drop_known_path_prefixes (String.sub path 2 (len - 2))
+    | () when len >= 1 && String.sub path 0 1 = "/" -> drop_known_path_prefixes (String.sub path 1 (len - 1))
+    | () -> path
+
+  let strip_backticks path =
+    let len = String.length path in
+    match () with
+    | () when len >= 2 && path.[0] = '`' && path.[len - 1] = '`' -> String.sub path 1 (len - 2)
+    | () -> path
+
+  let normalize_finding_path path = path |> String.trim |> strip_backticks |> drop_known_path_prefixes
+
+  let path_equivalent a b = String.equal a b || CCString.suffix ~suf:("/" ^ b) a || CCString.suffix ~suf:("/" ^ a) b
+
+  let path_matches_target path target =
+    match path with
+    | None -> false
+    | Some p -> path_equivalent p target
+
+  let path_basename_matches_target path target =
+    match path with
+    | None -> false
+    | Some p -> String.equal (Filename.basename p) (Filename.basename target)
+
+  let find_file_diff_by_path ~diff path =
+    let target = normalize_finding_path path in
+    let normalized_paths =
+      List.map
+        (fun (fd : Diff_parser.file_diff) ->
+          let path = Some (normalize_finding_path fd.path) in
+          let old_path = Option.map normalize_finding_path fd.old_path in
+          fd, path, old_path)
+        diff
+    in
+    let direct_matches =
+      List.filter
+        (fun (_fd, path, old_path) -> path_matches_target path target || path_matches_target old_path target)
+        normalized_paths
+    in
+    match direct_matches with
+    | (fd, _, _) :: _ -> Some fd
+    | [] ->
+      let basename_matches =
+        List.filter
+          (fun (_fd, path, old_path) ->
+            path_basename_matches_target path target || path_basename_matches_target old_path target)
+          normalized_paths
+      in
+      (match basename_matches with
+      | [ (fd, _, _) ] -> Some fd
+      | _ -> None)
+
+  let right_line_ranges (fd : Diff_parser.file_diff) =
+    List.filter_map
+      (fun (h : Diff_parser.hunk) ->
+        match () with
+        | () when h.new_count <= 0 -> None
+        | () -> Some (h.new_start, h.new_start + h.new_count - 1))
+      fd.hunks
+
+  let nearest_right_line_in_diff (fd : Diff_parser.file_diff) ~target_line =
+    let pick_better best (start_line, end_line) =
+      let candidate_line, distance =
+        match () with
+        | () when target_line < start_line -> start_line, start_line - target_line
+        | () when target_line > end_line -> end_line, target_line - end_line
+        | () -> target_line, 0
+      in
+      match best with
+      | None -> Some (candidate_line, distance)
+      | Some (_best_line, best_distance) when distance < best_distance -> Some (candidate_line, distance)
+      | Some _ -> best
+    in
+    right_line_ranges fd |> List.fold_left pick_better None |> Option.map (fun (line, _distance) -> line)
+
+  let fallback_position_in_file_diff (fd : Diff_parser.file_diff) ~target_line =
+    match nearest_right_line_in_diff fd ~target_line with
+    | Some nearest_line ->
+      (match Diff_parser.line_to_position fd ~line:nearest_line ~side:Right with
+      | Some _ as pos -> pos
+      | None ->
+        let try_offsets = [ -2; -1; 1; 2 ] in
+        try_offsets
+        |> List.find_map (fun offset -> Diff_parser.line_to_position fd ~line:(nearest_line + offset) ~side:Right))
+    | None -> None
+
   let finding_to_comment ~diff (finding : Review_types.finding) =
-    let file_diff = List.find_opt (fun fd -> String.equal fd.Diff_parser.path finding.path) diff in
+    let file_diff = find_file_diff_by_path ~diff finding.path in
     match file_diff with
     | None -> None
     | Some fd ->
     match finding.line with
     | None -> None
+    | Some line when line <= 0 -> None
     | Some line ->
-      let position = Diff_parser.line_to_position fd ~line ~side:Right in
+      let position =
+        match Diff_parser.line_to_position fd ~line ~side:Right with
+        | Some _ as pos -> pos
+        | None -> fallback_position_in_file_diff fd ~target_line:line
+      in
       Option.map
         (fun pos ->
           Github_types.
             {
-              path = finding.path;
+              path = fd.path;
               position = Some pos;
               line = None;
               side = None;
@@ -250,9 +346,45 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
       run_plugins ~ctx ~repo_url ~config ~diff:filtered_diff ~diff_text ~metadata ~debug_dir ~head_sha
     in
     Cost_tracking.log_review_costs review_costs;
-    let comments = List.filter_map (finding_to_comment ~diff:filtered_diff) findings in
-    let unpositioned = List.length findings - List.length comments in
+    let comments_rev, unpositioned_findings_rev =
+      List.fold_left
+        (fun (comments, unpositioned_findings) (finding : Review_types.finding) ->
+          match finding_to_comment ~diff:filtered_diff finding with
+          | Some comment -> comment :: comments, unpositioned_findings
+          | None -> comments, finding :: unpositioned_findings)
+        ([], []) findings
+    in
+    let comments = List.rev comments_rev in
+    let unpositioned_findings = List.rev unpositioned_findings_rev in
+    let unpositioned = List.length unpositioned_findings in
     if unpositioned > 0 then log#info "PR #%d: %d findings could not be positioned in diff" number unpositioned;
+    let unpositioned_section =
+      match unpositioned_findings with
+      | [] -> ""
+      | _ :: _ ->
+        let to_bullet (f : Review_types.finding) =
+          let location =
+            match f.line with
+            | Some line -> Printf.sprintf "%s:%d" f.path line
+            | None -> f.path
+          in
+          Printf.sprintf "- `%s` %s" location f.message
+        in
+        let shown = CCList.take 10 unpositioned_findings in
+        let hidden = List.length unpositioned_findings - List.length shown in
+        let bullets = String.concat "\n" (List.map to_bullet shown) in
+        let overflow =
+          match hidden with
+          | 0 -> ""
+          | n -> Printf.sprintf "\n- ... and %d more." n
+        in
+        Printf.sprintf
+          "\n\n\
+           **Unpositioned findings**\n\
+           Some findings could not be anchored to changed lines, so they are listed here:\n\
+           %s%s"
+          bullets overflow
+    in
     let review_body =
       match general_result with
       | Some review ->
@@ -269,6 +401,7 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
           "\xE2\x9A\xA0\xEF\xB8\x8F **Review failed** \xE2\x80\x94 the code review encountered an error and could not \
            produce results. Please re-trigger the review. If this persists, check the service logs.")
     in
+    let review_body = review_body ^ unpositioned_section in
     let review_body = if security_error then review_body ^ security_error_notice else review_body in
     let review_body =
       if config.show_review_cost then review_body ^ Cost_tracking.format_footer review_costs else review_body

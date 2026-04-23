@@ -173,7 +173,70 @@ let test_review_schema_valid () =
   (check bool) "has properties" true (CCString.find ~sub:{|"properties"|} json_str >= 0);
   (check bool) "has required" true (CCString.find ~sub:{|"required"|} json_str >= 0);
   (check bool) "has summary" true (CCString.find ~sub:{|"summary"|} json_str >= 0);
-  (check bool) "has findings" true (CCString.find ~sub:{|"findings"|} json_str >= 0)
+  (check bool) "has findings" true (CCString.find ~sub:{|"findings"|} json_str >= 0);
+  (check bool) "has field descriptions" true (CCString.find ~sub:{|"description"|} json_str >= 0)
+
+let rec collect_anthropic_schema_issues ~path (json : Yojson.Basic.t) =
+  match json with
+  | `Assoc fields ->
+    let key_issues =
+      List.concat_map
+        (fun (key, value) ->
+          let current_path = Printf.sprintf "%s/%s" path key in
+          let current_issues =
+            match key with
+            | "maxItems" | "prefixItems" | "unevaluatedItems" | "contains" | "minContains" | "maxContains"
+            | "uniqueItems" ->
+              [ Printf.sprintf "%s uses unsupported keyword '%s'" current_path key ]
+            | "minimum" | "maximum" | "multipleOf" | "exclusiveMinimum" | "exclusiveMaximum" | "minLength" | "maxLength"
+              ->
+              [ Printf.sprintf "%s uses unsupported keyword '%s'" current_path key ]
+            | "minItems" ->
+              (match value with
+              | `Int n when n > 1 -> [ Printf.sprintf "%s has unsupported minItems=%d" current_path n ]
+              | _ -> [])
+            | "$ref" ->
+              (match value with
+              | `String ref_ when CCString.prefix ~pre:"#/" ref_ -> []
+              | `String ref_ -> [ Printf.sprintf "%s has unsupported external ref '%s'" current_path ref_ ]
+              | _ -> [ Printf.sprintf "%s has invalid $ref value" current_path ])
+            | _ -> []
+          in
+          current_issues @ collect_anthropic_schema_issues ~path:current_path value)
+        fields
+    in
+    let object_issues =
+      match List.assoc_opt "type" fields with
+      | Some (`String "object") ->
+        (match List.assoc_opt "additionalProperties" fields with
+        | Some (`Bool false) -> []
+        | Some _ -> [ Printf.sprintf "%s object must set additionalProperties=false" path ]
+        | None -> [ Printf.sprintf "%s object is missing additionalProperties=false" path ])
+      | _ -> []
+    in
+    object_issues @ key_issues
+  | `List values ->
+    values
+    |> List.mapi (fun i value -> collect_anthropic_schema_issues ~path:(Printf.sprintf "%s[%d]" path i) value)
+    |> List.concat
+  | `Bool _ | `Float _ | `Int _ | `Null | `String _ -> []
+
+let test_anthropic_structured_output_schemas_compatible () =
+  let schemas : (string * Yojson.Basic.t) list =
+    [
+      "general_review", Review_types.review_output_jsonschema;
+      "security_triage", Security_types.triage_output_jsonschema;
+      "security_analysis", Security_types.analysis_output_jsonschema;
+      "security_validator", Security_types.validator_output_jsonschema;
+      "memory_curator", Security_types.curator_output_jsonschema;
+    ]
+  in
+  let issues = schemas |> List.concat_map (fun (name, schema) -> collect_anthropic_schema_issues ~path:name schema) in
+  match issues with
+  | [] -> ()
+  | _ ->
+    let issue_preview = issues |> CCList.take 20 |> String.concat "\n" in
+    fail (Printf.sprintf "generated structured output schemas violate Anthropic constraints:\n%s" issue_preview)
 
 let test_prompt_token_estimation () =
   let system = Review_prompt.system_prompt () in
@@ -299,10 +362,10 @@ let test_security_sanitization_status_roundtrip () =
   let open Security_types in
   let cases =
     [
-      Adequate, {|["Adequate"]|};
-      Inadequate "encoding not context-aware", {|["Inadequate","encoding not context-aware"]|};
-      Missing, {|["Missing"]|};
-      Unknown, {|["Unknown"]|};
+      Adequate, {|"adequate"|};
+      Inadequate, {|"inadequate"|};
+      Missing, {|"missing"|};
+      Unknown, {|"unknown"|};
     ]
   in
   List.iter
@@ -316,12 +379,7 @@ let test_security_sanitization_status_roundtrip () =
 
 let test_security_validation_verdict_roundtrip () =
   let open Security_types in
-  let cases =
-    [
-      Confirmed, {|["Confirmed"]|};
-      Rejected "source is not user-controllable", {|["Rejected","source is not user-controllable"]|};
-    ]
-  in
+  let cases = [ Confirmed, {|"confirmed"|}; Rejected, {|"rejected"|} ] in
   List.iter
     (fun (verdict, expected_json) ->
       let json_str = Melange_json.to_string (validation_verdict_to_json verdict) in
@@ -344,7 +402,7 @@ let test_security_validator_output_roundtrip () =
                 source = { path = "lib/api.ml"; line = 10; description = "URL from user input" };
                 sink = { path = "lib/http.ml"; line = 30; description = "HTTP GET request" };
                 flow = [ { path = "lib/api.ml"; line = 12; description = "Passed to fetch_url" } ];
-                sanitization = Inadequate "URL validation missing scheme check";
+                sanitization = Inadequate;
                 confidence = Medium;
                 description = "User-controlled URL used in server-side request";
                 suggested_fix = None;
@@ -1984,6 +2042,9 @@ let () =
           test_case "review schema valid" `Quick test_review_schema_valid;
           test_case "prompt token estimation" `Quick test_prompt_token_estimation;
         ] );
+      ( "anthropic_schema_compat",
+        [ test_case "structured output schemas compatible" `Quick test_anthropic_structured_output_schemas_compatible ]
+      );
       ( "review_types",
         [
           test_case "review output roundtrip" `Quick test_review_output_roundtrip;

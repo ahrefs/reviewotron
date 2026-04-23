@@ -40,7 +40,9 @@ Given the current memory (if any) and new learnings from a completed security re
 ## Output
 
 Produce a JSON object with a single field:
-- `updated_memory`: the complete updated markdown document as a string|}
+- `updated_memory`: the complete updated markdown document as a string
+
+Your final response must be a single JSON object matching the schema. Do not wrap it in markdown code fences, and do not include any prose before or after it.|}
 
 let config ~model_tier : Agent_runner.agent_config =
   {

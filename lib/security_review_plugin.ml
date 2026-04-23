@@ -177,9 +177,10 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) = struct
       (fun (vf : Security_types.validated_finding) ->
         match vf.verdict with
         | Confirmed -> ()
-        | Rejected reason ->
+        | Rejected ->
           let vc = Security_types.vuln_class_to_string vf.finding.vuln_class in
-          log#info "validator rejected %s finding at %s:%d: %s" vc vf.finding.sink.path vf.finding.sink.line reason)
+          log#info "validator rejected %s finding at %s:%d: %s" vc vf.finding.sink.path vf.finding.sink.line
+            vf.evidence_notes)
       results
 
   (** Route triage signals to per-class analysis agents, validate candidate
@@ -228,7 +229,7 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) = struct
             (fun (vf : Security_types.validated_finding) ->
               match vf.verdict with
               | Confirmed -> Some vf
-              | Rejected _ -> None)
+              | Rejected -> None)
             validated
         in
         log#info "validation complete: %d confirmed, %d rejected" (List.length confirmed)

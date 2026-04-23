@@ -112,14 +112,13 @@ val flow_step_jsonschema : Yojson.Basic.t
 
 (** Assessment of sanitization on the source-to-sink path.
 
-    Serialized as melange-json-native array-tag encoding:
-    - [Adequate] → [["Adequate"]]
-    - [Inadequate reason] → [["Inadequate", "reason"]]
-    - [Missing] → [["Missing"]]
-    - [Unknown] → [["Unknown"]] *)
+    Serialized as a lowercase JSON string (e.g. ["adequate"], ["inadequate"]),
+    matching Anthropic's supported structured-output subset.  Prose explanations
+    for [Inadequate] / [Unknown] cases belong in the finding's [description]
+    field, not in the variant itself. *)
 type sanitization_status =
   | Adequate
-  | Inadequate of string
+  | Inadequate
   | Missing
   | Unknown
 
@@ -159,12 +158,14 @@ val analysis_output_jsonschema : Yojson.Basic.t
 
 (** Validation verdict from the adversarial validator agent.
 
-    Serialized as melange-json-native array-tag encoding:
-    - [Confirmed] → [["Confirmed"]]
-    - [Rejected reason] → [["Rejected", "reason"]] *)
+    Serialized as a lowercase JSON string (["confirmed"] or ["rejected"]),
+    matching Anthropic's supported structured-output subset.  Rejection reasons
+    belong in the validated finding's [evidence_notes] field. *)
 type validation_verdict =
   | Confirmed
-  | Rejected of string
+  | Rejected
+
+val validation_verdict_to_string : validation_verdict -> string
 
 val validation_verdict_to_json : validation_verdict -> Yojson.Basic.t
 val validation_verdict_of_json : Yojson.Basic.t -> validation_verdict

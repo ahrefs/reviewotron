@@ -42,7 +42,13 @@ let severity_of_json = function
   | `String s -> Other s
   | json -> Melange_json.of_json_error ~json "expected a string for severity"
 
-let severity_jsonschema = `Assoc [ "type", `String "string" ]
+let severity_jsonschema =
+  `Assoc
+    [
+      "type", `String "string";
+      ( "description",
+        `String "Severity level for the finding. Prefer: critical, warning, suggestion, nitpick, or praise." );
+    ]
 
 (** {2 Finding category} *)
 
@@ -82,7 +88,15 @@ let finding_category_of_json = function
   | `String s -> Other s
   | json -> Melange_json.of_json_error ~json "expected a string for finding_category"
 
-let finding_category_jsonschema = `Assoc [ "type", `String "string" ]
+let finding_category_jsonschema =
+  `Assoc
+    [
+      "type", `String "string";
+      ( "description",
+        `String
+          "Finding category. Prefer: bug, security, performance, style, logic, error-handling, naming, or \
+           documentation." );
+    ]
 
 (** {2 Finding} *)
 
@@ -96,7 +110,10 @@ type finding = {
        "Category: bug, security, performance, style, logic, error-handling, naming, documentation"]
   message : string; [@jsonschema.description "Clear explanation of the finding"]
   suggested_fix : string option;
-     [@json.option] [@jsonschema.description "Code suggestion to fix the issue, if applicable"]
+     [@json.option]
+     [@jsonschema.description
+       "Code suggestion that replaces only the flagged lines. Return raw code with correct indentation and no markdown \
+        fences."]
 }
 [@@deriving json, jsonschema] [@@json.allow_extra_fields]
 
@@ -104,7 +121,7 @@ type finding = {
 
 type review_output = {
   summary : string; [@jsonschema.description "High-level summary of the review (2-4 sentences)"]
-  findings : finding list;
+  findings : finding list; [@jsonschema.description "List of inline findings to post on changed files and lines"]
   overall_assessment : string; [@json.default ""] [@jsonschema.description "Brief overall quality assessment"]
 }
 [@@deriving json, jsonschema] [@@json.allow_extra_fields]
