@@ -26,10 +26,6 @@ type file_diff = {
 
 type t = file_diff list
 
-type side =
-  | Left
-  | Right
-
 (** {2 Regex patterns} *)
 
 let hunk_header_re = Re2.create_exn {|^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@|}
@@ -184,75 +180,6 @@ let parse diff_text =
         first' :: List.map (fun s -> "diff --git " ^ s) rest
     in
     List.filter_map parse_file_section sections
-
-(** Advance old/new line counters based on a diff line *)
-let advance_lines old_line new_line = function
-  | Context _ -> old_line + 1, new_line + 1
-  | Deletion _ -> old_line + 1, new_line
-  | Addition _ -> old_line, new_line + 1
-
-let line_to_position file_diff ~line ~side =
-  let rec search_hunks position hunks =
-    match hunks with
-    | [] -> None
-    | hunk :: rest_hunks ->
-      let header_pos = position in
-      let rec search_lines pos old_line new_line = function
-        | [] -> None
-        | dl :: rest ->
-          let found =
-            match dl, side with
-            | Context _, Right -> new_line = line
-            | Context _, Left -> old_line = line
-            | Addition _, Right -> new_line = line
-            | Deletion _, Left -> old_line = line
-            | Addition _, Left -> false
-            | Deletion _, Right -> false
-          in
-          if found then Some pos
-          else (
-            let old_line', new_line' = advance_lines old_line new_line dl in
-            search_lines (pos + 1) old_line' new_line' rest)
-      in
-      let result = search_lines (header_pos + 1) hunk.old_start hunk.new_start hunk.lines in
-      (match result with
-      | Some _ -> result
-      | None ->
-        let next_position = header_pos + 1 + List.length hunk.lines in
-        search_hunks next_position rest_hunks)
-  in
-  search_hunks 1 file_diff.hunks
-
-let position_to_line file_diff ~position =
-  let rec search_hunks pos hunks =
-    match hunks with
-    | [] -> None
-    | hunk :: rest_hunks ->
-      let header_pos = pos in
-      if position = header_pos then
-        (* Pointing at the hunk header itself *)
-        Some (hunk.new_start, Right)
-      else (
-        let rec search_lines p old_line new_line = function
-          | [] -> None
-          | dl :: rest ->
-            if p = position then (
-              match dl with
-              | Context _ -> Some (new_line, Right)
-              | Addition _ -> Some (new_line, Right)
-              | Deletion _ -> Some (old_line, Left))
-            else (
-              let old_line', new_line' = advance_lines old_line new_line dl in
-              search_lines (p + 1) old_line' new_line' rest)
-        in
-        let result = search_lines (header_pos + 1) hunk.old_start hunk.new_start hunk.lines in
-        match result with
-        | Some _ -> result
-        | None ->
-          let next_pos = header_pos + 1 + List.length hunk.lines in
-          search_hunks next_pos rest_hunks)
-  in
-  search_hunks 1 file_diff.hunks
 
 let total_lines diffs =
   List.fold_left (fun acc fd -> List.fold_left (fun acc2 hunk -> acc2 + List.length hunk.lines) acc fd.hunks) 0 diffs

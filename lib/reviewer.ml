@@ -196,16 +196,16 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
     in
     right_line_ranges fd |> List.fold_left pick_better None |> Option.map (fun (line, _distance) -> line)
 
-  let fallback_position_in_file_diff (fd : Diff_parser.file_diff) ~target_line =
-    match nearest_right_line_in_diff fd ~target_line with
-    | Some nearest_line ->
-      (match Diff_parser.line_to_position fd ~line:nearest_line ~side:Right with
-      | Some _ as pos -> pos
-      | None ->
-        let try_offsets = [ -2; -1; 1; 2 ] in
-        try_offsets
-        |> List.find_map (fun offset -> Diff_parser.line_to_position fd ~line:(nearest_line + offset) ~side:Right))
-    | None -> None
+  let line_in_right_range (fd : Diff_parser.file_diff) ~line =
+    List.exists (fun (start_line, end_line) -> line >= start_line && line <= end_line) (right_line_ranges fd)
+
+  (** Resolve a finding to a line that appears in the diff on the new-file side.
+      Returns the original line if it's in range, otherwise snaps to the nearest
+      in-range line, otherwise [None] (no right-side hunks at all). *)
+  let resolve_right_line (fd : Diff_parser.file_diff) ~target_line =
+    match line_in_right_range fd ~line:target_line with
+    | true -> Some target_line
+    | false -> nearest_right_line_in_diff fd ~target_line
 
   let finding_to_comment ~diff (finding : Review_types.finding) =
     let file_diff = find_file_diff_by_path ~diff finding.path in
@@ -215,24 +215,19 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
     match finding.line with
     | line when line <= 0 -> None
     | line ->
-      let position =
-        match Diff_parser.line_to_position fd ~line ~side:Right with
-        | Some _ as pos -> pos
-        | None -> fallback_position_in_file_diff fd ~target_line:line
-      in
       Option.map
-        (fun pos ->
+        (fun resolved_line ->
           Github_types.
             {
               path = fd.path;
-              position = Some pos;
-              line = None;
-              side = None;
+              position = None;
+              line = Some resolved_line;
+              side = Some Right;
               start_line = None;
               start_side = None;
               body = Review_format.format_finding_body finding;
             })
-        position
+        (resolve_right_line fd ~target_line:line)
 
   module General_plugin = General_review_plugin.Make (AI)
   module Security_plugin = Security_review_plugin.Make (GH) (AI)
