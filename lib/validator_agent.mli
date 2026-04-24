@@ -15,8 +15,9 @@
     [Standard] (Sonnet), matching or exceeding the analysis agents it
     checks.
 
-    The returned config has [max_steps = 8] to allow spot-checking
-    evidence via [get_file_content]. *)
+    The returned config has [max_steps = 12] to allow spot-checking
+    evidence via [get_file_content].  Sized for validator runs that carry
+    ~10 candidate findings spanning several files. *)
 val config : model_tier:Agent_runner.model_tier -> Agent_runner.agent_config
 
 (** Build the user message for the validator agent.

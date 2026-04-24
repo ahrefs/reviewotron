@@ -110,7 +110,7 @@ let config ~model_tier : Agent_runner.agent_config =
     system_prompt;
     model_tier;
     output_schema = Security_types.validator_output_jsonschema;
-    max_steps = 8;
+    max_steps = 12;
   }
 
 let build_input ~diff_text ~candidate_findings ?security_memory () =

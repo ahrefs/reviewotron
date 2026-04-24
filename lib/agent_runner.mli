@@ -79,3 +79,15 @@ val run_agent :
   input:string ->
   unit ->
   (agent_result, string) result Lwt.t
+
+(** Serialize a list of completed steps as a replay-able message history.
+
+    Each step produces an [Assistant] message (text + tool calls) followed by
+    a [Tool] message (the tool results), matching how the SDK stitches the
+    multi-turn conversation back together.  Steps whose tool calls were never
+    executed (typically the final step when [max_steps] is exhausted) are
+    dropped — re-sending an Assistant turn with unanswered [tool_use] blocks
+    would be a protocol violation at the Anthropic API layer.
+
+    Exposed for unit testing the budget-exhaustion recovery path. *)
+val messages_of_steps : Ai_core.Generate_text_result.step list -> Ai_provider.Prompt.message list

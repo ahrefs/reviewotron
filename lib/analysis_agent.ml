@@ -674,7 +674,7 @@ let build_system_prompt ~vuln_class ~language_hints =
 let config ~vuln_class ~model_tier ~language_hints : Agent_runner.agent_config =
   let name = Printf.sprintf "security_analysis_%s" (Security_types.vuln_class_to_string vuln_class) in
   let system_prompt = build_system_prompt ~vuln_class ~language_hints in
-  { name; system_prompt; model_tier; output_schema = Security_types.analysis_output_jsonschema; max_steps = 10 }
+  { name; system_prompt; model_tier; output_schema = Security_types.analysis_output_jsonschema; max_steps = 15 }
 
 let append_regions buf regions =
   List.iter
