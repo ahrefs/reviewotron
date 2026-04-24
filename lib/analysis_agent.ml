@@ -85,6 +85,21 @@ You have access to `get_file_content` to fetch any file from the repository. Use
 - You need to check a function's implementation to determine if it sanitizes input
 - You need to verify framework configuration (e.g., template auto-escaping settings)
 
+### Fetched File Format
+
+Files returned by `get_file_content` are presented with the same left-column line-number gutter as the annotated diff, prefixed by a `# File: <path>` header. Example:
+
+```
+# File: src/middleware/session.ts
+   1 |  import { sign, verify } from "hono/jwt";
+   2 |  import type { MiddlewareHandler } from "hono";
+   3 |
+  24 |    const payload = (await verifyToken(raw)) ?? decodePayload(raw);
+```
+
+- The path on the `# File:` header is the authoritative path of every line that follows, up to the next `# File:` header. Never attribute a line to a neighboring file or a file that was merely mentioned in prose.
+- Use the numbers in the left column verbatim as `line` values — do not count, do not estimate.
+
 ## Output Instructions
 
 Produce a JSON object with:
@@ -92,7 +107,14 @@ Produce a JSON object with:
 - `files_examined`: array of file paths you examined (from diff and via get_file_content)
 - `notes`: any relevant observations about the codebase's security posture for this vuln class
 
-Every `line` value in any finding, source, sink, or flow step MUST be copied verbatim from the left column of the annotated diff. Do not count lines, do not estimate, and do not use tilde (`~`) or approximate notations in messages — the column gives you the exact number.
+Every `line` value in any finding, source, sink, or flow step MUST be copied verbatim from the left column of the annotated diff or a fetched file. Do not count lines, do not estimate, and do not use tilde (`~`) or approximate notations in messages — the column gives you the exact number.
+
+The `path` field on every finding, source, sink, and flow step MUST be the exact path of the file where that code actually lives — copied verbatim from either the `+++ b/` header in the annotated diff, or the `# File:` header of a fetched file. You know which code belongs to which file because every line you read is presented under a file header. Do NOT:
+- substitute a neighboring file (e.g., put `requireAdmin.ts` when the code is in `session.ts`),
+- use a caller or consumer file as the sink location (the sink lives where the dangerous operation is written, not where it is invoked),
+- invent paths that you did not see in a diff header or tool response.
+
+If a vulnerability's sink is in unchanged code that this PR's changes reach into, set `sink.path` and `sink.line` to the unchanged file's exact path and line — the reviewer routes such findings into a dedicated section of the main review body. This is preferred over mis-attributing to a changed file.
 
 The `sanitization` field must be one of the strings `"adequate"`, `"inadequate"`, `"missing"`, or `"unknown"`. When it is `"inadequate"` or `"unknown"`, explain the reason in the finding's `description` field — do not attach it to the `sanitization` value itself.
 

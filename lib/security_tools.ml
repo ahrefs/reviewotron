@@ -31,7 +31,8 @@ let make_get_file_content ~fetch_file =
       let%lwt result = fetch_file path in
       let response =
         match result with
-        | Ok (Some content) -> { content = Some content; error = None }
+        | Ok (Some content) ->
+          { content = Some (Diff_parser.annotate_file_content ~path content); error = None }
         | Ok None -> { content = None; error = Some (Printf.sprintf "File not found: %s" path) }
         | Error msg -> { content = None; error = Some msg }
       in

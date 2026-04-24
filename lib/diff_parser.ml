@@ -300,6 +300,18 @@ let to_string_annotated diffs =
   let all_lines = List.concat_map file_diff_to_annotated_lines diffs in
   String.concat "\n" all_lines
 
+(** Render raw file content with the same left-column line-number gutter as
+    the annotated diff, prefixed by a [# File: <path>] header.  Used by
+    [get_file_content] so agents see tool-fetched files in the same layout
+    as the diff — anchoring by lookup, not by counting, and with the exact
+    path echoed back for attribution. *)
+let annotate_file_content ~path content =
+  let lines = String.split_on_char '\n' content in
+  let numbered =
+    List.mapi (fun i line -> Printf.sprintf "%s |  %s" (format_annotated_number (i + 1)) line) lines
+  in
+  String.concat "\n" (Printf.sprintf "# File: %s" path :: numbered)
+
 let estimate_tokens diffs =
   let char_count =
     List.fold_left

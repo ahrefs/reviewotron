@@ -64,5 +64,11 @@ val to_string : t -> string
     interleaved where they appear in the hunk but cannot anchor findings. *)
 val to_string_annotated : t -> string
 
+(** Annotate raw file content with a [# File: <path>] header and the same
+    left-column line-number gutter used for the annotated diff.  Used by the
+    [get_file_content] tool so that files fetched outside the diff are
+    presented in the same layout agents already know how to read. *)
+val annotate_file_content : path:string -> string -> string
+
 (** Rough token estimate for the diff text (~4 chars per token). *)
 val estimate_tokens : t -> int
