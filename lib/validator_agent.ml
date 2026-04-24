@@ -113,18 +113,12 @@ let config ~model_tier : Agent_runner.agent_config =
     max_steps = 12;
   }
 
-let build_input ~diff_text ~candidate_findings ?security_memory () =
+let build_input ~diff_text ~candidate_findings () =
   let buf = Buffer.create (String.length diff_text + 1024) in
   Buffer.add_string buf "## Candidate Findings to Validate\n\n";
   Printf.bprintf buf "The analysis agents produced %d candidate finding(s). Validate each one.\n\n"
     (List.length candidate_findings);
   List.iteri (fun i f -> format_finding buf ~index:i f) candidate_findings;
-  (match security_memory with
-  | Some memory when String.length memory > 0 ->
-    Buffer.add_string buf "\n## Repository Security Context\n\n";
-    Buffer.add_string buf memory;
-    Buffer.add_char buf '\n'
-  | Some _ | None -> ());
   Buffer.add_char buf '\n';
   Buffer.add_string buf Review_prompt.annotated_diff_format_explainer;
   Buffer.add_string buf "\n## Diff\n\n";

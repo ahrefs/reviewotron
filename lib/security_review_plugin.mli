@@ -60,18 +60,14 @@ module Make (_ : Api.Github) (_ : Api.Agent_runner) : sig
   val validated_to_finding :
     diff:Diff_parser.file_diff list -> Security_types.validated_finding -> Review_types.finding
 
-  (** Process the memory update queue: read pending entries, run the
-      curator agent to incorporate them, save the updated memory file,
-      and truncate the queue.
+  (** Build the architectural observations passed to the memory curator.
 
-      Returns the curator agent cost, or an empty list if there were
-      no pending updates or the curator failed. *)
-  val process_memory_queue :
-    ctx:Context.t ->
-    repo_url:string ->
-    memory_dir:string ->
-    security_config:Config_types.security_plugin_config ->
-    ?debug_dir:string ->
-    unit ->
-    Cost_tracking.agent_cost list Lwt.t
+      Exposed for testing: these observations are deliberately derived
+      only from the shape of the review (language hints, reviewed files,
+      triage vuln-class distribution).  No per-finding information is
+      ever included. *)
+  val build_observations :
+    triage_output:Security_types.triage_output ->
+    file_paths:string list ->
+    Security_types.architectural_observations
 end

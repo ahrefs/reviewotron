@@ -23,18 +23,17 @@ val config : model_tier:Agent_runner.model_tier -> Agent_runner.agent_config
 (** Build the user message for the validator agent.
 
     Assembles the candidate findings (rendered as readable text with
-    full evidence chains), optional repository security memory, and
-    the original diff into a structured prompt.
+    full evidence chains) and the original diff into a structured prompt.
+
+    The validator is adversarial by charter — it receives no repository
+    security memory.  Memory priors work against that posture by biasing
+    the validator toward accepting analysis output when the memory
+    suggests the repo is "already known risky."
 
     @param diff_text Raw unified diff text.
-    @param candidate_findings All candidate findings from analysis agents.
-    @param security_memory Optional repo security memory contents. *)
+    @param candidate_findings All candidate findings from analysis agents. *)
 val build_input :
-  diff_text:string ->
-  candidate_findings:Security_types.candidate_finding list ->
-  ?security_memory:string ->
-  unit ->
-  string
+  diff_text:string -> candidate_findings:Security_types.candidate_finding list -> unit -> string
 
 (** Build the tool set for the validator agent.
 

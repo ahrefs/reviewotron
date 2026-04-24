@@ -1222,38 +1222,8 @@ let test_analysis_agent_build_input_minimal () =
   (check bool) "contains rationale" true (Devkit.Stre.exists input "SQL string concatenation");
   (check bool) "contains confidence" true (Devkit.Stre.exists input "high");
   (check bool) "contains regions" true (Devkit.Stre.exists input "lines 10");
-  (check bool) "no security memory section" false (Devkit.Stre.exists input "Repository Security Context")
-
-let test_analysis_agent_build_input_with_memory () =
-  let signal : Security_types.triage_signal =
-    {
-      vuln_class = Xss;
-      confidence = Medium;
-      regions = [ { path = "template.html"; start_line = 5; end_line = 15 } ];
-      rationale = "Unescaped template variable";
-    }
-  in
-  let input =
-    Analysis_agent.build_input ~diff_text:"diff content" ~triage_signals:[ signal ] ~file_paths:[ "template.html" ]
-      ~security_memory:"Known safe: Html.escape_text used consistently" ()
-  in
-  (check bool) "contains memory" true (Devkit.Stre.exists input "Known safe: Html.escape_text used consistently");
-  (check bool) "has security memory section" true (Devkit.Stre.exists input "Repository Security Context")
-
-let test_analysis_agent_build_input_empty_memory () =
-  let signal : Security_types.triage_signal =
-    {
-      vuln_class = Injection;
-      confidence = High;
-      regions = [ { path = "app.py"; start_line = 1; end_line = 5 } ];
-      rationale = "test";
-    }
-  in
-  let input =
-    Analysis_agent.build_input ~diff_text:"diff" ~triage_signals:[ signal ] ~file_paths:[ "app.py" ] ~security_memory:""
-      ()
-  in
-  (check bool) "no security memory section for empty" false (Devkit.Stre.exists input "Repository Security Context")
+  (check bool) "no repository security context section" false
+    (Devkit.Stre.exists input "Repository Security Context")
 
 let test_analysis_agent_tools () =
   let fetch_file _path = Lwt.return_ok (Some "file content") in
@@ -1775,115 +1745,14 @@ let test_memory_load_empty_file () =
       let loaded = Security_memory.load ~memory_dir:tmp_dir ~repo_url:"https://github.com/test/repo" in
       (check bool) "empty file returns None" true (Option.is_none loaded))
 
-(** {2 Memory queue tests} *)
-
-let test_memory_update_roundtrip () =
-  let open Security_types in
-  let update =
-    {
-      timestamp = "2026-04-15T10:00:00Z";
-      review_id = "PR-42";
-      learnings = [ "OCaml backend uses Dream" ];
-      stale_entries = [];
-    }
-  in
-  let parsed = roundtrip memory_update_to_json memory_update_of_json update in
-  (check string) "timestamp" update.timestamp parsed.timestamp;
-  (check string) "review_id" update.review_id parsed.review_id;
-  (check (list string)) "learnings" update.learnings parsed.learnings;
-  (check (list string)) "stale_entries" update.stale_entries parsed.stale_entries
-
-let test_memory_update_roundtrip_with_stale () =
-  let open Security_types in
-  let update =
-    {
-      timestamp = "2026-04-15T10:00:00Z";
-      review_id = "PR-43";
-      learnings = [ "Found new auth pattern" ];
-      stale_entries = [ "Old JWT middleware info" ];
-    }
-  in
-  let parsed = roundtrip memory_update_to_json memory_update_of_json update in
-  (check (list string)) "stale_entries" update.stale_entries parsed.stale_entries
-
-let test_queue_path () =
-  let path = Security_memory.queue_path ~memory_dir:"memory" ~repo_url:"https://github.com/ahrefs/monorepo" in
-  (check string) "queue path" "memory/ahrefs-monorepo.queue" path
-
-let make_test_update ~review_id ~learnings =
-  Security_types.{ timestamp = "2026-04-15T10:00:00Z"; review_id; learnings; stale_entries = [] }
-
-(** Create a temp dir and clean up memory + queue files after the test. *)
-let with_queue_dir f =
-  let tmp_dir = Filename.temp_dir "reviewotron_queue_" "_test" in
-  let repo_url = "https://github.com/test/repo" in
-  Fun.protect
-    ~finally:(fun () ->
-      let mem_path = Security_memory.memory_path ~memory_dir:tmp_dir ~repo_url in
-      let q_path = Security_memory.queue_path ~memory_dir:tmp_dir ~repo_url in
-      (try Sys.remove mem_path with Sys_error _ -> ());
-      (try Sys.remove q_path with Sys_error _ -> ());
-      try Unix.rmdir tmp_dir with Unix.Unix_error _ -> ())
-    (fun () -> f tmp_dir repo_url)
-
-let test_queue_append_read_roundtrip () =
-  with_queue_dir (fun tmp_dir repo_url ->
-    let u1 = make_test_update ~review_id:"PR-1" ~learnings:[ "Backend uses Dream" ] in
-    let u2 = make_test_update ~review_id:"PR-2" ~learnings:[ "SQL via Caqti"; "Auth via JWT" ] in
-    Security_memory.append_update ~memory_dir:tmp_dir ~repo_url ~update:u1;
-    Security_memory.append_update ~memory_dir:tmp_dir ~repo_url ~update:u2;
-    let updates = Security_memory.read_updates ~memory_dir:tmp_dir ~repo_url in
-    (check int) "two updates read back" 2 (List.length updates);
-    match updates with
-    | [ first; second ] ->
-      (check string) "first review_id" "PR-1" first.review_id;
-      (check string) "second review_id" "PR-2" second.review_id;
-      (check (list string)) "second learnings" [ "SQL via Caqti"; "Auth via JWT" ] second.learnings
-    | _ -> Alcotest.fail "expected exactly two updates")
-
-let test_queue_read_missing_file () =
-  let updates =
-    Security_memory.read_updates ~memory_dir:"nonexistent_dir_for_test" ~repo_url:"https://github.com/test/repo"
-  in
-  (check (list string)) "empty list" [] (List.map (fun (u : Security_types.memory_update) -> u.review_id) updates)
-
-let test_queue_read_malformed_entries () =
-  with_queue_dir (fun tmp_dir repo_url ->
-    let u1 = make_test_update ~review_id:"PR-1" ~learnings:[ "Valid entry" ] in
-    Security_memory.append_update ~memory_dir:tmp_dir ~repo_url ~update:u1;
-    (* Manually append a malformed line *)
-    let path = Security_memory.queue_path ~memory_dir:tmp_dir ~repo_url in
-    let oc = open_out_gen [ Open_wronly; Open_append; Open_creat ] 0o644 path in
-    Fun.protect ~finally:(fun () -> close_out oc) (fun () -> output_string oc "not valid json\n");
-    let u2 = make_test_update ~review_id:"PR-3" ~learnings:[ "Also valid" ] in
-    Security_memory.append_update ~memory_dir:tmp_dir ~repo_url ~update:u2;
-    let updates = Security_memory.read_updates ~memory_dir:tmp_dir ~repo_url in
-    (check int) "skips malformed, keeps valid" 2 (List.length updates);
-    match updates with
-    | [ first; second ] ->
-      (check string) "first review_id" "PR-1" first.review_id;
-      (check string) "second review_id" "PR-3" second.review_id
-    | _ -> Alcotest.fail "expected exactly two valid updates")
-
-let test_queue_truncate () =
-  with_queue_dir (fun tmp_dir repo_url ->
-    let u1 = make_test_update ~review_id:"PR-1" ~learnings:[ "Some learning" ] in
-    Security_memory.append_update ~memory_dir:tmp_dir ~repo_url ~update:u1;
-    let before = Security_memory.read_updates ~memory_dir:tmp_dir ~repo_url in
-    (check int) "one update before truncate" 1 (List.length before);
-    Security_memory.truncate_queue ~memory_dir:tmp_dir ~repo_url;
-    let after = Security_memory.read_updates ~memory_dir:tmp_dir ~repo_url in
-    (check int) "empty after truncate" 0 (List.length after))
-
-let test_queue_truncate_missing_file () =
-  (* Should not raise — truncating a nonexistent file is a no-op *)
-  Security_memory.truncate_queue ~memory_dir:"nonexistent_dir_for_test" ~repo_url:"https://github.com/test/repo"
-
 (** {2 Memory curator agent tests} *)
+
+let empty_observations : Security_types.architectural_observations =
+  { language_hints = []; reviewed_files = []; vuln_class_distribution = [] }
 
 let test_curator_output_roundtrip () =
   let open Security_types in
-  let output = { updated_memory = "# Security Memory: test/repo\n\n## Architecture\n- OCaml backend\n" } in
+  let output = { updated_memory = "# test/repo\n\n## Architecture\n- OCaml backend\n" } in
   let parsed = roundtrip curator_output_to_json curator_output_of_json output in
   (check string) "updated_memory" output.updated_memory parsed.updated_memory
 
@@ -1917,119 +1786,173 @@ let test_curator_agent_output_schema_valid () =
     (check bool) "has properties" true (List.mem_assoc "properties" fields)
   | _ -> fail "expected JSON object schema"
 
+let test_curator_prompt_architectural_only () =
+  let cfg = Memory_curator_agent.config ~model_tier:Fast in
+  let prompt = cfg.system_prompt in
+  (check bool) "prompt names Architecture section" true (Devkit.Stre.exists prompt "## Architecture");
+  (check bool) "prompt names Known Safe Patterns section" true (Devkit.Stre.exists prompt "## Known Safe Patterns");
+  (check bool) "prompt forbids line-number references" true
+    (Devkit.Stre.exists prompt "line number" || Devkit.Stre.exists prompt "line-number"
+   || Devkit.Stre.exists prompt "path:line");
+  (check bool) "prompt explicitly rejects Known Risk Areas" true (Devkit.Stre.exists prompt "Known Risk Areas");
+  (check bool) "prompt explicitly rejects Suppressions" true (Devkit.Stre.exists prompt "Suppressions")
+
 let test_curator_build_input_no_memory () =
-  let input =
-    Memory_curator_agent.build_input ~repo_name:"ahrefs/monorepo" ~memory_max_tokens:5000
-      ~learnings:[ "Backend uses Dream framework"; "SQL goes through Caqti" ]
-      ()
+  let observations : Security_types.architectural_observations =
+    {
+      language_hints = [ "ocaml" ];
+      reviewed_files = [ "lib/db.ml"; "lib/auth.ml" ];
+      vuln_class_distribution = [ "injection", 2 ];
+    }
   in
-  (check bool) "contains repo name" true (Devkit.Stre.exists input "ahrefs/monorepo");
-  (check bool) "contains no existing memory" true (Devkit.Stre.exists input "No existing memory");
+  let input = Memory_curator_agent.build_input ~repo_name:"ahrefs-monorepo" ~memory_max_tokens:500 ~observations () in
+  (check bool) "contains repo name" true (Devkit.Stre.exists input "ahrefs-monorepo");
+  (check bool) "contains 'No existing brief'" true (Devkit.Stre.exists input "No existing brief");
   (check bool) "contains current token count" true (Devkit.Stre.exists input "Current: 0 tokens");
-  (check bool) "contains max token budget" true (Devkit.Stre.exists input "Maximum: 5000 tokens");
-  (check bool) "contains learning 1" true (Devkit.Stre.exists input "Backend uses Dream framework");
-  (check bool) "contains learning 2" true (Devkit.Stre.exists input "SQL goes through Caqti")
+  (check bool) "contains max token budget" true (Devkit.Stre.exists input "Maximum: 500 tokens");
+  (check bool) "contains language hint" true (Devkit.Stre.exists input "ocaml");
+  (check bool) "contains reviewed file" true (Devkit.Stre.exists input "lib/db.ml");
+  (check bool) "contains vuln class distribution" true (Devkit.Stre.exists input "injection: 2")
 
 let test_curator_build_input_with_memory () =
-  let existing = "# Security Memory: test/repo\n\n## Architecture\n- OCaml backend\n" in
+  let existing = "# test/repo\n\n## Architecture\n- OCaml backend\n" in
+  let observations : Security_types.architectural_observations =
+    { language_hints = [ "ocaml" ]; reviewed_files = [ "lib/api.ml" ]; vuln_class_distribution = [] }
+  in
   let input =
-    Memory_curator_agent.build_input ~repo_name:"test/repo" ~memory_max_tokens:3000
-      ~learnings:[ "New endpoint added in lib/api.ml" ] ~current_memory:existing ()
+    Memory_curator_agent.build_input ~repo_name:"test-repo" ~memory_max_tokens:500 ~observations
+      ~current_memory:existing ()
   in
   (check bool) "contains existing memory" true (Devkit.Stre.exists input "OCaml backend");
-  (check bool) "contains Current Memory section" true (Devkit.Stre.exists input "## Current Memory");
-  (check bool) "no 'No existing memory' text" false (Devkit.Stre.exists input "No existing memory");
+  (check bool) "contains Current Brief section" true (Devkit.Stre.exists input "## Current Brief");
+  (check bool) "no 'No existing brief' text" false (Devkit.Stre.exists input "No existing brief");
   (check bool) "contains current token estimate" true (Devkit.Stre.exists input "Current: ~");
-  (check bool) "contains max token budget" true (Devkit.Stre.exists input "Maximum: 3000 tokens");
-  (check bool) "contains learning" true (Devkit.Stre.exists input "New endpoint added in lib/api.ml")
+  (check bool) "contains max token budget" true (Devkit.Stre.exists input "Maximum: 500 tokens");
+  (check bool) "contains reviewed file" true (Devkit.Stre.exists input "lib/api.ml")
 
 let test_curator_build_input_empty_memory () =
   let input =
-    Memory_curator_agent.build_input ~repo_name:"test/repo" ~memory_max_tokens:5000 ~learnings:[ "test learning" ]
-      ~current_memory:"" ()
+    Memory_curator_agent.build_input ~repo_name:"test-repo" ~memory_max_tokens:500
+      ~observations:empty_observations ~current_memory:"" ()
   in
-  (check bool) "empty memory treated as no memory" true (Devkit.Stre.exists input "No existing memory")
+  (check bool) "empty memory treated as no brief" true (Devkit.Stre.exists input "No existing brief")
 
-let test_curator_build_input_empty_learnings () =
+let test_curator_build_input_empty_observations () =
   let input =
-    Memory_curator_agent.build_input ~repo_name:"test/repo" ~memory_max_tokens:5000 ~learnings:[]
-      ~current_memory:"# Security Memory\n" ()
+    Memory_curator_agent.build_input ~repo_name:"test-repo" ~memory_max_tokens:500
+      ~observations:empty_observations ~current_memory:"# test-repo\n" ()
   in
-  (check bool) "contains New Learnings section" true (Devkit.Stre.exists input "## New Learnings");
-  (check bool) "contains existing memory" true (Devkit.Stre.exists input "# Security Memory")
+  (check bool) "still contains existing brief" true (Devkit.Stre.exists input "# test-repo");
+  (* No observations ⇒ no observation sections rendered *)
+  (check bool) "no language hints section" false (Devkit.Stre.exists input "## Language Hints");
+  (check bool) "no reviewed files section" false (Devkit.Stre.exists input "## Reviewed Files");
+  (check bool) "no distribution section" false (Devkit.Stre.exists input "## Triage Vuln-Class Distribution")
 
-(** {2 Memory round-trip tests} *)
-
-let test_memory_rt_queue_to_curator_input () =
-  (* Queue I/O round-trip is covered by test_queue_append_read_roundtrip.
-     This test focuses on build_input surfacing learnings in the prompt. *)
-  let learnings = [ "Language hints: ocaml"; "Triage flagged: injection"; "Reviewed files: lib/db.ml" ] in
-  let input = Memory_curator_agent.build_input ~repo_name:"test/repo" ~memory_max_tokens:5000 ~learnings () in
-  (check bool) "curator input contains language hint" true (Devkit.Stre.exists input "Language hints: ocaml");
-  (check bool) "curator input contains triage flag" true (Devkit.Stre.exists input "Triage flagged: injection");
-  (check bool) "curator input contains file list" true (Devkit.Stre.exists input "Reviewed files: lib/db.ml");
-  (check bool) "curator input has New Learnings section" true (Devkit.Stre.exists input "## New Learnings")
-
-let test_memory_rt_curator_save_load () =
-  with_queue_dir (fun tmp_dir repo_url ->
-    let updated_memory =
-      "# Security Memory: test/repo\n\n\
-       ## Architecture\n\
-       - OCaml with Dream\n\n\
-       ## Known Safe Patterns\n\
-       - Db.query parameterized\n"
-    in
-    Security_memory.save ~memory_dir:tmp_dir ~repo_url ~content:updated_memory;
-    let loaded = Security_memory.load ~memory_dir:tmp_dir ~repo_url in
-    match loaded with
-    | None -> Alcotest.fail "expected memory to be present after save"
-    | Some content -> (check bool) "loaded content matches saved" true (String.equal content updated_memory))
-
-let test_memory_rt_injected_into_triage () =
-  let security_memory =
-    Some
-      "# Security Memory: test/repo\n\n\
-       ## Architecture\n\
-       - OCaml backend\n\n\
-       ## Known Risk Areas\n\
-       - lib/export/csv.ml uses shell commands\n"
+let test_curator_build_input_samples_long_file_list () =
+  let files = List.init 30 (fun i -> Printf.sprintf "src/f%d.ts" i) in
+  let observations : Security_types.architectural_observations =
+    { language_hints = []; reviewed_files = files; vuln_class_distribution = [] }
   in
-  let input =
-    Triage_agent.build_input
-      ~diff_text:"diff --git a/lib/db.ml b/lib/db.ml\n+let q = \"SELECT * FROM users WHERE id = \" ^ id"
-      ~file_paths:[ "lib/db.ml" ] ?security_memory ()
-  in
-  (check bool) "triage input has repository security context" true
-    (Devkit.Stre.exists input "## Repository Security Context");
-  (check bool) "triage input contains memory architecture" true (Devkit.Stre.exists input "OCaml backend");
-  (check bool) "triage input contains risk areas" true (Devkit.Stre.exists input "lib/export/csv.ml")
+  let input = Memory_curator_agent.build_input ~repo_name:"test-repo" ~memory_max_tokens:500 ~observations () in
+  (check bool) "first file present" true (Devkit.Stre.exists input "src/f0.ts");
+  (check bool) "12th file present" true (Devkit.Stre.exists input "src/f11.ts");
+  (check bool) "sample truncated with ellipsis" true (Devkit.Stre.exists input "- ...\n");
+  (check bool) "late file not present" false (Devkit.Stre.exists input "src/f25.ts")
 
-let test_memory_rt_injected_into_analysis () =
-  let security_memory =
-    Some "# Security Memory: test/repo\n\n## Known Safe Patterns\n- Db.query uses parameterized statements\n"
-  in
-  let signal = make_triage_signal ~vuln_class:Security_types.Injection ~confidence:Security_types.High in
-  let input =
-    Analysis_agent.build_input
-      ~diff_text:"diff --git a/lib/query.ml b/lib/query.ml\n+let q = \"SELECT * FROM t WHERE id = \" ^ id"
-      ~triage_signals:[ signal ] ~file_paths:[ "lib/query.ml" ] ?security_memory ()
-  in
-  (check bool) "analysis input has repository security context" true
-    (Devkit.Stre.exists input "## Repository Security Context");
-  (check bool) "analysis input contains safe patterns from memory" true
-    (Devkit.Stre.exists input "Db.query uses parameterized statements")
+(** INVARIANT: the curator input cannot contain per-finding path/line references.
 
-let test_memory_rt_token_budget () =
-  (* Verify that when memory exceeds the configured limit, the curator's input
-     correctly communicates the budget so the model knows to compress. The actual
-     compression instruction lives in the curator's system prompt constant (not in
-     build_input), so we only assert that the budget numbers are surfaced here. *)
+    The curator's job is to maintain an architectural brief — never to
+    catalogue findings.  We construct observations as the plugin does
+    (from [build_observations]) and check that even when the review
+    produced findings with real paths and line numbers, none of them
+    leak into the curator's prompt. *)
+let test_curator_input_never_contains_findings () =
+  let triage_output : Security_types.triage_output =
+    {
+      signals =
+        [
+          {
+            vuln_class = Injection;
+            confidence = High;
+            regions = [ { path = "src/lib/db.ts"; start_line = 10; end_line = 20 } ];
+            rationale = "concat into sql";
+          };
+          {
+            vuln_class = Xss;
+            confidence = Medium;
+            regions = [ { path = "src/views/user.ts"; start_line = 5; end_line = 5 } ];
+            rationale = "unescaped";
+          };
+        ];
+      language_hints = [ "TypeScript" ];
+      skip_reason = None;
+    }
+  in
+  let file_paths = [ "src/lib/db.ts"; "src/views/user.ts"; "src/routes/auth.ts" ] in
+  let findings : Review_types.finding list =
+    [
+      {
+        path = "src/lib/db.ts";
+        line = 42;
+        end_line = None;
+        severity = Critical;
+        category = Security;
+        message = "SQL injection in query builder";
+        suggested_fix = None;
+      };
+      {
+        path = "src/routes/auth.ts";
+        line = 17;
+        end_line = None;
+        severity = Warning;
+        category = Security;
+        message = "Missing authz check";
+        suggested_fix = None;
+      };
+    ]
+  in
+  ignore (findings : Review_types.finding list);
+  let observations = Sec_test.build_observations ~triage_output ~file_paths in
+  let input = Memory_curator_agent.build_input ~repo_name:"test-repo" ~memory_max_tokens:500 ~observations () in
+  (* Findings' identifying information must not appear in the curator prompt. *)
+  (check bool) "no confirmed-finding line number 1" false (Devkit.Stre.exists input ":42");
+  (check bool) "no confirmed-finding line number 2" false (Devkit.Stre.exists input ":17");
+  (check bool) "no 'Confirmed security finding' phrase" false (Devkit.Stre.exists input "Confirmed security finding");
+  (check bool) "no finding message 1" false (Devkit.Stre.exists input "SQL injection in query builder");
+  (check bool) "no finding message 2" false (Devkit.Stre.exists input "Missing authz check");
+  (* But the architectural shape *is* there. *)
+  (check bool) "language hint present" true (Devkit.Stre.exists input "TypeScript");
+  (check bool) "reviewed file present" true (Devkit.Stre.exists input "src/lib/db.ts");
+  (check bool) "vuln class distribution present" true (Devkit.Stre.exists input "injection: 1")
+
+let test_curator_save_load_roundtrip () =
+  let tmp_dir = Filename.temp_dir "reviewotron_curator_" "_test" in
+  let repo_url = "https://github.com/test/repo" in
+  Fun.protect
+    ~finally:(fun () ->
+      let mem_path = Security_memory.memory_path ~memory_dir:tmp_dir ~repo_url in
+      (try Sys.remove mem_path with Sys_error _ -> ());
+      try Unix.rmdir tmp_dir with Unix.Unix_error _ -> ())
+    (fun () ->
+      let updated_memory =
+        "# test-repo\n\n\
+         ## Architecture\n\
+         - OCaml with Dream\n\n\
+         ## Known Safe Patterns\n\
+         - Db.query parameterized\n"
+      in
+      Security_memory.save ~memory_dir:tmp_dir ~repo_url ~content:updated_memory;
+      let loaded = Security_memory.load ~memory_dir:tmp_dir ~repo_url in
+      match loaded with
+      | None -> Alcotest.fail "expected memory to be present after save"
+      | Some content -> (check bool) "loaded content matches saved" true (String.equal content updated_memory))
+
+let test_curator_build_input_token_budget () =
   let large_memory = String.make 4001 'x' in
-  (* 4001 chars → estimate_tokens ≈ 1001, which is > max_tokens = 800 *)
-  let max_tokens = 800 in
+  let max_tokens = 500 in
   let input =
-    Memory_curator_agent.build_input ~repo_name:"test/repo" ~memory_max_tokens:max_tokens ~learnings:[ "New learning" ]
-      ~current_memory:large_memory ()
+    Memory_curator_agent.build_input ~repo_name:"test-repo" ~memory_max_tokens:max_tokens
+      ~observations:empty_observations ~current_memory:large_memory ()
   in
   let estimated = Memory_curator_agent.estimate_tokens large_memory in
   (check bool) "estimated tokens exceeds limit" true (estimated > max_tokens);
@@ -2037,55 +1960,6 @@ let test_memory_rt_token_budget () =
   (check bool) "curator input contains maximum tokens" true
     (Devkit.Stre.exists input (Printf.sprintf "Maximum: %d tokens" max_tokens));
   (check bool) "curator input contains current estimate" true (Devkit.Stre.exists input "Current: ~")
-
-let test_memory_full_round_trip () =
-  with_queue_dir (fun tmp_dir repo_url ->
-    let repo_name = Security_memory.repo_slug repo_url in
-    (* 1. Review produces learnings → queue *)
-    let learnings =
-      [
-        "Language hints: ocaml";
-        "Triage flagged: injection";
-        "Reviewed files: lib/db.ml, lib/auth.ml";
-        "Confirmed security finding at lib/db.ml:42";
-      ]
-    in
-    let update = make_test_update ~review_id:"PR-10" ~learnings in
-    Security_memory.append_update ~memory_dir:tmp_dir ~repo_url ~update;
-    (* 2. Queue persists learnings *)
-    let updates = Security_memory.read_updates ~memory_dir:tmp_dir ~repo_url in
-    (check int) "queue has one entry" 1 (List.length updates);
-    let queued_learnings = List.concat_map (fun (u : Security_types.memory_update) -> u.learnings) updates in
-    (check bool) "queued learnings include finding" true
-      (List.exists (String.equal "Confirmed security finding at lib/db.ml:42") queued_learnings);
-    (* 3. Curator input is built from queue learnings *)
-    let curator_input =
-      Memory_curator_agent.build_input ~repo_name ~memory_max_tokens:5000 ~learnings:queued_learnings ()
-    in
-    (check bool) "curator input contains finding learning" true
-      (Devkit.Stre.exists curator_input "Confirmed security finding at lib/db.ml:42");
-    (* 4. Curator saves updated memory and queue is truncated *)
-    let updated_memory =
-      "# Security Memory: test/repo\n\n\
-       ## Architecture\n\
-       - OCaml with Dream\n\n\
-       ## Known Risk Areas\n\
-       - lib/db.ml:42 SQL injection confirmed\n"
-    in
-    Security_memory.save ~memory_dir:tmp_dir ~repo_url ~content:updated_memory;
-    Security_memory.truncate_queue ~memory_dir:tmp_dir ~repo_url;
-    (check int) "queue empty after truncation" 0
-      (List.length (Security_memory.read_updates ~memory_dir:tmp_dir ~repo_url));
-    (* 5. Next review loads memory → injected into triage prompt *)
-    let loaded_memory = Security_memory.load ~memory_dir:tmp_dir ~repo_url in
-    let triage_input =
-      Triage_agent.build_input ~diff_text:"+ let x = Dream.query req \"id\"" ~file_paths:[ "lib/db.ml" ]
-        ?security_memory:loaded_memory ()
-    in
-    (check bool) "next review triage sees updated memory" true
-      (Devkit.Stre.exists triage_input "## Repository Security Context");
-    (check bool) "next review triage sees risk area from memory" true
-      (Devkit.Stre.exists triage_input "lib/db.ml:42 SQL injection confirmed"))
 
 (** {2 Security pipeline end-to-end tests} *)
 
@@ -2668,8 +2542,6 @@ let () =
           test_case "prompt class section" `Quick test_analysis_agent_prompt_contains_class_section;
           test_case "language hints" `Quick test_analysis_agent_language_hints;
           test_case "build input minimal" `Quick test_analysis_agent_build_input_minimal;
-          test_case "build input with memory" `Quick test_analysis_agent_build_input_with_memory;
-          test_case "build input empty memory" `Quick test_analysis_agent_build_input_empty_memory;
           test_case "tools" `Quick test_analysis_agent_tools;
           test_case "output schema" `Quick test_analysis_agent_output_schema;
           test_case "shared methodology" `Quick test_analysis_agent_shared_methodology;
@@ -2740,36 +2612,21 @@ let () =
           test_case "save load roundtrip" `Quick test_memory_save_load_roundtrip;
           test_case "load empty file" `Quick test_memory_load_empty_file;
         ] );
-      ( "memory_queue",
-        [
-          test_case "memory_update roundtrip" `Quick test_memory_update_roundtrip;
-          test_case "memory_update with stale entries" `Quick test_memory_update_roundtrip_with_stale;
-          test_case "queue path" `Quick test_queue_path;
-          test_case "append and read roundtrip" `Quick test_queue_append_read_roundtrip;
-          test_case "read missing file" `Quick test_queue_read_missing_file;
-          test_case "read with malformed entries" `Quick test_queue_read_malformed_entries;
-          test_case "truncate" `Quick test_queue_truncate;
-          test_case "truncate missing file" `Quick test_queue_truncate_missing_file;
-        ] );
       ( "memory_curator",
         [
           test_case "curator_output roundtrip" `Quick test_curator_output_roundtrip;
           test_case "config" `Quick test_curator_agent_config;
           test_case "config model tier" `Quick test_curator_agent_config_model_tier;
           test_case "output schema valid" `Quick test_curator_agent_output_schema_valid;
+          test_case "prompt is architectural only" `Quick test_curator_prompt_architectural_only;
           test_case "build input no memory" `Quick test_curator_build_input_no_memory;
           test_case "build input with memory" `Quick test_curator_build_input_with_memory;
           test_case "build input empty memory" `Quick test_curator_build_input_empty_memory;
-          test_case "build input empty learnings" `Quick test_curator_build_input_empty_learnings;
-        ] );
-      ( "memory_round_trip",
-        [
-          test_case "queue to curator input" `Quick test_memory_rt_queue_to_curator_input;
-          test_case "curator save load" `Quick test_memory_rt_curator_save_load;
-          test_case "injected into triage" `Quick test_memory_rt_injected_into_triage;
-          test_case "injected into analysis" `Quick test_memory_rt_injected_into_analysis;
-          test_case "token budget shown in curator input" `Quick test_memory_rt_token_budget;
-          test_case "full round trip" `Quick test_memory_full_round_trip;
+          test_case "build input empty observations" `Quick test_curator_build_input_empty_observations;
+          test_case "build input samples long file list" `Quick test_curator_build_input_samples_long_file_list;
+          test_case "input never contains findings" `Quick test_curator_input_never_contains_findings;
+          test_case "save load roundtrip" `Quick test_curator_save_load_roundtrip;
+          test_case "token budget shown in input" `Quick test_curator_build_input_token_budget;
         ] );
       ( "security_e2e",
         [
