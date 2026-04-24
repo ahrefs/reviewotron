@@ -25,18 +25,20 @@ val config :
 (** Build the user message for an analysis agent.
 
     Assembles the triage signals (flagged regions for this agent's vuln class),
-    changed file paths, optional repository security memory, and the full diff
-    into a structured prompt.
+    changed file paths, and the full diff into a structured prompt.
+
+    The analysis agent works from the diff, its triage signals, and its own
+    methodology — no repository security memory is injected.  Memory priors
+    bias analysis toward confirmation; the curated architectural brief is
+    fed to triage only.
 
     @param diff_text Raw unified diff text.
     @param triage_signals Triage signals relevant to this agent's vuln class.
-    @param file_paths List of changed file paths in the PR.
-    @param security_memory Optional repo security memory contents. *)
+    @param file_paths List of changed file paths in the PR. *)
 val build_input :
   diff_text:string ->
   triage_signals:Security_types.triage_signal list ->
   file_paths:string list ->
-  ?security_memory:string ->
   unit ->
   string
 

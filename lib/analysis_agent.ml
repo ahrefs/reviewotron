@@ -681,7 +681,7 @@ let append_regions buf regions =
     (fun (r : Security_types.region) -> Printf.bprintf buf "  - %s lines %d-%d\n" r.path r.start_line r.end_line)
     regions
 
-let build_input ~diff_text ~triage_signals ~file_paths ?security_memory () =
+let build_input ~diff_text ~triage_signals ~file_paths () =
   let buf = Buffer.create (String.length diff_text + 512) in
   Buffer.add_string buf "## Triage Signals\n\n";
   Buffer.add_string buf "The triage agent flagged the following regions for your analysis:\n\n";
@@ -697,12 +697,6 @@ let build_input ~diff_text ~triage_signals ~file_paths ?security_memory () =
     triage_signals;
   Buffer.add_string buf "## Changed Files\n\n";
   List.iter (Printf.bprintf buf "- %s\n") file_paths;
-  (match security_memory with
-  | Some memory when String.length memory > 0 ->
-    Buffer.add_string buf "\n## Repository Security Context\n\n";
-    Buffer.add_string buf memory;
-    Buffer.add_char buf '\n'
-  | Some _ | None -> ());
   Buffer.add_char buf '\n';
   Buffer.add_string buf Review_prompt.annotated_diff_format_explainer;
   Buffer.add_string buf "\n## Diff\n\n";

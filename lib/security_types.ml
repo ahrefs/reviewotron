@@ -210,14 +210,21 @@ type validator_output = {
 [@@deriving json, jsonschema] [@@json.allow_extra_fields]
 
 type curator_output = {
-  updated_memory : string; [@jsonschema.description "Full updated security memory content to persist for future reviews"]
+  updated_memory : string;
+     [@jsonschema.description
+       "Full updated architectural brief for the repository. Contains only Architecture and Known Safe Patterns \
+        sections; no file:line references."]
 }
 [@@deriving json, jsonschema] [@@json.allow_extra_fields]
 
-type memory_update = {
-  timestamp : string;
-  review_id : string;
-  learnings : string list;
-  stale_entries : string list;
+(** Architectural observations passed to the memory curator.
+
+    These are deliberately limited to information that describes the
+    {e shape} of the repository — not any specific findings the review
+    produced.  The type has no field for findings: the curator cannot
+    record file:line claims because it is never told about them. *)
+type architectural_observations = {
+  language_hints : string list;
+  reviewed_files : string list;
+  vuln_class_distribution : (string * int) list;
 }
-[@@deriving json] [@@json.allow_extra_fields]

@@ -198,16 +198,14 @@ val curator_output_to_json : curator_output -> Yojson.Basic.t
 val curator_output_of_json : Yojson.Basic.t -> curator_output
 val curator_output_jsonschema : Yojson.Basic.t
 
-(** {2 Memory queue types} *)
+(** Architectural observations passed to the memory curator.
 
-(** A queued memory update from a completed review.
-    Appended to the queue file in JSONL format for later processing by the curator. *)
-type memory_update = {
-  timestamp : string;
-  review_id : string;
-  learnings : string list;
-  stale_entries : string list;
+    These describe the shape of the repository — language(s), a sample of
+    files reviewed, and the distribution of vulnerability classes triage
+    flagged.  The type has no field for findings: the curator cannot
+    record file:line claims because it is never told about them. *)
+type architectural_observations = {
+  language_hints : string list;
+  reviewed_files : string list;
+  vuln_class_distribution : (string * int) list;
 }
-
-val memory_update_to_json : memory_update -> Yojson.Basic.t
-val memory_update_of_json : Yojson.Basic.t -> memory_update

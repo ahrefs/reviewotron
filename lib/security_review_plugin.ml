@@ -92,11 +92,11 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) = struct
       Returns the list of candidate findings and the agent cost on success,
       or an empty list with no cost if the agent fails. *)
   let run_single_analysis ~ctx ~repo_url ~head_sha ~security_config ~diff_text ~file_paths ~language_hints ~vuln_class
-    ~triage_signals ?security_memory ?debug_dir () =
+    ~triage_signals ?debug_dir () =
     let vc_name = Security_types.vuln_class_to_string vuln_class in
     let model_tier = agent_model_tier security_config.Config_types.analysis_model_tier in
     let agent_config = Analysis_agent.config ~vuln_class ~model_tier ~language_hints in
-    let input = Analysis_agent.build_input ~diff_text ~triage_signals ~file_paths ?security_memory () in
+    let input = Analysis_agent.build_input ~diff_text ~triage_signals ~file_paths () in
     let tools = Analysis_agent.tools ~fetch_file:(fetch_file ~ctx ~repo_url ~ref_:head_sha) in
     let%lwt result = AI.run ~ctx ~repo_url ~tools ?debug_dir ~config:agent_config ~input () in
     match result with
@@ -232,11 +232,10 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) = struct
       Returns the list of validated findings and the agent cost on success.
       If the validator agent fails or its output cannot be parsed, returns
       an empty list — unvalidated findings are never reported. *)
-  let run_validator ~ctx ~repo_url ~head_sha ~security_config ~diff_text ~candidate_findings ?security_memory ?debug_dir
-    () =
+  let run_validator ~ctx ~repo_url ~head_sha ~security_config ~diff_text ~candidate_findings ?debug_dir () =
     let model_tier = agent_model_tier security_config.Config_types.validator_model_tier in
     let agent_config = Validator_agent.config ~model_tier in
-    let input = Validator_agent.build_input ~diff_text ~candidate_findings ?security_memory () in
+    let input = Validator_agent.build_input ~diff_text ~candidate_findings () in
     let tools = Validator_agent.tools ~fetch_file:(fetch_file ~ctx ~repo_url ~ref_:head_sha) in
     let%lwt result = AI.run ~ctx ~repo_url ~tools ?debug_dir ~config:agent_config ~input () in
     match result with
@@ -273,8 +272,8 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) = struct
       single agent invocation with all relevant triage context.  Candidate
       findings are passed through the validator agent; only confirmed
       findings are converted to review findings. *)
-  let run_analysis ~ctx ~repo_url ~head_sha ~security_config ~diff ~diff_text ~file_paths ~language_hints
-    ?security_memory ?debug_dir signals =
+  let run_analysis ~ctx ~repo_url ~head_sha ~security_config ~diff ~diff_text ~file_paths ~language_hints ?debug_dir
+    signals =
     let actionable = List.filter (should_analyze ~security_config) signals in
     match actionable with
     | [] ->
@@ -289,7 +288,7 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) = struct
             Lwt.catch
               (fun () ->
                 run_single_analysis ~ctx ~repo_url ~head_sha ~security_config ~diff_text ~file_paths ~language_hints
-                  ~vuln_class ~triage_signals ?security_memory ?debug_dir ())
+                  ~vuln_class ~triage_signals ?debug_dir ())
               (fun exn ->
                 log#error "analysis agent %s raised: %s" (Security_types.vuln_class_to_string vuln_class) (Exn.str exn);
                 Lwt.return ([], [])))
@@ -303,8 +302,8 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) = struct
       | [] -> Lwt.return ([], analysis_costs)
       | _ :: _ ->
         let%lwt validated, validator_costs =
-          run_validator ~ctx ~repo_url ~head_sha ~security_config ~diff_text ~candidate_findings:candidates
-            ?security_memory ?debug_dir ()
+          run_validator ~ctx ~repo_url ~head_sha ~security_config ~diff_text ~candidate_findings:candidates ?debug_dir
+            ()
         in
         log_rejected validated;
         let confirmed =
@@ -319,98 +318,72 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) = struct
           (List.length validated - List.length confirmed);
         Lwt.return (List.map (validated_to_finding ~diff) confirmed, analysis_costs @ validator_costs))
 
-  (** Merge learnings and stale entries from all queued updates.
+  (** Build the architectural observations passed to the memory curator.
 
-      Stale entries are prefixed with ["STALE: "] so the curator knows
-      to remove them from the memory file. *)
-  let collect_queue_learnings (updates : Security_types.memory_update list) =
-    List.concat_map
-      (fun (u : Security_types.memory_update) ->
-        u.learnings @ List.map (fun entry -> "STALE: " ^ entry) u.stale_entries)
-      updates
-
-  (** Process the memory update queue: read pending entries, run the
-      curator agent to incorporate them into the memory file, and
-      truncate the queue.
-
-      Returns the curator agent cost, or an empty list if there were
-      no pending updates or the curator failed. *)
-  let process_memory_queue ~ctx ~repo_url ~memory_dir ~security_config ?debug_dir () =
-    let updates = Security_memory.read_updates ~memory_dir ~repo_url in
-    match updates with
-    | [] ->
-      log#info "memory queue: no pending updates";
-      Lwt.return []
-    | _ :: _ ->
-      log#info "memory queue: %d pending updates" (List.length updates);
-      let learnings = collect_queue_learnings updates in
-      let current_memory = Security_memory.load ~memory_dir ~repo_url in
-      let memory_max_tokens = security_config.Config_types.memory_max_tokens in
-      let repo_name = Security_memory.repo_slug repo_url in
-      (* Curator uses the triage model tier (both are Fast by default per PRD §4.4) *)
-      let curator_config =
-        Memory_curator_agent.config ~model_tier:(agent_model_tier security_config.triage_model_tier)
-      in
-      let input = Memory_curator_agent.build_input ~repo_name ~memory_max_tokens ~learnings ?current_memory () in
-      let%lwt result = AI.run ~ctx ~repo_url ?debug_dir ~config:curator_config ~input () in
-      (match result with
-      | Error msg ->
-        log#error "memory curator agent failed: %s" msg;
-        Lwt.return []
-      | Ok agent_result ->
-        let cost = Cost_tracking.of_agent_result ~agent_name:"memory_curator" ~files_fetched:0 agent_result in
-        (match Security_types.curator_output_of_json agent_result.output with
-        | output ->
-          let estimated = Memory_curator_agent.estimate_tokens output.updated_memory in
-          if estimated > memory_max_tokens then
-            log#warn "curator output exceeds token limit (%d > %d), saving anyway" estimated memory_max_tokens;
-          Security_memory.save ~memory_dir ~repo_url ~content:output.updated_memory;
-          Security_memory.truncate_queue ~memory_dir ~repo_url;
-          log#info "memory updated and queue truncated";
-          Lwt.return [ cost ]
-        | exception exn ->
-          log#error "failed to parse curator output: %s" (Exn.str exn);
-          Lwt.return [ cost ]))
-
-  (** Collect learnings from a completed review for the memory queue.
-
-      Extracts useful context that the curator can incorporate into the
-      repo security memory: detected languages, triaged vuln classes,
-      reviewed file names, and confirmed finding locations. *)
-  let collect_review_learnings ~(triage_output : Security_types.triage_output) ~file_paths
-    ~(findings : Review_types.finding list) =
-    let lang_hints =
-      match triage_output.language_hints with
-      | [] -> []
-      | hints -> [ Printf.sprintf "Language hints: %s" (String.concat ", " hints) ]
+      Deliberately derived only from the shape of the review — language
+      hints, a sample of files touched, and the distribution of triage
+      vuln-class signals.  Findings are never included: the curator
+      cannot record file:line claims because it is never told about them. *)
+  let build_observations ~(triage_output : Security_types.triage_output) ~file_paths :
+    Security_types.architectural_observations =
+    let reviewed_files =
+      match List.compare_length_with file_paths 12 > 0 with
+      | true -> CCList.take 12 file_paths
+      | false -> file_paths
     in
-    let vuln_classes =
-      let classes =
-        triage_output.signals
-        |> List.map (fun (s : Security_types.triage_signal) -> Security_types.vuln_class_to_string s.vuln_class)
-        |> List.sort_uniq String.compare
-      in
-      match classes with
-      | [] -> []
-      | _ -> [ Printf.sprintf "Triage flagged: %s" (String.concat ", " classes) ]
-    in
-    let file_list =
-      match file_paths with
-      | [] -> []
-      | _ ->
-        let sample =
-          if List.compare_length_with file_paths 10 > 0 then CCList.take 10 file_paths @ [ "..." ] else file_paths
+    let vuln_class_distribution =
+      let bump acc vc =
+        let matching, others = List.partition (fun (v, _) -> String.equal v vc) acc in
+        let existing =
+          match matching with
+          | (_, n) :: _ -> n
+          | [] -> 0
         in
-        [ Printf.sprintf "Reviewed files: %s" (String.concat ", " sample) ]
+        (vc, existing + 1) :: others
+      in
+      triage_output.signals
+      |> List.map (fun (s : Security_types.triage_signal) -> Security_types.vuln_class_to_string s.vuln_class)
+      |> List.fold_left bump []
+      |> List.sort (fun (a, _) (b, _) -> String.compare a b)
     in
-    let finding_notes =
-      List.map
-        (fun (f : Review_types.finding) -> Printf.sprintf "Confirmed security finding at %s:%d" f.path f.line)
-        findings
-    in
-    lang_hints @ vuln_classes @ file_list @ finding_notes
+    { language_hints = triage_output.language_hints; reviewed_files; vuln_class_distribution }
 
-  let run ~ctx ~repo_url ~diff ~diff_text ~metadata ~debug_dir ~head_sha =
+  (** Run the memory curator to refresh the repo's architectural brief.
+
+      The curator rewrites the brief from the provided observations plus
+      the current brief (if any).  Runs a single-shot call — no tools,
+      no queue — and writes directly to the memory file.  Last write wins
+      if two reviews curate concurrently; since the brief is a pure
+      architectural description the output converges rather than
+      accumulates. *)
+  let curate_memory ~ctx ~repo_url ~memory_dir ~security_config ~observations ?debug_dir () =
+    let current_memory = Security_memory.load ~memory_dir ~repo_url in
+    let memory_max_tokens = security_config.Config_types.memory_max_tokens in
+    let repo_name = Security_memory.repo_slug repo_url in
+    let curator_config =
+      Memory_curator_agent.config ~model_tier:(agent_model_tier security_config.triage_model_tier)
+    in
+    let input = Memory_curator_agent.build_input ~repo_name ~memory_max_tokens ~observations ?current_memory () in
+    let%lwt result = AI.run ~ctx ~repo_url ?debug_dir ~config:curator_config ~input () in
+    match result with
+    | Error msg ->
+      log#error "memory curator agent failed: %s" msg;
+      Lwt.return []
+    | Ok agent_result ->
+      let cost = Cost_tracking.of_agent_result ~agent_name:"memory_curator" ~files_fetched:0 agent_result in
+      (match Security_types.curator_output_of_json agent_result.output with
+      | output ->
+        let estimated = Memory_curator_agent.estimate_tokens output.updated_memory in
+        if estimated > memory_max_tokens then
+          log#warn "curator output exceeds token limit (%d > %d), saving anyway" estimated memory_max_tokens;
+        Security_memory.save ~memory_dir ~repo_url ~content:output.updated_memory;
+        log#info "memory brief updated";
+        Lwt.return [ cost ]
+      | exception exn ->
+        log#error "failed to parse curator output: %s" (Exn.str exn);
+        Lwt.return [ cost ])
+
+  let run ~ctx ~repo_url ~diff ~diff_text ~metadata:_ ~debug_dir ~head_sha =
     let config = Context.get_config ctx ~repo_url in
     let security_config = config.review_plugins.security in
     let memory_dir = "memory" in
@@ -429,24 +402,15 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) = struct
     | None ->
       let%lwt findings, analysis_costs =
         run_analysis ~ctx ~repo_url ~head_sha ~security_config ~diff ~diff_text ~file_paths
-          ~language_hints:triage_output.language_hints ?security_memory ~debug_dir triage_output.signals
+          ~language_hints:triage_output.language_hints ~debug_dir triage_output.signals
       in
-      let update =
-        Security_types.
-          {
-            timestamp = Time.gmt_string (Unix.gettimeofday ());
-            review_id = Printf.sprintf "PR-%d" metadata.Review_plugin.pr_number;
-            learnings = collect_review_learnings ~triage_output ~file_paths ~findings;
-            stale_entries = [];
-          }
-      in
-      Security_memory.append_update ~memory_dir ~repo_url ~update;
+      let observations = build_observations ~triage_output ~file_paths in
       (* Fire the curator asynchronously — not in the critical review path.
-         Background_pool is not available in this codebase; Lwt.async matches
-         the existing pattern in request_handler.ml. *)
+         Last-write-wins is acceptable: the brief is a pure architectural
+         description over the same repo, so concurrent writes converge. *)
       Lwt.async (fun () ->
         try%lwt
-          let%lwt costs = process_memory_queue ~ctx ~repo_url ~memory_dir ~security_config ~debug_dir () in
+          let%lwt costs = curate_memory ~ctx ~repo_url ~memory_dir ~security_config ~observations ~debug_dir () in
           ignore (costs : Cost_tracking.agent_cost list);
           Lwt.return_unit
         with exn ->
