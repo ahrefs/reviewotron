@@ -15,6 +15,10 @@ val review_schema : Yojson.Safe.t
     - [false]: the general review is told to include security in scope. *)
 val system_prompt : ?override:string -> security_covered_elsewhere:bool -> unit -> string
 
+(** Explainer for the per-line numbering format used by {!Diff_parser.to_string_annotated}.
+    Include this in any agent system prompt that expects to emit [finding.line] values. *)
+val annotated_diff_format_explainer : string
+
 (** Build the user message containing the diff and context.
     [file_contents] is a list of [(path, content)] pairs for additional context. *)
 val build_user_message :

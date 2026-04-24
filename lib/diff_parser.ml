@@ -241,6 +241,65 @@ let to_string diffs =
   let all_lines = List.concat_map file_diff_to_lines diffs in
   String.concat "\n" all_lines
 
+(** Width of the left-hand line-number column in the annotated form.
+    Four digits covers files up to 9999 lines; rare to exceed in practice. *)
+let annotated_number_width = 4
+
+let annotated_blank = String.make annotated_number_width ' '
+
+let format_annotated_number n = Printf.sprintf "%*d" annotated_number_width n
+
+(** Render one diff line with its new-file line number (when applicable).
+    Advances the [new_line] counter and returns (rendered, new_line'). *)
+let annotate_diff_line new_line = function
+  | Context s -> Printf.sprintf "%s |  %s" (format_annotated_number new_line) s, new_line + 1
+  | Addition s -> Printf.sprintf "%s | +%s" (format_annotated_number new_line) s, new_line + 1
+  | Deletion s -> Printf.sprintf "%s | -%s" annotated_blank s, new_line
+
+(** Like {!file_diff_to_lines} but with per-line new-file numbers. *)
+let file_diff_to_annotated_lines fd =
+  let lines = ref [] in
+  let add s = lines := s :: !lines in
+  let old_path =
+    match fd.old_path with
+    | Some p -> p
+    | None -> fd.path
+  in
+  add (Printf.sprintf "diff --git a/%s b/%s" old_path fd.path);
+  (match fd.status with
+  | Added -> add "new file mode 100644"
+  | Deleted -> add "deleted file mode 100644"
+  | Renamed ->
+    add (Printf.sprintf "rename from %s" old_path);
+    add (Printf.sprintf "rename to %s" fd.path)
+  | Modified -> ());
+  (match fd.status with
+  | Deleted ->
+    add (Printf.sprintf "--- a/%s" old_path);
+    add "+++ /dev/null"
+  | Added ->
+    add "--- /dev/null";
+    add (Printf.sprintf "+++ b/%s" fd.path)
+  | Modified | Renamed ->
+    add (Printf.sprintf "--- a/%s" old_path);
+    add (Printf.sprintf "+++ b/%s" fd.path));
+  List.iter
+    (fun hunk ->
+      add (hunk_header_str hunk);
+      let new_line = ref hunk.new_start in
+      List.iter
+        (fun dl ->
+          let rendered, new_line' = annotate_diff_line !new_line dl in
+          new_line := new_line';
+          add rendered)
+        hunk.lines)
+    fd.hunks;
+  List.rev !lines
+
+let to_string_annotated diffs =
+  let all_lines = List.concat_map file_diff_to_annotated_lines diffs in
+  String.concat "\n" all_lines
+
 let estimate_tokens diffs =
   let char_count =
     List.fold_left
