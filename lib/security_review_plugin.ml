@@ -126,56 +126,104 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) = struct
     | High -> Critical
     | Medium | Low -> Warning
 
-  (** Derive a multi-line [end_line] for a validated finding from its flow
-      evidence.  We take the greatest line among flow steps whose [path]
-      matches the sink's [path] and that sits strictly above the sink line,
-      and only keep it if the whole [sink.line..end_line] span fits inside
-      one right-side hunk of the diff on the sink's file.  Otherwise we
-      return [None] and the finding renders as a single-line anchor.
+  (** A candidate's sink is what the analysis agent picked as "the dangerous
+      operation."  For some vulnerability classes — notably authz — the agent
+      tends to point [sink] at the enforcement/decision point (e.g. a role
+      check) rather than at the defect site where the PR actually introduces
+      the flaw.  When that enforcement point lives in unchanged code, the
+      finding can't be rendered as an inline comment even though the flow
+      chain almost always traces through a line that was changed.
 
-      This is done at conversion time (not in the analysis prompt) because
-      the flow chain already carries the load-bearing lines — there's no need
-      to ask the agent to pick a range. *)
-  let derive_end_line_from_flow ~diff (f : Security_types.candidate_finding) =
-    let file_diff = Diff_anchor.find_file_diff_by_path ~diff f.sink.path in
+      [pick_inline_anchor] walks [\[sink\] @ flow @ \[source\]] in priority
+      order and returns the first [(path, line)] whose [path] is present in
+      the diff.  If none qualify, we fall back to the sink — the finding then
+      routes to the "unchanged code" section in the main review body.
+
+      The ordering means: prefer the sink when it's already in the diff,
+      otherwise prefer a flow step, otherwise the source.  Flow is ordered
+      source→sink by construction, so taking the first diff-resident step
+      gives us the earliest point on the path that this PR touches. *)
+  let pick_inline_anchor ~diff (f : Security_types.candidate_finding) =
+    let sink_site = `Sink, f.sink.path, f.sink.line in
+    let flow_sites =
+      List.map (fun (s : Security_types.flow_step) -> `Flow, s.path, s.line) f.flow
+    in
+    let source_site = `Source, f.source.path, f.source.line in
+    let candidates = sink_site :: (flow_sites @ [ source_site ]) in
+    let in_diff (_kind, path, _line) = Option.is_some (Diff_anchor.find_file_diff_by_path ~diff path) in
+    match List.find_opt in_diff candidates with
+    | Some chosen -> chosen
+    | None -> sink_site
+
+  (** Derive a multi-line [end_line] relative to the chosen inline anchor.
+
+      We look for flow steps on the anchor's file whose line sits strictly
+      below the anchor line, pick the greatest one, and keep it only if the
+      whole [anchor_line..end_line] span fits inside one right-side hunk.
+      Otherwise the finding renders as a single-line anchor. *)
+  let derive_end_line_from_flow ~diff ~anchor_path ~anchor_line (f : Security_types.candidate_finding) =
+    let file_diff = Diff_anchor.find_file_diff_by_path ~diff anchor_path in
     match file_diff with
     | None -> None
     | Some fd ->
       let same_file_flow_lines =
         f.flow
         |> List.filter_map (fun (step : Security_types.flow_step) ->
-          match String.equal step.path f.sink.path && step.line > f.sink.line with
+          match String.equal step.path anchor_path && step.line > anchor_line with
           | true -> Some step.line
           | false -> None)
       in
       (match same_file_flow_lines with
       | [] -> None
       | _ :: _ ->
-        let candidate = List.fold_left max f.sink.line same_file_flow_lines in
-        (match candidate > f.sink.line && Diff_anchor.single_hunk_contains fd ~start_line:f.sink.line ~end_line:candidate with
+        let candidate = List.fold_left max anchor_line same_file_flow_lines in
+        (match
+           candidate > anchor_line && Diff_anchor.single_hunk_contains fd ~start_line:anchor_line ~end_line:candidate
+         with
         | true -> Some candidate
         | false -> None))
+
+  (** If the inline anchor differs from the sink (we snapped onto a flow or
+      source step), prepend a short "Related" line so the reader sees the
+      enforcement/sink location too.  When the anchor IS the sink, return the
+      description unchanged. *)
+  let enrich_message_with_sink ~anchor_kind ~(f : Security_types.candidate_finding) =
+    match anchor_kind with
+    | `Sink -> f.description
+    | `Flow | `Source ->
+      Printf.sprintf "**Related sink:** `%s:%d` — %s\n\n%s" f.sink.path f.sink.line f.sink.description f.description
 
   (** Convert a validated finding into a review finding.
 
       Only called for findings with a [Confirmed] verdict.  Severity is
-      derived from the inner candidate's confidence level.
-      [evidence_notes] from the validator is not surfaced in the PR
-      comment — it is available in logs for prompt tuning.
+      derived from the inner candidate's confidence level.  [evidence_notes]
+      from the validator is not surfaced in the PR comment — it is available
+      in logs for prompt tuning.
 
-      [end_line] is derived from the candidate's flow evidence when the flow
-      spans multiple lines inside the sink's file, giving the PR reader a
-      highlighted block that covers the load-bearing flow — without requiring
-      any new prompt affordance. *)
+      Inline anchor is picked from the evidence chain via [pick_inline_anchor]
+      so that findings whose sink lives in unchanged code still land on a
+      changed line when the flow traces through one.  [end_line] is derived
+      from flow steps relative to the chosen anchor. *)
   let validated_to_finding ~diff (vf : Security_types.validated_finding) : Review_types.finding =
     let f = vf.finding in
+    let anchor_kind, anchor_path, anchor_line = pick_inline_anchor ~diff f in
+    (match anchor_kind with
+    | `Sink -> ()
+    | `Flow | `Source ->
+      log#info "anchor-snap: sink %s:%d not in diff, anchoring on %s %s:%d (vuln_class=%s)" f.sink.path f.sink.line
+        (match anchor_kind with
+        | `Flow -> "flow step"
+        | `Source -> "source"
+        | `Sink -> "sink")
+        anchor_path anchor_line
+        (Security_types.vuln_class_to_string f.vuln_class));
     {
-      path = f.sink.path;
-      line = f.sink.line;
-      end_line = derive_end_line_from_flow ~diff f;
+      path = anchor_path;
+      line = anchor_line;
+      end_line = derive_end_line_from_flow ~diff ~anchor_path ~anchor_line f;
       severity = severity_of_confidence f.confidence;
       category = Security;
-      message = f.description;
+      message = enrich_message_with_sink ~anchor_kind ~f;
       suggested_fix = f.suggested_fix;
     }
 
