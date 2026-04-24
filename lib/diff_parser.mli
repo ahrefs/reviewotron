@@ -48,5 +48,21 @@ val filter_paths : t -> ignored:string list -> t
     Produces output suitable for sending to code review tools. *)
 val to_string : t -> string
 
+(** Reconstruct a unified diff with per-line new-file line numbers.
+
+    Each content line is prefixed with a fixed-width column containing the
+    line's number in the new version of the file, followed by [" | "] and
+    the usual diff marker (` `, [+], [-]) plus content.  Deletion lines have
+    a blank number column because they do not exist in the new file.
+
+    This form is designed for LLM consumption: it removes the need to count
+    lines manually, which models do unreliably, and makes the number the
+    model writes in a [finding.line] field a direct lookup into the annotated
+    text rather than an arithmetic task.
+
+    Added and context lines share the new-file numbering; deletions are
+    interleaved where they appear in the hunk but cannot anchor findings. *)
+val to_string_annotated : t -> string
+
 (** Rough token estimate for the diff text (~4 chars per token). *)
 val estimate_tokens : t -> int

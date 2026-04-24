@@ -121,6 +121,8 @@ let build_input ~diff_text ~candidate_findings ?security_memory () =
     Buffer.add_string buf memory;
     Buffer.add_char buf '\n'
   | Some _ | None -> ());
+  Buffer.add_char buf '\n';
+  Buffer.add_string buf Review_prompt.annotated_diff_format_explainer;
   Buffer.add_string buf "\n## Diff\n\n";
   Buffer.add_string buf diff_text;
   Buffer.contents buf

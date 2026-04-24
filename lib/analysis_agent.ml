@@ -92,6 +92,8 @@ Produce a JSON object with:
 - `files_examined`: array of file paths you examined (from diff and via get_file_content)
 - `notes`: any relevant observations about the codebase's security posture for this vuln class
 
+Every `line` value in any finding, source, sink, or flow step MUST be copied verbatim from the left column of the annotated diff. Do not count lines, do not estimate, and do not use tilde (`~`) or approximate notations in messages — the column gives you the exact number.
+
 The `sanitization` field must be one of the strings `"adequate"`, `"inadequate"`, `"missing"`, or `"unknown"`. When it is `"inadequate"` or `"unknown"`, explain the reason in the finding's `description` field — do not attach it to the `sanitization` value itself.
 
 Your final response must be a single JSON object matching the schema. Do not wrap it in markdown code fences, and do not include any prose before or after it.
@@ -679,6 +681,8 @@ let build_input ~diff_text ~triage_signals ~file_paths ?security_memory () =
     Buffer.add_string buf memory;
     Buffer.add_char buf '\n'
   | Some _ | None -> ());
+  Buffer.add_char buf '\n';
+  Buffer.add_string buf Review_prompt.annotated_diff_format_explainer;
   Buffer.add_string buf "\n## Diff\n\n";
   Buffer.add_string buf diff_text;
   Buffer.contents buf

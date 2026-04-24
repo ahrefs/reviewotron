@@ -200,7 +200,11 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
         paths
 
   (** Parse a raw diff, filter ignored paths, and check size limits.
-      Returns [Ok (filtered_diff, filtered_diff_text)] or [Error reason]. *)
+
+      Returns [Ok (filtered_diff, annotated_diff_text)] or [Error reason].
+      The returned text is annotated with per-line new-file line numbers so
+      agents can anchor findings by lookup rather than by counting.  See
+      {!Diff_parser.to_string_annotated}. *)
   let prepare_diff ~config diff_text =
     let parsed_diff = Diff_parser.parse diff_text in
     let filtered_diff = Diff_parser.filter_paths parsed_diff ~ignored:config.Config_types.ignored_paths in
@@ -208,7 +212,7 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
     match filtered_diff with
     | [] -> Error `Empty
     | _ when total_lines > config.max_diff_lines -> Error (`Too_large total_lines)
-    | _ -> Ok (filtered_diff, Diff_parser.to_string filtered_diff)
+    | _ -> Ok (filtered_diff, Diff_parser.to_string_annotated filtered_diff)
 
   (** Map a finding to a GitHub review comment, if it can be positioned in the diff. *)
   let rec drop_known_path_prefixes path =

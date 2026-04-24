@@ -31,7 +31,7 @@ One narrow escape hatch: if you believe a critical security concern would genuin
 let guidelines =
   {|Guidelines:
 - Only comment on the changed lines (additions), not existing code.
-- Every finding MUST include `path` (file path, no prefix) and `line` (1-based line number from the new version of the file, matching a line that appears in the diff). Do not put line numbers inside `path` or `message`.
+- Every finding MUST include `path` (file path, no prefix) and `line`. The `line` value MUST equal the exact number shown in the left column of the diff line you are commenting on — copy it verbatim, do not count or estimate. Do not put line numbers inside `path` or `message`.
 - If you cannot pinpoint a specific changed line for an observation, do not emit a finding — mention it in the top-level `summary` or `overall_assessment` instead.
 - If multiple findings concern the same root cause, emit ONE finding with a combined message. Do not attach sibling comments at nearby lines describing variants of the same issue.
 - A recommended alternative implementation or refactor belongs in the top-level `summary`, not as an inline finding attached to an unrelated line.
@@ -68,8 +68,37 @@ let format_file_content (path, content) =
   in
   Printf.sprintf "### %s\n```%s\n%s\n```" path ext content
 
+(** Shared explainer for the annotated-diff line-number format.
+
+    Every agent that receives a diff text from this codebase gets it in the
+    form produced by {!Diff_parser.to_string_annotated}.  Each content line
+    carries its new-file line number in a left column so the agent can anchor
+    findings by direct lookup instead of counting.  Include this explainer in
+    any agent system prompt that expects to emit [finding.line] values. *)
+let annotated_diff_format_explainer =
+  {|## Diff Format
+
+Every content line in the diff is prefixed with a fixed-width column containing that line's number in the new version of the file, followed by ` | ` and the usual diff marker (` `, `+`, or `-`) and the line content.
+
+Example:
+```
+@@ -10,3 +10,4 @@
+  10 |  unchanged context line
+  11 | +added line
+  12 |  another context line
+     | -a deleted line (no new-file number because it is not in the new file)
+  13 |  last context line
+```
+
+Use these numbers verbatim:
+- When you emit a finding with a `line` field, the value MUST equal the number shown in the left column of the line you are anchoring the finding to. Do not compute, estimate, or adjust — copy the number as displayed.
+- The correct anchor is the specific line the finding is about. If the finding is about an added function, anchor on the `+` line where the function is declared (or on a specific line inside it). If the finding is about a regression introduced by surrounding changes, anchor on the context (` `) line whose number matches the code you are describing.
+- Deletion-only lines have a blank number column. They exist in the old file but not the new file and CANNOT anchor a finding — pick the nearest addition or context line instead.
+- Do not cite line numbers with `~` (approximate) prefixes or ranges like "line ~85" in finding messages. The column gives you the exact number.
+|}
+
 let build_user_message ~diff ?pr_title ?pr_description ?file_contents () =
-  let buf = Buffer.create (String.length diff + 256) in
+  let buf = Buffer.create (String.length diff + 512) in
   (match pr_title with
   | Some title -> Buffer.add_string buf (Printf.sprintf "## Pull Request: %s\n\n" title)
   | None -> ());
@@ -78,6 +107,8 @@ let build_user_message ~diff ?pr_title ?pr_description ?file_contents () =
     Buffer.add_string buf desc;
     Buffer.add_string buf "\n\n"
   | Some _ | None -> ());
+  Buffer.add_string buf annotated_diff_format_explainer;
+  Buffer.add_string buf "\n";
   Buffer.add_string buf "## Diff\n\n";
   Buffer.add_string buf diff;
   (match file_contents with

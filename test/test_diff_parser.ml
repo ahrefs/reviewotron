@@ -359,6 +359,82 @@ let test_to_string_preserves_filter () =
       re_parsed
   end
 
+(** {2 Annotated rendering tests} *)
+
+(** Assert that the annotated text contains an exact line tagged with the given
+    new-file number, preceded by the standard separator. *)
+let contains_annotated_line ~line_no ~marker ~content text =
+  let sub = Printf.sprintf "%4d | %c%s" line_no marker content in
+  CCString.find ~sub text >= 0
+
+let test_annotated_addition_and_context () =
+  let diffs = Diff_parser.parse single_hunk_diff in
+  let annotated = Diff_parser.to_string_annotated diffs in
+  (* single_hunk_diff: @@ -1,4 +1,5 @@
+       let x = 1     (context, new=1)
+      -let y = 2     (deletion, no new)
+      +let y = 3     (addition, new=2)
+      +let z = 4     (addition, new=3)
+       let w = 5     (context, new=4) *)
+  (check bool) "context line 1 has number" true (contains_annotated_line ~line_no:1 ~marker:' ' ~content:"let x = 1" annotated);
+  (check bool) "addition line 2 has number and +" true
+    (contains_annotated_line ~line_no:2 ~marker:'+' ~content:"let y = 3" annotated);
+  (check bool) "addition line 3 has number and +" true
+    (contains_annotated_line ~line_no:3 ~marker:'+' ~content:"let z = 4" annotated);
+  (check bool) "context line 4 has number" true (contains_annotated_line ~line_no:4 ~marker:' ' ~content:"let w = 5" annotated)
+
+let test_annotated_deletion_has_blank_column () =
+  let diffs = Diff_parser.parse single_hunk_diff in
+  let annotated = Diff_parser.to_string_annotated diffs in
+  (* A deletion line should appear with a blank number column and the "-" marker. *)
+  (check bool) "deletion has blank column" true (CCString.find ~sub:"     | -let y = 2" annotated >= 0)
+
+let test_annotated_multi_hunk_continues_numbering () =
+  let diffs = Diff_parser.parse multi_hunk_diff in
+  let annotated = Diff_parser.to_string_annotated diffs in
+  (* multi_hunk_diff hunk 1: @@ -1,3 +1,4 @@  (lines 1-4 new)
+     hunk 2:                @@ -10,3 +11,4 @@ (lines 11-14 new) *)
+  (check bool) "hunk1 context new=1" true (contains_annotated_line ~line_no:1 ~marker:' ' ~content:"let a = 1" annotated);
+  (check bool) "hunk1 addition new=2" true
+    (contains_annotated_line ~line_no:2 ~marker:'+' ~content:"let b = 2" annotated);
+  (check bool) "hunk2 context new=11" true
+    (contains_annotated_line ~line_no:11 ~marker:' ' ~content:"let x = 10" annotated);
+  (check bool) "hunk2 addition new=13" true
+    (contains_annotated_line ~line_no:13 ~marker:'+' ~content:"let z = 12" annotated)
+
+let test_annotated_new_file_numbers_from_one () =
+  let diff =
+    String.concat "\n"
+      [
+        "diff --git a/new.ml b/new.ml";
+        "new file mode 100644";
+        "index 0000000..abcdefg";
+        "--- /dev/null";
+        "+++ b/new.ml";
+        "@@ -0,0 +1,3 @@";
+        "+let a = 1";
+        "+let b = 2";
+        "+let c = 3";
+      ]
+  in
+  let diffs = Diff_parser.parse diff in
+  let annotated = Diff_parser.to_string_annotated diffs in
+  (check bool) "new file line 1" true (contains_annotated_line ~line_no:1 ~marker:'+' ~content:"let a = 1" annotated);
+  (check bool) "new file line 2" true (contains_annotated_line ~line_no:2 ~marker:'+' ~content:"let b = 2" annotated);
+  (check bool) "new file line 3" true (contains_annotated_line ~line_no:3 ~marker:'+' ~content:"let c = 3" annotated)
+
+let test_annotated_roundtrip_through_parse () =
+  (* Ensure the annotated text can still be parsed as a plain diff (the parser
+     ignores unknown prefixes on content lines — the annotation stays harmless). *)
+  let diffs = Diff_parser.parse multi_hunk_diff in
+  let annotated = Diff_parser.to_string_annotated diffs in
+  (* The annotated form is NOT a valid unified diff; this test just asserts the
+     output is non-empty and structurally distinct from to_string. *)
+  (check bool) "annotated is non-empty" true (String.length annotated > 0);
+  (check bool) "annotated differs from plain" true
+    (not (String.equal annotated (Diff_parser.to_string diffs)));
+  (check bool) "annotated contains ' | ' separator" true (CCString.find ~sub:" | " annotated >= 0)
+
 (** {2 Test runner} *)
 
 let () =
@@ -393,5 +469,13 @@ let () =
           test_case "roundtrip single hunk" `Quick test_to_string_roundtrip;
           test_case "roundtrip real diff" `Quick test_to_string_multi_file_roundtrip;
           test_case "preserves filter" `Quick test_to_string_preserves_filter;
+        ] );
+      ( "to_string_annotated",
+        [
+          test_case "addition and context lines show numbers" `Quick test_annotated_addition_and_context;
+          test_case "deletion has blank column" `Quick test_annotated_deletion_has_blank_column;
+          test_case "multi hunk continues new-file numbering" `Quick test_annotated_multi_hunk_continues_numbering;
+          test_case "new file numbers from 1" `Quick test_annotated_new_file_numbers_from_one;
+          test_case "annotated differs from plain and has separator" `Quick test_annotated_roundtrip_through_parse;
         ] );
     ]

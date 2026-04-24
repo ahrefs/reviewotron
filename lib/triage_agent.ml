@@ -52,7 +52,7 @@ Produce a JSON object with this structure:
 - `signals`: array of triage signals, each with:
   - `vuln_class`: one of "injection", "xss", "command_injection", "authn", "authz", "ssrf"
   - `confidence`: one of "high", "medium", "low"
-  - `regions`: array of regions, each with `path` (file path), `start_line`, `end_line` (line numbers in the diff)
+  - `regions`: array of regions, each with `path` (file path), `start_line`, `end_line`. Both line numbers MUST be copied verbatim from the left column of the annotated diff — the exact numbers printed for the first and last lines you want the analysis agent to inspect. Do not count or estimate.
   - `rationale`: brief explanation of why this region is flagged
 - `language_hints`: array of programming languages detected in the diff (e.g., ["OCaml", "JavaScript"])
 - `skip_reason`: if the diff contains nothing security-relevant, set this to a brief explanation and leave `signals` empty
@@ -121,6 +121,8 @@ let build_input ~diff_text ~file_paths ?security_memory () =
     Buffer.add_string buf memory;
     Buffer.add_char buf '\n'
   | Some _ | None -> ());
+  Buffer.add_char buf '\n';
+  Buffer.add_string buf Review_prompt.annotated_diff_format_explainer;
   Buffer.add_string buf "\n## Diff\n\n";
   Buffer.add_string buf diff_text;
   Buffer.contents buf
