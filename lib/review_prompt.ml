@@ -32,6 +32,7 @@ let guidelines =
   {|Guidelines:
 - Only comment on the changed lines (additions), not existing code.
 - Every finding MUST include `path` (file path, no prefix) and `line`. The `line` value MUST equal the exact number shown in the left column of the diff line you are commenting on — copy it verbatim, do not count or estimate. Do not put line numbers inside `path` or `message`.
+- Prefer single-line anchors. Only set `end_line` when the finding is genuinely unintelligible without a range — e.g. a specific control-flow branch, a try/catch body, or the few lines that carry the bug. Do NOT span an entire function. When set, `line` is the first relevant line and `end_line` is the last; both MUST be copied verbatim from the annotated diff's left column, both MUST sit inside the same hunk, and `end_line` MUST be strictly greater than `line`. Leave `end_line` null for single-line findings.
 - If you cannot pinpoint a specific changed line for an observation, do not emit a finding — mention it in the top-level `summary` or `overall_assessment` instead.
 - If multiple findings concern the same root cause, emit ONE finding with a combined message. Do not attach sibling comments at nearby lines describing variants of the same issue.
 - A recommended alternative implementation or refactor belongs in the top-level `summary`, not as an inline finding attached to an unrelated line.

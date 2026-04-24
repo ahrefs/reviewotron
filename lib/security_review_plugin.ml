@@ -126,18 +126,53 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) = struct
     | High -> Critical
     | Medium | Low -> Warning
 
+  (** Derive a multi-line [end_line] for a validated finding from its flow
+      evidence.  We take the greatest line among flow steps whose [path]
+      matches the sink's [path] and that sits strictly above the sink line,
+      and only keep it if the whole [sink.line..end_line] span fits inside
+      one right-side hunk of the diff on the sink's file.  Otherwise we
+      return [None] and the finding renders as a single-line anchor.
+
+      This is done at conversion time (not in the analysis prompt) because
+      the flow chain already carries the load-bearing lines — there's no need
+      to ask the agent to pick a range. *)
+  let derive_end_line_from_flow ~diff (f : Security_types.candidate_finding) =
+    let file_diff = Diff_anchor.find_file_diff_by_path ~diff f.sink.path in
+    match file_diff with
+    | None -> None
+    | Some fd ->
+      let same_file_flow_lines =
+        f.flow
+        |> List.filter_map (fun (step : Security_types.flow_step) ->
+          match String.equal step.path f.sink.path && step.line > f.sink.line with
+          | true -> Some step.line
+          | false -> None)
+      in
+      (match same_file_flow_lines with
+      | [] -> None
+      | _ :: _ ->
+        let candidate = List.fold_left max f.sink.line same_file_flow_lines in
+        (match candidate > f.sink.line && Diff_anchor.single_hunk_contains fd ~start_line:f.sink.line ~end_line:candidate with
+        | true -> Some candidate
+        | false -> None))
+
   (** Convert a validated finding into a review finding.
 
       Only called for findings with a [Confirmed] verdict.  Severity is
       derived from the inner candidate's confidence level.
       [evidence_notes] from the validator is not surfaced in the PR
-      comment — it is available in logs for prompt tuning. *)
-  let validated_to_finding (vf : Security_types.validated_finding) : Review_types.finding =
+      comment — it is available in logs for prompt tuning.
+
+      [end_line] is derived from the candidate's flow evidence when the flow
+      spans multiple lines inside the sink's file, giving the PR reader a
+      highlighted block that covers the load-bearing flow — without requiring
+      any new prompt affordance. *)
+  let validated_to_finding ~diff (vf : Security_types.validated_finding) : Review_types.finding =
     let f = vf.finding in
     {
       path = f.sink.path;
       line = f.sink.line;
-      end_line = None;
+      end_line = derive_end_line_from_flow ~diff f;
       severity = severity_of_confidence f.confidence;
       category = Security;
       message = f.description;
@@ -190,8 +225,8 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) = struct
       single agent invocation with all relevant triage context.  Candidate
       findings are passed through the validator agent; only confirmed
       findings are converted to review findings. *)
-  let run_analysis ~ctx ~repo_url ~head_sha ~security_config ~diff_text ~file_paths ~language_hints ?security_memory
-    ?debug_dir signals =
+  let run_analysis ~ctx ~repo_url ~head_sha ~security_config ~diff ~diff_text ~file_paths ~language_hints
+    ?security_memory ?debug_dir signals =
     let actionable = List.filter (should_analyze ~security_config) signals in
     match actionable with
     | [] ->
@@ -234,7 +269,7 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) = struct
         in
         log#info "validation complete: %d confirmed, %d rejected" (List.length confirmed)
           (List.length validated - List.length confirmed);
-        Lwt.return (List.map validated_to_finding confirmed, analysis_costs @ validator_costs))
+        Lwt.return (List.map (validated_to_finding ~diff) confirmed, analysis_costs @ validator_costs))
 
   (** Merge learnings and stale entries from all queued updates.
 
@@ -345,7 +380,7 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) = struct
       Lwt.return ([], triage_costs)
     | None ->
       let%lwt findings, analysis_costs =
-        run_analysis ~ctx ~repo_url ~head_sha ~security_config ~diff_text ~file_paths
+        run_analysis ~ctx ~repo_url ~head_sha ~security_config ~diff ~diff_text ~file_paths
           ~language_hints:triage_output.language_hints ?security_memory ~debug_dir triage_output.signals
       in
       let update =

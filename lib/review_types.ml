@@ -106,7 +106,14 @@ type finding = {
      [@jsonschema.description
        "Line number (1-based) in the new version of the file. Must be a line that actually appears in the diff; \
         findings without a specific changed line should not be emitted."]
-  end_line : int option; [@json.option] [@jsonschema.description "End line for multi-line findings"]
+  end_line : int option;
+     [@json.option]
+     [@jsonschema.description
+       "Last line of a multi-line anchor for the finding. Prefer single-line anchors: only set end_line when the \
+        finding is genuinely unintelligible without the range — e.g. a specific control-flow branch, a try/catch body, \
+        or the few lines that carry the bug. Do NOT span an entire function. Both line and end_line MUST be copied \
+        verbatim from the left column of the annotated diff, MUST both sit inside the same hunk, and end_line MUST be \
+        strictly greater than line. Leave null for single-line findings."]
   severity : severity; [@jsonschema.description "Severity: critical, warning, suggestion, nitpick, or praise"]
   category : finding_category;
      [@jsonschema.description

@@ -214,100 +214,26 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
     | _ when total_lines > config.max_diff_lines -> Error (`Too_large total_lines)
     | _ -> Ok (filtered_diff, Diff_parser.to_string_annotated filtered_diff)
 
-  (** Map a finding to a GitHub review comment, if it can be positioned in the diff. *)
-  let rec drop_known_path_prefixes path =
-    let len = String.length path in
-    match () with
-    | () when len >= 2 && String.sub path 0 2 = "./" -> drop_known_path_prefixes (String.sub path 2 (len - 2))
-    | () when len >= 2 && String.sub path 0 2 = "a/" -> drop_known_path_prefixes (String.sub path 2 (len - 2))
-    | () when len >= 2 && String.sub path 0 2 = "b/" -> drop_known_path_prefixes (String.sub path 2 (len - 2))
-    | () when len >= 1 && String.sub path 0 1 = "/" -> drop_known_path_prefixes (String.sub path 1 (len - 1))
-    | () -> path
+  (** Decide whether a finding can be rendered as a multi-line comment.
 
-  let strip_backticks path =
-    let len = String.length path in
-    match () with
-    | () when len >= 2 && path.[0] = '`' && path.[len - 1] = '`' -> String.sub path 1 (len - 2)
-    | () -> path
-
-  let normalize_finding_path path = path |> String.trim |> strip_backticks |> drop_known_path_prefixes
-
-  let path_equivalent a b = String.equal a b || CCString.suffix ~suf:("/" ^ b) a || CCString.suffix ~suf:("/" ^ a) b
-
-  let path_matches_target path target =
-    match path with
-    | None -> false
-    | Some p -> path_equivalent p target
-
-  let path_basename_matches_target path target =
-    match path with
-    | None -> false
-    | Some p -> String.equal (Filename.basename p) (Filename.basename target)
-
-  let find_file_diff_by_path ~diff path =
-    let target = normalize_finding_path path in
-    let normalized_paths =
-      List.map
-        (fun (fd : Diff_parser.file_diff) ->
-          let path = Some (normalize_finding_path fd.path) in
-          let old_path = Option.map normalize_finding_path fd.old_path in
-          fd, path, old_path)
-        diff
-    in
-    let direct_matches =
-      List.filter
-        (fun (_fd, path, old_path) -> path_matches_target path target || path_matches_target old_path target)
-        normalized_paths
-    in
-    match direct_matches with
-    | (fd, _, _) :: _ -> Some fd
-    | [] ->
-      let basename_matches =
-        List.filter
-          (fun (_fd, path, old_path) ->
-            path_basename_matches_target path target || path_basename_matches_target old_path target)
-          normalized_paths
-      in
-      (match basename_matches with
-      | [ (fd, _, _) ] -> Some fd
-      | _ -> None)
-
-  let right_line_ranges (fd : Diff_parser.file_diff) =
-    List.filter_map
-      (fun (h : Diff_parser.hunk) ->
-        match () with
-        | () when h.new_count <= 0 -> None
-        | () -> Some (h.new_start, h.new_start + h.new_count - 1))
-      fd.hunks
-
-  let nearest_right_line_in_diff (fd : Diff_parser.file_diff) ~target_line =
-    let pick_better best (start_line, end_line) =
-      let candidate_line, distance =
-        match () with
-        | () when target_line < start_line -> start_line, start_line - target_line
-        | () when target_line > end_line -> end_line, target_line - end_line
-        | () -> target_line, 0
-      in
-      match best with
-      | None -> Some (candidate_line, distance)
-      | Some (_best_line, best_distance) when distance < best_distance -> Some (candidate_line, distance)
-      | Some _ -> best
-    in
-    right_line_ranges fd |> List.fold_left pick_better None |> Option.map (fun (line, _distance) -> line)
-
-  let line_in_right_range (fd : Diff_parser.file_diff) ~line =
-    List.exists (fun (start_line, end_line) -> line >= start_line && line <= end_line) (right_line_ranges fd)
-
-  (** Resolve a finding to a line that appears in the diff on the new-file side.
-      Returns the original line if it's in range, otherwise snaps to the nearest
-      in-range line, otherwise [None] (no right-side hunks at all). *)
-  let resolve_right_line (fd : Diff_parser.file_diff) ~target_line =
-    match line_in_right_range fd ~line:target_line with
-    | true -> Some target_line
-    | false -> nearest_right_line_in_diff fd ~target_line
+      Returns [Some (start, end_)] when [end_line] is present, strictly above
+      [line], and the whole [line..end_line] span fits inside one right-side
+      hunk.  Returns [None] for single-line findings or whenever the range
+      fails any check — the caller falls back to the single-line path. *)
+  let valid_multiline_range fd (finding : Review_types.finding) ~resolved_line =
+    match finding.end_line with
+    | None -> None
+    | Some end_line ->
+      match () with
+      | () when end_line <= resolved_line -> None
+      | () when not (Diff_anchor.single_hunk_contains fd ~start_line:resolved_line ~end_line) ->
+        log#info "degrading multi-line finding to single-line (range %s:%d..%d crosses hunk boundary or is out of diff)"
+          finding.path resolved_line end_line;
+        None
+      | () -> Some (resolved_line, end_line)
 
   let finding_to_comment ~diff (finding : Review_types.finding) =
-    let file_diff = find_file_diff_by_path ~diff finding.path in
+    let file_diff = Diff_anchor.find_file_diff_by_path ~diff finding.path in
     match file_diff with
     | None -> None
     | Some fd ->
@@ -316,17 +242,22 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
     | line ->
       Option.map
         (fun resolved_line ->
+          let start_line, start_side, end_line =
+            match valid_multiline_range fd finding ~resolved_line with
+            | Some (s, e) -> Some s, Some Github_types.Right, e
+            | None -> None, None, resolved_line
+          in
           Github_types.
             {
               path = fd.path;
               position = None;
-              line = Some resolved_line;
+              line = Some end_line;
               side = Some Right;
-              start_line = None;
-              start_side = None;
+              start_line;
+              start_side;
               body = Review_format.format_finding_body finding;
             })
-        (resolve_right_line fd ~target_line:line)
+        (Diff_anchor.resolve_right_line fd ~target_line:line)
 
   module General_plugin = General_review_plugin.Make (AI)
   module Security_plugin = Security_review_plugin.Make (GH) (AI)
