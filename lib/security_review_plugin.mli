@@ -53,6 +53,13 @@ module Make (_ : Api.Github) (_ : Api.Agent_runner) : sig
     head_sha:string ->
     (Review_types.finding list * Cost_tracking.agent_cost list) Lwt.t
 
+  (** Convert a validated security finding into a review finding, choosing the
+      inline anchor from the evidence chain so that findings whose sink lives
+      in unchanged code still land on a changed line when the flow traces
+      through one.  Exposed for testing the anchor-snapping logic. *)
+  val validated_to_finding :
+    diff:Diff_parser.file_diff list -> Security_types.validated_finding -> Review_types.finding
+
   (** Process the memory update queue: read pending entries, run the
       curator agent to incorporate them, save the updated memory file,
       and truncate the queue.

@@ -501,6 +501,132 @@ let test_annotate_file_content_empty () =
   (* String.split_on_char always yields at least one element. *)
   (check string) "empty body still gets header + one numbered empty line" "# File: x\n   1 |  " annotated
 
+(** {2 Security finding anchor-snapping tests}
+
+    These exercise [Security_review_plugin.Make().validated_to_finding] —
+    specifically the case where the analysis agent's chosen sink lives in
+    unchanged code but the flow chain traces through a changed line.  The
+    anchor must snap onto the earliest in-diff evidence step, and the sink
+    must be surfaced in the comment body. *)
+
+module Sec_test = Security_review_plugin.Make (Api_local.Github) (Api_local.Agent_runner)
+
+(** Same two-hunk diff we use for the multi-line tests: file [src/main.ml]
+    with hunks at [10..14] and [40..43]. *)
+let parsed_anchor_diff = parsed_two_hunk_diff
+
+let mk_validated ~source ~sink ~flow ?(verdict = Security_types.Confirmed) ?(evidence_notes = "ok") () :
+  Security_types.validated_finding =
+  {
+    finding =
+      {
+        vuln_class = Security_types.Authz;
+        source;
+        sink;
+        flow;
+        sanitization = Missing;
+        confidence = High;
+        description = "described vulnerability";
+        suggested_fix = None;
+      };
+    verdict;
+    evidence_notes;
+  }
+
+let src_site ~path ~line ~description : Security_types.source_evidence = { path; line; description }
+let sink_site ~path ~line ~description : Security_types.sink_evidence = { path; line; description }
+let flow_step ~path ~line ~description : Security_types.flow_step = { path; line; description }
+
+let test_anchor_sink_in_diff_no_snap () =
+  (* Sink is already in the diff (src/main.ml hunk A).  We must not snap; the
+     finding's path/line should equal the sink and the message should NOT
+     carry a "Related sink" prefix. *)
+  let vf =
+    mk_validated
+      ~source:(src_site ~path:"src/unrelated.ml" ~line:1 ~description:"src")
+      ~sink:(sink_site ~path:"src/main.ml" ~line:11 ~description:"dangerous op")
+      ~flow:[] ()
+  in
+  let f = Sec_test.validated_to_finding ~diff:parsed_anchor_diff vf in
+  (check string) "path stays on sink" "src/main.ml" f.path;
+  (check int) "line stays on sink" 11 f.line;
+  (check bool) "no Related prefix in message" true
+    (not (CCString.mem ~sub:"Related sink" f.message))
+
+let test_anchor_sink_not_in_diff_flow_in_diff () =
+  (* Sink is in an unchanged file; flow passes through src/main.ml:12.  The
+     finding must snap to the flow step and the body must carry the sink
+     location as "Related sink: ...". *)
+  let vf =
+    mk_validated
+      ~source:(src_site ~path:"src/entry.ml" ~line:1 ~description:"http param")
+      ~sink:(sink_site ~path:"src/unchanged.ml" ~line:99 ~description:"unchecked authz")
+      ~flow:
+        [
+          flow_step ~path:"src/entry.ml" ~line:2 ~description:"passed to handler";
+          flow_step ~path:"src/main.ml" ~line:12 ~description:"defect introduced here";
+          flow_step ~path:"src/unchanged.ml" ~line:50 ~description:"reaches guard";
+        ]
+      ()
+  in
+  let f = Sec_test.validated_to_finding ~diff:parsed_anchor_diff vf in
+  (check string) "path snaps to flow step file" "src/main.ml" f.path;
+  (check int) "line snaps to flow step line" 12 f.line;
+  (check bool) "message has Related sink prefix" true (CCString.mem ~sub:"Related sink" f.message);
+  (check bool) "message references sink path" true (CCString.mem ~sub:"src/unchanged.ml:99" f.message)
+
+let test_anchor_nothing_in_diff_falls_through_to_sink () =
+  (* All evidence is in unchanged files.  The anchor stays on the sink so the
+     finding routes to the "Findings on unchanged code" section of the main
+     review body. *)
+  let vf =
+    mk_validated
+      ~source:(src_site ~path:"src/a.ml" ~line:1 ~description:"src")
+      ~sink:(sink_site ~path:"src/b.ml" ~line:10 ~description:"sink")
+      ~flow:[ flow_step ~path:"src/c.ml" ~line:5 ~description:"via" ]
+      ()
+  in
+  let f = Sec_test.validated_to_finding ~diff:parsed_anchor_diff vf in
+  (check string) "path stays on sink" "src/b.ml" f.path;
+  (check int) "line stays on sink" 10 f.line;
+  (check bool) "no Related prefix (unsnapped)" true (not (CCString.mem ~sub:"Related sink" f.message))
+
+let test_anchor_source_fallback_when_flow_empty () =
+  (* Sink is not in diff and flow is empty; fall through to source.  Source
+     lives in the diff, so the anchor lands there with the Related-sink
+     enrichment. *)
+  let vf =
+    mk_validated
+      ~source:(src_site ~path:"src/main.ml" ~line:40 ~description:"user input")
+      ~sink:(sink_site ~path:"src/elsewhere.ml" ~line:500 ~description:"sink far away")
+      ~flow:[] ()
+  in
+  let f = Sec_test.validated_to_finding ~diff:parsed_anchor_diff vf in
+  (check string) "snaps to source path" "src/main.ml" f.path;
+  (check int) "snaps to source line" 40 f.line;
+  (check bool) "message carries Related sink" true (CCString.mem ~sub:"src/elsewhere.ml:500" f.message)
+
+let test_anchor_end_line_derived_from_anchor_not_sink () =
+  (* Sink is unchanged; flow traces through src/main.ml:10 AND src/main.ml:14
+     (both inside hunk A).  After snapping to 10, end_line should extend to
+     14 — derived relative to the chosen anchor, not the original sink. *)
+  let vf =
+    mk_validated
+      ~source:(src_site ~path:"src/entry.ml" ~line:1 ~description:"src")
+      ~sink:(sink_site ~path:"src/unchanged.ml" ~line:99 ~description:"sink")
+      ~flow:
+        [
+          flow_step ~path:"src/main.ml" ~line:10 ~description:"defect introduced";
+          flow_step ~path:"src/main.ml" ~line:14 ~description:"still inside hunk A";
+          flow_step ~path:"src/unchanged.ml" ~line:50 ~description:"continues";
+        ]
+      ()
+  in
+  let f = Sec_test.validated_to_finding ~diff:parsed_anchor_diff vf in
+  (check string) "snapped path" "src/main.ml" f.path;
+  (check int) "snapped line" 10 f.line;
+  (check (option int)) "end_line extends to 14" (Some 14) f.end_line
+
 (** {2 Review types tests} *)
 
 let test_review_output_roundtrip () =
@@ -2337,6 +2463,14 @@ let () =
         [
           test_case "header and gutter" `Quick test_annotate_file_content_header_and_gutter;
           test_case "empty body" `Quick test_annotate_file_content_empty;
+        ] );
+      ( "security_anchor_snap",
+        [
+          test_case "sink in diff: no snap" `Quick test_anchor_sink_in_diff_no_snap;
+          test_case "sink unchanged, flow in diff: snap + Related" `Quick test_anchor_sink_not_in_diff_flow_in_diff;
+          test_case "nothing in diff: falls through to sink" `Quick test_anchor_nothing_in_diff_falls_through_to_sink;
+          test_case "source fallback when flow empty" `Quick test_anchor_source_fallback_when_flow_empty;
+          test_case "end_line derived from anchor, not sink" `Quick test_anchor_end_line_derived_from_anchor_not_sink;
         ] );
       ( "review_types",
         [
