@@ -24,6 +24,8 @@ SQL or query string construction, string interpolation or concatenation into dat
 ### xss
 HTML template rendering with unescaped variables, string interpolation into markup, `innerHTML`, `dangerouslySetInnerHTML`, server-side template engines outputting user data, DOM manipulation with user-controlled strings.
 
+Also flag any call that renders user-controlled content through a markdown or HTML rendering helper whose output reaches an HTTP response body, an attribute value, or the DOM — e.g. `renderMarkdown`, `marked`, `markdown-it`, `remark`, `showdown`, `turndown`, `Markdown.to_html`, `markdown.markdown` (Python), `CommonMarker`, `Remark.process`, or any function whose name contains `markdown`/`render`/`toHtml`/`html`. This applies even when the response's `Content-Type` is set to `text/plain`, `application/octet-stream`, or a download attachment — browsers may sniff, users may open the payload locally, and the rendered output frequently flows to a UI surface elsewhere. **High confidence** when the helper's output reaches `res.body`, `c.body`, `response.write`, `Dream.respond`, `Response(...)`, `setInnerHTML`, or a template interpolation; **medium** when it is stored (written to a DB column named `body`/`content`/`description`/`note_body`/`message`) without visible sanitization.
+
 ### command_injection
 `exec`, `system`, `popen`, `spawn`, shell invocations, backtick execution, `Filename.quote` (fragile escaping), any pattern where user input could reach a shell command string.
 
