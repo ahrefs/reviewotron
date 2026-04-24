@@ -433,6 +433,74 @@ let test_finding_to_comment_single_line_unchanged () =
     (check (option int)) "no start_side" None (Option.map (fun _ -> 0) c.start_side);
     (check (option int)) "line = 10" (Some 10) c.line
 
+(** {2 Finding routing tests}
+
+    These exercise the [route_finding] classifier that decides whether a
+    finding becomes an inline comment, a "Findings on unchanged code" entry,
+    or an "Anchor failed" entry. *)
+
+let routing_is_positioned = function
+  | R_anchor_test.Positioned _ -> true
+  | _ -> false
+
+let routing_is_file_not_in_diff = function
+  | R_anchor_test.File_not_in_diff -> true
+  | _ -> false
+
+let routing_is_anchor_failed = function
+  | R_anchor_test.Anchor_failed -> true
+  | _ -> false
+
+let test_route_finding_positioned () =
+  let finding = mk_finding ~path:"src/main.ml" ~line:10 () in
+  (check bool) "positioned" true (routing_is_positioned (R_anchor_test.route_finding ~diff:parsed_two_hunk_diff finding))
+
+let test_route_finding_file_not_in_diff () =
+  let finding = mk_finding ~path:"src/other.ml" ~line:5 () in
+  (check bool) "file_not_in_diff" true
+    (routing_is_file_not_in_diff (R_anchor_test.route_finding ~diff:parsed_two_hunk_diff finding))
+
+let test_route_finding_non_positive_line_is_anchor_failed () =
+  let finding = mk_finding ~path:"src/main.ml" ~line:0 () in
+  (check bool) "anchor_failed" true
+    (routing_is_anchor_failed (R_anchor_test.route_finding ~diff:parsed_two_hunk_diff finding))
+
+(** A diff whose only hunk is deletion-only: the file is in the diff, but
+    there is no right-side line to anchor a finding on.  [resolve_right_line]
+    returns [None] and [route_finding] must classify this as Anchor_failed. *)
+let deletion_only_diff_text =
+  "diff --git a/src/gone.ml b/src/gone.ml\n\
+   --- a/src/gone.ml\n\
+   +++ b/src/gone.ml\n\
+   @@ -1,2 +1,0 @@\n\
+   -deleted a\n\
+   -deleted b\n"
+
+let parsed_deletion_only_diff = Diff_parser.parse deletion_only_diff_text
+
+let test_route_finding_deletion_only_file_is_anchor_failed () =
+  let finding = mk_finding ~path:"src/gone.ml" ~line:1 () in
+  (check bool) "anchor_failed on deletion-only file" true
+    (routing_is_anchor_failed (R_anchor_test.route_finding ~diff:parsed_deletion_only_diff finding))
+
+(** {2 Fetched-file annotation tests} *)
+
+let test_annotate_file_content_header_and_gutter () =
+  let content = "line one\nline two\nline three" in
+  let annotated = Diff_parser.annotate_file_content ~path:"src/foo.ml" content in
+  let expected =
+    "# File: src/foo.ml\n\
+    \   1 |  line one\n\
+    \   2 |  line two\n\
+    \   3 |  line three"
+  in
+  (check string) "annotated output" expected annotated
+
+let test_annotate_file_content_empty () =
+  let annotated = Diff_parser.annotate_file_content ~path:"x" "" in
+  (* String.split_on_char always yields at least one element. *)
+  (check string) "empty body still gets header + one numbered empty line" "# File: x\n   1 |  " annotated
+
 (** {2 Review types tests} *)
 
 let test_review_output_roundtrip () =
@@ -652,7 +720,11 @@ let test_security_tools_execute_success () =
   let execute = CCOption.get_exn_or __LOC__ tool.execute in
   let result_json = Lwt_main.run (execute args) in
   let result = Security_tools.get_file_content_result_of_json result_json in
-  (check (option string)) "content" (Some "file content here") result.content;
+  (* The tool wraps raw content with a [# File: <path>] header and a
+     per-line gutter so the agent can anchor findings without counting. *)
+  (check (option string)) "content is annotated"
+    (Some "# File: lib/auth.ml\n   1 |  file content here")
+    result.content;
   (check (option string)) "error" None result.error
 
 let test_security_tools_execute_not_found () =
@@ -2253,6 +2325,18 @@ let () =
           test_case "range crossing hunks degrades" `Quick test_finding_to_comment_range_crosses_hunks_degrades;
           test_case "end_line out of file degrades" `Quick test_finding_to_comment_end_line_out_of_file_degrades;
           test_case "single-line still works" `Quick test_finding_to_comment_single_line_unchanged;
+        ] );
+      ( "finding_routing",
+        [
+          test_case "positioned" `Quick test_route_finding_positioned;
+          test_case "file not in diff" `Quick test_route_finding_file_not_in_diff;
+          test_case "non-positive line is anchor_failed" `Quick test_route_finding_non_positive_line_is_anchor_failed;
+          test_case "deletion-only file is anchor_failed" `Quick test_route_finding_deletion_only_file_is_anchor_failed;
+        ] );
+      ( "file_annotation",
+        [
+          test_case "header and gutter" `Quick test_annotate_file_content_header_and_gutter;
+          test_case "empty body" `Quick test_annotate_file_content_empty;
         ] );
       ( "review_types",
         [

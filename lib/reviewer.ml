@@ -232,21 +232,36 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
         None
       | () -> Some (resolved_line, end_line)
 
-  let finding_to_comment ~diff (finding : Review_types.finding) =
+  (** Outcome of attempting to render a finding as an inline review comment.
+
+      - [Positioned] — successfully mapped to a line in the diff.
+      - [File_not_in_diff] — the finding's [path] doesn't match any changed file.
+        Legitimate findings on unchanged code land here.
+      - [Anchor_failed] — the path matched a changed file but we couldn't
+        derive a usable line (line ≤ 0, or the file has no right-side hunks).
+        Treated as a bug report for prompt tuning. *)
+  type finding_routing =
+    | Positioned of Github_types.review_comment_req
+    | File_not_in_diff
+    | Anchor_failed
+
+  let route_finding ~diff (finding : Review_types.finding) =
     let file_diff = Diff_anchor.find_file_diff_by_path ~diff finding.path in
     match file_diff with
-    | None -> None
+    | None -> File_not_in_diff
     | Some fd ->
     match finding.line with
-    | line when line <= 0 -> None
+    | line when line <= 0 -> Anchor_failed
     | line ->
-      Option.map
-        (fun resolved_line ->
-          let start_line, start_side, end_line =
-            match valid_multiline_range fd finding ~resolved_line with
-            | Some (s, e) -> Some s, Some Github_types.Right, e
-            | None -> None, None, resolved_line
-          in
+      (match Diff_anchor.resolve_right_line fd ~target_line:line with
+      | None -> Anchor_failed
+      | Some resolved_line ->
+        let start_line, start_side, end_line =
+          match valid_multiline_range fd finding ~resolved_line with
+          | Some (s, e) -> Some s, Some Github_types.Right, e
+          | None -> None, None, resolved_line
+        in
+        Positioned
           Github_types.
             {
               path = fd.path;
@@ -257,7 +272,11 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
               start_side;
               body = Review_format.format_finding_body finding;
             })
-        (Diff_anchor.resolve_right_line fd ~target_line:line)
+
+  let finding_to_comment ~diff finding =
+    match route_finding ~diff finding with
+    | Positioned c -> Some c
+    | File_not_in_diff | Anchor_failed -> None
 
   module General_plugin = General_review_plugin.Make (AI)
   module Security_plugin = Security_review_plugin.Make (GH) (AI)
@@ -346,39 +365,53 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
       run_plugins ~ctx ~repo_url ~config ~diff:filtered_diff ~diff_text ~metadata ~debug_dir ~head_sha
     in
     Cost_tracking.log_review_costs review_costs;
-    let comments_rev, unpositioned_findings_rev =
+    (* Route each finding to an inline comment, a main-body section, or /dev/null. *)
+    let surfaces_in_unchanged_section (f : Review_types.finding) =
+      match f.severity with
+      | Critical | Warning -> true
+      | Suggestion | Nitpick | Praise | Other _ -> false
+    in
+    let comments_rev, unchanged_rev, anchor_failed_rev =
       List.fold_left
-        (fun (comments, unpositioned_findings) (finding : Review_types.finding) ->
-          match finding_to_comment ~diff:filtered_diff finding with
-          | Some comment -> comment :: comments, unpositioned_findings
-          | None -> comments, finding :: unpositioned_findings)
-        ([], []) findings
+        (fun (comments, unchanged, anchor_failed) (finding : Review_types.finding) ->
+          match route_finding ~diff:filtered_diff finding with
+          | Positioned comment -> comment :: comments, unchanged, anchor_failed
+          | File_not_in_diff ->
+            (match surfaces_in_unchanged_section finding with
+            | true -> comments, finding :: unchanged, anchor_failed
+            | false ->
+              log#info "PR #%d: dropping low-severity finding on unchanged file %s:%d (%s)" number finding.path
+                finding.line (Review_types.severity_to_string finding.severity);
+              comments, unchanged, anchor_failed)
+          | Anchor_failed ->
+            log#warn "PR #%d: finding on changed file %s:%d could not be anchored — surfacing for investigation" number
+              finding.path finding.line;
+            comments, unchanged, finding :: anchor_failed)
+        ([], [], []) findings
     in
     let comments = List.rev comments_rev in
-    let unpositioned_findings = List.rev unpositioned_findings_rev in
-    let unpositioned = List.length unpositioned_findings in
-    if unpositioned > 0 then log#info "PR #%d: %d findings could not be positioned in diff" number unpositioned;
-    let unpositioned_section =
-      match unpositioned_findings with
+    let unchanged_findings = List.rev unchanged_rev in
+    let anchor_failed_findings = List.rev anchor_failed_rev in
+    let to_bullet (f : Review_types.finding) = Printf.sprintf "- `%s:%d` %s" f.path f.line f.message in
+    let render_section ~title ~lead = function
       | [] -> ""
-      | _ :: _ ->
-        let to_bullet (f : Review_types.finding) =
-          Printf.sprintf "- `%s:%d` %s" f.path f.line f.message
-        in
-        let shown = CCList.take 10 unpositioned_findings in
-        let hidden = List.length unpositioned_findings - List.length shown in
-        let bullets = String.concat "\n" (List.map to_bullet shown) in
-        let overflow =
-          match hidden with
-          | 0 -> ""
-          | n -> Printf.sprintf "\n- ... and %d more." n
-        in
-        Printf.sprintf
-          "\n\n\
-           **Unpositioned findings**\n\
-           Some findings could not be anchored to changed lines, so they are listed here:\n\
-           %s%s"
-          bullets overflow
+      | _ :: _ as fs ->
+        let bullets = String.concat "\n" (List.map to_bullet fs) in
+        Printf.sprintf "\n\n%s\n%s\n%s" title lead bullets
+    in
+    let unchanged_section =
+      render_section ~title:"### Findings on unchanged code (please investigate)"
+        ~lead:
+          "These security-relevant findings reference files that were not changed in this PR. Investigate whether \
+           they should be addressed in this PR or opened as a separate issue:"
+        unchanged_findings
+    in
+    let anchor_failed_section =
+      render_section ~title:"### Findings we couldn't anchor (please investigate)"
+        ~lead:
+          "These findings matched a changed file but could not be anchored to a line in the diff. Likely agent \
+           mis-anchoring — please report:"
+        anchor_failed_findings
     in
     let review_body =
       match general_result with
@@ -396,7 +429,7 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
           "\xE2\x9A\xA0\xEF\xB8\x8F **Review failed** \xE2\x80\x94 the code review encountered an error and could not \
            produce results. Please re-trigger the review. If this persists, check the service logs.")
     in
-    let review_body = review_body ^ unpositioned_section in
+    let review_body = review_body ^ unchanged_section ^ anchor_failed_section in
     let review_body = if security_error then review_body ^ security_error_notice else review_body in
     let review_body =
       if config.show_review_cost then review_body ^ Cost_tracking.format_footer review_costs else review_body

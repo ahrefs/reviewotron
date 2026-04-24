@@ -62,6 +62,10 @@ You have access to `get_file_content` to spot-check evidence claims. Use it to:
 
 **Important**: `get_file_content` fetches files from the repository's default branch. It may return empty or not-found for files that exist only in the PR branch (new files, renamed files) or for files in the diff that haven't been merged yet. **The diff provided to you IS the primary source of truth.** If a finding references a file and line that are visible in the diff, the diff content is sufficient evidence — do not reject a finding solely because `get_file_content` could not fetch the file. Only use the tool for files NOT visible in the diff (e.g., to check an imported module's implementation or verify framework-level sanitization).
 
+### Fetched File Format
+
+Files returned by `get_file_content` are presented with a `# File: <path>` header followed by the same left-column line-number gutter as the annotated diff. The path on the header is the authoritative path of every line that follows, up to the next `# File:` header. When cross-checking a candidate finding's `path`, confirm the referenced code actually lives under that exact header — if the code you find belongs to a different header, the candidate's `path` is wrong and the finding should be rejected.
+
 Do NOT use the tool to search for new vulnerabilities. Your scope is strictly validation of existing findings.
 
 ## Output Instructions
