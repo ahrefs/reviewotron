@@ -1133,7 +1133,7 @@ let test_triage_corpus_safe_skip () =
 let test_analysis_agent_config () =
   let cfg = Analysis_agent.config ~vuln_class:Injection ~model_tier:Standard ~language_hints:[ "Python" ] in
   (check string) "name" "security_analysis_injection" cfg.name;
-  (check int) "max_steps" 10 cfg.max_steps;
+  (check int) "max_steps" 15 cfg.max_steps;
   (check bool) "has system prompt" true (String.length cfg.system_prompt > 0);
   (check bool) "has output schema" true
     (match cfg.output_schema with
@@ -2394,6 +2394,128 @@ let test_write_debug_dump () =
   (try Unix.rmdir (Printf.sprintf "%s/nested" tmp_dir) with Unix.Unix_error _ -> ());
   try Unix.rmdir tmp_dir with Unix.Unix_error _ -> ()
 
+(** {2 Budget-exhaustion recovery tests}
+
+    These exercise [Agent_runner.messages_of_steps], the helper that rebuilds
+    a replay-able transcript from completed steps so we can force a tool-less
+    finalization call when the agent's step budget runs out mid-tool-loop. *)
+
+let zero_usage : Ai_provider.Usage.t = { input_tokens = 0; output_tokens = 0; total_tokens = None }
+
+let mk_step ?(text = "") ?(tool_calls = []) ?(tool_results = []) ?(finish_reason = Ai_provider.Finish_reason.Stop) () :
+  Ai_core.Generate_text_result.step =
+  { text; reasoning = ""; tool_calls; tool_results; finish_reason; usage = zero_usage }
+
+let mk_tool_call ~id ~name ~args : Ai_core.Generate_text_result.tool_call =
+  { tool_call_id = id; tool_name = name; args }
+
+let mk_tool_result ~id ~name ~result : Ai_core.Generate_text_result.tool_result =
+  { tool_call_id = id; tool_name = name; result; is_error = false; provider_metadata = None }
+
+(** Count [Assistant] and [Tool] messages in a replayed transcript. *)
+let count_roles (msgs : Ai_provider.Prompt.message list) =
+  List.fold_left
+    (fun (a, t) m ->
+      match m with
+      | Ai_provider.Prompt.Assistant _ -> a + 1, t
+      | Tool _ -> a, t + 1
+      | System _ | User _ -> a, t)
+    (0, 0) msgs
+
+let test_messages_of_steps_empty () =
+  let msgs = Agent_runner.messages_of_steps [] in
+  (check int) "no messages for empty steps" 0 (List.length msgs)
+
+let test_messages_of_steps_text_only_step () =
+  let steps = [ mk_step ~text:"just thinking out loud" () ] in
+  let msgs = Agent_runner.messages_of_steps steps in
+  let assistants, tools = count_roles msgs in
+  (check int) "one assistant" 1 assistants;
+  (check int) "no tool message" 0 tools
+
+let test_messages_of_steps_completed_tool_turn () =
+  let steps =
+    [
+      mk_step ~text:"let me check that file"
+        ~tool_calls:[ mk_tool_call ~id:"tc1" ~name:"get_file_content" ~args:(`Assoc [ "path", `String "a.ml" ]) ]
+        ~tool_results:[ mk_tool_result ~id:"tc1" ~name:"get_file_content" ~result:(`String "file body") ]
+        ();
+    ]
+  in
+  let msgs = Agent_runner.messages_of_steps steps in
+  let assistants, tools = count_roles msgs in
+  (check int) "one assistant" 1 assistants;
+  (check int) "one tool message" 1 tools
+
+(** The core invariant: a step whose [tool_results] is empty represents
+    tool_calls that were never executed (max_steps exhaustion).  Replaying
+    that turn would send Anthropic an Assistant/[tool_use] with no matching
+    Tool/[tool_result] — a protocol violation.  The helper must drop it. *)
+let test_messages_of_steps_drops_unfulfilled_final_turn () =
+  let steps =
+    [
+      mk_step ~text:"examined first file"
+        ~tool_calls:[ mk_tool_call ~id:"tc1" ~name:"get_file_content" ~args:(`Assoc [ "path", `String "a.ml" ]) ]
+        ~tool_results:[ mk_tool_result ~id:"tc1" ~name:"get_file_content" ~result:(`String "body a") ]
+        ();
+      (* Final step: model asked for another tool call but budget ran out. *)
+      mk_step ~text:"let me also check b.ml"
+        ~tool_calls:[ mk_tool_call ~id:"tc2" ~name:"get_file_content" ~args:(`Assoc [ "path", `String "b.ml" ]) ]
+        ~tool_results:[] ~finish_reason:Ai_provider.Finish_reason.Tool_calls ();
+    ]
+  in
+  let msgs = Agent_runner.messages_of_steps steps in
+  let assistants, tools = count_roles msgs in
+  (* Only the fulfilled first step survives. *)
+  (check int) "only one assistant kept" 1 assistants;
+  (check int) "only one tool message kept" 1 tools;
+  (* The dropped turn's text must not appear anywhere. *)
+  let all_text =
+    List.concat_map
+      (function
+        | Ai_provider.Prompt.Assistant { content } ->
+          List.filter_map
+            (function
+              | Ai_provider.Prompt.Text { text; _ } -> Some text
+              | _ -> None)
+            content
+        | _ -> [])
+      msgs
+  in
+  (check bool) "unfulfilled turn text dropped" true
+    (not (List.exists (fun t -> CCString.mem ~sub:"check b.ml" t) all_text));
+  (check bool) "fulfilled turn text kept" true
+    (List.exists (fun t -> CCString.mem ~sub:"examined first file" t) all_text)
+
+let test_messages_of_steps_multi_turn_ordering () =
+  let s1 =
+    mk_step ~text:"first"
+      ~tool_calls:[ mk_tool_call ~id:"tc1" ~name:"t" ~args:`Null ]
+      ~tool_results:[ mk_tool_result ~id:"tc1" ~name:"t" ~result:`Null ]
+      ()
+  in
+  let s2 =
+    mk_step ~text:"second"
+      ~tool_calls:[ mk_tool_call ~id:"tc2" ~name:"t" ~args:`Null ]
+      ~tool_results:[ mk_tool_result ~id:"tc2" ~name:"t" ~result:`Null ]
+      ()
+  in
+  let msgs = Agent_runner.messages_of_steps [ s1; s2 ] in
+  let assistants, tools = count_roles msgs in
+  (check int) "two assistant turns" 2 assistants;
+  (check int) "two tool turns" 2 tools;
+  (* Order must be Assistant, Tool, Assistant, Tool — not all assistants first. *)
+  let roles =
+    List.map
+      (function
+        | Ai_provider.Prompt.Assistant _ -> "a"
+        | Tool _ -> "t"
+        | System _ -> "s"
+        | User _ -> "u")
+      msgs
+  in
+  (check (list string)) "interleaved order" [ "a"; "t"; "a"; "t" ] roles
+
 let () =
   run "reviewotron"
     [
@@ -2678,4 +2800,14 @@ let () =
           test_case "commit comment retries on first failure" `Quick test_commit_comment_retry_on_failure;
         ] );
       "debug_dump", [ test_case "write debug dump creates file with expected content" `Quick test_write_debug_dump ];
+      ( "budget_recovery",
+        [
+          test_case "messages_of_steps: empty input" `Quick test_messages_of_steps_empty;
+          test_case "messages_of_steps: text-only step" `Quick test_messages_of_steps_text_only_step;
+          test_case "messages_of_steps: completed tool turn" `Quick test_messages_of_steps_completed_tool_turn;
+          test_case "messages_of_steps: drops unfulfilled final turn" `Quick
+            test_messages_of_steps_drops_unfulfilled_final_turn;
+          test_case "messages_of_steps: preserves Assistant/Tool interleaving" `Quick
+            test_messages_of_steps_multi_turn_ordering;
+        ] );
     ]
