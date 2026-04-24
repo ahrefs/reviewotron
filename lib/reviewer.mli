@@ -19,4 +19,9 @@ module Make (_ : Api.Github) (_ : Api.Agent_runner) (_ : Api.Slack) : sig
   (** Dispatch a webhook event: check filters, run review, post results.
       Errors are logged but do not propagate — the caller gets [unit]. *)
   val process_event : Context.t -> event:Github.event -> unit Lwt.t
+
+  (** Map a finding to a GitHub review comment, if it can be positioned in the
+      diff.  Exposed for testing the anchoring and multi-line emission logic. *)
+  val finding_to_comment :
+    diff:Diff_parser.file_diff list -> Review_types.finding -> Github_types.review_comment_req option
 end

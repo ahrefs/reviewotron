@@ -331,6 +331,108 @@ let test_dedup_sorts_by_path_then_line () =
   let messages = List.map (fun (f : Review_types.finding) -> f.message) out in
   (check (list string)) "sorted by path then line" [ "a10"; "a20"; "b5" ] messages
 
+(** {2 Multi-line inline comment tests}
+
+    These tests cover the end_line plumbing from [Review_types.finding] through
+    [Reviewer.finding_to_comment], and the hunk-range helpers in {!Diff_anchor}
+    that guard multi-line emission. *)
+
+(** A two-hunk diff on one file: hunk A at new_start=10 covers lines 10..14,
+    hunk B at new_start=40 covers lines 40..43.  All additions so the right-side
+    line ranges match [new_start, new_start + new_count - 1]. *)
+let two_hunk_diff_text =
+  "diff --git a/src/main.ml b/src/main.ml\n\
+   --- a/src/main.ml\n\
+   +++ b/src/main.ml\n\
+   @@ -10,5 +10,5 @@\n\
+    a\n\
+    b\n\
+   +c\n\
+   +d\n\
+    e\n\
+   @@ -40,4 +40,4 @@\n\
+    f\n\
+   +g\n\
+   +h\n\
+    i\n"
+
+let parsed_two_hunk_diff = Diff_parser.parse two_hunk_diff_text
+
+let find_fd_exn diff path =
+  match Diff_anchor.find_file_diff_by_path ~diff path with
+  | Some fd -> fd
+  | None -> Alcotest.fail (Printf.sprintf "expected to find file diff for %s" path)
+
+let test_single_hunk_contains_valid_range () =
+  let fd = find_fd_exn parsed_two_hunk_diff "src/main.ml" in
+  (check bool) "range fully inside hunk A" true (Diff_anchor.single_hunk_contains fd ~start_line:10 ~end_line:14);
+  (check bool) "range fully inside hunk B" true (Diff_anchor.single_hunk_contains fd ~start_line:40 ~end_line:43)
+
+let test_single_hunk_contains_straddles_hunks () =
+  let fd = find_fd_exn parsed_two_hunk_diff "src/main.ml" in
+  (check bool) "range crossing hunks is rejected" false (Diff_anchor.single_hunk_contains fd ~start_line:12 ~end_line:41);
+  (check bool) "range spanning gap is rejected" false (Diff_anchor.single_hunk_contains fd ~start_line:14 ~end_line:40)
+
+(** Instantiate the reviewer against the in-memory api harness so we can call
+    [finding_to_comment] without standing up a real GitHub client. *)
+module R_anchor_test = Reviewer.Make (Api_local.Github) (Api_local.Agent_runner) (Api_local.Slack)
+
+let test_finding_to_comment_multiline_valid () =
+  let finding = mk_finding ~path:"src/main.ml" ~line:10 ~end_line:(Some 14) () in
+  match R_anchor_test.finding_to_comment ~diff:parsed_two_hunk_diff finding with
+  | None -> Alcotest.fail "expected a review comment"
+  | Some c ->
+    (check (option int)) "start_line = 10" (Some 10) c.start_line;
+    (check (option int)) "line = 14" (Some 14) c.line;
+    let side_is_right = function
+      | Some Github_types.Right -> true
+      | _ -> false
+    in
+    (check bool) "start_side = Some Right" true (side_is_right c.start_side);
+    (check bool) "side = Some Right" true (side_is_right c.side)
+
+let test_finding_to_comment_end_line_equals_line_is_single () =
+  let finding = mk_finding ~path:"src/main.ml" ~line:10 ~end_line:(Some 10) () in
+  match R_anchor_test.finding_to_comment ~diff:parsed_two_hunk_diff finding with
+  | None -> Alcotest.fail "expected a review comment"
+  | Some c ->
+    (check (option int)) "no start_line" None c.start_line;
+    (check (option int)) "line = 10" (Some 10) c.line
+
+let test_finding_to_comment_end_line_lt_line_is_single () =
+  let finding = mk_finding ~path:"src/main.ml" ~line:12 ~end_line:(Some 10) () in
+  match R_anchor_test.finding_to_comment ~diff:parsed_two_hunk_diff finding with
+  | None -> Alcotest.fail "expected a review comment"
+  | Some c ->
+    (check (option int)) "no start_line" None c.start_line;
+    (check (option int)) "line = 12" (Some 12) c.line
+
+let test_finding_to_comment_range_crosses_hunks_degrades () =
+  let finding = mk_finding ~path:"src/main.ml" ~line:12 ~end_line:(Some 41) () in
+  match R_anchor_test.finding_to_comment ~diff:parsed_two_hunk_diff finding with
+  | None -> Alcotest.fail "expected a review comment"
+  | Some c ->
+    (check (option int)) "no start_line" None c.start_line;
+    (* Anchor line 12 is in range, so it stays at 12; the range falls back. *)
+    (check (option int)) "line = 12" (Some 12) c.line
+
+let test_finding_to_comment_end_line_out_of_file_degrades () =
+  let finding = mk_finding ~path:"src/main.ml" ~line:10 ~end_line:(Some 999) () in
+  match R_anchor_test.finding_to_comment ~diff:parsed_two_hunk_diff finding with
+  | None -> Alcotest.fail "expected a review comment"
+  | Some c ->
+    (check (option int)) "no start_line" None c.start_line;
+    (check (option int)) "line = 10" (Some 10) c.line
+
+let test_finding_to_comment_single_line_unchanged () =
+  let finding = mk_finding ~path:"src/main.ml" ~line:10 ~end_line:None () in
+  match R_anchor_test.finding_to_comment ~diff:parsed_two_hunk_diff finding with
+  | None -> Alcotest.fail "expected a review comment"
+  | Some c ->
+    (check (option int)) "no start_line" None c.start_line;
+    (check (option int)) "no start_side" None (Option.map (fun _ -> 0) c.start_side);
+    (check (option int)) "line = 10" (Some 10) c.line
+
 (** {2 Review types tests} *)
 
 let test_review_output_roundtrip () =
@@ -2140,6 +2242,17 @@ let () =
           test_case "near line different category both kept" `Quick test_dedup_near_line_different_category_both_kept;
           test_case "security findings not near-line collapsed" `Quick test_dedup_security_not_near_line_collapsed;
           test_case "sorts by path then line" `Quick test_dedup_sorts_by_path_then_line;
+        ] );
+      ( "multiline_inline",
+        [
+          test_case "single_hunk_contains valid range" `Quick test_single_hunk_contains_valid_range;
+          test_case "single_hunk_contains rejects straddles" `Quick test_single_hunk_contains_straddles_hunks;
+          test_case "valid multi-line range emits range" `Quick test_finding_to_comment_multiline_valid;
+          test_case "end_line == line degrades to single" `Quick test_finding_to_comment_end_line_equals_line_is_single;
+          test_case "end_line < line degrades to single" `Quick test_finding_to_comment_end_line_lt_line_is_single;
+          test_case "range crossing hunks degrades" `Quick test_finding_to_comment_range_crosses_hunks_degrades;
+          test_case "end_line out of file degrades" `Quick test_finding_to_comment_end_line_out_of_file_degrades;
+          test_case "single-line still works" `Quick test_finding_to_comment_single_line_unchanged;
         ] );
       ( "review_types",
         [
