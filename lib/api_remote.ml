@@ -105,6 +105,15 @@ module Github : Api.Github = struct
     let path = Printf.sprintf "/pulls/%d" number in
     github_get ~ctx ~repo_url ~path ~accept:"application/vnd.github.v3.diff" ()
 
+  let get_pull_request ~ctx ~repo_url ~number =
+    let path = Printf.sprintf "/pulls/%d" number in
+    let%lwt result = github_get ~ctx ~repo_url ~path () in
+    match result with
+    | Error msg -> Lwt.return (Error msg)
+    | Ok body ->
+      (try Lwt.return (Ok (Github_types.pull_request_of_json (Melange_json.of_string body)))
+       with exn -> Lwt.return (Error (Printf.sprintf "failed to parse pull_request response: %s" (Exn.str exn))))
+
   let get_compare_diff ~ctx ~repo_url ~base ~head =
     let path = Printf.sprintf "/compare/%s...%s" (Web.urlencode base) (Web.urlencode head) in
     github_get ~ctx ~repo_url ~path ~accept:"application/vnd.github.v3.diff" ()
