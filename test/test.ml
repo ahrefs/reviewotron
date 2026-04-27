@@ -2333,8 +2333,8 @@ let test_security_e2e_rejected () =
     [skip_reason: null] when it has signals to report — the LLM populates
     the optional field with a placeholder rather than omitting it.  Pre-fix
     we treated [Some ""] the same as a real skip reason and silenced the
-    entire security pipeline (observed on PR #81 in the example-repo
-    test repo).  This regression test pins the post-fix behaviour: an
+    entire security pipeline (observed in production).  This regression
+    test pins the post-fix behaviour: an
     empty-or-whitespace [skip_reason] is treated as [None] and analysis
     proceeds based on the signals. *)
 let test_security_e2e_triage_empty_skip_reason () =

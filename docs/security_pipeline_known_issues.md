@@ -222,19 +222,18 @@ get unlucky on this specific run?". Five samples is too few to tell.
 - The existing `security_e2e` tests are good for plumbing but use mocked
   agent responses — they cannot detect prompt regressions.
 
-**Cost:** 1–2 days for a basic harness over the example-repo test repo's
-canonical diff. Pays for itself the first time we catch a regression before
-shipping.
+**Cost:** 1–2 days for a basic harness over a canonical test diff. Pays for
+itself the first time we catch a regression before shipping.
 
 ---
 
 ## Resolved this session
 
-### #81 — Empty `skip_reason` silenced the pipeline
+### Empty `skip_reason` silenced the pipeline
 
 **Layer:** `lib/security_review_plugin.ml` (`run`).
 
-**Observed:** PR #81 in the example-repo test repo. Triage emitted
+**Observed:** on a real PR, triage emitted
 `skip_reason: ""` (empty string) instead of `skip_reason: null` despite
 having signals to report. The `match` on `skip_reason` treated `Some ""`
 identically to `Some "real reason"` and bailed out of the security pipeline
