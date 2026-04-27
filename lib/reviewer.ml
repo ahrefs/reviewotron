@@ -127,7 +127,7 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
       let modified_files = List.concat_map (fun (c : Github_types.commit) -> c.added @ c.modified) push.commits in
       let config_modified = List.exists (String.equal (Context.config_filename ctx)) modified_files in
       if config_modified then fetch_config ~ctx ~repo_url else Lwt.return (Ok ())
-    | Pull_request _ | Unknown _ -> Lwt.return (Ok ())
+    | Pull_request _ | Issue_comment _ | Unknown _ -> Lwt.return (Ok ())
 
   (** Check whether a PR event should trigger a review.
       Returns [None] if it should, [Some reason] if it should be skipped. *)
@@ -610,6 +610,9 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
       | Some reason ->
         log#info "push %s skipped: %s" push.after reason;
         Lwt.return_unit)
+    | Github.Issue_comment n ->
+      log#debug "issue_comment received on PR #%d (handler not wired yet)" n.issue.number;
+      Lwt.return_unit
     | Github.Unknown kind ->
       log#debug "ignoring unhandled event type: %s" kind;
       Lwt.return_unit

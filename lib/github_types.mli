@@ -116,6 +116,43 @@ type pr_notification = {
 }
 [@@deriving json]
 
+(** {2 Issue comment types}
+
+    Webhook events for comments on issues and pull requests.  The
+    [issue.pull_request] sub-field is non-null exactly when the underlying
+    issue is a PR, so it is the discriminator the dispatch layer checks
+    before treating an [issue_comment] event as a PR comment. *)
+
+type issue_pull_request_ref = { url : string } [@@deriving json]
+
+type issue = {
+  number : int;
+  title : string;
+  state : string;
+  user : github_user option;
+  html_url : string;
+  pull_request : issue_pull_request_ref option;
+}
+[@@deriving json]
+
+type issue_comment = {
+  id : int;
+  body : string;
+  user : github_user option;
+  html_url : string;
+}
+[@@deriving json]
+
+type issue_comment_notification = {
+  action : string;
+  issue : issue;
+  comment : issue_comment;
+  repository : repository;
+  sender : github_user;
+  installation : installation option;
+}
+[@@deriving json]
+
 (** {2 GitHub API response types} *)
 
 type pull_request_file = {

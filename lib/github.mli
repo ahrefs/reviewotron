@@ -17,6 +17,7 @@ val pr_action_of_string : string -> pr_action
 type event =
   | Pull_request of Github_types.pr_notification
   | Push of Github_types.commit_pushed_notification
+  | Issue_comment of Github_types.issue_comment_notification
   | Unknown of string
 
 (** Extract the repository HTML URL from an event.
