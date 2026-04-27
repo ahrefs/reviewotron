@@ -41,6 +41,41 @@ let test_parse_unknown_event () =
   | Ok _ -> fail "expected Unknown event"
   | Error msg -> fail (Printf.sprintf "unexpected error: %s" msg)
 
+let test_parse_issue_comment_review () =
+  let body = read_file "mock_payloads/issue_comment_review.json" in
+  match Github.parse_event ~event_type:"issue_comment" ~body with
+  | Ok (Github.Issue_comment n) ->
+    (check string) "action" "created" n.action;
+    (check int) "issue number" 42 n.issue.number;
+    (check string) "issue state" "open" n.issue.state;
+    (check bool) "issue is a PR" true (Option.is_some n.issue.pull_request);
+    (check string) "comment body" "REVIEW" n.comment.body;
+    (check string) "sender" "reviewer1" n.sender.login;
+    (check string) "repo" "ahrefs/monorepo" n.repository.full_name
+  | Ok _ -> fail "expected Issue_comment event"
+  | Error msg -> fail (Printf.sprintf "parse error: %s" msg)
+
+let test_parse_issue_comment_on_regular_issue () =
+  let body = read_file "mock_payloads/issue_comment_on_issue.json" in
+  match Github.parse_event ~event_type:"issue_comment" ~body with
+  | Ok (Github.Issue_comment n) ->
+    (* The parser must accept comments on regular issues; the dispatch layer
+       is the one that rejects them when they're not on a PR. *)
+    (check bool) "pull_request marker is null" true (Option.is_none n.issue.pull_request);
+    (check int) "issue number" 7 n.issue.number
+  | Ok _ -> fail "expected Issue_comment event"
+  | Error msg -> fail (Printf.sprintf "parse error: %s" msg)
+
+let test_parse_issue_comment_null_user () =
+  let body = read_file "mock_payloads/issue_comment_null_user.json" in
+  match Github.parse_event ~event_type:"issue_comment" ~body with
+  | Ok (Github.Issue_comment n) ->
+    (check bool) "issue.user is None" true (Option.is_none n.issue.user);
+    (check bool) "comment.user is None" true (Option.is_none n.comment.user);
+    (check string) "comment body still parsed" "REVIEW" n.comment.body
+  | Ok _ -> fail "expected Issue_comment event"
+  | Error msg -> fail (Printf.sprintf "parse error: %s" msg)
+
 let test_hmac_signature_valid () =
   let secret = "test-secret" in
   let body = "test-body" in
@@ -2531,6 +2566,9 @@ let () =
           test_case "parse pr_opened" `Quick test_parse_pr_opened;
           test_case "parse push_develop" `Quick test_parse_push_develop;
           test_case "parse unknown event" `Quick test_parse_unknown_event;
+          test_case "parse issue_comment on PR with REVIEW body" `Quick test_parse_issue_comment_review;
+          test_case "parse issue_comment on regular (non-PR) issue" `Quick test_parse_issue_comment_on_regular_issue;
+          test_case "parse issue_comment with null user fields" `Quick test_parse_issue_comment_null_user;
         ] );
       ( "hmac_signature",
         [

@@ -128,6 +128,53 @@ type pr_notification = {
 }
 [@@deriving json] [@@json.allow_extra_fields]
 
+(** {2 Issue comment types}
+
+    The [issue_comment] webhook event covers comments on both regular issues
+    and pull requests.  GitHub delivers the [issue] shape (not the
+    [pull_request] shape) regardless of which one the comment lives on; the
+    [issue.pull_request] sub-field is non-null exactly when the underlying
+    issue is a PR.
+
+    The inner [issue_pull_request_ref] carries [url], [html_url], [diff_url],
+    [patch_url], and [merged_at] in the wire format — none of which we read.
+    The single [url] field below is a placeholder so the record decodes
+    cleanly; everything else is dropped via [allow_extra_fields].
+
+    [user] fields are nullable in GitHub's schema (e.g. when an account has
+    been deleted), so we model them as [github_user option] even though
+    freshly-created comments and issues normally carry a populated user. *)
+
+type issue_pull_request_ref = { url : string } [@@deriving json] [@@json.allow_extra_fields]
+
+type issue = {
+  number : int;
+  title : string;
+  state : string;
+  user : github_user option; [@json.option]
+  html_url : string;
+  pull_request : issue_pull_request_ref option; [@json.option]
+}
+[@@deriving json] [@@json.allow_extra_fields]
+
+type issue_comment = {
+  id : int;
+  body : string;
+  user : github_user option; [@json.option]
+  html_url : string;
+}
+[@@deriving json] [@@json.allow_extra_fields]
+
+type issue_comment_notification = {
+  action : string;
+  issue : issue;
+  comment : issue_comment;
+  repository : repository;
+  sender : github_user;
+  installation : installation option; [@json.option]
+}
+[@@deriving json] [@@json.allow_extra_fields]
+
 (** {2 GitHub API response types} *)
 
 type pull_request_file = {

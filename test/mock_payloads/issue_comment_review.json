@@ -1,0 +1,52 @@
+{
+  "action": "created",
+  "issue": {
+    "number": 42,
+    "title": "Add feature X to the dashboard",
+    "state": "open",
+    "html_url": "https://github.com/ahrefs/monorepo/issues/42",
+    "user": {
+      "login": "developer1",
+      "id": 12345,
+      "url": "https://api.github.com/users/developer1",
+      "html_url": "https://github.com/developer1",
+      "avatar_url": "https://avatars.githubusercontent.com/u/12345?v=4"
+    },
+    "pull_request": {
+      "url": "https://api.github.com/repos/ahrefs/monorepo/pulls/42",
+      "html_url": "https://github.com/ahrefs/monorepo/pull/42",
+      "diff_url": "https://github.com/ahrefs/monorepo/pull/42.diff",
+      "patch_url": "https://github.com/ahrefs/monorepo/pull/42.patch",
+      "merged_at": null
+    }
+  },
+  "comment": {
+    "id": 9001,
+    "body": "REVIEW",
+    "html_url": "https://github.com/ahrefs/monorepo/pull/42#issuecomment-9001",
+    "user": {
+      "login": "reviewer1",
+      "id": 99999,
+      "url": "https://api.github.com/users/reviewer1",
+      "html_url": "https://github.com/reviewer1",
+      "avatar_url": "https://avatars.githubusercontent.com/u/99999?v=4"
+    }
+  },
+  "repository": {
+    "name": "monorepo",
+    "full_name": "ahrefs/monorepo",
+    "html_url": "https://github.com/ahrefs/monorepo",
+    "commits_url": "https://api.github.com/repos/ahrefs/monorepo/commits{/sha}",
+    "contents_url": "https://api.github.com/repos/ahrefs/monorepo/contents/{+path}",
+    "pulls_url": "https://api.github.com/repos/ahrefs/monorepo/pulls{/number}",
+    "issues_url": "https://api.github.com/repos/ahrefs/monorepo/issues{/number}",
+    "compare_url": "https://api.github.com/repos/ahrefs/monorepo/compare/{base}...{head}"
+  },
+  "sender": {
+    "login": "reviewer1",
+    "id": 99999,
+    "url": "https://api.github.com/users/reviewer1",
+    "html_url": "https://github.com/reviewer1",
+    "avatar_url": "https://avatars.githubusercontent.com/u/99999?v=4"
+  }
+}
