@@ -485,7 +485,19 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) = struct
     match triage_result with
     | None -> Lwt.return ([], triage_costs)
     | Some triage_output ->
-    match triage_output.skip_reason with
+    (* Triage is sometimes asked to choose between [skip_reason = None] (proceed)
+       and [skip_reason = Some "..."] (bail).  When it has nothing to say but
+       still feels obliged to populate the field, it emits the empty string —
+       and we used to treat that as a real skip, silencing the entire security
+       pipeline for the PR (observed on PR #81 in the example-repo test
+       repo).  An empty or whitespace-only reason carries no information, so
+       fall through to analysis and let the signal list drive the decision. *)
+    let effective_skip_reason =
+      match triage_output.skip_reason with
+      | Some reason when String.length (String.trim reason) > 0 -> Some reason
+      | Some _ | None -> None
+    in
+    match effective_skip_reason with
     | Some reason ->
       log#info "triage: skipped (%s)" reason;
       Lwt.return ([], triage_costs)
