@@ -92,6 +92,7 @@ type config = {
   auto_review_pr_open : bool;
   auto_review_pr_sync : bool;
   review_pushes_to_develop : bool;
+  auto_review_on_comment : bool;
   system_prompt_override : string option;
   slack_channel : string option;
   show_review_cost : bool;

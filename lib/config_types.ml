@@ -126,6 +126,7 @@ type config = {
   auto_review_pr_open : bool; [@json.default false]
   auto_review_pr_sync : bool; [@json.default false]
   review_pushes_to_develop : bool; [@json.default false]
+  auto_review_on_comment : bool; [@json.default false]
   system_prompt_override : string option; [@json.option]
   slack_channel : string option; [@json.option]
   show_review_cost : bool; [@json.default false]

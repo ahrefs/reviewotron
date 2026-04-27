@@ -156,6 +156,49 @@ let make_push_payload ?(ref_ = "refs/heads/develop") ?(before = "fb245e2a6d52d10
     (if deleted then "true" else "false")
     commit_json commit_json (repo_json ()) before after pusher_name (user_json ~login:sender_login ())
 
+(** Build an [issue_comment] webhook payload with sensible defaults.
+
+    Defaults model a [REVIEW] comment posted by [reviewer1] on PR #42 of the
+    test repo.  Override [is_pr] to [false] to model a comment on a regular
+    issue (the [pull_request] sub-field becomes [null]).  Override [state],
+    [action], [body], or [sender_login] to construct the various skip-reason
+    test cases. *)
+let make_issue_comment_payload ?(action = "created") ?(number = 42) ?(title = "Add feature X to the dashboard")
+  ?(state = "open") ?(is_pr = true) ?(body = "REVIEW") ?(sender_login = "reviewer1") ?(sender_id = 99999) () =
+  let pr_marker =
+    if is_pr then
+      Printf.sprintf
+        {|{"url": "https://api.github.com/repos/ahrefs/monorepo/pulls/%d", "html_url": "https://github.com/ahrefs/monorepo/pull/%d", "diff_url": "https://github.com/ahrefs/monorepo/pull/%d.diff", "patch_url": "https://github.com/ahrefs/monorepo/pull/%d.patch", "merged_at": null}|}
+        number number number number
+    else "null"
+  in
+  Printf.sprintf
+    {|{
+  "action": %S,
+  "issue": {
+    "number": %d,
+    "title": %S,
+    "state": %S,
+    "html_url": "https://github.com/ahrefs/monorepo/issues/%d",
+    "user": %s,
+    "pull_request": %s
+  },
+  "comment": {
+    "id": 9001,
+    "body": %S,
+    "html_url": "https://github.com/ahrefs/monorepo/issues/%d#issuecomment-9001",
+    "user": %s
+  },
+  "repository": %s,
+  "sender": %s
+}|}
+    action number title state number
+    (user_json ~login:"developer1" ())
+    pr_marker body number
+    (user_json ~login:sender_login ~id:sender_id ())
+    (repo_json ())
+    (user_json ~login:sender_login ~id:sender_id ())
+
 (** Parse a webhook event, failing with a clear message on error. *)
 let parse_event_exn ~event_type ~body =
   match Github.parse_event ~event_type ~body with

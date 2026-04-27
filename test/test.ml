@@ -1453,6 +1453,150 @@ let test_pr_skipped_when_closed () =
   let write_log = Api_local.get_write_log () in
   (check string) "no review posted" "" write_log
 
+(** {2 REVIEW comment trigger tests}
+
+    These exercise the [issue_comment] dispatch path end-to-end: each test
+    constructs an [issue_comment.created] webhook, runs it through
+    [process_event], and asserts on the resulting write log.  The PR fetched
+    via [get_pull_request] is mocked to the same [pr_42.json] fixture used
+    by other PR-flow tests, so the review pipeline runs identically to a
+    PR-open trigger past dispatch.
+
+    The skip-reason branches are covered as e2e tests rather than unit tests
+    because the helper is internal to the [Make] functor and not exposed in
+    the [.mli] — same pattern as [pr_skip_reason] / [push_skip_reason]. *)
+
+let comment_trigger_config =
+  Config_types.config_of_json (Melange_json.of_string {|{"auto_review_on_comment": true}|})
+
+let test_comment_trigger_reviews_pr () =
+  Test_helpers.reset_test_state ();
+  let ctx = Test_helpers.make_test_context ~config:comment_trigger_config () in
+  let payload = Test_helpers.make_issue_comment_payload () in
+  let event = Test_helpers.parse_event_exn ~event_type:"issue_comment" ~body:payload in
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let write_log = Api_local.get_write_log () in
+  (check bool) "review posted via REVIEW comment" true (CCString.find ~sub:"[create_pr_review]" write_log >= 0);
+  (check bool) "uses general review pipeline" true
+    (CCString.find ~sub:"The changes look generally good" write_log >= 0)
+
+let test_comment_trigger_disabled () =
+  Test_helpers.reset_test_state ();
+  (* Default config has auto_review_on_comment = false *)
+  let ctx = Test_helpers.make_test_context () in
+  let payload = Test_helpers.make_issue_comment_payload () in
+  let event = Test_helpers.parse_event_exn ~event_type:"issue_comment" ~body:payload in
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let write_log = Api_local.get_write_log () in
+  (check string) "no review when auto_review_on_comment disabled" "" write_log
+
+let test_comment_trigger_non_review_body_silent () =
+  Test_helpers.reset_test_state ();
+  let ctx = Test_helpers.make_test_context ~config:comment_trigger_config () in
+  let payload = Test_helpers.make_issue_comment_payload ~body:"looks good!" () in
+  let event = Test_helpers.parse_event_exn ~event_type:"issue_comment" ~body:payload in
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let write_log = Api_local.get_write_log () in
+  (check string) "non-trigger comment ignored" "" write_log
+
+let test_comment_trigger_body_with_extra_text () =
+  Test_helpers.reset_test_state ();
+  let ctx = Test_helpers.make_test_context ~config:comment_trigger_config () in
+  (* Trigger phrase requires exact match — "REVIEW please" must not fire. *)
+  let payload = Test_helpers.make_issue_comment_payload ~body:"REVIEW please" () in
+  let event = Test_helpers.parse_event_exn ~event_type:"issue_comment" ~body:payload in
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let write_log = Api_local.get_write_log () in
+  (check string) "REVIEW with trailing text does not trigger" "" write_log
+
+let test_comment_trigger_body_trims_whitespace () =
+  Test_helpers.reset_test_state ();
+  let ctx = Test_helpers.make_test_context ~config:comment_trigger_config () in
+  (* Leading/trailing whitespace is trimmed before the equality check. *)
+  let payload = Test_helpers.make_issue_comment_payload ~body:"  REVIEW\n" () in
+  let event = Test_helpers.parse_event_exn ~event_type:"issue_comment" ~body:payload in
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let write_log = Api_local.get_write_log () in
+  (check bool) "trimmed REVIEW triggers" true (CCString.find ~sub:"[create_pr_review]" write_log >= 0)
+
+let test_comment_trigger_skips_on_regular_issue () =
+  Test_helpers.reset_test_state ();
+  let ctx = Test_helpers.make_test_context ~config:comment_trigger_config () in
+  let payload = Test_helpers.make_issue_comment_payload ~is_pr:false () in
+  let event = Test_helpers.parse_event_exn ~event_type:"issue_comment" ~body:payload in
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let write_log = Api_local.get_write_log () in
+  (check string) "comment on regular issue does not trigger review" "" write_log
+
+let test_comment_trigger_skips_on_closed_pr () =
+  Test_helpers.reset_test_state ();
+  let ctx = Test_helpers.make_test_context ~config:comment_trigger_config () in
+  let payload = Test_helpers.make_issue_comment_payload ~state:"closed" () in
+  let event = Test_helpers.parse_event_exn ~event_type:"issue_comment" ~body:payload in
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let write_log = Api_local.get_write_log () in
+  (check string) "REVIEW on closed PR does not trigger" "" write_log
+
+let test_comment_trigger_skips_edited_action () =
+  Test_helpers.reset_test_state ();
+  let ctx = Test_helpers.make_test_context ~config:comment_trigger_config () in
+  let payload = Test_helpers.make_issue_comment_payload ~action:"edited" () in
+  let event = Test_helpers.parse_event_exn ~event_type:"issue_comment" ~body:payload in
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let write_log = Api_local.get_write_log () in
+  (check string) "edited comment does not retrigger review" "" write_log
+
+let test_comment_trigger_skips_bot_sender () =
+  Test_helpers.reset_test_state ();
+  let ctx = Test_helpers.make_test_context ~config:comment_trigger_config () in
+  let payload = Test_helpers.make_issue_comment_payload ~sender_login:"some-bot[bot]" () in
+  let event = Test_helpers.parse_event_exn ~event_type:"issue_comment" ~body:payload in
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let write_log = Api_local.get_write_log () in
+  (check string) "bot sender does not trigger review" "" write_log
+
+let test_comment_trigger_skips_ignored_author () =
+  Test_helpers.reset_test_state ();
+  let config =
+    Config_types.config_of_json
+      (Melange_json.of_string {|{"auto_review_on_comment": true, "ignored_authors": ["spammer"]}|})
+  in
+  let ctx = Test_helpers.make_test_context ~config () in
+  let payload = Test_helpers.make_issue_comment_payload ~sender_login:"spammer" () in
+  let event = Test_helpers.parse_event_exn ~event_type:"issue_comment" ~body:payload in
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let write_log = Api_local.get_write_log () in
+  (check string) "ignored author does not trigger review" "" write_log
+
+let test_comment_trigger_re_reviews_same_sha () =
+  Test_helpers.reset_test_state ();
+  (* PR open registers head_sha in state via is_pr_reviewed.  A subsequent
+     REVIEW comment on the same SHA must still trigger — manual triggers
+     bypass the dedup. *)
+  let state = State.create () in
+  let ctx =
+    Test_helpers.make_test_context ~state
+      ~config:
+        (Config_types.config_of_json
+           (Melange_json.of_string {|{"auto_review_pr_open": true, "auto_review_on_comment": true}|}))
+      ()
+  in
+  (* First, trigger a normal PR-open review to populate state. *)
+  let pr_payload = read_file "mock_payloads/pr_opened.json" in
+  let pr_event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:pr_payload in
+  Lwt_main.run (R_test.process_event ctx ~event:pr_event);
+  let first_log = Api_local.get_write_log () in
+  (check bool) "first review posted" true (CCString.find ~sub:"[create_pr_review]" first_log >= 0);
+  (* Now send a REVIEW comment on the same PR. The PR-flow dedup would
+     normally reject it, but the comment trigger bypasses that check. *)
+  Api_local.clear_write_log ();
+  let comment_payload = Test_helpers.make_issue_comment_payload () in
+  let comment_event = Test_helpers.parse_event_exn ~event_type:"issue_comment" ~body:comment_payload in
+  Lwt_main.run (R_test.process_event ctx ~event:comment_event);
+  let second_log = Api_local.get_write_log () in
+  (check bool) "REVIEW comment re-triggers despite same head SHA" true
+    (CCString.find ~sub:"[create_pr_review]" second_log >= 0)
+
 (** {2 PR edge case tests} *)
 
 let test_pr_synchronize_review () =
@@ -2766,6 +2910,20 @@ let () =
           test_case "PR review end-to-end" `Quick test_pr_review_e2e;
           test_case "draft PR skipped" `Quick test_pr_skipped_when_draft;
           test_case "closed PR skipped" `Quick test_pr_skipped_when_closed;
+        ] );
+      ( "comment_trigger",
+        [
+          test_case "REVIEW comment triggers PR review" `Quick test_comment_trigger_reviews_pr;
+          test_case "REVIEW comment ignored when auto_review_on_comment disabled" `Quick test_comment_trigger_disabled;
+          test_case "non-trigger body silently ignored" `Quick test_comment_trigger_non_review_body_silent;
+          test_case "REVIEW with extra text does not trigger" `Quick test_comment_trigger_body_with_extra_text;
+          test_case "whitespace around REVIEW is trimmed" `Quick test_comment_trigger_body_trims_whitespace;
+          test_case "REVIEW on regular issue does not trigger" `Quick test_comment_trigger_skips_on_regular_issue;
+          test_case "REVIEW on closed PR does not trigger" `Quick test_comment_trigger_skips_on_closed_pr;
+          test_case "edited comment does not retrigger" `Quick test_comment_trigger_skips_edited_action;
+          test_case "bot sender does not trigger" `Quick test_comment_trigger_skips_bot_sender;
+          test_case "ignored author does not trigger" `Quick test_comment_trigger_skips_ignored_author;
+          test_case "REVIEW re-reviews same head SHA" `Quick test_comment_trigger_re_reviews_same_sha;
         ] );
       ( "pr_edge_cases",
         [
