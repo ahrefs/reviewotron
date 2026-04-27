@@ -15,8 +15,9 @@ val pr_action_of_string : string -> pr_action
 
 (** Supported webhook event types. *)
 type event =
-  | Pull_request of Github_types_t.pr_notification
-  | Push of Github_types_t.commit_pushed_notification
+  | Pull_request of Github_types.pr_notification
+  | Push of Github_types.commit_pushed_notification
+  | Issue_comment of Github_types.issue_comment_notification
   | Unknown of string
 
 (** Extract the repository HTML URL from an event.

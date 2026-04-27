@@ -1,0 +1,16 @@
+diff --git a/src/handlers/user.py b/src/handlers/user.py
+index 1234567..abcdefg 100644
+--- a/src/handlers/user.py
++++ b/src/handlers/user.py
+@@ -10,8 +10,12 @@ from flask import request, jsonify
+
+ def get_user(request):
+     user_id = request.args.get('id')
+-    user = db.get_user(user_id)
+-    return jsonify(user)
++    query = "SELECT * FROM users WHERE id = %s"
++    cursor = db.execute(query, (user_id,))
++    user = cursor.fetchone()
++    if user is None:
++        return jsonify({"error": "not found"}), 404
++    return jsonify(dict(user))

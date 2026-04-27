@@ -1,0 +1,18 @@
+diff --git a/lib/handlers/file_preview.ml b/lib/handlers/file_preview.ml
+index 4567890..efghijk 100644
+--- a/lib/handlers/file_preview.ml
++++ b/lib/handlers/file_preview.ml
+@@ -5,10 +5,14 @@ open Dream
+
+ let handle_preview request =
+   let filename = Dream.query request "filename" in
+-  match filename with
+-  | None -> Dream.respond ~status:`Bad_Request "missing filename"
+-  | Some _ -> Dream.respond "preview not implemented"
++  match filename with
++  | None -> Dream.respond ~status:`Bad_Request "missing filename"
++  | Some name ->
++    let cmd = "file -b " ^ name in
++    let result = Sys.command cmd in
++    let output = Printf.sprintf "exit code: %d" result in
++    Dream.respond output

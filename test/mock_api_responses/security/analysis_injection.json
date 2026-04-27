@@ -1,0 +1,40 @@
+{
+  "findings": [
+    {
+      "vuln_class": "injection",
+      "source": {
+        "path": "src/main.ml",
+        "line": 10,
+        "description": "HTTP request parameter 'id' from Dream.query"
+      },
+      "sink": {
+        "path": "src/main.ml",
+        "line": 14,
+        "description": "String concatenation into SQL query passed to Db.exec"
+      },
+      "flow": [
+        {
+          "path": "src/main.ml",
+          "line": 10,
+          "description": "User input read from query parameter"
+        },
+        {
+          "path": "src/main.ml",
+          "line": 12,
+          "description": "Concatenated into SQL string"
+        },
+        {
+          "path": "src/main.ml",
+          "line": 14,
+          "description": "Passed to Db.exec as raw SQL"
+        }
+      ],
+      "sanitization": "missing",
+      "confidence": "high",
+      "description": "User-controlled input from HTTP query parameter is concatenated directly into a SQL query string without parameterization.",
+      "suggested_fix": "Use Caqti prepared statements with typed parameters instead of string concatenation."
+    }
+  ],
+  "files_examined": ["src/main.ml"],
+  "notes": "Single injection path identified. No parameterization or escaping observed."
+}

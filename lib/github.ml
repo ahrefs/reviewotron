@@ -21,13 +21,15 @@ let pr_action_of_string = function
   | s -> Other s
 
 type event =
-  | Pull_request of Github_types_t.pr_notification
-  | Push of Github_types_t.commit_pushed_notification
+  | Pull_request of Github_types.pr_notification
+  | Push of Github_types.commit_pushed_notification
+  | Issue_comment of Github_types.issue_comment_notification
   | Unknown of string
 
 let repo_url_of_event = function
   | Pull_request n -> n.repository.url
   | Push n -> n.repository.url
+  | Issue_comment n -> n.repository.url
   | Unknown _ -> ""
 
 let validate_signature ~secret ~signature ~body =
@@ -43,16 +45,23 @@ let parse_event ~event_type ~body =
   match event_type with
   | "pull_request" ->
     (try
-       let n = Github_types_j.pr_notification_of_string body in
+       let n = Github_types.pr_notification_of_json (Melange_json.of_string body) in
        log#info "[%s] PR #%d: action=%s, title=%s, user=%s" n.repository.full_name n.pull_request.number n.action
          n.pull_request.title n.pull_request.user.login;
        Ok (Pull_request n)
      with exn -> Error (Printf.sprintf "failed to parse pull_request payload: %s" (Exn.str exn)))
   | "push" ->
     (try
-       let n = Github_types_j.commit_pushed_notification_of_string body in
+       let n = Github_types.commit_pushed_notification_of_json (Melange_json.of_string body) in
        let num_commits = List.length n.commits in
        log#info "[%s] push: ref=%s, commits=%d, pusher=%s" n.repository.full_name n.ref_ num_commits n.pusher.name;
        Ok (Push n)
      with exn -> Error (Printf.sprintf "failed to parse push payload: %s" (Exn.str exn)))
+  | "issue_comment" ->
+    (try
+       let n = Github_types.issue_comment_notification_of_json (Melange_json.of_string body) in
+       log#info "[%s] issue_comment: action=%s, issue=#%d, sender=%s" n.repository.full_name n.action n.issue.number
+         n.sender.login;
+       Ok (Issue_comment n)
+     with exn -> Error (Printf.sprintf "failed to parse issue_comment payload: %s" (Exn.str exn)))
   | other -> Ok (Unknown other)

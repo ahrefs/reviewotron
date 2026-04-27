@@ -6,3 +6,5 @@ _opam
 
 secrets.json
 state.json
+debug/
+memory/

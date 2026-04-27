@@ -1,0 +1,734 @@
+{
+  "project": "Security Review Pipeline",
+  "prd": "docs/plans/2026-04-14-security-review-pipeline-prd.md",
+  "tasks": [
+    {
+      "id": "P0.1",
+      "phase": 0,
+      "title": "Add melange-json-native dependency",
+      "description": "Add melange-json-native to dune-project and opam dependencies. Verify the project still builds.",
+      "steps": [
+        "Add melange-json-native to dune-project package depends",
+        "Add melange-json-native to lib/dune preprocess or libraries",
+        "Run make clean build test fmt to confirm no regressions"
+      ],
+      "depends_on": [],
+      "complete": true
+    },
+    {
+      "id": "P0.2",
+      "phase": 0,
+      "title": "Migrate slack_types.atd to OCaml types with [@@deriving json]",
+      "description": "Replace slack_types.atd with a slack_types.ml module using melange-json-native [@@deriving json]. Update all call sites that reference Slack_t or Slack_j to use the new module.",
+      "steps": [
+        "Read slack_types.atd and all files that import Slack_t / Slack_j",
+        "Create slack_types.ml with equivalent OCaml types and [@@deriving json]",
+        "Update all call sites to use the new module",
+        "Delete slack_types.atd",
+        "Update lib/dune to remove slack_types from atd processing",
+        "Run make clean build test fmt"
+      ],
+      "depends_on": [
+        "P0.1"
+      ],
+      "complete": true
+    },
+    {
+      "id": "P0.3",
+      "phase": 0,
+      "title": "Migrate state.atd to OCaml types with [@@deriving json]",
+      "description": "Replace state.atd with state_types.ml using melange-json-native [@@deriving json]. Update state.ml and all other consumers.",
+      "steps": [
+        "Read state.atd and all files referencing State_t / State_j",
+        "Create state_types.ml with equivalent types and [@@deriving json]",
+        "Update state.ml and all other call sites",
+        "Delete state.atd",
+        "Update lib/dune",
+        "Run make clean build test fmt"
+      ],
+      "depends_on": [
+        "P0.1"
+      ],
+      "complete": true
+    },
+    {
+      "id": "P0.4",
+      "phase": 0,
+      "title": "Migrate config.atd to OCaml types with [@@deriving json]",
+      "description": "Replace config.atd with config_types.ml using melange-json-native [@@deriving json]. Update config_adapter.ml and all other consumers.",
+      "steps": [
+        "Read config.atd, config_adapter.ml, and all files referencing Config_t / Config_j",
+        "Create config_types.ml with equivalent types and [@@deriving json]",
+        "Update config_adapter.ml and all other call sites",
+        "Delete config.atd",
+        "Update lib/dune",
+        "Run make clean build test fmt"
+      ],
+      "depends_on": [
+        "P0.1"
+      ],
+      "complete": true
+    },
+    {
+      "id": "P0.5",
+      "phase": 0,
+      "title": "Migrate review_types.atd to OCaml types with [@@deriving json, jsonschema]",
+      "description": "Replace review_types.atd with review_types.ml using [@@deriving json, jsonschema]. This is the first type that needs jsonschema derivation for structured output.",
+      "steps": [
+        "Read review_types.atd and all files referencing Review_types_t / Review_types_j",
+        "Create review_types.ml with equivalent types and [@@deriving json, jsonschema]",
+        "Update review_prompt.ml, review_format.ml, reviewer.ml, and all other call sites",
+        "Delete review_types.atd",
+        "Update lib/dune",
+        "Run make clean build test fmt"
+      ],
+      "depends_on": [
+        "P0.1"
+      ],
+      "complete": true
+    },
+    {
+      "id": "P0.6",
+      "phase": 0,
+      "title": "Migrate github_types.atd to OCaml types with [@@deriving json]",
+      "description": "Replace github_types.atd with github_types.ml using melange-json-native [@@deriving json]. Update github.ml, reviewer.ml, and all other consumers.",
+      "steps": [
+        "Read github_types.atd and all files referencing Github_types_t / Github_types_j",
+        "Create github_types.ml with equivalent types and [@@deriving json]",
+        "Update github.ml, reviewer.ml, request_handler.ml, and all other call sites",
+        "Delete github_types.atd",
+        "Update lib/dune",
+        "Run make clean build test fmt"
+      ],
+      "depends_on": [
+        "P0.1"
+      ],
+      "complete": true
+    },
+    {
+      "id": "P0.7",
+      "phase": 0,
+      "title": "Remove ATD build dependencies from dune",
+      "description": "Once all non-Anthropic ATD files are migrated, remove atdgen from dune preprocessing rules. anthropic_types.atd stays temporarily until Phase 1.",
+      "steps": [
+        "Verify only anthropic_types.atd remains",
+        "Remove atdgen rules for deleted .atd files from lib/dune",
+        "Confirm anthropic_types.atd still builds via its own atd rule",
+        "Run make clean build test fmt"
+      ],
+      "depends_on": [
+        "P0.2",
+        "P0.3",
+        "P0.4",
+        "P0.5",
+        "P0.6"
+      ],
+      "complete": true
+    },
+    {
+      "id": "P1.1",
+      "phase": 1,
+      "title": "Add ocaml-ai-sdk dependencies",
+      "description": "Add ai_core, ai_provider, and ai_provider_anthropic packages to dune-project and lib/dune. Verify the project builds with the new dependencies.",
+      "steps": [
+        "Add ai_core, ai_provider, ai_provider_anthropic to dune-project depends",
+        "Add them to lib/dune libraries",
+        "Run make clean build test fmt"
+      ],
+      "depends_on": [
+        "P0.7"
+      ],
+      "complete": true
+    },
+    {
+      "id": "P1.2",
+      "phase": 1,
+      "title": "Implement generic run_agent function",
+      "description": "Build a generic agent runner using Generate_text.generate from ocaml-ai-sdk. Handles multi-step tool loops, structured output, token tracking, and retries.",
+      "steps": [
+        "Read the ocaml-ai-sdk API (query context7 for documentation)",
+        "Create lib/agent_runner.ml and lib/agent_runner.mli",
+        "Define agent_config type with name, system_prompt, model_tier, output_schema, tools, max_steps",
+        "Define model_tier type (Fast | Standard | Strong)",
+        "Implement run_agent using Generate_text.generate",
+        "Return agent_result with parsed output and Usage.t token counts",
+        "Run make clean build test fmt"
+      ],
+      "depends_on": [
+        "P1.1"
+      ],
+      "complete": true
+    },
+    {
+      "id": "P1.3",
+      "phase": 1,
+      "title": "Refactor Api.Claude into Api.Agent_runner",
+      "description": "Replace the hand-rolled Anthropic API module with the new agent runner. Rewrite the general review to use an agent config (system prompt + output schema + no tools).",
+      "steps": [
+        "Read api_remote.ml, api.ml, reviewer.ml to understand current Claude integration",
+        "Refactor Api.Claude signature to use agent_runner.run_agent",
+        "Create general review agent config in reviewer.ml",
+        "Wire reviewer.ml to use the new agent runner",
+        "Run make clean build test fmt"
+      ],
+      "depends_on": [
+        "P1.2"
+      ],
+      "complete": true
+    },
+    {
+      "id": "P1.4",
+      "phase": 1,
+      "title": "Delete anthropic_types.atd and manual HTTP code",
+      "description": "Remove anthropic_types.atd, build_anthropic_request, and all hand-rolled HTTP code for the Anthropic API. The SDK handles everything now.",
+      "steps": [
+        "Delete anthropic_types.atd",
+        "Remove atdgen rules for anthropic_types from lib/dune",
+        "Remove build_anthropic_request and related HTTP functions from api_remote.ml",
+        "Remove atdgen and atdgen-runtime from dune-project if no longer needed",
+        "Verify no remaining references to Anthropic_types_t / Anthropic_types_j",
+        "Run make clean build test fmt"
+      ],
+      "depends_on": [
+        "P1.3"
+      ],
+      "complete": true
+    },
+    {
+      "id": "P2.1",
+      "phase": 2,
+      "title": "Define Review_plugin module type",
+      "description": "Define the plugin interface as an OCaml module type. Each plugin takes context, repo URL, diff, and metadata, and returns a list of findings.",
+      "steps": [
+        "Create lib/review_plugin.ml with the Review_plugin module type signature",
+        "Create lib/review_plugin.mli",
+        "The signature: val name, val run with ctx, repo_url, diff, diff_text, metadata returning finding list Lwt.t",
+        "Add review_metadata type if not already defined",
+        "Run make clean build test fmt"
+      ],
+      "depends_on": [
+        "P1.4"
+      ],
+      "complete": true
+    },
+    {
+      "id": "P2.2",
+      "phase": 2,
+      "title": "Wrap general review in General_review_plugin",
+      "description": "Refactor the existing general review code into a module that satisfies the Review_plugin interface.",
+      "steps": [
+        "Create lib/general_review_plugin.ml implementing Review_plugin",
+        "Move relevant review logic from reviewer.ml into the plugin",
+        "Ensure the plugin returns findings in the standard type",
+        "Run make clean build test fmt"
+      ],
+      "depends_on": [
+        "P2.1"
+      ],
+      "complete": true
+    },
+    {
+      "id": "P2.3",
+      "phase": 2,
+      "title": "Extend config with review_plugins section",
+      "description": "Add review_plugins configuration to the config types, allowing per-repo plugin enable/disable and plugin-specific settings.",
+      "steps": [
+        "Add review_plugins type to config_types.ml with general and security subsections",
+        "Add security plugin config: vuln_classes, model tiers, confidence_threshold, memory_max_tokens",
+        "Update config_adapter.ml to parse new fields with sensible defaults",
+        "Run make clean build test fmt"
+      ],
+      "depends_on": [
+        "P2.1"
+      ],
+      "complete": true
+    },
+    {
+      "id": "P2.4",
+      "phase": 2,
+      "title": "Build plugin orchestrator in reviewer.ml",
+      "description": "Refactor reviewer.ml to iterate over enabled plugins, run them, collect findings, deduplicate, and post a single PR review.",
+      "steps": [
+        "Read current reviewer.ml to understand the review flow",
+        "Add plugin registration and lookup mechanism",
+        "Implement orchestrator: iterate enabled plugins, collect findings, merge, deduplicate",
+        "Wire General_review_plugin as the only enabled plugin initially",
+        "Verify existing behavior is unchanged - same output as before",
+        "Run make clean build test fmt"
+      ],
+      "depends_on": [
+        "P2.2",
+        "P2.3"
+      ],
+      "complete": true
+    },
+    {
+      "id": "P3.1",
+      "phase": 3,
+      "title": "Define security pipeline types",
+      "description": "Define all security-specific types: vuln_class, triage_output, candidate_finding, analysis_output, validator_output, etc. All with [@@deriving json, jsonschema].",
+      "steps": [
+        "Create lib/security_types.ml",
+        "Define vuln_class variant: Injection | Xss | Command_injection | Authn | Authz | Ssrf",
+        "Define confidence type: High | Medium | Low",
+        "Define triage types: region, triage_signal, triage_output",
+        "Define analysis types: source_evidence, sink_evidence, flow_step, sanitization_status, candidate_finding, analysis_output",
+        "Define validator types: validation_verdict, validated_finding, validator_output",
+        "All types get [@@deriving json, jsonschema]",
+        "Create lib/security_types.mli",
+        "Run make clean build test fmt"
+      ],
+      "depends_on": [
+        "P2.4"
+      ],
+      "complete": true
+    },
+    {
+      "id": "P3.2",
+      "phase": 3,
+      "title": "Implement get_file_content tool",
+      "description": "Build the get_file_content tool for interactive context expansion. Agents call this to fetch file contents via the GitHub Contents API when tracing data flows beyond the diff.",
+      "steps": [
+        "Read ocaml-ai-sdk Core_tool.t interface (query context7)",
+        "Create lib/security_tools.ml with get_file_content as Core_tool.t",
+        "Implement callback: receives path parameter, fetches via GitHub Contents API, returns content",
+        "Type tool params and result via [@@deriving json, jsonschema]",
+        "Create lib/security_tools.mli",
+        "Run make clean build test fmt"
+      ],
+      "depends_on": [
+        "P3.1"
+      ],
+      "complete": true
+    },
+    {
+      "id": "P3.3",
+      "phase": 3,
+      "title": "Build triage agent config and prompt",
+      "description": "Create the triage agent configuration with its system prompt. The triage agent does a fast scan of the diff to identify security-relevant regions and route to analysis agents.",
+      "steps": [
+        "Create lib/triage_agent.ml with the agent_config for triage",
+        "Write triage system prompt: scan for security patterns, identify vuln classes, flag regions",
+        "Model tier: Fast (Haiku) by default",
+        "No tools (single-shot, no context expansion)",
+        "Output schema derived from triage_output type",
+        "Create lib/triage_agent.mli",
+        "Run make clean build test fmt"
+      ],
+      "depends_on": [
+        "P3.1"
+      ],
+      "complete": true
+    },
+    {
+      "id": "P3.4",
+      "phase": 3,
+      "title": "Build security plugin skeleton with triage routing",
+      "description": "Create the Security_review_plugin module implementing Review_plugin. Runs triage agent, routes signals to analysis agents (stubbed for now), collects findings.",
+      "steps": [
+        "Create lib/security_review_plugin.ml implementing Review_plugin",
+        "Wire triage agent: run on diff, parse triage_output",
+        "Implement routing logic: High/Medium -> spawn analysis, Low -> only if in config vuln_classes",
+        "Stub analysis agents (return empty findings for now)",
+        "Register the security plugin in the orchestrator",
+        "Create lib/security_review_plugin.mli",
+        "Run make clean build test fmt"
+      ],
+      "depends_on": [
+        "P3.2",
+        "P3.3"
+      ],
+      "complete": true
+    },
+    {
+      "id": "P3.5",
+      "phase": 3,
+      "title": "Test triage against initial corpus diffs",
+      "description": "Create initial test corpus diffs and verify the triage agent correctly identifies security-relevant regions.",
+      "steps": [
+        "Create test/security_corpus/ directory structure per PRD section 8.2",
+        "Write at least 2 synthetic diffs: one vulnerable (injection), one safe",
+        "Write triage test that runs the triage agent against corpus diffs",
+        "Verify triage flags the correct vuln class for vulnerable diffs",
+        "Verify triage returns no signals for safe diffs",
+        "Run make clean build test fmt"
+      ],
+      "depends_on": [
+        "P3.4"
+      ],
+      "complete": true
+    },
+    {
+      "id": "P4.1",
+      "phase": 4,
+      "title": "Build shared analysis agent framework",
+      "description": "Create the common analysis agent infrastructure: shared prompt structure, output schema, tool set. All per-class agents will use this framework with different prompts.",
+      "steps": [
+        "Create lib/analysis_agent.ml with shared analysis agent builder",
+        "Define common prompt template with source/sink/flow/sanitization methodology",
+        "Wire get_file_content tool into analysis agent configs",
+        "Output schema from candidate_finding / analysis_output types",
+        "Accept language_hints to parameterize source/sink catalogs",
+        "Create lib/analysis_agent.mli",
+        "Run make clean build test fmt"
+      ],
+      "depends_on": [
+        "P3.4"
+      ],
+      "complete": true
+    },
+    {
+      "id": "P4.2",
+      "phase": 4,
+      "title": "Implement injection analysis agent prompt",
+      "description": "Write the injection-specific prompt with source/sink catalogs for SQL injection, NoSQL injection, and other injection types across OCaml, JS, and Python.",
+      "steps": [
+        "Create lib/prompts/injection_prompt.ml (or embed in analysis_agent.ml)",
+        "Define injection sources: HTTP params, form data, URL params, headers",
+        "Define injection sinks: db.query, string-interpolated SQL, Caqti with unsafe exec, etc.",
+        "Define injection sanitization: parameterized queries, prepared statements",
+        "Include OCaml/Dream, JS/Express, Python/Django patterns",
+        "Wire into analysis_agent framework",
+        "Run make clean build test fmt"
+      ],
+      "depends_on": [
+        "P4.1"
+      ],
+      "complete": true
+    },
+    {
+      "id": "P4.3",
+      "phase": 4,
+      "title": "Implement XSS analysis agent prompt",
+      "description": "Write the XSS-specific prompt with source/sink catalogs for reflected XSS, stored XSS, and DOM-based XSS.",
+      "steps": [
+        "Define XSS sources: user input rendered into HTML, URL params, stored user content",
+        "Define XSS sinks: innerHTML, dangerouslySetInnerHTML, template interpolation, document.write",
+        "Define XSS sanitization: HTML encoding, CSP, DOMPurify, framework auto-escaping",
+        "Include OCaml/Dream template, React/JSX, vanilla JS patterns",
+        "Wire into analysis_agent framework",
+        "Run make clean build test fmt"
+      ],
+      "depends_on": [
+        "P4.1"
+      ],
+      "complete": true
+    },
+    {
+      "id": "P4.4",
+      "phase": 4,
+      "title": "Implement command injection analysis agent prompt",
+      "description": "Write the command injection-specific prompt with source/sink catalogs for OS command injection.",
+      "steps": [
+        "Define command injection sources: user input passed to shell commands",
+        "Define command injection sinks: exec, system, popen, Unix.create_process, Sys.command, backtick operators",
+        "Define sanitization: shell escaping (Filename.quote), avoiding shell entirely, allowlist validation",
+        "Include OCaml/Unix, Node.js child_process, Python subprocess patterns",
+        "Wire into analysis_agent framework",
+        "Run make clean build test fmt"
+      ],
+      "depends_on": [
+        "P4.1"
+      ],
+      "complete": true
+    },
+    {
+      "id": "P4.5",
+      "phase": 4,
+      "title": "Implement AuthN analysis agent prompt",
+      "description": "Write the authentication-specific prompt for detecting authentication bypass, weak token validation, missing expiry checks, etc.",
+      "steps": [
+        "Define AuthN sources: login endpoints, token generation, session creation",
+        "Define AuthN sinks: token validation skipped, expiry not checked, weak comparison",
+        "Define AuthN patterns: JWT without exp claim, timing-safe comparison, session fixation",
+        "Include OCaml/Dream middleware, Express/passport, Django auth patterns",
+        "Wire into analysis_agent framework",
+        "Run make clean build test fmt"
+      ],
+      "depends_on": [
+        "P4.1"
+      ],
+      "complete": true
+    },
+    {
+      "id": "P4.6",
+      "phase": 4,
+      "title": "Implement AuthZ analysis agent prompt",
+      "description": "Write the authorization-specific prompt for detecting missing permission checks, IDOR, privilege escalation.",
+      "steps": [
+        "Define AuthZ sources: resource access without ownership check, missing role guards",
+        "Define AuthZ sinks: data access, mutation endpoints, admin-only operations",
+        "Define AuthZ patterns: IDOR via predictable IDs, missing middleware, horizontal privilege escalation",
+        "Include OCaml/Dream guards, Express middleware, Django permissions patterns",
+        "Wire into analysis_agent framework",
+        "Run make clean build test fmt"
+      ],
+      "depends_on": [
+        "P4.1"
+      ],
+      "complete": true
+    },
+    {
+      "id": "P4.7",
+      "phase": 4,
+      "title": "Implement SSRF analysis agent prompt",
+      "description": "Write the SSRF-specific prompt for detecting server-side request forgery via user-controlled URLs.",
+      "steps": [
+        "Define SSRF sources: user-controlled URLs, redirect targets, webhook URLs",
+        "Define SSRF sinks: HTTP client calls, URL fetching, redirect following",
+        "Define SSRF sanitization: URL allowlisting, scheme restriction, DNS rebinding protection",
+        "Include OCaml/Cohttp, Node.js fetch/axios, Python requests patterns",
+        "Wire into analysis_agent framework",
+        "Run make clean build test fmt"
+      ],
+      "depends_on": [
+        "P4.1"
+      ],
+      "complete": true
+    },
+    {
+      "id": "P4.8",
+      "phase": 4,
+      "title": "Wire analysis agents into security plugin and remove stubs",
+      "description": "Replace the stubbed analysis agent calls in security_review_plugin.ml with real calls to the per-class analysis agents.",
+      "steps": [
+        "Read security_review_plugin.ml routing logic",
+        "Replace stubs with real analysis agent invocations",
+        "Run analysis agents in parallel (Lwt.join or similar) since they are independent",
+        "Collect all candidate_finding lists from analysis agents",
+        "Run make clean build test fmt"
+      ],
+      "depends_on": [
+        "P4.2",
+        "P4.3",
+        "P4.4",
+        "P4.5",
+        "P4.6",
+        "P4.7"
+      ],
+      "complete": true
+    },
+    {
+      "id": "P5.1",
+      "phase": 5,
+      "title": "Build validator agent config and prompt",
+      "description": "Create the adversarial validator agent that reviews all candidate findings and makes accept/reject decisions. Must be at least as capable as analysis agents (Sonnet).",
+      "steps": [
+        "Create lib/validator_agent.ml with agent config",
+        "Write adversarial validation prompt: verify source exists, sink is dangerous, flow is traceable, sanitization assessment is correct",
+        "Model tier: Standard (Sonnet)",
+        "Wire get_file_content tool for spot-checking evidence",
+        "Output schema from validator_output type",
+        "Create lib/validator_agent.mli",
+        "Run make clean build test fmt"
+      ],
+      "depends_on": [
+        "P4.8"
+      ],
+      "complete": true
+    },
+    {
+      "id": "P5.2",
+      "phase": 5,
+      "title": "Implement finding conversion pipeline",
+      "description": "Build the conversion from candidate_finding -> validated_finding -> Review_types.finding. Map confidence + verdict to severity. Drop rejected findings.",
+      "steps": [
+        "Implement candidate -> validated finding conversion in security_review_plugin.ml",
+        "Filter to only Confirmed verdicts",
+        "Map severity: High confidence confirmed -> Critical, Medium -> Warning",
+        "Map validated_finding to Review_types.finding with category=Security",
+        "Log rejected findings for offline prompt tuning",
+        "Run make clean build test fmt"
+      ],
+      "depends_on": [
+        "P5.1"
+      ],
+      "complete": true
+    },
+    {
+      "id": "P5.3",
+      "phase": 5,
+      "title": "End-to-end test: full security pipeline",
+      "description": "Test the complete pipeline from webhook -> triage -> analysis -> validation -> PR comment using the mock API.",
+      "steps": [
+        "Create test scenarios using Api_local with mock responses",
+        "Test: vulnerable diff produces security finding in PR review",
+        "Test: safe diff produces no security findings",
+        "Test: security plugin disabled produces no security findings",
+        "Add golden files for expected outputs",
+        "Run make clean build test fmt"
+      ],
+      "depends_on": [
+        "P5.2"
+      ],
+      "complete": true
+    },
+    {
+      "id": "P5.4",
+      "phase": 5,
+      "title": "Implement per-agent cost tracking",
+      "description": "Accumulate Usage.t per agent, compute per-review cost, add optional PR footer with cost info.",
+      "steps": [
+        "Define agent_cost and review_cost types in a new lib/cost_tracking.ml",
+        "Record input_tokens, output_tokens, model, turns, files_fetched per agent",
+        "Implement pricing lookup table (easily updatable, not hardcoded)",
+        "Compute estimated_cost_usd per agent and total",
+        "Add optional PR footer when show_review_cost is true",
+        "Log cost at info level after each review",
+        "Store cost in state.json alongside review record",
+        "Run make clean build test fmt"
+      ],
+      "depends_on": [
+        "P5.2"
+      ],
+      "complete": true
+    },
+    {
+      "id": "P6.1",
+      "phase": 6,
+      "title": "Define memory file format and storage",
+      "description": "Implement the repo security memory system: markdown file per repo at memory/{repo_slug}.md, loading into agent prompts.",
+      "steps": [
+        "Create lib/security_memory.ml with memory file read/write functions",
+        "Define storage path convention: memory/{repo_slug}.md",
+        "Implement memory loading: read file, inject as ## Repository Security Context in agent prompts",
+        "Handle missing memory files gracefully (first review for a repo)",
+        "Create lib/security_memory.mli",
+        "Run make clean build test fmt"
+      ],
+      "depends_on": [
+        "P5.3"
+      ],
+      "complete": true
+    },
+    {
+      "id": "P6.2",
+      "phase": 6,
+      "title": "Implement memory curator agent",
+      "description": "Build the post-review memory curator agent that updates the repo security memory file with learnings from the completed review.",
+      "steps": [
+        "Create lib/memory_curator_agent.ml with agent config",
+        "Model tier: Fast (Haiku), runs async post-review",
+        "Input: current memory contents, token count, max limit, new learnings",
+        "Output: updated memory file content within configured token limit",
+        "Implement compression: remove stale entries, merge related, drop least actionable",
+        "Create lib/memory_curator_agent.mli",
+        "Run make clean build test fmt"
+      ],
+      "depends_on": [
+        "P6.1"
+      ],
+      "complete": true
+    },
+    {
+      "id": "P6.3",
+      "phase": 6,
+      "title": "Implement memory update queue for distributed safety",
+      "description": "Build the append-only queue mechanism so multiple reviewotron instances can safely update memory concurrently.",
+      "steps": [
+        "Define memory_update type with timestamp, review_id, learnings, stale_entries",
+        "Implement queue file at memory/{repo_slug}.queue",
+        "Implement append: each review appends JSON entry with learnings",
+        "Implement curator queue processing: read all pending, incorporate into memory, truncate queue",
+        "Add memory_max_tokens config enforcement",
+        "Write tests for queue append/read/truncation cycle",
+        "Run make clean build test fmt"
+      ],
+      "depends_on": [
+        "P6.2"
+      ],
+      "complete": true
+    },
+    {
+      "id": "P6.4",
+      "phase": 6,
+      "title": "Test memory round-trip",
+      "description": "End-to-end test: review produces learnings -> curator updates memory -> next review uses updated memory.",
+      "steps": [
+        "Create test that simulates a review producing learnings",
+        "Run curator to update memory file",
+        "Verify memory file contains the learnings",
+        "Simulate next review and verify memory is injected into agent prompts",
+        "Test token limit enforcement: memory exceeding limit gets compressed",
+        "Run make clean build test fmt"
+      ],
+      "depends_on": [
+        "P6.3"
+      ],
+      "complete": true
+    },
+    {
+      "id": "P7.1",
+      "phase": 7,
+      "title": "Build comprehensive synthetic diff corpus",
+      "description": "Create a test corpus of synthetic diffs covering all 6 vulnerability classes with both vulnerable and safe variants, across OCaml/ReasonML with JS/Python coverage.",
+      "steps": [
+        "Create test/security_corpus/ directory structure",
+        "Write injection diffs: sql_concat_vulnerable, sql_parameterized_safe, sql_partial_sanitization",
+        "Write XSS diffs: innerHTML_vulnerable, escaped_output_safe",
+        "Write command injection diffs: exec_user_input, exec_hardcoded_safe",
+        "Write AuthN diffs: jwt_no_expiry_check",
+        "Write AuthZ diffs: missing_ownership_check",
+        "Write SSRF diffs: url_from_user_input",
+        "Include multi-language variants (OCaml primary, JS/Python secondary)",
+        "Run make clean build test fmt"
+      ],
+      "depends_on": [
+        "P5.3"
+      ],
+      "complete": true
+    },
+    {
+      "id": "P7.2",
+      "phase": 7,
+      "title": "Build corpus test runner",
+      "description": "Build a test runner that executes the full security pipeline against each corpus diff and asserts expected outcomes.",
+      "steps": [
+        "Create test/test_security_corpus.ml",
+        "For each corpus diff: run full pipeline, assert expected vuln class + severity or clean",
+        "Triage-specific tests: verify correct vuln class flagged for every vulnerable diff",
+        "These tests call Claude - mark them as on-demand (not CI)",
+        "Run make clean build test fmt"
+      ],
+      "depends_on": [
+        "P7.1"
+      ],
+      "complete": true
+    },
+    {
+      "id": "P7.3",
+      "phase": 7,
+      "title": "Implement quality metric tracking",
+      "description": "Track triage recall/precision, analysis TP rate, post-validation FP rate from corpus test runs.",
+      "steps": [
+        "Create lib/quality_metrics.ml for computing metrics from corpus results",
+        "Track: triage recall (>95% target), triage precision (>60%), analysis TP rate (>80%), post-validation FP rate (<10%)",
+        "Output metrics summary after corpus test run",
+        "Create lib/quality_metrics.mli",
+        "Run make clean build test fmt"
+      ],
+      "depends_on": [
+        "P7.2"
+      ],
+      "complete": true
+    },
+    {
+      "id": "P7.4",
+      "phase": 7,
+      "title": "Tune prompts based on corpus results",
+      "description": "Analyze corpus test results and tune agent prompts to improve quality metrics toward targets.",
+      "steps": [
+        "Run full corpus test suite",
+        "Analyze false negatives: where did triage miss? Adjust triage prompt signals",
+        "Analyze false positives: where did validator fail to reject? Tighten validation criteria",
+        "Re-run corpus tests and compare metrics",
+        "Iterate until metrics meet targets or diminishing returns",
+        "Run make clean build test fmt"
+      ],
+      "depends_on": [
+        "P7.3"
+      ],
+      "complete": true
+    }
+  ]
+}

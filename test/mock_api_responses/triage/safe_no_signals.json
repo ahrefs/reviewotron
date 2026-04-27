@@ -1,0 +1,5 @@
+{
+  "signals": [],
+  "language_hints": ["python"],
+  "skip_reason": "All SQL queries use parameterized statements. No security-relevant patterns detected."
+}

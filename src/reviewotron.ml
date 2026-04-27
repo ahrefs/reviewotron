@@ -65,10 +65,18 @@ let check_action secrets_path config_filename state_path event_type payload_file
           Printf.printf "Compare: %s\n" n.compare;
           Printf.printf "Pusher: %s\n" n.pusher.name;
           List.iter
-            (fun (c : Github_types_t.commit) ->
+            (fun (c : Github_types.commit) ->
               let short_sha = String.sub c.id 0 (min 8 (String.length c.id)) in
               Printf.printf "  %s %s\n" short_sha (Stre.shorten 72 c.message))
             n.commits
+        | Github.Issue_comment n ->
+          Printf.printf "Event: issue_comment\n";
+          Printf.printf "Action: %s\n" n.action;
+          Printf.printf "Repository: %s\n" n.repository.full_name;
+          Printf.printf "Issue: #%d %s (state=%s)\n" n.issue.number n.issue.title n.issue.state;
+          Printf.printf "Is PR: %b\n" (Option.is_some n.issue.pull_request);
+          Printf.printf "Sender: %s\n" n.sender.login;
+          Printf.printf "Body: %s\n" (Stre.shorten 200 n.comment.body)
         | Github.Unknown kind -> Printf.printf "Event: %s (unhandled)\n" kind)
       end)
 

@@ -105,50 +105,6 @@ let test_multi_file () =
     (check file_status_testable) "second file status" Added f2.status
   | _ -> fail "expected at least two files"
 
-(** {2 Position mapping tests} *)
-
-let test_position_mapping_single_hunk () =
-  let diffs = Diff_parser.parse single_hunk_diff in
-  let fd = hd_exn "diffs" diffs in
-  (check (option int)) "context line 1 right" (Some 2) (Diff_parser.line_to_position fd ~line:1 ~side:Right);
-  (check (option int)) "context line 1 left" (Some 2) (Diff_parser.line_to_position fd ~line:1 ~side:Left);
-  (check (option int)) "deleted line 2 left" (Some 3) (Diff_parser.line_to_position fd ~line:2 ~side:Left);
-  (check (option int)) "added line 2 right" (Some 4) (Diff_parser.line_to_position fd ~line:2 ~side:Right);
-  (check (option int)) "added line 3 right" (Some 5) (Diff_parser.line_to_position fd ~line:3 ~side:Right);
-  (check (option int)) "context line 4 right" (Some 6) (Diff_parser.line_to_position fd ~line:4 ~side:Right);
-  (check (option int)) "line 100 not found" None (Diff_parser.line_to_position fd ~line:100 ~side:Right)
-
-let test_position_mapping_multi_hunk () =
-  let diffs = Diff_parser.parse multi_hunk_diff in
-  let fd = hd_exn "diffs" diffs in
-  (check (option int)) "hunk1 context new=1" (Some 2) (Diff_parser.line_to_position fd ~line:1 ~side:Right);
-  (check (option int)) "hunk1 add new=2" (Some 3) (Diff_parser.line_to_position fd ~line:2 ~side:Right);
-  (check (option int)) "hunk2 context new=11" (Some 7) (Diff_parser.line_to_position fd ~line:11 ~side:Right);
-  (check (option int)) "hunk2 del old=11" (Some 8) (Diff_parser.line_to_position fd ~line:11 ~side:Left);
-  (check (option int)) "hunk2 add new=12" (Some 9) (Diff_parser.line_to_position fd ~line:12 ~side:Right);
-  (check (option int)) "hunk2 context new=14" (Some 11) (Diff_parser.line_to_position fd ~line:14 ~side:Right)
-
-let test_position_to_line () =
-  let diffs = Diff_parser.parse single_hunk_diff in
-  let fd = hd_exn "diffs" diffs in
-  let check_pos pos expected_line expected_side =
-    let side_str (s : Diff_parser.side) =
-      match s with
-      | Left -> "Left"
-      | Right -> "Right"
-    in
-    match Diff_parser.position_to_line fd ~position:pos with
-    | Some (line, side) ->
-      (check int) (Printf.sprintf "pos %d line" pos) expected_line line;
-      (check string) (Printf.sprintf "pos %d side" pos) (side_str expected_side) (side_str side)
-    | None -> fail (Printf.sprintf "position %d returned None" pos)
-  in
-  check_pos 2 1 Right;
-  check_pos 3 2 Left;
-  check_pos 4 2 Right;
-  check_pos 5 3 Right;
-  check_pos 6 4 Right
-
 (** {2 Edge case tests} *)
 
 let test_empty_diff () =
@@ -307,48 +263,6 @@ let test_unicode_content () =
   | Diff_parser.Addition s -> (check bool) "unicode preserved" true (String.length s > 0)
   | _ -> fail "expected Addition line"
 
-let test_very_long_hunk_positions () =
-  (* Build a hunk with > 100 lines to verify position mapping works at high offsets *)
-  let lines = ref [] in
-  for i = 150 downto 1 do
-    lines := Printf.sprintf "+let line_%d = %d" i i :: !lines
-  done;
-  let diff_lines =
-    [
-      "diff --git a/big.ml b/big.ml";
-      "new file mode 100644";
-      "index 0000000..abcdefg";
-      "--- /dev/null";
-      "+++ b/big.ml";
-      Printf.sprintf "@@ -0,0 +1,%d @@" 150;
-    ]
-    @ !lines
-  in
-  let diff = String.concat "\n" diff_lines in
-  let diffs = Diff_parser.parse diff in
-  let fd = hd_exn "diffs" diffs in
-  (* Position for line 150 should be 151 (1 for header + 150 lines) *)
-  (check (option int)) "line 150 position" (Some 151) (Diff_parser.line_to_position fd ~line:150 ~side:Right);
-  (* Verify reverse mapping *)
-  match Diff_parser.position_to_line fd ~position:151 with
-  | Some (line, _side) -> (check int) "position 151 -> line 150" 150 line
-  | None -> fail "position 151 returned None"
-
-let test_multiple_hunks_continuous_positions () =
-  (* Verify positions are continuous across hunks (no gaps) *)
-  let diffs = Diff_parser.parse multi_hunk_diff in
-  let fd = hd_exn "diffs" diffs in
-  (* Hunk 1: 4 lines + 1 header = 5 positions (1-5)
-     Hunk 2: 5 lines + 1 header, starting at position 6 *)
-  let all_positions =
-    List.init 11 (fun i ->
-      let pos = i + 1 in
-      pos, Diff_parser.position_to_line fd ~position:pos)
-  in
-  let valid_count = List.length (List.filter (fun (_pos, result) -> Option.is_some result) all_positions) in
-  (* All 11 positions (2 headers + 9 lines) should resolve *)
-  (check int) "all positions resolve" 11 valid_count
-
 (** {2 Filtering tests} *)
 
 let test_filter_paths () =
@@ -445,6 +359,82 @@ let test_to_string_preserves_filter () =
       re_parsed
   end
 
+(** {2 Annotated rendering tests} *)
+
+(** Assert that the annotated text contains an exact line tagged with the given
+    new-file number, preceded by the standard separator. *)
+let contains_annotated_line ~line_no ~marker ~content text =
+  let sub = Printf.sprintf "%4d | %c%s" line_no marker content in
+  CCString.find ~sub text >= 0
+
+let test_annotated_addition_and_context () =
+  let diffs = Diff_parser.parse single_hunk_diff in
+  let annotated = Diff_parser.to_string_annotated diffs in
+  (* single_hunk_diff: @@ -1,4 +1,5 @@
+       let x = 1     (context, new=1)
+      -let y = 2     (deletion, no new)
+      +let y = 3     (addition, new=2)
+      +let z = 4     (addition, new=3)
+       let w = 5     (context, new=4) *)
+  (check bool) "context line 1 has number" true (contains_annotated_line ~line_no:1 ~marker:' ' ~content:"let x = 1" annotated);
+  (check bool) "addition line 2 has number and +" true
+    (contains_annotated_line ~line_no:2 ~marker:'+' ~content:"let y = 3" annotated);
+  (check bool) "addition line 3 has number and +" true
+    (contains_annotated_line ~line_no:3 ~marker:'+' ~content:"let z = 4" annotated);
+  (check bool) "context line 4 has number" true (contains_annotated_line ~line_no:4 ~marker:' ' ~content:"let w = 5" annotated)
+
+let test_annotated_deletion_has_blank_column () =
+  let diffs = Diff_parser.parse single_hunk_diff in
+  let annotated = Diff_parser.to_string_annotated diffs in
+  (* A deletion line should appear with a blank number column and the "-" marker. *)
+  (check bool) "deletion has blank column" true (CCString.find ~sub:"     | -let y = 2" annotated >= 0)
+
+let test_annotated_multi_hunk_continues_numbering () =
+  let diffs = Diff_parser.parse multi_hunk_diff in
+  let annotated = Diff_parser.to_string_annotated diffs in
+  (* multi_hunk_diff hunk 1: @@ -1,3 +1,4 @@  (lines 1-4 new)
+     hunk 2:                @@ -10,3 +11,4 @@ (lines 11-14 new) *)
+  (check bool) "hunk1 context new=1" true (contains_annotated_line ~line_no:1 ~marker:' ' ~content:"let a = 1" annotated);
+  (check bool) "hunk1 addition new=2" true
+    (contains_annotated_line ~line_no:2 ~marker:'+' ~content:"let b = 2" annotated);
+  (check bool) "hunk2 context new=11" true
+    (contains_annotated_line ~line_no:11 ~marker:' ' ~content:"let x = 10" annotated);
+  (check bool) "hunk2 addition new=13" true
+    (contains_annotated_line ~line_no:13 ~marker:'+' ~content:"let z = 12" annotated)
+
+let test_annotated_new_file_numbers_from_one () =
+  let diff =
+    String.concat "\n"
+      [
+        "diff --git a/new.ml b/new.ml";
+        "new file mode 100644";
+        "index 0000000..abcdefg";
+        "--- /dev/null";
+        "+++ b/new.ml";
+        "@@ -0,0 +1,3 @@";
+        "+let a = 1";
+        "+let b = 2";
+        "+let c = 3";
+      ]
+  in
+  let diffs = Diff_parser.parse diff in
+  let annotated = Diff_parser.to_string_annotated diffs in
+  (check bool) "new file line 1" true (contains_annotated_line ~line_no:1 ~marker:'+' ~content:"let a = 1" annotated);
+  (check bool) "new file line 2" true (contains_annotated_line ~line_no:2 ~marker:'+' ~content:"let b = 2" annotated);
+  (check bool) "new file line 3" true (contains_annotated_line ~line_no:3 ~marker:'+' ~content:"let c = 3" annotated)
+
+let test_annotated_roundtrip_through_parse () =
+  (* Ensure the annotated text can still be parsed as a plain diff (the parser
+     ignores unknown prefixes on content lines — the annotation stays harmless). *)
+  let diffs = Diff_parser.parse multi_hunk_diff in
+  let annotated = Diff_parser.to_string_annotated diffs in
+  (* The annotated form is NOT a valid unified diff; this test just asserts the
+     output is non-empty and structurally distinct from to_string. *)
+  (check bool) "annotated is non-empty" true (String.length annotated > 0);
+  (check bool) "annotated differs from plain" true
+    (not (String.equal annotated (Diff_parser.to_string diffs)));
+  (check bool) "annotated contains ' | ' separator" true (CCString.find ~sub:" | " annotated >= 0)
+
 (** {2 Test runner} *)
 
 let () =
@@ -456,12 +446,6 @@ let () =
           test_case "multi hunk" `Quick test_multi_hunk;
           test_case "multi file" `Quick test_multi_file;
         ] );
-      ( "position_mapping",
-        [
-          test_case "single hunk positions" `Quick test_position_mapping_single_hunk;
-          test_case "multi hunk positions" `Quick test_position_mapping_multi_hunk;
-          test_case "position to line" `Quick test_position_to_line;
-        ] );
       ( "edge_cases",
         [
           test_case "empty diff" `Quick test_empty_diff;
@@ -472,8 +456,6 @@ let () =
           test_case "no newline at end marker" `Quick test_no_newline_at_end_marker;
           test_case "permission-only change" `Quick test_permission_only_change;
           test_case "unicode content" `Quick test_unicode_content;
-          test_case "very long hunk positions" `Quick test_very_long_hunk_positions;
-          test_case "continuous positions across hunks" `Quick test_multiple_hunks_continuous_positions;
         ] );
       "filtering", [ test_case "filter paths" `Quick test_filter_paths ];
       ( "metrics",
@@ -487,5 +469,13 @@ let () =
           test_case "roundtrip single hunk" `Quick test_to_string_roundtrip;
           test_case "roundtrip real diff" `Quick test_to_string_multi_file_roundtrip;
           test_case "preserves filter" `Quick test_to_string_preserves_filter;
+        ] );
+      ( "to_string_annotated",
+        [
+          test_case "addition and context lines show numbers" `Quick test_annotated_addition_and_context;
+          test_case "deletion has blank column" `Quick test_annotated_deletion_has_blank_column;
+          test_case "multi hunk continues new-file numbering" `Quick test_annotated_multi_hunk_continues_numbering;
+          test_case "new file numbers from 1" `Quick test_annotated_new_file_numbers_from_one;
+          test_case "annotated differs from plain and has separator" `Quick test_annotated_roundtrip_through_parse;
         ] );
     ]

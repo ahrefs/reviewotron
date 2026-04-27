@@ -11,7 +11,7 @@ val default_secrets_filepath : string
 val default_config_filename : string
 
 (** Return a config with all defaults (equivalent to parsing ["{}"]). *)
-val default_config : unit -> Config_t.config
+val default_config : unit -> Config_types.config
 
 (** Create a context by loading secrets and optionally state from disk.
     Config is fetched lazily from each repo via the GitHub API.
@@ -19,28 +19,28 @@ val default_config : unit -> Config_t.config
 val create : secrets_filepath:string -> ?config_filename:string -> ?state_filepath:string -> unit -> (t, string) result
 
 (** Look up the cached config for a repository. Returns [None] if not yet fetched. *)
-val find_repo_config : t -> repo_url:string -> Config_t.config option
+val find_repo_config : t -> repo_url:string -> Config_types.config option
 
 (** Cache a fetched config for a repository. *)
-val set_repo_config : t -> repo_url:string -> Config_t.config -> unit
+val set_repo_config : t -> repo_url:string -> Config_types.config -> unit
 
 (** Get the effective configuration for a repository.
     Returns the cached config if available, otherwise returns defaults. *)
-val get_config : t -> repo_url:string -> Config_t.config
+val get_config : t -> repo_url:string -> Config_types.config
 
 (** Get the webhook secret for a repository, if configured. *)
 val get_hook_secret : t -> repo_url:string -> string option
 
 (** Get the auth configuration for a repository, if configured.
     Supports both personal access tokens and GitHub App installation auth. *)
-val get_repo_auth : t -> repo_url:string -> Config_t.repo_auth option
+val get_repo_auth : t -> repo_url:string -> Config_types.repo_auth option
 
 (** Get the GitHub personal access token for a repository, if configured.
     Returns [None] for App installation auth — use {!get_repo_auth} instead. *)
 val get_gh_token : t -> repo_url:string -> string option
 
 (** Access the secrets configuration. *)
-val secrets : t -> Config_t.secrets
+val secrets : t -> Config_types.secrets
 
 (** Access the state handle. *)
 val state : t -> State.t
@@ -49,4 +49,4 @@ val state : t -> State.t
 val config_filename : t -> string
 
 (** Construct a context directly. Useful for testing. *)
-val make : secrets:Config_t.secrets -> ?config_filename:string -> ?state:State.t -> unit -> t
+val make : secrets:Config_types.secrets -> ?config_filename:string -> ?state:State.t -> unit -> t

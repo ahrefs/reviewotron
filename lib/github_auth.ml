@@ -55,7 +55,7 @@ let cache_token ~installation_id tok =
 
 (** {2 Installation token exchange} *)
 
-let exchange_installation_token (app : Config_t.app_installation_cfg) =
+let exchange_installation_token (app : Config_types.app_installation_cfg) =
   match make_jwt ~client_id:app.client_id ~pem:app.pem with
   | Error _ as e -> Lwt.return e
   | Ok jwt ->
@@ -68,7 +68,7 @@ let exchange_installation_token (app : Config_t.app_installation_cfg) =
       log#error "%s" msg;
       Lwt.return (Error msg)
     | Ok body ->
-    match Github_types_j.installation_token_response_of_string body with
+    match Github_types.installation_token_response_of_json (Melange_json.of_string body) with
     | resp ->
       cache_token ~installation_id:app.installation_id resp.token;
       log#info "obtained installation token for installation %s" app.installation_id;
@@ -78,7 +78,7 @@ let exchange_installation_token (app : Config_t.app_installation_cfg) =
 
 (** {2 Public API} *)
 
-let get_token (auth : Config_t.repo_auth) =
+let get_token (auth : Config_types.repo_auth) =
   match auth with
   | GH_token token -> Lwt.return (Ok token)
   | AppInstallation app ->

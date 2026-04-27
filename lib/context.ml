@@ -2,18 +2,18 @@ open Devkit
 
 type t = {
   config_filename : string;
-  secrets : Config_t.secrets;
-  repo_configs : (string, Config_t.config) Hashtbl.t;
+  secrets : Config_types.secrets;
+  repo_configs : (string, Config_types.config) Hashtbl.t;
   state : State.t;
 }
 
 let default_secrets_filepath = "secrets.json"
 let default_config_filename = ".reviewotron.json"
 
-let default_config () : Config_t.config = Config_j.config_of_string "{}"
+let default_config () : Config_types.config = Config_types.config_of_json (Melange_json.of_string "{}")
 
 let load_secrets ~secrets_filepath =
-  match Config_j.secrets_of_string (Std.input_file ~bin:true secrets_filepath) with
+  match Config_types.secrets_of_json (Melange_json.of_string (Std.input_file ~bin:true secrets_filepath)) with
   | exception exn ->
     let msg = Printf.sprintf "failed to read secrets from %s: %s" secrets_filepath (Exn.str exn) in
     Error msg
@@ -44,13 +44,13 @@ let get_config ctx ~repo_url =
   | None -> default_config ()
 
 let find_secrets_repo ctx ~repo_url =
-  List.find_opt (fun (repo : Config_t.repo_config) -> String.equal repo.url repo_url) ctx.secrets.repos
+  List.find_opt (fun (repo : Config_types.repo_config) -> String.equal repo.url repo_url) ctx.secrets.repos
 
 let get_hook_secret ctx ~repo_url =
   Stdlib.Option.bind (find_secrets_repo ctx ~repo_url) (fun repo -> repo.gh_hook_secret)
 
 let get_repo_auth ctx ~repo_url =
-  Stdlib.Option.bind (find_secrets_repo ctx ~repo_url) (fun (repo : Config_t.repo_config) -> repo.auth)
+  Stdlib.Option.bind (find_secrets_repo ctx ~repo_url) (fun (repo : Config_types.repo_config) -> repo.auth)
 
 let get_gh_token ctx ~repo_url =
   match get_repo_auth ctx ~repo_url with

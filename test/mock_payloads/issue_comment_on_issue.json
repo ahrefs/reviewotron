@@ -1,0 +1,46 @@
+{
+  "action": "created",
+  "issue": {
+    "number": 7,
+    "title": "Bug: dashboard fails to load",
+    "state": "open",
+    "html_url": "https://github.com/org/monorepo/issues/7",
+    "user": {
+      "login": "reporter",
+      "id": 33333,
+      "url": "https://api.github.com/users/reporter",
+      "html_url": "https://github.com/reporter",
+      "avatar_url": "https://avatars.githubusercontent.com/u/33333?v=4"
+    },
+    "pull_request": null
+  },
+  "comment": {
+    "id": 9002,
+    "body": "REVIEW",
+    "html_url": "https://github.com/org/monorepo/issues/7#issuecomment-9002",
+    "user": {
+      "login": "commenter",
+      "id": 44444,
+      "url": "https://api.github.com/users/commenter",
+      "html_url": "https://github.com/commenter",
+      "avatar_url": "https://avatars.githubusercontent.com/u/44444?v=4"
+    }
+  },
+  "repository": {
+    "name": "monorepo",
+    "full_name": "org/monorepo",
+    "html_url": "https://github.com/org/monorepo",
+    "commits_url": "https://api.github.com/repos/org/monorepo/commits{/sha}",
+    "contents_url": "https://api.github.com/repos/org/monorepo/contents/{+path}",
+    "pulls_url": "https://api.github.com/repos/org/monorepo/pulls{/number}",
+    "issues_url": "https://api.github.com/repos/org/monorepo/issues{/number}",
+    "compare_url": "https://api.github.com/repos/org/monorepo/compare/{base}...{head}"
+  },
+  "sender": {
+    "login": "commenter",
+    "id": 44444,
+    "url": "https://api.github.com/users/commenter",
+    "html_url": "https://github.com/commenter",
+    "avatar_url": "https://avatars.githubusercontent.com/u/44444?v=4"
+  }
+}

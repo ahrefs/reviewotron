@@ -2,15 +2,26 @@ open Reviewotron_lib
 
 let test_repo_url = "https://github.com/org/monorepo"
 
+(** Shared config fixture for tests that exercise the automatic-review code
+    paths.  All four [auto_review_*] / [review_pushes_to_develop] flags are
+    set to [true], because the production defaults flipped to [false] and a
+    test that constructs a default config silently skips every review.
+
+    Tests that assert on skip-reasons {e other than} "auto-review disabled"
+    (draft, closed, ignored author, etc.) should use this fixture so the
+    skip they care about is the one actually under test. *)
+let auto_review_enabled_config =
+  Config_types.config_of_json
+    (Melange_json.of_string
+       {|{"auto_review_pr_open": true, "auto_review_pr_sync": true, "review_pushes_to_develop": true}|})
+
 (** Create a test context with default config and mock secrets.
     Pre-populates the repo config cache so tests don't need to fetch from GitHub. *)
-let make_test_context ?state ?(config = Config_j.config_of_string "{}") () =
-  let secrets : Config_t.secrets =
+let make_test_context ?state ?(config = Config_types.config_of_json (Melange_json.of_string "{}")) () =
+  let secrets : Config_types.secrets =
     {
-      repos =
-        [ { url = test_repo_url; auth = Some (GH_token "test-token"); gh_hook_secret = None; config_override = None } ];
+      repos = [ { url = test_repo_url; auth = Some (GH_token "test-token"); gh_hook_secret = None } ];
       anthropic_api_key = "sk-test";
-      anthropic_version = "2023-06-01";
       slack_access_token = None;
     }
   in
@@ -22,7 +33,10 @@ let make_test_context ?state ?(config = Config_j.config_of_string "{}") () =
 let reset_test_state () =
   Api_local.clear_write_log ();
   Api_local.clear_slack_messages ();
-  Api_local.reset_claude_response_path ()
+  Api_local.reset_agent_response_path ();
+  Api_local.clear_agent_response_map ();
+  Api_local.reset_fail_next_pr_review ();
+  Api_local.reset_fail_next_commit_comment ()
 
 (** Build a minimal repository JSON object. *)
 let repo_json ?(name = "monorepo") ?(full_name = "org/monorepo") ?(url = "https://github.com/org/monorepo") () =
@@ -141,6 +155,49 @@ let make_push_payload ?(ref_ = "refs/heads/develop") ?(before = "fb245e2a6d52d10
     (if created then "true" else "false")
     (if deleted then "true" else "false")
     commit_json commit_json (repo_json ()) before after pusher_name (user_json ~login:sender_login ())
+
+(** Build an [issue_comment] webhook payload with sensible defaults.
+
+    Defaults model a [REVIEW] comment posted by [reviewer1] on PR #42 of the
+    test repo.  Override [is_pr] to [false] to model a comment on a regular
+    issue (the [pull_request] sub-field becomes [null]).  Override [state],
+    [action], [body], or [sender_login] to construct the various skip-reason
+    test cases. *)
+let make_issue_comment_payload ?(action = "created") ?(number = 42) ?(title = "Add feature X to the dashboard")
+  ?(state = "open") ?(is_pr = true) ?(body = "REVIEW") ?(sender_login = "reviewer1") ?(sender_id = 99999) () =
+  let pr_marker =
+    if is_pr then
+      Printf.sprintf
+        {|{"url": "https://api.github.com/repos/org/monorepo/pulls/%d", "html_url": "https://github.com/org/monorepo/pull/%d", "diff_url": "https://github.com/org/monorepo/pull/%d.diff", "patch_url": "https://github.com/org/monorepo/pull/%d.patch", "merged_at": null}|}
+        number number number number
+    else "null"
+  in
+  Printf.sprintf
+    {|{
+  "action": %S,
+  "issue": {
+    "number": %d,
+    "title": %S,
+    "state": %S,
+    "html_url": "https://github.com/org/monorepo/issues/%d",
+    "user": %s,
+    "pull_request": %s
+  },
+  "comment": {
+    "id": 9001,
+    "body": %S,
+    "html_url": "https://github.com/org/monorepo/issues/%d#issuecomment-9001",
+    "user": %s
+  },
+  "repository": %s,
+  "sender": %s
+}|}
+    action number title state number
+    (user_json ~login:"developer1" ())
+    pr_marker body number
+    (user_json ~login:sender_login ~id:sender_id ())
+    (repo_json ())
+    (user_json ~login:sender_login ~id:sender_id ())
 
 (** Parse a webhook event, failing with a clear message on error. *)
 let parse_event_exn ~event_type ~body =

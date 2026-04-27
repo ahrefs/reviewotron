@@ -1,0 +1,18 @@
+{
+  "signals": [
+    {
+      "vuln_class": "injection",
+      "confidence": "high",
+      "regions": [
+        {
+          "path": "src/main.ml",
+          "start_line": 10,
+          "end_line": 15
+        }
+      ],
+      "rationale": "SQL query constructed via string concatenation with user-controlled input"
+    }
+  ],
+  "language_hints": ["ocaml"],
+  "skip_reason": ""
+}
