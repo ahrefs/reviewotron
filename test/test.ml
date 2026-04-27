@@ -627,6 +627,111 @@ let test_anchor_end_line_derived_from_anchor_not_sink () =
   (check int) "snapped line" 10 f.line;
   (check (option int)) "end_line extends to 14" (Some 14) f.end_line
 
+(** {2 Candidate finding deduplication tests}
+
+    Per-class analysis agents independently flag the same defect under different
+    vuln_class labels (e.g. SQL injection in a [/search] endpoint also smells
+    like authn or authz to neighbouring agents).  [dedup_candidates] collapses
+    candidates that share the same [(sink.path, sink.line)] so the validator
+    sees the strongest framing of each defect, exactly once. *)
+
+let mk_candidate ~vuln_class ~sink_path ~sink_line ?(confidence = Security_types.High) ?(flow = []) ?(tag = "")
+  () : Security_types.candidate_finding =
+  {
+    vuln_class;
+    source = { path = "src/entry.ts"; line = 1; description = "user input " ^ tag };
+    sink = { path = sink_path; line = sink_line; description = "sink " ^ tag };
+    flow;
+    sanitization = Missing;
+    confidence;
+    description = "candidate finding " ^ tag;
+    suggested_fix = None;
+  }
+
+let mk_flow_step ~path ~line description : Security_types.flow_step = { path; line; description }
+
+let test_dedup_collapses_same_sink_across_vuln_classes () =
+  let candidates =
+    [
+      mk_candidate ~vuln_class:Injection ~sink_path:"src/routes/notes.ts" ~sink_line:99 ~confidence:Medium
+        ~tag:"injection" ();
+      mk_candidate ~vuln_class:Authn ~sink_path:"src/routes/notes.ts" ~sink_line:99 ~confidence:Low ~tag:"authn"
+        ();
+      mk_candidate ~vuln_class:Authz ~sink_path:"src/routes/notes.ts" ~sink_line:99 ~confidence:Medium
+        ~tag:"authz" ();
+      mk_candidate ~vuln_class:Xss ~sink_path:"src/routes/notes.ts" ~sink_line:99 ~confidence:High ~tag:"xss" ();
+    ]
+  in
+  let deduped = Sec_test.dedup_candidates candidates in
+  (check int) "collapses 4 → 1" 1 (List.length deduped);
+  match deduped with
+  | [ kept ] ->
+    (check string) "highest confidence wins (xss High > Medium > Low)" "xss"
+      (Security_types.vuln_class_to_string kept.vuln_class)
+  | _ -> Alcotest.fail "expected exactly one finding after dedup"
+
+let test_dedup_preserves_distinct_sinks () =
+  (* Two real, separate defects: command-injection sources at admin.ts:19 *and*
+     the actual exec call at debug.ts:7.  Both should survive. *)
+  let candidates =
+    [
+      mk_candidate ~vuln_class:Command_injection ~sink_path:"src/lib/debug.ts" ~sink_line:7 ~tag:"exec" ();
+      mk_candidate ~vuln_class:Command_injection ~sink_path:"src/routes/admin.ts" ~sink_line:19 ~tag:"route" ();
+    ]
+  in
+  let deduped = Sec_test.dedup_candidates candidates in
+  (check int) "two distinct sinks preserved" 2 (List.length deduped)
+
+let test_dedup_tiebreak_prefers_longer_flow () =
+  let short_flow = [ mk_flow_step ~path:"src/a.ts" ~line:5 "step 1" ] in
+  let long_flow =
+    [
+      mk_flow_step ~path:"src/a.ts" ~line:5 "step 1";
+      mk_flow_step ~path:"src/a.ts" ~line:9 "step 2";
+      mk_flow_step ~path:"src/a.ts" ~line:14 "step 3";
+    ]
+  in
+  let candidates =
+    [
+      mk_candidate ~vuln_class:Injection ~sink_path:"src/a.ts" ~sink_line:42 ~confidence:Medium
+        ~flow:short_flow ~tag:"short" ();
+      mk_candidate ~vuln_class:Authz ~sink_path:"src/a.ts" ~sink_line:42 ~confidence:Medium ~flow:long_flow
+        ~tag:"long" ();
+    ]
+  in
+  let deduped = Sec_test.dedup_candidates candidates in
+  (check int) "collapses to one" 1 (List.length deduped);
+  match deduped with
+  | [ kept ] ->
+    (check int) "longer flow wins on confidence tie" 3 (List.length kept.flow);
+    (check string) "kept the longer-flow candidate" "authz"
+      (Security_types.vuln_class_to_string kept.vuln_class)
+  | _ -> Alcotest.fail "expected exactly one finding after dedup"
+
+let test_dedup_tiebreak_first_seen_when_fully_tied () =
+  let flow = [ mk_flow_step ~path:"src/a.ts" ~line:5 "step 1" ] in
+  let candidates =
+    [
+      mk_candidate ~vuln_class:Injection ~sink_path:"src/a.ts" ~sink_line:42 ~confidence:High ~flow ~tag:"first" ();
+      mk_candidate ~vuln_class:Authz ~sink_path:"src/a.ts" ~sink_line:42 ~confidence:High ~flow ~tag:"second" ();
+    ]
+  in
+  let deduped = Sec_test.dedup_candidates candidates in
+  match deduped with
+  | [ kept ] ->
+    (check string) "first-seen wins when confidence and flow tied" "injection"
+      (Security_types.vuln_class_to_string kept.vuln_class)
+  | _ -> Alcotest.fail "expected exactly one finding after dedup"
+
+let test_dedup_empty () =
+  let deduped = Sec_test.dedup_candidates [] in
+  (check int) "empty in, empty out" 0 (List.length deduped)
+
+let test_dedup_single_candidate_passthrough () =
+  let c = mk_candidate ~vuln_class:Injection ~sink_path:"src/a.ts" ~sink_line:1 ~tag:"only" () in
+  let deduped = Sec_test.dedup_candidates [ c ] in
+  (check int) "single candidate passes through" 1 (List.length deduped)
+
 (** {2 Review types tests} *)
 
 let test_review_output_roundtrip () =
@@ -2459,6 +2564,16 @@ let () =
         [
           test_case "header and gutter" `Quick test_annotate_file_content_header_and_gutter;
           test_case "empty body" `Quick test_annotate_file_content_empty;
+        ] );
+      ( "security_dedup",
+        [
+          test_case "collapses same sink across vuln_classes; highest confidence wins" `Quick
+            test_dedup_collapses_same_sink_across_vuln_classes;
+          test_case "preserves distinct sinks" `Quick test_dedup_preserves_distinct_sinks;
+          test_case "tie on confidence, longer flow wins" `Quick test_dedup_tiebreak_prefers_longer_flow;
+          test_case "tie on confidence and flow, first-seen wins" `Quick test_dedup_tiebreak_first_seen_when_fully_tied;
+          test_case "empty input" `Quick test_dedup_empty;
+          test_case "single candidate passthrough" `Quick test_dedup_single_candidate_passthrough;
         ] );
       ( "security_anchor_snap",
         [

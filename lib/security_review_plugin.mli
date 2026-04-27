@@ -60,6 +60,16 @@ module Make (_ : Api.Github) (_ : Api.Agent_runner) : sig
   val validated_to_finding :
     diff:Diff_parser.file_diff list -> Security_types.validated_finding -> Review_types.finding
 
+  (** Collapse candidate findings that share the same [(sink.path, sink.line)].
+
+      Per-class analysis agents independently flag the same defect under
+      different vuln_class labels.  This pass keeps one canonical candidate
+      per sink line — picked by highest confidence, then longest flow, then
+      first-seen — so the validator sees each defect exactly once.  Distinct
+      sink lines are always preserved; merging only happens at literally the
+      same file and line.  Exposed for testing. *)
+  val dedup_candidates : Security_types.candidate_finding list -> Security_types.candidate_finding list
+
   (** Build the architectural observations passed to the memory curator.
 
       Exposed for testing: these observations are deliberately derived
