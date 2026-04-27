@@ -22,12 +22,14 @@ Reviewotron includes a **multi-agent security analysis pipeline** that detects i
 
 ## How It Works
 
-Reviewotron runs as an HTTP server that receives GitHub webhook events. When a PR is opened (or updated) or code is pushed to `develop`, it:
+Reviewotron runs as an HTTP server that receives GitHub webhook events. It can review on PR open/update, on pushes to `develop`, or when someone posts a `REVIEW` comment on a PR. **All triggers are off by default** — see [Defaults](#defaults) below.
+
+For each enabled trigger, the bot:
 
 1. **Receives the webhook** at the `/github` endpoint
 2. **Validates the signature** using the configured webhook secret (HMAC-SHA256)
 3. **Fetches the repo config** from `.reviewotron.json` in the repo (via GitHub API), or uses defaults
-4. **Fetches the diff** for the PR or push
+4. **Fetches the diff** for the PR or push (for `REVIEW` comments, also fetches the full PR via the API to recover `head.sha`, since `issue_comment` webhooks don't carry it)
 5. **Filters the diff** — removes ignored paths, checks size limits
 6. **Runs review plugins** concurrently:
    - **General review** — Claude analyzes the diff for bugs, style, logic, performance, etc.
@@ -35,6 +37,7 @@ Reviewotron runs as an HTTP server that receives GitHub webhook events. When a P
 7. **Posts results**:
    - PR events: a single GitHub PR review with inline comments
    - Push events: commit comments for critical/warning findings + a Slack message
+   - `REVIEW` comments: same as PR events
 
 ### Event Flow
 
@@ -42,7 +45,7 @@ Reviewotron runs as an HTTP server that receives GitHub webhook events. When a P
 GitHub Webhook (POST /github)
     │
     ├─ Signature validation (HMAC-SHA256)
-    ├─ Event parsing (pull_request or push)
+    ├─ Event parsing (pull_request, push, or issue_comment)
     ├─ Config fetch from .reviewotron.json
     ├─ Diff fetch + filtering
     │
@@ -64,12 +67,29 @@ GitHub Webhook (POST /github)
 
 ### Supported GitHub Events
 
-| Event | Trigger | Output |
-|-------|---------|--------|
-| `pull_request` (opened, reopened, synchronize, ready_for_review) | PR opened or updated | GitHub PR review with inline comments |
-| `push` (to `refs/heads/develop`) | Code pushed to develop | Commit comments + Slack message |
+| Event | Trigger | Gated by | Output |
+|-------|---------|----------|--------|
+| `pull_request` (opened, reopened, ready_for_review) | PR opened, reopened, or marked ready | `auto_review_pr_open` | GitHub PR review with inline comments |
+| `pull_request` (synchronize) | New commits pushed to a PR | `auto_review_pr_sync` | GitHub PR review with inline comments |
+| `push` (to `refs/heads/develop`) | Code pushed to develop | `review_pushes_to_develop` | Commit comments + Slack message |
+| `issue_comment` (created, on a PR, body equals `REVIEW`) | Manual trigger via PR comment | `auto_review_on_comment` | GitHub PR review with inline comments |
+
+The `REVIEW` trigger is exact-match: the comment body must equal the literal string `REVIEW` after trimming whitespace. Anything else (including `REVIEW please` or quoted text) is ignored silently. The bot must have the `pull_request` GitHub App permission and the **Issue comment** webhook event subscribed.
 
 Events are processed asynchronously — the webhook returns `200 accepted` immediately, and the review runs in the background.
+
+### Defaults
+
+**All four automatic-review triggers default to `false`.** A repo without a `.reviewotron.json` (or one that doesn't set the relevant flags) receives no reviews. Opt in via `.reviewotron.json`:
+
+| Flag | Effect when `true` |
+|------|--------------------|
+| `auto_review_pr_open` | Review PRs on open / reopen / ready-for-review |
+| `auto_review_pr_sync` | Review PRs when new commits land on them |
+| `review_pushes_to_develop` | Review pushes to the `develop` branch |
+| `auto_review_on_comment` | Review when someone posts a `REVIEW` comment on a PR |
+
+Manual `REVIEW` comments bypass the dedup that protects the automatic flow from re-reviewing the same head SHA — by design, since the manual trigger means the user wants a fresh review.
 
 ---
 
@@ -187,9 +207,10 @@ Each repo can have a `.reviewotron.json` file in its root. This is fetched from 
   "model": "claude-sonnet-4-6",
   "ignored_paths": ["*.test.js", "vendor/"],
   "ignored_authors": ["dependabot[bot]"],
-  "auto_review_pr_open": true,
-  "auto_review_pr_sync": true,
-  "review_pushes_to_develop": true,
+  "auto_review_pr_open": false,
+  "auto_review_pr_sync": false,
+  "review_pushes_to_develop": false,
+  "auto_review_on_comment": false,
   "system_prompt_override": null,
   "slack_channel": "#code-reviews",
   "show_review_cost": false,
@@ -221,9 +242,10 @@ Each repo can have a `.reviewotron.json` file in its root. This is fetched from 
 | `model` | `claude-sonnet-4-6` | Model ID for the general review agent. |
 | `ignored_paths` | `[]` | Glob patterns for files to exclude from review. Supports `*` and `**` wildcards. |
 | `ignored_authors` | `[]` | GitHub usernames whose PRs/pushes should be skipped. |
-| `auto_review_pr_open` | `true` | Review PRs when they are opened, reopened, or marked ready. |
-| `auto_review_pr_sync` | `true` | Review PRs when new commits are pushed to them. |
-| `review_pushes_to_develop` | `true` | Review pushes to the `develop` branch. |
+| `auto_review_pr_open` | `false` | Review PRs when they are opened, reopened, or marked ready. |
+| `auto_review_pr_sync` | `false` | Review PRs when new commits are pushed to them. |
+| `review_pushes_to_develop` | `false` | Review pushes to the `develop` branch. |
+| `auto_review_on_comment` | `false` | Review when someone posts a top-level PR comment whose body is exactly `REVIEW` (after trimming). Requires the GitHub App to subscribe to **Issue comment** events. |
 | `system_prompt_override` | `null` | Replace the default general review system prompt entirely. |
 | `slack_channel` | `null` | Slack channel for push review notifications. Requires `slack_access_token` in secrets. |
 | `show_review_cost` | `false` | Append a cost summary footer to PR reviews. |
