@@ -2124,6 +2124,34 @@ let test_security_e2e_rejected () =
   (check bool) "has general review" true (CCString.find ~sub:"The changes look generally good" write_log >= 0);
   (check bool) "no security findings after rejection" true (CCString.find ~sub:{|"security"|} write_log < 0)
 
+(** Triage occasionally emits [skip_reason: ""] (an empty string) instead of
+    [skip_reason: null] when it has signals to report — the LLM populates
+    the optional field with a placeholder rather than omitting it.  Pre-fix
+    we treated [Some ""] the same as a real skip reason and silenced the
+    entire security pipeline (observed on PR #81 in the buildkite-starter
+    test repo).  This regression test pins the post-fix behaviour: an
+    empty-or-whitespace [skip_reason] is treated as [None] and analysis
+    proceeds based on the signals. *)
+let test_security_e2e_triage_empty_skip_reason () =
+  Test_helpers.reset_test_state ();
+  Api_local.set_agent_response_map
+    [
+      "general_review", "mock_api_responses/claude/review_response.json";
+      "security_triage", "mock_api_responses/security/triage_injection_empty_skip.json";
+      "security_analysis_injection", "mock_api_responses/security/analysis_injection.json";
+      "security_validator", "mock_api_responses/security/validator_confirmed.json";
+    ];
+  let ctx = Test_helpers.make_test_context ~config:security_enabled_config () in
+  let payload = read_file "mock_payloads/pr_opened.json" in
+  let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let write_log = Api_local.get_write_log () in
+  (check bool) "review posted" true (CCString.find ~sub:"[create_pr_review]" write_log >= 0);
+  (check bool) "empty skip_reason did NOT silence security pipeline" true
+    (CCString.find ~sub:"**[critical]** security" write_log >= 0);
+  (check bool) "injection finding surfaced" true
+    (CCString.find ~sub:"SQL query string without parameterization" write_log >= 0)
+
 let test_security_e2e_disabled () =
   Test_helpers.reset_test_state ();
   let config =
@@ -2748,6 +2776,8 @@ let () =
           test_case "vulnerable diff produces security finding" `Quick test_security_e2e_vulnerable;
           test_case "safe diff produces no security findings" `Quick test_security_e2e_safe;
           test_case "rejected finding produces no security output" `Quick test_security_e2e_rejected;
+          test_case "empty skip_reason does not silence pipeline" `Quick
+            test_security_e2e_triage_empty_skip_reason;
           test_case "disabled plugin produces no security findings" `Quick test_security_e2e_disabled;
         ] );
       ( "general_failure_robustness",
