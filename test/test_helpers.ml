@@ -2,6 +2,19 @@ open Reviewotron_lib
 
 let test_repo_url = "https://github.com/ahrefs/monorepo"
 
+(** Shared config fixture for tests that exercise the automatic-review code
+    paths.  All four [auto_review_*] / [review_pushes_to_develop] flags are
+    set to [true], because the production defaults flipped to [false] and a
+    test that constructs a default config silently skips every review.
+
+    Tests that assert on skip-reasons {e other than} "auto-review disabled"
+    (draft, closed, ignored author, etc.) should use this fixture so the
+    skip they care about is the one actually under test. *)
+let auto_review_enabled_config =
+  Config_types.config_of_json
+    (Melange_json.of_string
+       {|{"auto_review_pr_open": true, "auto_review_pr_sync": true, "review_pushes_to_develop": true}|})
+
 (** Create a test context with default config and mock secrets.
     Pre-populates the repo config cache so tests don't need to fetch from GitHub. *)
 let make_test_context ?state ?(config = Config_types.config_of_json (Melange_json.of_string "{}")) () =

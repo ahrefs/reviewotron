@@ -4,12 +4,21 @@ open Alcotest
 
 let read_file path = Std.input_file ~bin:true path
 
+(* Default-off auto-review flags mean every test that wants the review pipeline
+   to actually run must opt in explicitly. The shared security config fixtures
+   below opt into PR-open and PR-sync because the security e2e suite always
+   exercises the PR flow. The Slack-enabled variant adds [review_pushes_to_develop]
+   for tests that exercise the push-to-develop path. *)
+
 let security_enabled_config =
-  Config_types.config_of_json (Melange_json.of_string {|{"review_plugins": {"security": {"enabled": true}}}|})
+  Config_types.config_of_json
+    (Melange_json.of_string
+       {|{"auto_review_pr_open": true, "auto_review_pr_sync": true, "review_plugins": {"security": {"enabled": true}}}|})
 
 let security_enabled_slack_config =
   Config_types.config_of_json
-    (Melange_json.of_string {|{"slack_channel": "dev-reviews", "review_plugins": {"security": {"enabled": true}}}|})
+    (Melange_json.of_string
+       {|{"auto_review_pr_open": true, "auto_review_pr_sync": true, "review_pushes_to_develop": true, "slack_channel": "dev-reviews", "review_plugins": {"security": {"enabled": true}}}|})
 
 let test_parse_pr_opened () =
   let body = read_file "mock_payloads/pr_opened.json" in
@@ -1415,7 +1424,7 @@ module R_test = Reviewer.Make (Api_local.Github) (Api_local.Agent_runner) (Api_l
 
 let test_pr_review_e2e () =
   Test_helpers.reset_test_state ();
-  let ctx = Test_helpers.make_test_context () in
+  let ctx = Test_helpers.make_test_context ~config:Test_helpers.auto_review_enabled_config () in
   let payload = read_file "mock_payloads/pr_opened.json" in
   let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
   Lwt_main.run (R_test.process_event ctx ~event);
@@ -1428,7 +1437,7 @@ let test_pr_review_e2e () =
 
 let test_pr_skipped_when_draft () =
   Test_helpers.reset_test_state ();
-  let ctx = Test_helpers.make_test_context () in
+  let ctx = Test_helpers.make_test_context ~config:Test_helpers.auto_review_enabled_config () in
   let payload = Test_helpers.make_pr_payload ~draft:true () in
   let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
   Lwt_main.run (R_test.process_event ctx ~event);
@@ -1437,7 +1446,7 @@ let test_pr_skipped_when_draft () =
 
 let test_pr_skipped_when_closed () =
   Test_helpers.reset_test_state ();
-  let ctx = Test_helpers.make_test_context () in
+  let ctx = Test_helpers.make_test_context ~config:Test_helpers.auto_review_enabled_config () in
   let payload = Test_helpers.make_pr_payload ~action:"closed" () in
   let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
   Lwt_main.run (R_test.process_event ctx ~event);
@@ -1448,7 +1457,7 @@ let test_pr_skipped_when_closed () =
 
 let test_pr_synchronize_review () =
   Test_helpers.reset_test_state ();
-  let ctx = Test_helpers.make_test_context () in
+  let ctx = Test_helpers.make_test_context ~config:Test_helpers.auto_review_enabled_config () in
   let payload = read_file "mock_payloads/pr_opened.json" in
   let payload = Stre.replace_all ~str:payload ~sub:{|"action": "opened"|} ~by:{|"action": "synchronize"|} in
   let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
@@ -1458,7 +1467,10 @@ let test_pr_synchronize_review () =
 
 let test_pr_all_ignored_paths_skipped () =
   Test_helpers.reset_test_state ();
-  let config = Config_types.config_of_json (Melange_json.of_string {|{"ignored_paths": ["*.lock", "*.json"]}|}) in
+  let config =
+    Config_types.config_of_json
+      (Melange_json.of_string {|{"auto_review_pr_open": true, "ignored_paths": ["*.lock", "*.json"]}|})
+  in
   let ctx = Test_helpers.make_test_context ~config () in
   (* Use PR 99 which only has .lock and .json files *)
   let payload = Test_helpers.make_pr_payload ~number:99 ~title:"Update lock files" () in
@@ -1470,7 +1482,7 @@ let test_pr_all_ignored_paths_skipped () =
 let test_pr_empty_findings_review () =
   Test_helpers.reset_test_state ();
   Api_local.set_agent_response_path "mock_api_responses/claude/empty_findings_response.json";
-  let ctx = Test_helpers.make_test_context () in
+  let ctx = Test_helpers.make_test_context ~config:Test_helpers.auto_review_enabled_config () in
   let payload = read_file "mock_payloads/pr_opened.json" in
   let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
   Lwt_main.run (R_test.process_event ctx ~event);
@@ -1484,7 +1496,9 @@ let test_pr_empty_findings_review () =
 let test_pr_large_diff_skipped () =
   Test_helpers.reset_test_state ();
   (* Set max_diff_lines very low so the normal PR 42 diff exceeds it *)
-  let config = Config_types.config_of_json (Melange_json.of_string {|{"max_diff_lines": 1}|}) in
+  let config =
+    Config_types.config_of_json (Melange_json.of_string {|{"auto_review_pr_open": true, "max_diff_lines": 1}|})
+  in
   let ctx = Test_helpers.make_test_context ~config () in
   let payload = read_file "mock_payloads/pr_opened.json" in
   let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
@@ -1497,7 +1511,10 @@ let test_pr_large_diff_skipped () =
 let test_push_review_e2e () =
   Test_helpers.reset_test_state ();
   Api_local.set_agent_response_path "mock_api_responses/claude/push_review_response.json";
-  let config = Config_types.config_of_json (Melange_json.of_string {|{"slack_channel": "dev-reviews"}|}) in
+  let config =
+    Config_types.config_of_json
+      (Melange_json.of_string {|{"review_pushes_to_develop": true, "slack_channel": "dev-reviews"}|})
+  in
   let ctx = Test_helpers.make_test_context ~config () in
   let payload = read_file "mock_payloads/push_develop.json" in
   let event = Test_helpers.parse_event_exn ~event_type:"push" ~body:payload in
@@ -1514,7 +1531,7 @@ let test_push_review_e2e () =
 
 let test_push_skipped_non_develop () =
   Test_helpers.reset_test_state ();
-  let ctx = Test_helpers.make_test_context () in
+  let ctx = Test_helpers.make_test_context ~config:Test_helpers.auto_review_enabled_config () in
   let payload = Test_helpers.make_push_payload ~ref_:"refs/heads/main" () in
   let event = Test_helpers.parse_event_exn ~event_type:"push" ~body:payload in
   Lwt_main.run (R_test.process_event ctx ~event);
@@ -1525,7 +1542,7 @@ let test_push_skipped_non_develop () =
 
 let test_push_created_skipped () =
   Test_helpers.reset_test_state ();
-  let ctx = Test_helpers.make_test_context () in
+  let ctx = Test_helpers.make_test_context ~config:Test_helpers.auto_review_enabled_config () in
   let payload = Test_helpers.make_push_payload ~created:true () in
   let event = Test_helpers.parse_event_exn ~event_type:"push" ~body:payload in
   Lwt_main.run (R_test.process_event ctx ~event);
@@ -1534,7 +1551,7 @@ let test_push_created_skipped () =
 
 let test_push_deleted_skipped () =
   Test_helpers.reset_test_state ();
-  let ctx = Test_helpers.make_test_context () in
+  let ctx = Test_helpers.make_test_context ~config:Test_helpers.auto_review_enabled_config () in
   let payload = Test_helpers.make_push_payload ~deleted:true () in
   let event = Test_helpers.parse_event_exn ~event_type:"push" ~body:payload in
   Lwt_main.run (R_test.process_event ctx ~event);
@@ -1546,7 +1563,7 @@ let test_push_deleted_skipped () =
 let test_duplicate_pr_prevention () =
   Test_helpers.reset_test_state ();
   let state = State.create () in
-  let ctx = Test_helpers.make_test_context ~state () in
+  let ctx = Test_helpers.make_test_context ~state ~config:Test_helpers.auto_review_enabled_config () in
   let payload = read_file "mock_payloads/pr_opened.json" in
   let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
   (* First review should go through *)
@@ -1563,7 +1580,10 @@ let test_duplicate_push_prevention () =
   Test_helpers.reset_test_state ();
   Api_local.set_agent_response_path "mock_api_responses/claude/push_review_response.json";
   let state = State.create () in
-  let config = Config_types.config_of_json (Melange_json.of_string {|{"slack_channel": "dev-reviews"}|}) in
+  let config =
+    Config_types.config_of_json
+      (Melange_json.of_string {|{"review_pushes_to_develop": true, "slack_channel": "dev-reviews"}|})
+  in
   let ctx = Test_helpers.make_test_context ~state ~config () in
   let payload = read_file "mock_payloads/push_develop.json" in
   let event = Test_helpers.parse_event_exn ~event_type:"push" ~body:payload in
@@ -1582,7 +1602,10 @@ let test_duplicate_push_prevention () =
 
 let test_ignored_author_pr_skipped () =
   Test_helpers.reset_test_state ();
-  let config = Config_types.config_of_json (Melange_json.of_string {|{"ignored_authors": ["developer1"]}|}) in
+  let config =
+    Config_types.config_of_json
+      (Melange_json.of_string {|{"auto_review_pr_open": true, "ignored_authors": ["developer1"]}|})
+  in
   let ctx = Test_helpers.make_test_context ~config () in
   let payload = read_file "mock_payloads/pr_opened.json" in
   let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
@@ -1592,7 +1615,10 @@ let test_ignored_author_pr_skipped () =
 
 let test_ignored_author_push_skipped () =
   Test_helpers.reset_test_state ();
-  let config = Config_types.config_of_json (Melange_json.of_string {|{"ignored_authors": ["developer2"]}|}) in
+  let config =
+    Config_types.config_of_json
+      (Melange_json.of_string {|{"review_pushes_to_develop": true, "ignored_authors": ["developer2"]}|})
+  in
   let ctx = Test_helpers.make_test_context ~config () in
   let payload = read_file "mock_payloads/push_develop.json" in
   let event = Test_helpers.parse_event_exn ~event_type:"push" ~body:payload in
@@ -2190,7 +2216,9 @@ let test_security_e2e_triage_empty_skip_reason () =
 let test_security_e2e_disabled () =
   Test_helpers.reset_test_state ();
   let config =
-    Config_types.config_of_json (Melange_json.of_string {|{"review_plugins": {"security": {"enabled": false}}}|})
+    Config_types.config_of_json
+      (Melange_json.of_string
+         {|{"auto_review_pr_open": true, "review_plugins": {"security": {"enabled": false}}}|})
   in
   let ctx = Test_helpers.make_test_context ~config () in
   let payload = read_file "mock_payloads/pr_opened.json" in
@@ -2341,7 +2369,9 @@ let test_pr_no_security_notice_when_disabled () =
   Test_helpers.reset_test_state ();
   (* Disable the security plugin. No security failure notice should appear. *)
   let config =
-    Config_types.config_of_json (Melange_json.of_string {|{"review_plugins": {"security": {"enabled": false}}}|})
+    Config_types.config_of_json
+      (Melange_json.of_string
+         {|{"auto_review_pr_open": true, "review_plugins": {"security": {"enabled": false}}}|})
   in
   let ctx = Test_helpers.make_test_context ~config () in
   let payload = read_file "mock_payloads/pr_opened.json" in
@@ -2358,7 +2388,7 @@ let test_pr_review_retry_on_failure () =
   Test_helpers.reset_test_state ();
   (* Make the first create_pr_review call fail, then succeed on retry. *)
   Api_local.set_fail_next_pr_review ();
-  let ctx = Test_helpers.make_test_context () in
+  let ctx = Test_helpers.make_test_context ~config:Test_helpers.auto_review_enabled_config () in
   let payload = read_file "mock_payloads/pr_opened.json" in
   let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
   Lwt_main.run (R_test.process_event ctx ~event);
@@ -2372,7 +2402,10 @@ let test_commit_comment_retry_on_failure () =
   Api_local.set_agent_response_path "mock_api_responses/claude/push_review_response.json";
   (* Make the first create_commit_comment call fail, then succeed on retry. *)
   Api_local.set_fail_next_commit_comment ();
-  let config = Config_types.config_of_json (Melange_json.of_string {|{"slack_channel": "dev-reviews"}|}) in
+  let config =
+    Config_types.config_of_json
+      (Melange_json.of_string {|{"review_pushes_to_develop": true, "slack_channel": "dev-reviews"}|})
+  in
   let ctx = Test_helpers.make_test_context ~config () in
   let payload = read_file "mock_payloads/push_develop.json" in
   let event = Test_helpers.parse_event_exn ~event_type:"push" ~body:payload in
