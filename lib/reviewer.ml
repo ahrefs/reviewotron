@@ -171,6 +171,29 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
       Some (Printf.sprintf "already reviewed at %s" (String.sub push.after 0 (min 8 (String.length push.after))))
     else None
 
+  (** Check whether an [issue_comment] event with body [REVIEW] should
+      trigger a review.  The trigger-phrase check is performed at the
+      dispatch site {e before} this function is called, so the body is
+      not re-checked here.  Returns [None] if a review should run,
+      [Some reason] if it should be skipped (with a log line).
+
+      Order matters: structural checks (action, comment-on-PR-vs-issue,
+      PR state) come before the config gate so a misconfigured payload
+      surfaces a clear reason rather than the generic "disabled".
+      Author filters come last because they only matter once we've
+      decided the request is otherwise valid. *)
+  let comment_skip_reason ~ctx (n : Github_types.issue_comment_notification) =
+    let config = Context.get_config ctx ~repo_url:n.repository.url in
+    if not (String.equal n.action "created") then
+      Some (Printf.sprintf "comment action %s not reviewable" n.action)
+    else if Option.is_none n.issue.pull_request then Some "comment is on an issue, not a PR"
+    else if not (String.equal n.issue.state "open") then Some (Printf.sprintf "PR state is %s" n.issue.state)
+    else if not config.auto_review_on_comment then Some "auto_review_on_comment disabled"
+    else if is_bot_sender n.sender.login then Some (Printf.sprintf "bot sender %s" n.sender.login)
+    else if List.exists (fun a -> String.equal a n.sender.login) config.ignored_authors then
+      Some (Printf.sprintf "ignored author %s" n.sender.login)
+    else None
+
   (** Fetch a small number of key file contents for additional context. *)
   let fetch_key_files ~ctx ~repo_url ~diff ~ref_ =
     let paths =
@@ -474,6 +497,41 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
         execute_and_post_review ~ctx ~repo_url ~config ~number ~pr_title:pr.title ~diff_text:filtered_text
           ~filtered_diff ~file_contents ~description ~head_sha)
 
+  (** Review the PR referenced by an [issue_comment] webhook.
+
+      The [issue_comment] payload only carries the [issue] shape, not the
+      [pull_request] shape — crucially it lacks [head.sha] which the review
+      pipeline uses as the git ref for file-content fetches.  We fetch the
+      full PR via [get_pull_request], synthesise a [pr_notification] around
+      it (using the comment payload's repository/sender/installation), and
+      delegate to [review_pr].
+
+      [pr_skip_reason] is intentionally bypassed: [comment_skip_reason] has
+      already gated the request, and the [State.is_pr_reviewed] dedup that
+      [pr_skip_reason] applies is exactly the behaviour we want to skip on
+      a manual [REVIEW] trigger.  The synthesised [action] field is set to
+      a sentinel that no [pr_action_of_string] arm matches; nothing in
+      [review_pr] reads it. *)
+  let review_pr_from_comment ~ctx (n : Github_types.issue_comment_notification) =
+    let repo_url = n.repository.url in
+    let%lwt result = GH.get_pull_request ~ctx ~repo_url ~number:n.issue.number in
+    match result with
+    | Error msg ->
+      log#error "failed to fetch PR #%d for REVIEW comment trigger: %s" n.issue.number msg;
+      Lwt.return_unit
+    | Ok pr ->
+      let synthesised : Github_types.pr_notification =
+        {
+          action = "comment_review";
+          number = n.issue.number;
+          pull_request = pr;
+          repository = n.repository;
+          sender = n.sender;
+          installation = n.installation;
+        }
+      in
+      review_pr ~ctx synthesised
+
   (** Post commit comments for critical/warning findings from a push review. *)
   let post_push_comments ~ctx ~repo_url ~sha findings =
     Lwt_list.iter_s
@@ -611,8 +669,20 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
         log#info "push %s skipped: %s" push.after reason;
         Lwt.return_unit)
     | Github.Issue_comment n ->
-      log#debug "issue_comment received on PR #%d (handler not wired yet)" n.issue.number;
-      Lwt.return_unit
+      (* Trigger phrase: the comment body, after trimming, must equal
+         exactly "REVIEW".  Skip silently for any other body — most PR
+         comments are conversation, and we don't want to log a skip
+         reason for every one of them. *)
+      (match String.equal (String.trim n.comment.body) "REVIEW" with
+      | false -> Lwt.return_unit
+      | true ->
+        (match comment_skip_reason ~ctx n with
+        | None ->
+          log#info "REVIEW comment on PR #%d by %s: triggering review" n.issue.number n.sender.login;
+          review_pr_from_comment ~ctx n
+        | Some reason ->
+          log#info "REVIEW comment on PR #%d skipped: %s" n.issue.number reason;
+          Lwt.return_unit))
     | Github.Unknown kind ->
       log#debug "ignoring unhandled event type: %s" kind;
       Lwt.return_unit
