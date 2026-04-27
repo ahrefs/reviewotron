@@ -253,6 +253,90 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) = struct
         log#error "failed to parse validator output: %s" (Exn.str exn);
         Lwt.return ([], [ cost ]))
 
+  (** Collapse candidate findings that share the same [(sink.path, sink.line)].
+
+      Per-class analysis agents run independently, so a single defect (e.g. a
+      SQL injection in a [/search] route that also has missing authz on the
+      enclosing handler) frequently surfaces as several near-identical
+      candidates, one per vuln_class.  Forwarding all of them to the validator
+      causes three problems: (1) the validator's prompt grows linearly with the
+      duplication, eating its step budget on PRs with several defects (we have
+      observed it exhaust [max_steps] on real PRs); (2) the validator
+      sometimes accepts duplicates as separate findings, producing repetitive
+      inline comments; (3) when it does try to dedupe, it does so
+      inconsistently, so review counts swing run-to-run on the same diff.
+
+      This pass runs {e before} the validator, picks one canonical candidate
+      per [(sink.path, sink.line)], and discards the rest.  Selection is
+      deterministic: highest [confidence] first, then longest [flow] (more
+      evidence usually means the agent traced the chain harder), then
+      first-seen.  The deterministic ordering is what gives us run-to-run
+      consistency.
+
+      We do {e not} merge candidates across different sink lines, even when
+      they describe the same overall chain — the source-route line and the
+      actual exec call are both legitimate inline-comment anchors and both
+      worth surfacing.  Same [(path, line)] = same fix site = collapse. *)
+  let dedup_candidates (candidates : Security_types.candidate_finding list) =
+    let key (c : Security_types.candidate_finding) = c.sink.path, c.sink.line in
+    (* Bucket candidates by sink, preserving first-seen order both for buckets
+       and within each bucket. *)
+    let buckets = Hashtbl.create 16 in
+    let order = ref [] in
+    List.iter
+      (fun c ->
+        let k = key c in
+        match Hashtbl.find_opt buckets k with
+        | None ->
+          Hashtbl.replace buckets k [ c ];
+          order := k :: !order
+        | Some existing -> Hashtbl.replace buckets k (existing @ [ c ]))
+      candidates;
+    let pick_best bucket =
+      match bucket with
+      | [] -> None
+      | first :: _ ->
+        let better (a : Security_types.candidate_finding) (b : Security_types.candidate_finding) =
+          let ca = confidence_rank a.confidence in
+          let cb = confidence_rank b.confidence in
+          match Int.compare ca cb with
+          | x when x > 0 -> a
+          | x when x < 0 -> b
+          | _ ->
+            let fa = List.length a.flow in
+            let fb = List.length b.flow in
+            (match Int.compare fa fb with
+            | x when x > 0 -> a
+            | x when x < 0 -> b
+            | _ -> a)
+          (* first-seen wins on full tie; List.fold_left feeds [a] = accumulator
+             which started as the bucket's first element, so [a] is older *)
+        in
+        Some (List.fold_left better first bucket)
+    in
+    let log_discards (kept : Security_types.candidate_finding) bucket =
+      List.iter
+        (fun (c : Security_types.candidate_finding) ->
+          match c == kept with
+          | true -> ()
+          | false ->
+            log#info "dedup: dropped %s candidate at %s:%d (kept %s, %s confidence, %d flow steps)"
+              (Security_types.vuln_class_to_string c.vuln_class)
+              c.sink.path c.sink.line
+              (Security_types.vuln_class_to_string kept.vuln_class)
+              (Security_types.confidence_to_string kept.confidence)
+              (List.length kept.flow))
+        bucket
+    in
+    List.rev !order
+    |> List.filter_map (fun k ->
+      let bucket = Hashtbl.find buckets k in
+      match pick_best bucket with
+      | None -> None
+      | Some kept ->
+        log_discards kept bucket;
+        Some kept)
+
   (** Log each rejected finding for offline prompt tuning. *)
   let log_rejected (results : Security_types.validated_finding list) =
     List.iter
@@ -295,9 +379,15 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) = struct
           groups
       in
       let%lwt results = Lwt.all promises in
-      let candidates = List.concat_map fst results in
+      let raw_candidates = List.concat_map fst results in
       let analysis_costs = List.concat_map snd results in
-      log#info "analysis complete: %d total candidate findings" (List.length candidates);
+      log#info "analysis complete: %d total candidate findings" (List.length raw_candidates);
+      let candidates = dedup_candidates raw_candidates in
+      (match List.compare_lengths candidates raw_candidates < 0 with
+      | true ->
+        log#info "dedup: %d → %d candidates after collapsing duplicates by sink"
+          (List.length raw_candidates) (List.length candidates)
+      | false -> ());
       (match candidates with
       | [] -> Lwt.return ([], analysis_costs)
       | _ :: _ ->
