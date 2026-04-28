@@ -1,29 +1,34 @@
-.DEFAULT_GOAL := build
+.PHONY: all build clean start default fmt test dev
 
-.PHONY: build
+default: build
+
+ARGS ?=
+dev:
+	watchexec -i _build -i _opam -w lib -w src -e ml,mli -r -c "dune build && dune exec reviewotron -- $(ARGS)"
+
+
+start:
+	dune exec -- ./src/reviewotron.exe
+
 build:
-	dune build
+	dune build src/reviewotron.exe
 
-.PHONY: fmt
-fmt:
-	dune fmt --auto-promote
+watch:
+	dune build -w src/reviewotron.exe
 
-.PHONY: test
+release:
+	dune build --profile=release src/reviewotron.exe
+
 test:
 	dune runtest
 
-.PHONY: promote
-promote:
-	dune build @runtest --auto-promote
+test_promote:
+	dune runtest --auto-promote
 
-.PHONY: watch
-watch:
-	dune build -w
+all: build
 
-.PHONY: clean
+fmt:
+	dune build @fmt --auto-promote
+
 clean:
 	dune clean
-
-.PHONY: top
-top:
-	dune utop .
