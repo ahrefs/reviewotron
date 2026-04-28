@@ -44,8 +44,9 @@ let start ~ctx ~port =
         | _ -> Exn.fail "invalid path"
       in
       match request.meth, List.map Web.urldecode path with
-      | _, [ "ping" ] -> ret (Printf.sprintf "%s uptime %s\n" signature Devkit.Action.uptime#get_str)
-      | _, [ "github" ] ->
+      | _, [ "ping" ] | _, [ "external"; "ping" ] ->
+        ret (Printf.sprintf "%s uptime %s\n" signature Devkit.Action.uptime#get_str)
+      | _, [ "github" ] | _, [ "external"; "github" ] ->
         if String.length request.body > 10_000_000 then ret_err `Request_too_large "payload too large"
         else (
           let headers = request.headers in
