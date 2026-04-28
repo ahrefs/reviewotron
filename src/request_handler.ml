@@ -28,9 +28,9 @@ let check_signature ctx ~repo_url ~signature_header ~body =
     log#warn "signature validation failed: %s" msg;
     false
 
-let start ~ctx ~port =
+let start ~ctx ~addr ~port =
   let open Httpev in
-  let ip = Unix.inet_addr_of_string "0.0.0.0" in
+  let ip = Unix.inet_addr_of_string addr in
   let signature = Printf.sprintf "listen %s:%d" (Unix.string_of_inet_addr ip) port in
   let connection = Unix.ADDR_INET (ip, port) in
   Httpev.setup_lwt { default with name = "reviewotron"; connection; access_log_enabled = false } (fun _http request ->

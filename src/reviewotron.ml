@@ -6,7 +6,7 @@ let log = Log.from "reviewotron"
 
 (* entrypoints *)
 
-let run_action port secrets_path config_filename state_path logfile loglevel =
+let run_action addr port secrets_path config_filename state_path logfile loglevel =
   Daemon.logfile := logfile;
   Option.may Log.set_loglevels loglevel;
   Log.reopen !Daemon.logfile;
@@ -21,8 +21,8 @@ let run_action port secrets_path config_filename state_path logfile loglevel =
         log#error "failed to initialize: %s" e;
         Lwt.return_unit
       | Ok ctx ->
-        log#info "loaded secrets, starting HTTP server on port %d" port;
-        Request_handler.start ~ctx ~port
+        log#info "loaded secrets, starting HTTP server on %s:%d" addr port;
+        Request_handler.start ~ctx ~addr ~port
     end
 
 let check_action secrets_path config_filename state_path event_type payload_file =
@@ -82,6 +82,10 @@ let check_action secrets_path config_filename state_path event_type payload_file
 
 (* flags *)
 
+let addr =
+  let doc = "IP address that the HTTP server should bind to." in
+  Arg.(value & opt string "127.0.0.1" & info [ "a"; "addr" ] ~docv:"ADDR" ~doc)
+
 let port =
   let doc = "Port number for the HTTP server." in
   Arg.(value & opt int 1338 & info [ "p"; "port" ] ~docv:"PORT" ~doc)
@@ -119,7 +123,7 @@ let payload_file =
 let run_cmd =
   let doc = "Start the HTTP webhook server." in
   let info = Cmd.info "run" ~doc in
-  let term = Term.(const run_action $ port $ secrets $ config_filename $ state_path $ logfile $ loglevel) in
+  let term = Term.(const run_action $ addr $ port $ secrets $ config_filename $ state_path $ logfile $ loglevel) in
   Cmd.v info term
 
 let check_cmd =
