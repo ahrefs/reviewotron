@@ -174,7 +174,7 @@ Configure a webhook in your GitHub repository settings:
 
 | Setting | Value |
 |---------|-------|
-| Payload URL | `https://your-server:8080/github` |
+| Payload URL | `https://your-server:1338/github` |
 | Content type | `application/json` |
 | Secret | Same value as `gh_hook_secret` in secrets.json |
 | Events | Select **Pull requests** and **Pushes** |
@@ -182,13 +182,13 @@ Configure a webhook in your GitHub repository settings:
 ### Start the Server
 
 ```bash
-./reviewotron run --port 8080 --secrets secrets.json --state state.json
+./reviewotron run --port 1338 --secrets secrets.json --state state.json
 ```
 
 Verify it's running:
 
 ```bash
-curl http://localhost:8080/ping
+curl http://localhost:1338/ping
 ```
 
 ---
@@ -414,7 +414,7 @@ reviewotron run [OPTIONS]
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `-p`, `--port` | `8080` | HTTP server port |
+| `-p`, `--port` | `1338` | HTTP server port |
 | `--secrets` | `secrets.json` | Path to secrets file |
 | `--config-filename` | `.reviewotron.json` | Config filename to look for in repos |
 | `--state` | (none — in-memory) | Path to state file for persistence |
@@ -526,7 +526,7 @@ Multiple reviews can run concurrently (events are processed via `Lwt.async`). Th
 ### Review not triggering
 
 1. Check the webhook delivery log in GitHub (Settings > Webhooks > Recent Deliveries)
-2. Verify the server is running: `curl http://your-server:8080/ping`
+2. Verify the server is running: `curl http://your-server:1338/ping`
 3. Check the server logs for skip reasons:
    - `"bot sender"` — the event was from a bot account
    - `"ignored author"` — the author is in `ignored_authors`

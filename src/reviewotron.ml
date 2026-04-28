@@ -84,7 +84,7 @@ let check_action secrets_path config_filename state_path event_type payload_file
 
 let port =
   let doc = "Port number for the HTTP server." in
-  Arg.(value & opt int 8080 & info [ "p"; "port" ] ~docv:"PORT" ~doc)
+  Arg.(value & opt int 1338 & info [ "p"; "port" ] ~docv:"PORT" ~doc)
 
 let secrets =
   let doc = "Path to secrets.json file." in
