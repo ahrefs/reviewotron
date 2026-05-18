@@ -148,7 +148,7 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
         | Closed | Edited | Other _ -> false
       in
       if not is_reviewable_action then Some (Printf.sprintf "action %s not reviewable" pr.action)
-      else if pr.pull_request.draft then Some "draft PR"
+      else if pr.pull_request.draft && not config.review_draft_prs then Some "draft PR"
       else if State.is_pr_reviewed state ~repo_url:pr.repository.url ~pr_number:pr.number ~head_sha then
         Some (Printf.sprintf "already reviewed at %s" (String.sub head_sha 0 (min 8 (String.length head_sha))))
       else None)

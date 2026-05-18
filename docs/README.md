@@ -211,6 +211,7 @@ Each repo can have a `.reviewotron.json` file in its root. This is fetched from 
   "auto_review_pr_sync": false,
   "review_pushes_to_develop": false,
   "auto_review_on_comment": false,
+  "review_draft_prs": false,
   "system_prompt_override": null,
   "slack_channel": "#code-reviews",
   "show_review_cost": false,
@@ -246,6 +247,7 @@ Each repo can have a `.reviewotron.json` file in its root. This is fetched from 
 | `auto_review_pr_sync` | `false` | Review PRs when new commits are pushed to them. |
 | `review_pushes_to_develop` | `false` | Review pushes to the `develop` branch. |
 | `auto_review_on_comment` | `false` | Review when someone posts a top-level PR comment whose body is exactly `REVIEW` (after trimming). Requires the GitHub App to subscribe to **Issue comment** events. |
+| `review_draft_prs` | `false` | Include draft PRs in automatic reviews. By default drafts are skipped regardless of `auto_review_pr_open` / `auto_review_pr_sync`. |
 | `system_prompt_override` | `null` | Replace the default general review system prompt entirely. |
 | `slack_channel` | `null` | Slack channel for push review notifications. Requires `slack_access_token` in secrets. |
 | `show_review_cost` | `false` | Append a cost summary footer to PR reviews. |

@@ -1444,6 +1444,20 @@ let test_pr_skipped_when_draft () =
   let write_log = Api_local.get_write_log () in
   (check string) "no review posted" "" write_log
 
+let test_pr_reviewed_when_draft_and_flag_enabled () =
+  Test_helpers.reset_test_state ();
+  let config =
+    Config_types.config_of_json
+      (Melange_json.of_string
+         {|{"auto_review_pr_open": true, "auto_review_pr_sync": true, "review_draft_prs": true}|})
+  in
+  let ctx = Test_helpers.make_test_context ~config () in
+  let payload = Test_helpers.make_pr_payload ~draft:true () in
+  let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let write_log = Api_local.get_write_log () in
+  (check bool) "review posted" true (CCString.find ~sub:"[create_pr_review]" write_log >= 0)
+
 let test_pr_skipped_when_closed () =
   Test_helpers.reset_test_state ();
   let ctx = Test_helpers.make_test_context ~config:Test_helpers.auto_review_enabled_config () in
@@ -2909,6 +2923,8 @@ let () =
         [
           test_case "PR review end-to-end" `Quick test_pr_review_e2e;
           test_case "draft PR skipped" `Quick test_pr_skipped_when_draft;
+          test_case "draft PR reviewed when review_draft_prs is enabled" `Quick
+            test_pr_reviewed_when_draft_and_flag_enabled;
           test_case "closed PR skipped" `Quick test_pr_skipped_when_closed;
         ] );
       ( "comment_trigger",
