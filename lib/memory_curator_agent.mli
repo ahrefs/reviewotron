@@ -25,7 +25,7 @@ val config : model_tier:Agent_runner.model_tier -> Agent_runner.agent_config
     token budget, and a set of architectural observations from the
     completed review.
 
-    @param repo_name Repository identifier (e.g. ["ahrefs-monorepo"]).
+    @param repo_name Repository identifier (e.g. ["org-monorepo"]).
     @param memory_max_tokens Maximum number of tokens for the brief.
     @param observations Architectural observations extracted from the review.
     @param current_memory Optional existing brief contents. *)

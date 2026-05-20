@@ -9,7 +9,7 @@
 
 (** Derive a filesystem-safe slug from a repo URL.
     Strips protocol/host, [.git] suffix, and trailing slashes, then replaces [/] with [-].
-    e.g. "https://github.com/org/monorepo" -> "ahrefs-monorepo" *)
+    e.g. "https://github.com/org/monorepo" -> "org-monorepo" *)
 val repo_slug : string -> string
 
 (** Full filesystem path to the memory file for a given repo. *)

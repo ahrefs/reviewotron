@@ -2021,22 +2021,22 @@ let test_state_roundtrip_with_costs () =
 (** {2 Security memory tests} *)
 
 let test_repo_slug_basic () =
-  (check string) "github url" "ahrefs-monorepo" (Security_memory.repo_slug "https://github.com/org/monorepo")
+  (check string) "github url" "org-monorepo" (Security_memory.repo_slug "https://github.com/org/monorepo")
 
 let test_repo_slug_with_git_suffix () =
-  (check string) "git suffix" "ahrefs-monorepo" (Security_memory.repo_slug "https://github.com/org/monorepo.git")
+  (check string) "git suffix" "org-monorepo" (Security_memory.repo_slug "https://github.com/org/monorepo.git")
 
 let test_repo_slug_trailing_slash () =
-  (check string) "trailing slash" "ahrefs-monorepo" (Security_memory.repo_slug "https://github.com/org/monorepo/")
+  (check string) "trailing slash" "org-monorepo" (Security_memory.repo_slug "https://github.com/org/monorepo/")
 
 let test_repo_slug_http () =
-  (check string) "http url" "ahrefs-monorepo" (Security_memory.repo_slug "http://github.com/org/monorepo")
+  (check string) "http url" "org-monorepo" (Security_memory.repo_slug "http://github.com/org/monorepo")
 
-let test_repo_slug_bare () = (check string) "bare path" "ahrefs-monorepo" (Security_memory.repo_slug "org/monorepo")
+let test_repo_slug_bare () = (check string) "bare path" "org-monorepo" (Security_memory.repo_slug "org/monorepo")
 
 let test_memory_path () =
   let path = Security_memory.memory_path ~memory_dir:"memory" ~repo_url:"https://github.com/org/monorepo" in
-  (check string) "memory path" "memory/ahrefs-monorepo.md" path
+  (check string) "memory path" "memory/org-monorepo.md" path
 
 let test_memory_load_missing () =
   let result = Security_memory.load ~memory_dir:"nonexistent_dir_for_test" ~repo_url:"https://github.com/test/repo" in
@@ -2129,8 +2129,8 @@ let test_curator_build_input_no_memory () =
       vuln_class_distribution = [ "injection", 2 ];
     }
   in
-  let input = Memory_curator_agent.build_input ~repo_name:"ahrefs-monorepo" ~memory_max_tokens:500 ~observations () in
-  (check bool) "contains repo name" true (Devkit.Stre.exists input "ahrefs-monorepo");
+  let input = Memory_curator_agent.build_input ~repo_name:"org-monorepo" ~memory_max_tokens:500 ~observations () in
+  (check bool) "contains repo name" true (Devkit.Stre.exists input "org-monorepo");
   (check bool) "contains 'No existing brief'" true (Devkit.Stre.exists input "No existing brief");
   (check bool) "contains current token count" true (Devkit.Stre.exists input "Current: 0 tokens");
   (check bool) "contains max token budget" true (Devkit.Stre.exists input "Maximum: 500 tokens");
