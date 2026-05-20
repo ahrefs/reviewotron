@@ -29,6 +29,20 @@ module Make (AI : Api.Agent_runner) = struct
       let cost = Cost_tracking.of_agent_result ~agent_name:"general_review" ~files_fetched:0 agent_result in
       (match Review_types.review_output_of_json agent_result.output with
       | review ->
+        (* Strip the private reasoning scratchpad from every finding before it
+           crosses the plugin boundary.  The model is required by schema to
+           produce reasoning so it does the analyst work *before* drafting the
+           comment, but reasoning must never reach a posted comment.  The full
+           model output (including reasoning) remains available in agent debug
+           dumps for prompt tuning. *)
+        let reasonings_present =
+          List.fold_left (fun n (f : Review_types.finding) -> if String.length f.reasoning > 0 then n + 1 else n) 0
+            review.findings
+        in
+        let findings_stripped =
+          List.map (fun (f : Review_types.finding) -> { f with reasoning = "" }) review.findings
+        in
+        let review = { review with findings = findings_stripped } in
         let counts = Hashtbl.create 8 in
         List.iter
           (fun (f : Review_types.finding) ->
@@ -42,8 +56,9 @@ module Make (AI : Api.Agent_runner) = struct
           |> List.map (fun (k, v) -> Printf.sprintf "%s=%d" k v)
           |> String.concat " "
         in
-        log#info "review agent: %d findings (%s), summary length %d" (List.length review.findings) dist
-          (String.length review.summary);
+        log#info "review agent: %d findings (%s), summary length %d, reasoning trails stripped: %d/%d"
+          (List.length review.findings) dist (String.length review.summary) reasonings_present
+          (List.length review.findings);
         Lwt.return (Ok review, [ cost ])
       | exception exn -> Lwt.return (Error (Printf.sprintf "failed to parse review output: %s" (Exn.str exn)), [ cost ]))
 

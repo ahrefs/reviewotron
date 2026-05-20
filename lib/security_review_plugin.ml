@@ -223,6 +223,7 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) = struct
       end_line = derive_end_line_from_flow ~diff ~anchor_path ~anchor_line f;
       severity = severity_of_confidence f.confidence;
       category = Security;
+      reasoning = "";
       message = enrich_message_with_sink ~anchor_kind ~f;
       suggested_fix = f.suggested_fix;
     }

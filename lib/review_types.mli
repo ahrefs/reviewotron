@@ -44,6 +44,10 @@ type finding = {
   end_line : int option;
   severity : severity;
   category : finding_category;
+  reasoning : string;
+      (** Private analyst scratchpad emitted by the LLM.  Stripped to [""]
+          by the general review plugin before the finding is exposed to
+          the reviewer pipeline — it must never reach a posted comment. *)
   message : string;
   suggested_fix : string option;
 }

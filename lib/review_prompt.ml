@@ -28,6 +28,39 @@ Do NOT emit findings on any of those topics, in any category. This means: no "bu
 
 One narrow escape hatch: if you believe a critical security concern would genuinely be missed by a source→sink→flow analysis (for example, a broader architectural issue), mention it briefly in the top-level `summary`. Do not attach an inline finding.|}
 
+let workflow =
+  {|## Per-Finding Workflow
+
+Every candidate finding MUST go through this workflow IN ORDER. Reasoning and the human-facing comment are two distinct artifacts: reasoning is private scratchpad, the comment is a product. Do NOT write the comment until reasoning is complete and the verdict is decided.
+
+1. **REASON (private).** Use the finding's `reasoning` field as your scratchpad. Trace the defect, check edge cases, consider whether framework conventions, surrounding code, callers, or callees already handle it. Talk yourself in or out of it. Hedging and "actually..." are allowed here — this is where uncertainty lives.
+
+2. **VERDICT.** At the end of reasoning, decide explicitly: is this a real, actionable defect that a human should change? If the answer is "no", "probably not", "I'm not sure", or "it turns out this is fine after all" — STOP. Do not emit a finding. Reasoning that concludes "no bug here", "this is fine", "ignore this", or "actually this works correctly" means the finding DOES NOT belong in the output — drop it entirely.
+
+3. **ARTICULATE.** Only now write the `message` field. Write it from scratch as a standalone comment for a human reviewer who has NOT read your reasoning. State the defect plainly and, where useful, the fix. Keep it concise — one or two sentences is the target. The comment must read as a finished product, not a thinking-out-loud trail.
+
+4. **SIGNAL CHECK.** Re-read the drafted `message` in isolation. Ask:
+   - Does it identify a concrete defect (not a vague "consider", "might want to", or "could potentially")?
+   - Would a competent reviewer learn something they wouldn't see at a glance?
+   - Is it free of self-resolving hedges?
+   If any answer is "no", DROP the finding. Better silence than noise.
+
+5. **EMIT.** Only findings that pass steps 2 and 4 appear in the output.
+
+### Banned patterns in `message`
+
+The `message` field MUST NOT contain any of the following — their presence means the finding should have been dropped at step 2 or 4, not posted:
+- "actually", "wait", "never mind", "on second thought"
+- "no bug here", "this is fine", "ignore this", "this works correctly", "I was wrong"
+- "I think", "I believe", "it seems", "I suspect"
+- "might be a bug", "could potentially", "may or may not", "possibly"
+- Self-resolving reasoning of any shape (raising a concern then dismissing it in the same comment)
+- The word "However" used to walk back what the comment just said
+
+If the message needs hedging to be honest, the finding is not strong enough to post. Drop it.
+
+The `reasoning` field is private — it is stripped before any human sees the finding. Never reference it in `message`. The `message` must stand alone.|}
+
 let guidelines =
   {|Guidelines:
 - Only comment on the changed lines (additions), not existing code.
@@ -52,7 +85,7 @@ let build_system_prompt ~security_covered_elsewhere =
     | true -> focus_without_security
     | false -> focus_with_security
   in
-  String.concat "\n\n" [ preamble; focus; guidelines; output_hygiene ]
+  String.concat "\n\n" [ preamble; focus; workflow; guidelines; output_hygiene ]
 
 let review_schema : Yojson.Safe.t = (Review_types.review_output_jsonschema :> Yojson.Safe.t)
 
