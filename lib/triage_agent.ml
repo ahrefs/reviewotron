@@ -105,6 +105,7 @@ let config ~model_tier : Agent_runner.agent_config =
     model_tier;
     output_schema = Security_types.triage_output_jsonschema;
     max_steps = 1;
+    thinking_budget = None;
   }
 
 let build_input ~diff_text ~file_paths ?security_memory () =

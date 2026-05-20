@@ -14,7 +14,24 @@ type agent_config = {
   model_tier : model_tier;
   output_schema : Yojson.Basic.t;
   max_steps : int;
+  thinking_budget : int option;
 }
+
+(** Anthropic enforces a minimum extended-thinking budget of 1024 tokens.
+    Callers that ask for less are clamped up so a misconfiguration does not
+    crash the agent loop. *)
+let anthropic_min_thinking_budget = 1024
+
+let build_provider_options (config : agent_config) : Ai_provider.Provider_options.t =
+  match config.thinking_budget with
+  | None -> Ai_provider.Provider_options.empty
+  | Some n ->
+    let budget = max anthropic_min_thinking_budget n in
+    let thinking : Ai_provider_anthropic.Thinking.t =
+      { enabled = true; budget_tokens = Ai_provider_anthropic.Thinking.budget_exn budget }
+    in
+    let opts = { Ai_provider_anthropic.Anthropic_options.default with thinking = Some thinking } in
+    Ai_provider_anthropic.Anthropic_options.to_provider_options opts
 
 type agent_result = {
   output : Yojson.Basic.t;
@@ -149,8 +166,8 @@ let finalization_instruction =
   "You have reached the tool-use budget for this task. Do NOT request any more tool calls. Based solely on the \
    evidence you already gathered in the turns above, produce your final answer now as a single JSON object matching \
    the declared output schema. If you do not have enough evidence to confirm any finding, return an empty [findings] \
-   array and note the reason in the [notes] field (or equivalent field of your schema) — this is the correct \
-   behaviour when evidence is incomplete, and is strictly preferred over reporting unverified findings."
+   array and note the reason in the [notes] field (or equivalent field of your schema) — this is the correct behaviour \
+   when evidence is incomplete, and is strictly preferred over reporting unverified findings."
 
 (** Attempt a budget-exhaustion recovery: on [finish_reason = tool-calls] with
     no structured output, replay the completed turns plus a trailing user
@@ -163,7 +180,8 @@ let finalization_instruction =
 let finalize_after_budget_exhaustion ~model ~config ~input ~output_spec ~max_retries
   ~(first : Ai_core.Generate_text_result.t) =
   let base_messages =
-    Ai_provider.Prompt.User { content = [ Text { text = input; provider_options = po } ] } :: messages_of_steps first.steps
+    Ai_provider.Prompt.User { content = [ Text { text = input; provider_options = po } ] }
+    :: messages_of_steps first.steps
   in
   let follow_up =
     Ai_provider.Prompt.User { content = [ Text { text = finalization_instruction; provider_options = po } ] }
@@ -171,10 +189,11 @@ let finalize_after_budget_exhaustion ~model ~config ~input ~output_spec ~max_ret
   let messages = base_messages @ [ follow_up ] in
   log#info "agent %s: budget exhausted, attempting graceful finalization with %d replayed turns" config.name
     (List.length base_messages - 1);
+  let provider_options = build_provider_options config in
   try%lwt
     let%lwt second =
       Ai_core.Generate_text.generate_text ~model ~system:config.system_prompt ~messages ~tools:[] ~output:output_spec
-        ~max_steps:1 ~max_retries ()
+        ~max_steps:1 ~max_retries ~provider_options ()
     in
     match second.output with
     | Some _ ->
@@ -202,12 +221,16 @@ let run_agent ~model ?tools ?(max_retries = 2) ?debug_dir ~config ~input () =
   in
   let output_spec = Ai_core.Output.object_ ~name:(config.name ^ "_output") ~schema:config.output_schema () in
   let model_id = Ai_provider.Language_model.model_id model in
-  log#info "agent %s: starting (model=%s, max_steps=%d)" config.name model_id config.max_steps;
+  let provider_options = build_provider_options config in
+  log#info "agent %s: starting (model=%s, max_steps=%d, thinking_budget=%s)" config.name model_id config.max_steps
+    (match config.thinking_budget with
+    | None -> "off"
+    | Some n -> string_of_int (max anthropic_min_thinking_budget n));
   let tools = Option.default [] tools in
   try%lwt
     let%lwt result =
       Ai_core.Generate_text.generate_text ~model ~system:config.system_prompt ~prompt:input ~tools ~output:output_spec
-        ~max_steps:config.max_steps ~max_retries ()
+        ~max_steps:config.max_steps ~max_retries ~provider_options ()
     in
     let steps_count = List.length result.steps in
     let cache_read_input_tokens, cache_creation_input_tokens = extract_cache_tokens result.response.body in
@@ -225,8 +248,7 @@ let run_agent ~model ?tools ?(max_retries = 2) ?debug_dir ~config ~input () =
     in
     match result.output with
     | Some output ->
-      Lwt.return_ok
-        (make_result ~output ~usage:result.usage ~extra_cache_read:0 ~extra_cache_write:0 ~extra_steps:0)
+      Lwt.return_ok (make_result ~output ~usage:result.usage ~extra_cache_read:0 ~extra_cache_write:0 ~extra_steps:0)
     | None ->
       let tool_calls_exhaustion =
         match result.finish_reason with
@@ -259,8 +281,7 @@ let run_agent ~model ?tools ?(max_retries = 2) ?debug_dir ~config ~input () =
           (match second.output with
           | Some output ->
             Lwt.return_ok
-              (make_result ~output ~usage ~extra_cache_read ~extra_cache_write
-                 ~extra_steps:(List.length second.steps))
+              (make_result ~output ~usage ~extra_cache_read ~extra_cache_write ~extra_steps:(List.length second.steps))
           | None ->
             (* Impossible: finalize returns Some only when second.output is Some. *)
             let msg = Printf.sprintf "agent %s: finalization returned empty output" config.name in
@@ -269,14 +290,12 @@ let run_agent ~model ?tools ?(max_retries = 2) ?debug_dir ~config ~input () =
         | None ->
           let msg =
             Printf.sprintf
-              "agent %s: no structured output returned (finish_reason=tool-calls; finalization also failed)"
-              config.name
+              "agent %s: no structured output returned (finish_reason=tool-calls; finalization also failed)" config.name
           in
           (match debug_dir with
           | Some dir ->
             (match
-               write_debug_dump ~dir ~config ~finish_reason:result.finish_reason ~steps:result.steps
-                 ~usage:result.usage
+               write_debug_dump ~dir ~config ~finish_reason:result.finish_reason ~steps:result.steps ~usage:result.usage
              with
             | Some filepath -> log#warn "agent %s: parse failed, debug dump at %s" config.name filepath
             | None -> log#warn "%s" msg)

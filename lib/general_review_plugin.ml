@@ -8,9 +8,7 @@ module Make (AI : Api.Agent_runner) = struct
   let run_review ~ctx ~repo_url ~diff_text ~metadata ?debug_dir () =
     let config = Context.get_config ctx ~repo_url in
     let security_covered_elsewhere = config.review_plugins.security.enabled in
-    let system =
-      Review_prompt.system_prompt ?override:config.system_prompt_override ~security_covered_elsewhere ()
-    in
+    let system = Review_prompt.system_prompt ?override:config.system_prompt_override ~security_covered_elsewhere () in
     let Review_plugin.{ pr_title; pr_description; file_contents; _ } = metadata in
     let input = Review_prompt.build_user_message ~diff:diff_text ~pr_title ~pr_description ~file_contents () in
     let agent_config : Agent_runner.agent_config =
@@ -20,6 +18,7 @@ module Make (AI : Api.Agent_runner) = struct
         model_tier = Standard;
         output_schema = Review_types.review_output_jsonschema;
         max_steps = 1;
+        thinking_budget = None;
       }
     in
     let%lwt result = AI.run ~ctx ~repo_url ~model_id:config.model ?debug_dir ~config:agent_config ~input () in
@@ -36,8 +35,9 @@ module Make (AI : Api.Agent_runner) = struct
            model output (including reasoning) remains available in agent debug
            dumps for prompt tuning. *)
         let reasonings_present =
-          List.fold_left (fun n (f : Review_types.finding) -> if String.length f.reasoning > 0 then n + 1 else n) 0
-            review.findings
+          List.fold_left
+            (fun n (f : Review_types.finding) -> if String.length f.reasoning > 0 then n + 1 else n)
+            0 review.findings
         in
         let findings_stripped =
           List.map (fun (f : Review_types.finding) -> { f with reasoning = "" }) review.findings

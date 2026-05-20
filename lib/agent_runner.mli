@@ -22,6 +22,12 @@ type agent_config = {
   model_tier : model_tier;
   output_schema : Yojson.Basic.t;
   max_steps : int;
+  thinking_budget : int option;
+      (** Optional Anthropic extended-thinking budget in tokens.  When [Some n]
+          the runner enables thinking for this agent with that budget.  Values
+          below the Anthropic minimum (1024) are clamped up.  [None] disables
+          thinking (the default and current behaviour for every existing
+          agent). *)
 }
 
 (** Result of a successful agent run. *)
@@ -56,6 +62,18 @@ val write_debug_dump :
   steps:Ai_core.Generate_text_result.step list ->
   usage:Ai_provider.Usage.t ->
   string option
+
+(** Build the provider-options payload for an agent.
+
+    Translates the agent's [thinking_budget] (and any future provider-specific
+    knobs) into an {!Ai_provider.Provider_options.t} ready to hand to
+    [Ai_core.Generate_text.generate_text].  Pure and total — exposed for unit
+    testing the plumbing without a live network call.
+
+    Returns {!Ai_provider.Provider_options.empty} when the agent has no
+    provider-specific options, so the call site can pass the result
+    unconditionally. *)
+val build_provider_options : agent_config -> Ai_provider.Provider_options.t
 
 (** Run an agent with the given configuration and input prompt.
 
