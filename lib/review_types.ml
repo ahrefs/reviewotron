@@ -120,10 +120,7 @@ type finding = {
        "Category: bug, security, performance, style, logic, error-handling, naming, documentation"]
   message : string;
      [@jsonschema.description
-       "Concise, human-facing description of the defect and (when useful) the fix. Must read as a finished comment — no \
-        reasoning trail, no hedging like 'actually', 'wait', 'never mind', 'no bug here', 'this is fine', 'ignore \
-        this', 'I think', or 'it seems'. Do your reasoning in the model's extended-thinking channel; if you cannot \
-        write the message without hedging, the finding does not belong in the output — drop it."]
+       "Concise, human-facing description of the defect and (when useful) the fix. Must read as a finished comment."]
   suggested_fix : string option;
      [@json.option]
      [@jsonschema.description
