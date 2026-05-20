@@ -47,9 +47,7 @@ let format_distribution buf distribution =
   | [] -> ()
   | _ :: _ ->
     Buffer.add_string buf "\n## Triage Vuln-Class Distribution (past review)\n\n";
-    List.iter
-      (fun (vc, n) -> Printf.bprintf buf "- %s: %d signal(s)\n" vc n)
-      distribution
+    List.iter (fun (vc, n) -> Printf.bprintf buf "- %s: %d signal(s)\n" vc n) distribution
 
 let format_reviewed_files buf files =
   match files with

@@ -32,8 +32,7 @@ val config : model_tier:Agent_runner.model_tier -> Agent_runner.agent_config
 
     @param diff_text Raw unified diff text.
     @param candidate_findings All candidate findings from analysis agents. *)
-val build_input :
-  diff_text:string -> candidate_findings:Security_types.candidate_finding list -> unit -> string
+val build_input : diff_text:string -> candidate_findings:Security_types.candidate_finding list -> unit -> string
 
 (** Build the tool set for the validator agent.
 

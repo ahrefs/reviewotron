@@ -318,8 +318,8 @@ let test_prompt_token_estimation () =
 
 (** {2 Dedup tests} *)
 
-let mk_finding ~path ~line ?(end_line = None) ?(severity = Review_types.Warning)
-  ?(category = Review_types.Security) ?(message = "msg") ?(suggested_fix = None) () : Review_types.finding =
+let mk_finding ~path ~line ?(end_line = None) ?(severity = Review_types.Warning) ?(category = Review_types.Security)
+  ?(message = "msg") ?(suggested_fix = None) () : Review_types.finding =
   { path; line; end_line; severity; category; message; suggested_fix }
 
 let finding_by_message msg (f : Review_types.finding) = String.equal f.message msg
@@ -343,8 +343,7 @@ let test_dedup_near_line_collapse_same_category () =
   let b = mk_finding ~path:"a.ml" ~line:10 ~severity:Critical ~message:"b" () in
   let c = mk_finding ~path:"a.ml" ~line:30 ~severity:Warning ~message:"c" () in
   let out =
-    Reviewer.deduplicate_findings
-      [ Reviewer.From_general, a; Reviewer.From_general, b; Reviewer.From_general, c ]
+    Reviewer.deduplicate_findings [ Reviewer.From_general, a; Reviewer.From_general, b; Reviewer.From_general, c ]
   in
   (check int) "two findings (a+b collapsed, c kept)" 2 (List.length out);
   (check bool) "critical survives collapse" true (List.exists (finding_by_message "b") out);
@@ -389,16 +388,16 @@ let two_hunk_diff_text =
    --- a/src/main.ml\n\
    +++ b/src/main.ml\n\
    @@ -10,5 +10,5 @@\n\
-    a\n\
-    b\n\
+   a\n\
+   b\n\
    +c\n\
    +d\n\
-    e\n\
+   e\n\
    @@ -40,4 +40,4 @@\n\
-    f\n\
+   f\n\
    +g\n\
    +h\n\
-    i\n"
+   i\n"
 
 let parsed_two_hunk_diff = Diff_parser.parse two_hunk_diff_text
 
@@ -414,7 +413,8 @@ let test_single_hunk_contains_valid_range () =
 
 let test_single_hunk_contains_straddles_hunks () =
   let fd = find_fd_exn parsed_two_hunk_diff "src/main.ml" in
-  (check bool) "range crossing hunks is rejected" false (Diff_anchor.single_hunk_contains fd ~start_line:12 ~end_line:41);
+  (check bool) "range crossing hunks is rejected" false
+    (Diff_anchor.single_hunk_contains fd ~start_line:12 ~end_line:41);
   (check bool) "range spanning gap is rejected" false (Diff_anchor.single_hunk_contains fd ~start_line:14 ~end_line:40)
 
 (** Instantiate the reviewer against the in-memory api harness so we can call
@@ -497,7 +497,8 @@ let routing_is_anchor_failed = function
 
 let test_route_finding_positioned () =
   let finding = mk_finding ~path:"src/main.ml" ~line:10 () in
-  (check bool) "positioned" true (routing_is_positioned (R_anchor_test.route_finding ~diff:parsed_two_hunk_diff finding))
+  (check bool) "positioned" true
+    (routing_is_positioned (R_anchor_test.route_finding ~diff:parsed_two_hunk_diff finding))
 
 let test_route_finding_file_not_in_diff () =
   let finding = mk_finding ~path:"src/other.ml" ~line:5 () in
@@ -532,12 +533,7 @@ let test_route_finding_deletion_only_file_is_anchor_failed () =
 let test_annotate_file_content_header_and_gutter () =
   let content = "line one\nline two\nline three" in
   let annotated = Diff_parser.annotate_file_content ~path:"src/foo.ml" content in
-  let expected =
-    "# File: src/foo.ml\n\
-    \   1 |  line one\n\
-    \   2 |  line two\n\
-    \   3 |  line three"
-  in
+  let expected = "# File: src/foo.ml\n   1 |  line one\n   2 |  line two\n   3 |  line three" in
   (check string) "annotated output" expected annotated
 
 let test_annotate_file_content_empty () =
@@ -594,8 +590,7 @@ let test_anchor_sink_in_diff_no_snap () =
   let f = Sec_test.validated_to_finding ~diff:parsed_anchor_diff vf in
   (check string) "path stays on sink" "src/main.ml" f.path;
   (check int) "line stays on sink" 11 f.line;
-  (check bool) "no Related prefix in message" true
-    (not (CCString.mem ~sub:"Related sink" f.message))
+  (check bool) "no Related prefix in message" true (not (CCString.mem ~sub:"Related sink" f.message))
 
 let test_anchor_sink_not_in_diff_flow_in_diff () =
   (* Sink is in an unchanged file; flow passes through src/main.ml:12.  The
@@ -679,8 +674,8 @@ let test_anchor_end_line_derived_from_anchor_not_sink () =
     candidates that share the same [(sink.path, sink.line)] so the validator
     sees the strongest framing of each defect, exactly once. *)
 
-let mk_candidate ~vuln_class ~sink_path ~sink_line ?(confidence = Security_types.High) ?(flow = []) ?(tag = "")
-  () : Security_types.candidate_finding =
+let mk_candidate ~vuln_class ~sink_path ~sink_line ?(confidence = Security_types.High) ?(flow = []) ?(tag = "") () :
+  Security_types.candidate_finding =
   {
     vuln_class;
     source = { path = "src/entry.ts"; line = 1; description = "user input " ^ tag };
@@ -699,10 +694,8 @@ let test_dedup_collapses_same_sink_across_vuln_classes () =
     [
       mk_candidate ~vuln_class:Injection ~sink_path:"src/routes/notes.ts" ~sink_line:99 ~confidence:Medium
         ~tag:"injection" ();
-      mk_candidate ~vuln_class:Authn ~sink_path:"src/routes/notes.ts" ~sink_line:99 ~confidence:Low ~tag:"authn"
-        ();
-      mk_candidate ~vuln_class:Authz ~sink_path:"src/routes/notes.ts" ~sink_line:99 ~confidence:Medium
-        ~tag:"authz" ();
+      mk_candidate ~vuln_class:Authn ~sink_path:"src/routes/notes.ts" ~sink_line:99 ~confidence:Low ~tag:"authn" ();
+      mk_candidate ~vuln_class:Authz ~sink_path:"src/routes/notes.ts" ~sink_line:99 ~confidence:Medium ~tag:"authz" ();
       mk_candidate ~vuln_class:Xss ~sink_path:"src/routes/notes.ts" ~sink_line:99 ~confidence:High ~tag:"xss" ();
     ]
   in
@@ -737,10 +730,10 @@ let test_dedup_tiebreak_prefers_longer_flow () =
   in
   let candidates =
     [
-      mk_candidate ~vuln_class:Injection ~sink_path:"src/a.ts" ~sink_line:42 ~confidence:Medium
-        ~flow:short_flow ~tag:"short" ();
-      mk_candidate ~vuln_class:Authz ~sink_path:"src/a.ts" ~sink_line:42 ~confidence:Medium ~flow:long_flow
-        ~tag:"long" ();
+      mk_candidate ~vuln_class:Injection ~sink_path:"src/a.ts" ~sink_line:42 ~confidence:Medium ~flow:short_flow
+        ~tag:"short" ();
+      mk_candidate ~vuln_class:Authz ~sink_path:"src/a.ts" ~sink_line:42 ~confidence:Medium ~flow:long_flow ~tag:"long"
+        ();
     ]
   in
   let deduped = Sec_test.dedup_candidates candidates in
@@ -748,8 +741,7 @@ let test_dedup_tiebreak_prefers_longer_flow () =
   match deduped with
   | [ kept ] ->
     (check int) "longer flow wins on confidence tie" 3 (List.length kept.flow);
-    (check string) "kept the longer-flow candidate" "authz"
-      (Security_types.vuln_class_to_string kept.vuln_class)
+    (check string) "kept the longer-flow candidate" "authz" (Security_types.vuln_class_to_string kept.vuln_class)
   | _ -> Alcotest.fail "expected exactly one finding after dedup"
 
 let test_dedup_tiebreak_first_seen_when_fully_tied () =
@@ -888,12 +880,7 @@ let test_security_candidate_finding_roundtrip () =
 let test_security_sanitization_status_roundtrip () =
   let open Security_types in
   let cases =
-    [
-      Adequate, {|"adequate"|};
-      Inadequate, {|"inadequate"|};
-      Missing, {|"missing"|};
-      Unknown, {|"unknown"|};
-    ]
+    [ Adequate, {|"adequate"|}; Inadequate, {|"inadequate"|}; Missing, {|"missing"|}; Unknown, {|"unknown"|} ]
   in
   List.iter
     (fun (status, expected_json) ->
@@ -997,9 +984,7 @@ let test_security_tools_execute_success () =
   let result = Security_tools.get_file_content_result_of_json result_json in
   (* The tool wraps raw content with a [# File: <path>] header and a
      per-line gutter so the agent can anchor findings without counting. *)
-  (check (option string)) "content is annotated"
-    (Some "# File: lib/auth.ml\n   1 |  file content here")
-    result.content;
+  (check (option string)) "content is annotated" (Some "# File: lib/auth.ml\n   1 |  file content here") result.content;
   (check (option string)) "error" None result.error
 
 let test_security_tools_execute_not_found () =
@@ -1371,8 +1356,7 @@ let test_analysis_agent_build_input_minimal () =
   (check bool) "contains rationale" true (Devkit.Stre.exists input "SQL string concatenation");
   (check bool) "contains confidence" true (Devkit.Stre.exists input "high");
   (check bool) "contains regions" true (Devkit.Stre.exists input "lines 10");
-  (check bool) "no repository security context section" false
-    (Devkit.Stre.exists input "Repository Security Context")
+  (check bool) "no repository security context section" false (Devkit.Stre.exists input "Repository Security Context")
 
 let test_analysis_agent_tools () =
   let fetch_file _path = Lwt.return_ok (Some "file content") in
@@ -1448,8 +1432,7 @@ let test_pr_reviewed_when_draft_and_flag_enabled () =
   Test_helpers.reset_test_state ();
   let config =
     Config_types.config_of_json
-      (Melange_json.of_string
-         {|{"auto_review_pr_open": true, "auto_review_pr_sync": true, "review_draft_prs": true}|})
+      (Melange_json.of_string {|{"auto_review_pr_open": true, "auto_review_pr_sync": true, "review_draft_prs": true}|})
   in
   let ctx = Test_helpers.make_test_context ~config () in
   let payload = Test_helpers.make_pr_payload ~draft:true () in
@@ -1480,8 +1463,7 @@ let test_pr_skipped_when_closed () =
     because the helper is internal to the [Make] functor and not exposed in
     the [.mli] — same pattern as [pr_skip_reason] / [push_skip_reason]. *)
 
-let comment_trigger_config =
-  Config_types.config_of_json (Melange_json.of_string {|{"auto_review_on_comment": true}|})
+let comment_trigger_config = Config_types.config_of_json (Melange_json.of_string {|{"auto_review_on_comment": true}|})
 
 let test_comment_trigger_reviews_pr () =
   Test_helpers.reset_test_state ();
@@ -1491,8 +1473,7 @@ let test_comment_trigger_reviews_pr () =
   Lwt_main.run (R_test.process_event ctx ~event);
   let write_log = Api_local.get_write_log () in
   (check bool) "review posted via REVIEW comment" true (CCString.find ~sub:"[create_pr_review]" write_log >= 0);
-  (check bool) "uses general review pipeline" true
-    (CCString.find ~sub:"The changes look generally good" write_log >= 0)
+  (check bool) "uses general review pipeline" true (CCString.find ~sub:"The changes look generally good" write_log >= 0)
 
 let test_comment_trigger_disabled () =
   Test_helpers.reset_test_state ();
@@ -2116,8 +2097,9 @@ let test_curator_prompt_architectural_only () =
   (check bool) "prompt names Architecture section" true (Devkit.Stre.exists prompt "## Architecture");
   (check bool) "prompt names Known Safe Patterns section" true (Devkit.Stre.exists prompt "## Known Safe Patterns");
   (check bool) "prompt forbids line-number references" true
-    (Devkit.Stre.exists prompt "line number" || Devkit.Stre.exists prompt "line-number"
-   || Devkit.Stre.exists prompt "path:line");
+    (Devkit.Stre.exists prompt "line number"
+    || Devkit.Stre.exists prompt "line-number"
+    || Devkit.Stre.exists prompt "path:line");
   (check bool) "prompt explicitly rejects Known Risk Areas" true (Devkit.Stre.exists prompt "Known Risk Areas");
   (check bool) "prompt explicitly rejects Suppressions" true (Devkit.Stre.exists prompt "Suppressions")
 
@@ -2156,15 +2138,15 @@ let test_curator_build_input_with_memory () =
 
 let test_curator_build_input_empty_memory () =
   let input =
-    Memory_curator_agent.build_input ~repo_name:"test-repo" ~memory_max_tokens:500
-      ~observations:empty_observations ~current_memory:"" ()
+    Memory_curator_agent.build_input ~repo_name:"test-repo" ~memory_max_tokens:500 ~observations:empty_observations
+      ~current_memory:"" ()
   in
   (check bool) "empty memory treated as no brief" true (Devkit.Stre.exists input "No existing brief")
 
 let test_curator_build_input_empty_observations () =
   let input =
-    Memory_curator_agent.build_input ~repo_name:"test-repo" ~memory_max_tokens:500
-      ~observations:empty_observations ~current_memory:"# test-repo\n" ()
+    Memory_curator_agent.build_input ~repo_name:"test-repo" ~memory_max_tokens:500 ~observations:empty_observations
+      ~current_memory:"# test-repo\n" ()
   in
   (check bool) "still contains existing brief" true (Devkit.Stre.exists input "# test-repo");
   (* No observations ⇒ no observation sections rendered *)
@@ -2259,11 +2241,7 @@ let test_curator_save_load_roundtrip () =
       try Unix.rmdir tmp_dir with Unix.Unix_error _ -> ())
     (fun () ->
       let updated_memory =
-        "# test-repo\n\n\
-         ## Architecture\n\
-         - OCaml with Dream\n\n\
-         ## Known Safe Patterns\n\
-         - Db.query parameterized\n"
+        "# test-repo\n\n## Architecture\n- OCaml with Dream\n\n## Known Safe Patterns\n- Db.query parameterized\n"
       in
       Security_memory.save ~memory_dir:tmp_dir ~repo_url ~content:updated_memory;
       let loaded = Security_memory.load ~memory_dir:tmp_dir ~repo_url in
@@ -2375,8 +2353,7 @@ let test_security_e2e_disabled () =
   Test_helpers.reset_test_state ();
   let config =
     Config_types.config_of_json
-      (Melange_json.of_string
-         {|{"auto_review_pr_open": true, "review_plugins": {"security": {"enabled": false}}}|})
+      (Melange_json.of_string {|{"auto_review_pr_open": true, "review_plugins": {"security": {"enabled": false}}}|})
   in
   let ctx = Test_helpers.make_test_context ~config () in
   let payload = read_file "mock_payloads/pr_opened.json" in
@@ -2528,8 +2505,7 @@ let test_pr_no_security_notice_when_disabled () =
   (* Disable the security plugin. No security failure notice should appear. *)
   let config =
     Config_types.config_of_json
-      (Melange_json.of_string
-         {|{"auto_review_pr_open": true, "review_plugins": {"security": {"enabled": false}}}|})
+      (Melange_json.of_string {|{"auto_review_pr_open": true, "review_plugins": {"security": {"enabled": false}}}|})
   in
   let ctx = Test_helpers.make_test_context ~config () in
   let payload = read_file "mock_payloads/pr_opened.json" in
@@ -3021,8 +2997,7 @@ let () =
           test_case "vulnerable diff produces security finding" `Quick test_security_e2e_vulnerable;
           test_case "safe diff produces no security findings" `Quick test_security_e2e_safe;
           test_case "rejected finding produces no security output" `Quick test_security_e2e_rejected;
-          test_case "empty skip_reason does not silence pipeline" `Quick
-            test_security_e2e_triage_empty_skip_reason;
+          test_case "empty skip_reason does not silence pipeline" `Quick test_security_e2e_triage_empty_skip_reason;
           test_case "disabled plugin produces no security findings" `Quick test_security_e2e_disabled;
         ] );
       ( "general_failure_robustness",

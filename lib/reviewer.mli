@@ -22,13 +22,12 @@ module Make (_ : Api.Github) (_ : Api.Agent_runner) (_ : Api.Slack) : sig
 
   (** Where a finding goes when we try to turn it into a GitHub review comment. *)
   type finding_routing =
-    | Positioned of Github_types.review_comment_req
-        (** Successfully anchored to a line (or range) in the diff. *)
+    | Positioned of Github_types.review_comment_req  (** Successfully anchored to a line (or range) in the diff. *)
     | File_not_in_diff
-        (** The finding's [path] doesn't match any file in the PR diff; typically
+      (** The finding's [path] doesn't match any file in the PR diff; typically
             a legitimate finding on unchanged code that the change touches. *)
     | Anchor_failed
-        (** The file is in the diff but no usable line could be derived — either
+      (** The file is in the diff but no usable line could be derived — either
             [line ≤ 0] or the file has only deletion hunks on the right side.
             Treated as a tuning signal; surfaces in the review body for
             investigation regardless of severity. *)

@@ -149,8 +149,8 @@ let finalization_instruction =
   "You have reached the tool-use budget for this task. Do NOT request any more tool calls. Based solely on the \
    evidence you already gathered in the turns above, produce your final answer now as a single JSON object matching \
    the declared output schema. If you do not have enough evidence to confirm any finding, return an empty [findings] \
-   array and note the reason in the [notes] field (or equivalent field of your schema) — this is the correct \
-   behaviour when evidence is incomplete, and is strictly preferred over reporting unverified findings."
+   array and note the reason in the [notes] field (or equivalent field of your schema) — this is the correct behaviour \
+   when evidence is incomplete, and is strictly preferred over reporting unverified findings."
 
 (** Attempt a budget-exhaustion recovery: on [finish_reason = tool-calls] with
     no structured output, replay the completed turns plus a trailing user
@@ -163,7 +163,8 @@ let finalization_instruction =
 let finalize_after_budget_exhaustion ~model ~config ~input ~output_spec ~max_retries
   ~(first : Ai_core.Generate_text_result.t) =
   let base_messages =
-    Ai_provider.Prompt.User { content = [ Text { text = input; provider_options = po } ] } :: messages_of_steps first.steps
+    Ai_provider.Prompt.User { content = [ Text { text = input; provider_options = po } ] }
+    :: messages_of_steps first.steps
   in
   let follow_up =
     Ai_provider.Prompt.User { content = [ Text { text = finalization_instruction; provider_options = po } ] }
@@ -225,8 +226,7 @@ let run_agent ~model ?tools ?(max_retries = 2) ?debug_dir ~config ~input () =
     in
     match result.output with
     | Some output ->
-      Lwt.return_ok
-        (make_result ~output ~usage:result.usage ~extra_cache_read:0 ~extra_cache_write:0 ~extra_steps:0)
+      Lwt.return_ok (make_result ~output ~usage:result.usage ~extra_cache_read:0 ~extra_cache_write:0 ~extra_steps:0)
     | None ->
       let tool_calls_exhaustion =
         match result.finish_reason with
@@ -259,8 +259,7 @@ let run_agent ~model ?tools ?(max_retries = 2) ?debug_dir ~config ~input () =
           (match second.output with
           | Some output ->
             Lwt.return_ok
-              (make_result ~output ~usage ~extra_cache_read ~extra_cache_write
-                 ~extra_steps:(List.length second.steps))
+              (make_result ~output ~usage ~extra_cache_read ~extra_cache_write ~extra_steps:(List.length second.steps))
           | None ->
             (* Impossible: finalize returns Some only when second.output is Some. *)
             let msg = Printf.sprintf "agent %s: finalization returned empty output" config.name in
@@ -269,14 +268,12 @@ let run_agent ~model ?tools ?(max_retries = 2) ?debug_dir ~config ~input () =
         | None ->
           let msg =
             Printf.sprintf
-              "agent %s: no structured output returned (finish_reason=tool-calls; finalization also failed)"
-              config.name
+              "agent %s: no structured output returned (finish_reason=tool-calls; finalization also failed)" config.name
           in
           (match debug_dir with
           | Some dir ->
             (match
-               write_debug_dump ~dir ~config ~finish_reason:result.finish_reason ~steps:result.steps
-                 ~usage:result.usage
+               write_debug_dump ~dir ~config ~finish_reason:result.finish_reason ~steps:result.steps ~usage:result.usage
              with
             | Some filepath -> log#warn "agent %s: parse failed, debug dump at %s" config.name filepath
             | None -> log#warn "%s" msg)

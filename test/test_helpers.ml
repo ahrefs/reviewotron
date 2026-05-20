@@ -192,9 +192,7 @@ let make_issue_comment_payload ?(action = "created") ?(number = 42) ?(title = "A
   "repository": %s,
   "sender": %s
 }|}
-    action number title state number
-    (user_json ~login:"developer1" ())
-    pr_marker body number
+    action number title state number (user_json ~login:"developer1" ()) pr_marker body number
     (user_json ~login:sender_login ~id:sender_id ())
     (repo_json ())
     (user_json ~login:sender_login ~id:sender_id ())

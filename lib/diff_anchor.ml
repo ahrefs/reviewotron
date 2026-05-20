@@ -32,9 +32,7 @@ let resolve_right_line (fd : Diff_parser.file_diff) ~target_line =
   | false -> nearest_right_line_in_diff fd ~target_line
 
 let single_hunk_contains (fd : Diff_parser.file_diff) ~start_line ~end_line =
-  List.exists
-    (fun (hs, he) -> start_line >= hs && end_line <= he)
-    (right_line_ranges fd)
+  List.exists (fun (hs, he) -> start_line >= hs && end_line <= he) (right_line_ranges fd)
 
 let rec drop_known_path_prefixes path =
   let len = String.length path in

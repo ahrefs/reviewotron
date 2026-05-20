@@ -145,9 +145,7 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) = struct
       gives us the earliest point on the path that this PR touches. *)
   let pick_inline_anchor ~diff (f : Security_types.candidate_finding) =
     let sink_site = `Sink, f.sink.path, f.sink.line in
-    let flow_sites =
-      List.map (fun (s : Security_types.flow_step) -> `Flow, s.path, s.line) f.flow
-    in
+    let flow_sites = List.map (fun (s : Security_types.flow_step) -> `Flow, s.path, s.line) f.flow in
     let source_site = `Source, f.source.path, f.source.line in
     let candidates = sink_site :: (flow_sites @ [ source_site ]) in
     let in_diff (_kind, path, _line) = Option.is_some (Diff_anchor.find_file_diff_by_path ~diff path) in
@@ -385,8 +383,8 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) = struct
       let candidates = dedup_candidates raw_candidates in
       (match List.compare_lengths candidates raw_candidates < 0 with
       | true ->
-        log#info "dedup: %d → %d candidates after collapsing duplicates by sink"
-          (List.length raw_candidates) (List.length candidates)
+        log#info "dedup: %d → %d candidates after collapsing duplicates by sink" (List.length raw_candidates)
+          (List.length candidates)
       | false -> ());
       (match candidates with
       | [] -> Lwt.return ([], analysis_costs)
@@ -450,9 +448,7 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) = struct
     let current_memory = Security_memory.load ~memory_dir ~repo_url in
     let memory_max_tokens = security_config.Config_types.memory_max_tokens in
     let repo_name = Security_memory.repo_slug repo_url in
-    let curator_config =
-      Memory_curator_agent.config ~model_tier:(agent_model_tier security_config.triage_model_tier)
-    in
+    let curator_config = Memory_curator_agent.config ~model_tier:(agent_model_tier security_config.triage_model_tier) in
     let input = Memory_curator_agent.build_input ~repo_name ~memory_max_tokens ~observations ?current_memory () in
     let%lwt result = AI.run ~ctx ~repo_url ?debug_dir ~config:curator_config ~input () in
     match result with
@@ -485,38 +481,38 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) = struct
     match triage_result with
     | None -> Lwt.return ([], triage_costs)
     | Some triage_output ->
-    (* Triage is sometimes asked to choose between [skip_reason = None] (proceed)
+      (* Triage is sometimes asked to choose between [skip_reason = None] (proceed)
        and [skip_reason = Some "..."] (bail).  When it has nothing to say but
        still feels obliged to populate the field, it emits the empty string —
        and we used to treat that as a real skip, silencing the entire security
        pipeline for the PR (observed in production).  An empty or
        whitespace-only reason carries no information, so
        fall through to analysis and let the signal list drive the decision. *)
-    let effective_skip_reason =
-      match triage_output.skip_reason with
-      | Some reason when String.length (String.trim reason) > 0 -> Some reason
-      | Some _ | None -> None
-    in
-    match effective_skip_reason with
-    | Some reason ->
-      log#info "triage: skipped (%s)" reason;
-      Lwt.return ([], triage_costs)
-    | None ->
-      let%lwt findings, analysis_costs =
-        run_analysis ~ctx ~repo_url ~head_sha ~security_config ~diff ~diff_text ~file_paths
-          ~language_hints:triage_output.language_hints ~debug_dir triage_output.signals
+      let effective_skip_reason =
+        match triage_output.skip_reason with
+        | Some reason when String.length (String.trim reason) > 0 -> Some reason
+        | Some _ | None -> None
       in
-      let observations = build_observations ~triage_output ~file_paths in
-      (* Fire the curator asynchronously — not in the critical review path.
+      (match effective_skip_reason with
+      | Some reason ->
+        log#info "triage: skipped (%s)" reason;
+        Lwt.return ([], triage_costs)
+      | None ->
+        let%lwt findings, analysis_costs =
+          run_analysis ~ctx ~repo_url ~head_sha ~security_config ~diff ~diff_text ~file_paths
+            ~language_hints:triage_output.language_hints ~debug_dir triage_output.signals
+        in
+        let observations = build_observations ~triage_output ~file_paths in
+        (* Fire the curator asynchronously — not in the critical review path.
          Last-write-wins is acceptable: the brief is a pure architectural
          description over the same repo, so concurrent writes converge. *)
-      Lwt.async (fun () ->
-        try%lwt
-          let%lwt costs = curate_memory ~ctx ~repo_url ~memory_dir ~security_config ~observations ~debug_dir () in
-          ignore (costs : Cost_tracking.agent_cost list);
-          Lwt.return_unit
-        with exn ->
-          log#error "memory curator async task raised: %s" (Exn.str exn);
-          Lwt.return_unit);
-      Lwt.return (findings, triage_costs @ analysis_costs)
+        Lwt.async (fun () ->
+          try%lwt
+            let%lwt costs = curate_memory ~ctx ~repo_url ~memory_dir ~security_config ~observations ~debug_dir () in
+            ignore (costs : Cost_tracking.agent_cost list);
+            Lwt.return_unit
+          with exn ->
+            log#error "memory curator async task raised: %s" (Exn.str exn);
+            Lwt.return_unit);
+        Lwt.return (findings, triage_costs @ analysis_costs))
 end

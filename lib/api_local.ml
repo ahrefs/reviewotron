@@ -61,8 +61,8 @@ module Github : Api.Github = struct
     match read_mock_file path with
     | Error msg -> Lwt.return (Error msg)
     | Ok body ->
-      (try Lwt.return (Ok (Github_types.pull_request_of_json (Melange_json.of_string body)))
-       with exn -> Lwt.return (Error (Printf.sprintf "failed to parse mock pull_request: %s" (Exn.str exn))))
+    try Lwt.return (Ok (Github_types.pull_request_of_json (Melange_json.of_string body)))
+    with exn -> Lwt.return (Error (Printf.sprintf "failed to parse mock pull_request: %s" (Exn.str exn)))
 
   let get_compare_diff ~ctx:_ ~repo_url:_ ~base ~head =
     let path = Printf.sprintf "mock_api_responses/github/compare_%s_%s.diff" base head in

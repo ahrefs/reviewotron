@@ -307,9 +307,7 @@ let to_string_annotated diffs =
     path echoed back for attribution. *)
 let annotate_file_content ~path content =
   let lines = String.split_on_char '\n' content in
-  let numbered =
-    List.mapi (fun i line -> Printf.sprintf "%s |  %s" (format_annotated_number (i + 1)) line) lines
-  in
+  let numbered = List.mapi (fun i line -> Printf.sprintf "%s |  %s" (format_annotated_number (i + 1)) line) lines in
   String.concat "\n" (Printf.sprintf "# File: %s" path :: numbered)
 
 let estimate_tokens diffs =
