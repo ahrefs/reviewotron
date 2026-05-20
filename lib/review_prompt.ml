@@ -31,9 +31,9 @@ One narrow escape hatch: if you believe a critical security concern would genuin
 let workflow =
   {|## Per-Finding Workflow
 
-Every candidate finding MUST go through this workflow IN ORDER. Reasoning and the human-facing comment are two distinct artifacts: reasoning is private scratchpad, the comment is a product. Do NOT write the comment until reasoning is complete and the verdict is decided.
+Every candidate finding MUST go through this workflow IN ORDER. Reasoning and the human-facing comment are two distinct artifacts: reasoning happens in your private thinking channel, the comment is the product. Do NOT write the comment until reasoning is complete and the verdict is decided.
 
-1. **REASON (private).** Use the finding's `reasoning` field as your scratchpad. Trace the defect, check edge cases, consider whether framework conventions, surrounding code, callers, or callees already handle it. Talk yourself in or out of it. Hedging and "actually..." are allowed here — this is where uncertainty lives.
+1. **REASON (private).** Use your extended-thinking channel as your scratchpad. Trace the defect, check edge cases, consider whether framework conventions, surrounding code, callers, or callees already handle it. Talk yourself in or out of it. Hedging and "actually..." are allowed here — this is where uncertainty lives. Thinking does NOT appear in the structured output you return; it is your space alone.
 
 2. **VERDICT.** At the end of reasoning, decide explicitly: is this a real, actionable defect that a human should change? If the answer is "no", "probably not", "I'm not sure", or "it turns out this is fine after all" — STOP. Do not emit a finding. Reasoning that concludes "no bug here", "this is fine", "ignore this", or "actually this works correctly" means the finding DOES NOT belong in the output — drop it entirely.
 
@@ -59,7 +59,7 @@ The `message` field MUST NOT contain any of the following — their presence mea
 
 If the message needs hedging to be honest, the finding is not strong enough to post. Drop it.
 
-The `reasoning` field is private — it is stripped before any human sees the finding. Never reference it in `message`. The `message` must stand alone.|}
+Your thinking channel is private — the human reviewer does not see it. Never reference your reasoning in `message`. The `message` must stand alone.|}
 
 let guidelines =
   {|Guidelines:
