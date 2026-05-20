@@ -5,6 +5,10 @@
     that satisfies the plugin interface plus an extended [run_review] function
     that returns the full review output (summary + findings). *)
 
+(** Build the general review agent's configuration.  Exposed so the
+    Anthropic extended-thinking wiring is unit-testable. *)
+val build_agent_config : system_prompt:string -> Agent_runner.agent_config
+
 (** Build a general review plugin from an agent runner.
 
     The resulting module satisfies {!Review_plugin.S}.  It also exposes

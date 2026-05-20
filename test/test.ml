@@ -243,6 +243,26 @@ let test_review_schema_valid () =
   (check bool) "has findings" true (CCString.find ~sub:{|"findings"|} json_str >= 0);
   (check bool) "has field descriptions" true (CCString.find ~sub:{|"description"|} json_str >= 0)
 
+(** The system prompt must explicitly establish the workflow that separates
+    reasoning from the human-facing comment.  Reasoning happens first, the
+    verdict is decided, and only then is the comment articulated. *)
+let test_system_prompt_workflow_section () =
+  let prompt = Review_prompt.system_prompt ~security_covered_elsewhere:false () in
+  (check bool) "prompt names the workflow" true (CCString.find ~sub:"Per-Finding Workflow" prompt >= 0);
+  (check bool) "prompt instructs to reason first" true (CCString.find ~sub:"REASON" prompt >= 0);
+  (check bool) "prompt instructs to decide a verdict" true (CCString.find ~sub:"VERDICT" prompt >= 0);
+  (check bool) "prompt instructs to articulate the comment last" true (CCString.find ~sub:"ARTICULATE" prompt >= 0);
+  (check bool) "prompt includes a signal/noise check" true (CCString.find ~sub:"SIGNAL CHECK" prompt >= 0)
+
+(** Specific hedging phrases that indicate the model resolved its own concern
+    mid-message must be called out as banned in the message field. *)
+let test_system_prompt_banned_patterns () =
+  let prompt = Review_prompt.system_prompt ~security_covered_elsewhere:false () in
+  (* Spot-check a few representative banned phrases. The exhaustive list lives in the prompt itself. *)
+  (check bool) {|prompt bans "actually"|} true (CCString.find ~sub:{|"actually"|} prompt >= 0);
+  (check bool) {|prompt bans "no bug here"|} true (CCString.find ~sub:{|"no bug here"|} prompt >= 0);
+  (check bool) {|prompt bans "ignore this"|} true (CCString.find ~sub:{|"ignore this|} prompt >= 0)
+
 let rec collect_anthropic_schema_issues ~path (json : Yojson.Basic.t) =
   match json with
   | `Assoc fields ->
@@ -2554,7 +2574,14 @@ let test_write_debug_dump () =
   let tmp_dir = Filename.temp_dir "reviewotron_debug_test" "" in
   let dir = Printf.sprintf "%s/nested/subdir" tmp_dir in
   let config : Agent_runner.agent_config =
-    { name = "test_agent"; system_prompt = "unused"; model_tier = Fast; output_schema = `Assoc []; max_steps = 3 }
+    {
+      name = "test_agent";
+      system_prompt = "unused";
+      model_tier = Fast;
+      output_schema = `Assoc [];
+      max_steps = 3;
+      thinking_budget = None;
+    }
   in
   let step0 : Ai_core.Generate_text_result.step =
     {
@@ -2725,6 +2752,64 @@ let test_messages_of_steps_multi_turn_ordering () =
   in
   (check (list string)) "interleaved order" [ "a"; "t"; "a"; "t" ] roles
 
+(** {2 Agent thinking-config plumbing}
+
+    The agent_config carries an optional thinking-budget knob; when set, the
+    runner injects an Anthropic [Thinking] config into the provider options
+    that go on the wire.  Tests interrogate the pure helper that builds the
+    provider_options so we don't need a live network call. *)
+
+let mk_agent_config ?thinking_budget () : Agent_runner.agent_config =
+  {
+    name = "test_agent";
+    system_prompt = "be a test";
+    model_tier = Standard;
+    output_schema = `Assoc [];
+    max_steps = 1;
+    thinking_budget;
+  }
+
+let test_provider_options_empty_when_no_thinking_budget () =
+  let cfg = mk_agent_config () in
+  let po = Agent_runner.build_provider_options cfg in
+  (check bool) "no Anthropic options when thinking_budget = None" true
+    (Option.is_none (Ai_provider_anthropic.Anthropic_options.of_provider_options po))
+
+let test_provider_options_carries_thinking_when_set () =
+  let cfg = mk_agent_config ~thinking_budget:4096 () in
+  let po = Agent_runner.build_provider_options cfg in
+  match Ai_provider_anthropic.Anthropic_options.of_provider_options po with
+  | None -> fail "expected Anthropic options to be present when thinking_budget is set"
+  | Some opts ->
+    (match opts.thinking with
+    | None -> fail "expected thinking config to be populated"
+    | Some t ->
+      (check bool) "thinking enabled" true t.enabled;
+      (check int) "thinking budget matches" 4096 (Ai_provider_anthropic.Thinking.to_int t.budget_tokens))
+
+(** The general review agent must opt into Anthropic extended thinking.
+    This is what gives the model a real reasoning channel instead of leaking
+    reasoning into the posted [message]. *)
+let test_general_review_agent_config_enables_thinking () =
+  let cfg = General_review_plugin.build_agent_config ~system_prompt:"unused" in
+  match cfg.thinking_budget with
+  | None -> fail "expected general_review agent to enable thinking_budget"
+  | Some n ->
+    (check bool) "general_review thinking budget >= 4096" true (n >= 4096);
+    (check string) "agent name preserved" "general_review" cfg.name
+
+let test_provider_options_clamps_below_minimum () =
+  (* Anthropic requires budget_tokens >= 1024.  When a caller asks for less,
+     the runner must either reject or clamp; we choose to clamp up to 1024 so
+     misconfiguration does not crash the agent loop. *)
+  let cfg = mk_agent_config ~thinking_budget:500 () in
+  let po = Agent_runner.build_provider_options cfg in
+  match Ai_provider_anthropic.Anthropic_options.of_provider_options po with
+  | None -> fail "expected Anthropic options to be present"
+  | Some { thinking = Some t; _ } ->
+    (check int) "budget clamped to 1024 minimum" 1024 (Ai_provider_anthropic.Thinking.to_int t.budget_tokens)
+  | Some { thinking = None; _ } -> fail "expected thinking config to be populated"
+
 let () =
   run "reviewotron"
     [
@@ -2760,6 +2845,8 @@ let () =
           test_case "build user message" `Quick test_build_user_message;
           test_case "build user message no description" `Quick test_build_user_message_no_description;
           test_case "review schema valid" `Quick test_review_schema_valid;
+          test_case "system prompt has reasoning workflow section" `Quick test_system_prompt_workflow_section;
+          test_case "system prompt enumerates banned hedging patterns" `Quick test_system_prompt_banned_patterns;
           test_case "prompt token estimation" `Quick test_prompt_token_estimation;
         ] );
       ( "anthropic_schema_compat",
@@ -3031,5 +3118,15 @@ let () =
             test_messages_of_steps_drops_unfulfilled_final_turn;
           test_case "messages_of_steps: preserves Assistant/Tool interleaving" `Quick
             test_messages_of_steps_multi_turn_ordering;
+        ] );
+      ( "agent_thinking",
+        [
+          test_case "provider_options is empty when thinking_budget is None" `Quick
+            test_provider_options_empty_when_no_thinking_budget;
+          test_case "provider_options carries thinking config when set" `Quick
+            test_provider_options_carries_thinking_when_set;
+          test_case "provider_options clamps budget to 1024 minimum" `Quick test_provider_options_clamps_below_minimum;
+          test_case "general review agent_config enables thinking" `Quick
+            test_general_review_agent_config_enables_thinking;
         ] );
     ]

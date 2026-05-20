@@ -3,6 +3,8 @@
  (modules test test_helpers)
  (libraries
   reviewotron_lib
+  ocaml-ai-sdk.ai_provider
+  ocaml-ai-sdk.ai_provider_anthropic
   devkit
   alcotest
   containers

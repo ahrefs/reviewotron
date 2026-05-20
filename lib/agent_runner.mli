@@ -22,6 +22,11 @@ type agent_config = {
   model_tier : model_tier;
   output_schema : Yojson.Basic.t;
   max_steps : int;
+  thinking_budget : int option;
+      (** Anthropic extended-thinking budget for this agent.  Set to give the
+          model a private reasoning channel that does not leak into structured
+          output.  [None] keeps the agent single-pass; sub-1024 values are
+          clamped to the Anthropic minimum. *)
 }
 
 (** Result of a successful agent run. *)
@@ -56,6 +61,11 @@ val write_debug_dump :
   steps:Ai_core.Generate_text_result.step list ->
   usage:Ai_provider.Usage.t ->
   string option
+
+(** Translate an agent's provider-specific knobs into a [Provider_options.t]
+    payload for [Ai_core.Generate_text.generate_text].  Exposed so the
+    plumbing is unit-testable without dispatching a live agent run. *)
+val build_provider_options : agent_config -> Ai_provider.Provider_options.t
 
 (** Run an agent with the given configuration and input prompt.
 

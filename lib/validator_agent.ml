@@ -111,6 +111,7 @@ let config ~model_tier : Agent_runner.agent_config =
     model_tier;
     output_schema = Security_types.validator_output_jsonschema;
     max_steps = 12;
+    thinking_budget = None;
   }
 
 let build_input ~diff_text ~candidate_findings () =

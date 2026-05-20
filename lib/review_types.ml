@@ -118,7 +118,9 @@ type finding = {
   category : finding_category;
      [@jsonschema.description
        "Category: bug, security, performance, style, logic, error-handling, naming, documentation"]
-  message : string; [@jsonschema.description "Clear explanation of the finding"]
+  message : string;
+     [@jsonschema.description
+       "Concise, human-facing description of the defect and (when useful) the fix. Must read as a finished comment."]
   suggested_fix : string option;
      [@json.option]
      [@jsonschema.description
