@@ -2842,6 +2842,17 @@ let test_provider_options_carries_thinking_when_set () =
       (check bool) "thinking enabled" true t.enabled;
       (check int) "thinking budget matches" 4096 (Ai_provider_anthropic.Thinking.to_int t.budget_tokens))
 
+(** The general review agent must opt into Anthropic extended thinking.
+    This is what gives the model a real reasoning channel instead of leaking
+    reasoning into the posted [message]. *)
+let test_general_review_agent_config_enables_thinking () =
+  let cfg = General_review_plugin.build_agent_config ~system_prompt:"unused" in
+  match cfg.thinking_budget with
+  | None -> fail "expected general_review agent to enable thinking_budget"
+  | Some n ->
+    (check bool) "general_review thinking budget >= 4096" true (n >= 4096);
+    (check string) "agent name preserved" "general_review" cfg.name
+
 let test_provider_options_clamps_below_minimum () =
   (* Anthropic requires budget_tokens >= 1024.  When a caller asks for less,
      the runner must either reject or clamp; we choose to clamp up to 1024 so
@@ -3173,5 +3184,7 @@ let () =
           test_case "provider_options carries thinking config when set" `Quick
             test_provider_options_carries_thinking_when_set;
           test_case "provider_options clamps budget to 1024 minimum" `Quick test_provider_options_clamps_below_minimum;
+          test_case "general review agent_config enables thinking" `Quick
+            test_general_review_agent_config_enables_thinking;
         ] );
     ]

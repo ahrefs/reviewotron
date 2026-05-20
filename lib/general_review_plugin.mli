@@ -5,6 +5,15 @@
     that satisfies the plugin interface plus an extended [run_review] function
     that returns the full review output (summary + findings). *)
 
+(** Build the agent configuration for the general review agent.
+
+    Exposed for testing the wiring of Anthropic extended-thinking — the
+    config carries a non-trivial [thinking_budget] that the agent runner
+    translates into a provider-options payload.  The system prompt is the
+    only varying input; everything else (model tier, output schema, max
+    steps, thinking budget) is fixed by this plugin's design. *)
+val build_agent_config : system_prompt:string -> Agent_runner.agent_config
+
 (** Build a general review plugin from an agent runner.
 
     The resulting module satisfies {!Review_plugin.S}.  It also exposes

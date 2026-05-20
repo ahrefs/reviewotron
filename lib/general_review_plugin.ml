@@ -2,6 +2,24 @@ open Devkit
 
 let log = Log.from "general_review_plugin"
 
+(** Extended-thinking budget for the general review agent.
+
+    Sized for a single-shot multi-finding review.  Sonnet 4.6's default
+    [max_output_tokens] is 64k, so 4096 leaves ample headroom for the
+    structured review output that follows the thinking block.  Tuned up
+    or down here without touching call sites. *)
+let general_review_thinking_budget = 4096
+
+let build_agent_config ~system_prompt : Agent_runner.agent_config =
+  {
+    name = "general_review";
+    system_prompt;
+    model_tier = Standard;
+    output_schema = Review_types.review_output_jsonschema;
+    max_steps = 1;
+    thinking_budget = Some general_review_thinking_budget;
+  }
+
 module Make (AI : Api.Agent_runner) = struct
   let name = "general"
 
@@ -11,16 +29,7 @@ module Make (AI : Api.Agent_runner) = struct
     let system = Review_prompt.system_prompt ?override:config.system_prompt_override ~security_covered_elsewhere () in
     let Review_plugin.{ pr_title; pr_description; file_contents; _ } = metadata in
     let input = Review_prompt.build_user_message ~diff:diff_text ~pr_title ~pr_description ~file_contents () in
-    let agent_config : Agent_runner.agent_config =
-      {
-        name = "general_review";
-        system_prompt = system;
-        model_tier = Standard;
-        output_schema = Review_types.review_output_jsonschema;
-        max_steps = 1;
-        thinking_budget = None;
-      }
-    in
+    let agent_config = build_agent_config ~system_prompt:system in
     let%lwt result = AI.run ~ctx ~repo_url ~model_id:config.model ?debug_dir ~config:agent_config ~input () in
     match result with
     | Error _ as e -> Lwt.return (e, [])
