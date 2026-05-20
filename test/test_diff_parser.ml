@@ -376,12 +376,14 @@ let test_annotated_addition_and_context () =
       +let y = 3     (addition, new=2)
       +let z = 4     (addition, new=3)
        let w = 5     (context, new=4) *)
-  (check bool) "context line 1 has number" true (contains_annotated_line ~line_no:1 ~marker:' ' ~content:"let x = 1" annotated);
+  (check bool) "context line 1 has number" true
+    (contains_annotated_line ~line_no:1 ~marker:' ' ~content:"let x = 1" annotated);
   (check bool) "addition line 2 has number and +" true
     (contains_annotated_line ~line_no:2 ~marker:'+' ~content:"let y = 3" annotated);
   (check bool) "addition line 3 has number and +" true
     (contains_annotated_line ~line_no:3 ~marker:'+' ~content:"let z = 4" annotated);
-  (check bool) "context line 4 has number" true (contains_annotated_line ~line_no:4 ~marker:' ' ~content:"let w = 5" annotated)
+  (check bool) "context line 4 has number" true
+    (contains_annotated_line ~line_no:4 ~marker:' ' ~content:"let w = 5" annotated)
 
 let test_annotated_deletion_has_blank_column () =
   let diffs = Diff_parser.parse single_hunk_diff in
@@ -394,7 +396,8 @@ let test_annotated_multi_hunk_continues_numbering () =
   let annotated = Diff_parser.to_string_annotated diffs in
   (* multi_hunk_diff hunk 1: @@ -1,3 +1,4 @@  (lines 1-4 new)
      hunk 2:                @@ -10,3 +11,4 @@ (lines 11-14 new) *)
-  (check bool) "hunk1 context new=1" true (contains_annotated_line ~line_no:1 ~marker:' ' ~content:"let a = 1" annotated);
+  (check bool) "hunk1 context new=1" true
+    (contains_annotated_line ~line_no:1 ~marker:' ' ~content:"let a = 1" annotated);
   (check bool) "hunk1 addition new=2" true
     (contains_annotated_line ~line_no:2 ~marker:'+' ~content:"let b = 2" annotated);
   (check bool) "hunk2 context new=11" true
@@ -431,8 +434,7 @@ let test_annotated_roundtrip_through_parse () =
   (* The annotated form is NOT a valid unified diff; this test just asserts the
      output is non-empty and structurally distinct from to_string. *)
   (check bool) "annotated is non-empty" true (String.length annotated > 0);
-  (check bool) "annotated differs from plain" true
-    (not (String.equal annotated (Diff_parser.to_string diffs)));
+  (check bool) "annotated differs from plain" true (not (String.equal annotated (Diff_parser.to_string diffs)));
   (check bool) "annotated contains ' | ' separator" true (CCString.find ~sub:" | " annotated >= 0)
 
 (** {2 Test runner} *)

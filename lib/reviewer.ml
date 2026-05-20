@@ -184,8 +184,7 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
       decided the request is otherwise valid. *)
   let comment_skip_reason ~ctx (n : Github_types.issue_comment_notification) =
     let config = Context.get_config ctx ~repo_url:n.repository.url in
-    if not (String.equal n.action "created") then
-      Some (Printf.sprintf "comment action %s not reviewable" n.action)
+    if not (String.equal n.action "created") then Some (Printf.sprintf "comment action %s not reviewable" n.action)
     else if Option.is_none n.issue.pull_request then Some "comment is on an issue, not a PR"
     else if not (String.equal n.issue.state "open") then Some (Printf.sprintf "PR state is %s" n.issue.state)
     else if not config.auto_review_on_comment then Some "auto_review_on_comment disabled"
@@ -247,13 +246,13 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
     match finding.end_line with
     | None -> None
     | Some end_line ->
-      match () with
-      | () when end_line <= resolved_line -> None
-      | () when not (Diff_anchor.single_hunk_contains fd ~start_line:resolved_line ~end_line) ->
-        log#info "degrading multi-line finding to single-line (range %s:%d..%d crosses hunk boundary or is out of diff)"
-          finding.path resolved_line end_line;
-        None
-      | () -> Some (resolved_line, end_line)
+    match () with
+    | () when end_line <= resolved_line -> None
+    | () when not (Diff_anchor.single_hunk_contains fd ~start_line:resolved_line ~end_line) ->
+      log#info "degrading multi-line finding to single-line (range %s:%d..%d crosses hunk boundary or is out of diff)"
+        finding.path resolved_line end_line;
+      None
+    | () -> Some (resolved_line, end_line)
 
   (** Outcome of attempting to render a finding as an inline review comment.
 
@@ -276,25 +275,25 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
     match finding.line with
     | line when line <= 0 -> Anchor_failed
     | line ->
-      (match Diff_anchor.resolve_right_line fd ~target_line:line with
-      | None -> Anchor_failed
-      | Some resolved_line ->
-        let start_line, start_side, end_line =
-          match valid_multiline_range fd finding ~resolved_line with
-          | Some (s, e) -> Some s, Some Github_types.Right, e
-          | None -> None, None, resolved_line
-        in
-        Positioned
-          Github_types.
-            {
-              path = fd.path;
-              position = None;
-              line = Some end_line;
-              side = Some Right;
-              start_line;
-              start_side;
-              body = Review_format.format_finding_body finding;
-            })
+    match Diff_anchor.resolve_right_line fd ~target_line:line with
+    | None -> Anchor_failed
+    | Some resolved_line ->
+      let start_line, start_side, end_line =
+        match valid_multiline_range fd finding ~resolved_line with
+        | Some (s, e) -> Some s, Some Github_types.Right, e
+        | None -> None, None, resolved_line
+      in
+      Positioned
+        Github_types.
+          {
+            path = fd.path;
+            position = None;
+            line = Some end_line;
+            side = Some Right;
+            start_line;
+            start_side;
+            body = Review_format.format_finding_body finding;
+          }
 
   let finding_to_comment ~diff finding =
     match route_finding ~diff finding with
@@ -303,7 +302,6 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
 
   module General_plugin = General_review_plugin.Make (AI)
   module Security_plugin = Security_review_plugin.Make (GH) (AI)
-
 
   (** Run all enabled review plugins and collect findings and costs.
       Returns the general review output (if the general plugin is enabled),
@@ -404,7 +402,8 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
             | true -> comments, finding :: unchanged, anchor_failed
             | false ->
               log#info "PR #%d: dropping low-severity finding on unchanged file %s:%d (%s)" number finding.path
-                finding.line (Review_types.severity_to_string finding.severity);
+                finding.line
+                (Review_types.severity_to_string finding.severity);
               comments, unchanged, anchor_failed)
           | Anchor_failed ->
             log#warn "PR #%d: finding on changed file %s:%d could not be anchored — surfacing for investigation" number
@@ -425,8 +424,8 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
     let unchanged_section =
       render_section ~title:"### Findings on unchanged code (please investigate)"
         ~lead:
-          "These security-relevant findings reference files that were not changed in this PR. Investigate whether \
-           they should be addressed in this PR or opened as a separate issue:"
+          "These security-relevant findings reference files that were not changed in this PR. Investigate whether they \
+           should be addressed in this PR or opened as a separate issue:"
         unchanged_findings
     in
     let anchor_failed_section =
@@ -676,13 +675,13 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
       (match String.equal (String.trim n.comment.body) "REVIEW" with
       | false -> Lwt.return_unit
       | true ->
-        (match comment_skip_reason ~ctx n with
-        | None ->
-          log#info "REVIEW comment on PR #%d by %s: triggering review" n.issue.number n.sender.login;
-          review_pr_from_comment ~ctx n
-        | Some reason ->
-          log#info "REVIEW comment on PR #%d skipped: %s" n.issue.number reason;
-          Lwt.return_unit))
+      match comment_skip_reason ~ctx n with
+      | None ->
+        log#info "REVIEW comment on PR #%d by %s: triggering review" n.issue.number n.sender.login;
+        review_pr_from_comment ~ctx n
+      | Some reason ->
+        log#info "REVIEW comment on PR #%d skipped: %s" n.issue.number reason;
+        Lwt.return_unit)
     | Github.Unknown kind ->
       log#debug "ignoring unhandled event type: %s" kind;
       Lwt.return_unit

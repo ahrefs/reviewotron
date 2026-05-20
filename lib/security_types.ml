@@ -192,8 +192,7 @@ let validation_verdict_jsonschema =
       "enum", `List (List.map (fun v -> `String (validation_verdict_to_string v)) all_validation_verdicts);
       ( "description",
         `String
-          "Validation outcome: confirmed, or rejected. When rejected, explain the reason in the evidence_notes field."
-      );
+          "Validation outcome: confirmed, or rejected. When rejected, explain the reason in the evidence_notes field." );
     ]
 
 type validated_finding = {

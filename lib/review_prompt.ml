@@ -1,7 +1,6 @@
 (** Prompt construction for Claude code review. *)
 
-let preamble =
-  {|You are an expert code reviewer. Review the following code changes and provide actionable feedback.|}
+let preamble = {|You are an expert code reviewer. Review the following code changes and provide actionable feedback.|}
 
 let focus_with_security =
   {|Focus on:

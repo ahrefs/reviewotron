@@ -57,8 +57,7 @@ module Make (_ : Api.Github) (_ : Api.Agent_runner) : sig
       inline anchor from the evidence chain so that findings whose sink lives
       in unchanged code still land on a changed line when the flow traces
       through one.  Exposed for testing the anchor-snapping logic. *)
-  val validated_to_finding :
-    diff:Diff_parser.file_diff list -> Security_types.validated_finding -> Review_types.finding
+  val validated_to_finding : diff:Diff_parser.file_diff list -> Security_types.validated_finding -> Review_types.finding
 
   (** Collapse candidate findings that share the same [(sink.path, sink.line)].
 
@@ -77,7 +76,5 @@ module Make (_ : Api.Github) (_ : Api.Agent_runner) : sig
       triage vuln-class distribution).  No per-finding information is
       ever included. *)
   val build_observations :
-    triage_output:Security_types.triage_output ->
-    file_paths:string list ->
-    Security_types.architectural_observations
+    triage_output:Security_types.triage_output -> file_paths:string list -> Security_types.architectural_observations
 end

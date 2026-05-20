@@ -22,7 +22,7 @@
     "head": {
       "sha": "abc123def456789012345678901234567890abcd",
       "ref": "feature/add-feature-x",
-      "label": "ahrefs:feature/add-feature-x",
+      "label": "org:feature/add-feature-x",
       "repo": {
         "name": "monorepo",
         "full_name": "org/monorepo",
@@ -44,7 +44,7 @@
     "base": {
       "sha": "def456789012345678901234567890abcdef1234",
       "ref": "develop",
-      "label": "ahrefs:develop",
+      "label": "org:develop",
       "repo": {
         "name": "monorepo",
         "full_name": "org/monorepo",

@@ -11,7 +11,7 @@
 
 (license MIT)
 
-(documentation https://github.com/ahrefs/ocaml-ai-sdk)
+(documentation https://github.com/ahrefs/reviewotron)
 
 (package
  (name reviewotron)
@@ -37,10 +37,11 @@
   (mirage-crypto-pk
    (< 2.1.0))
   (ocaml-ai-sdk
-   (= 0.3))
+   (>= 0.3))
   (mirage-crypto-rng
    (< 2.1.0))
-  ppx_deriving_jsonschema
+  (ppx_deriving_jsonschema
+   (>= 0.0.7))
   ptime
   (ocamlformat
    (= 0.29.0))

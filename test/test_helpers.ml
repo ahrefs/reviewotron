@@ -67,7 +67,7 @@ let user_json ?(login = "developer1") ?(id = 12345) () =
 
 (** Build a PR branch JSON object. *)
 let branch_json ?(sha = "abc123def456789012345678901234567890abcd") ?(ref_ = "feature/test")
-  ?(label = "ahrefs:feature/test") () =
+  ?(label = "org:feature/test") () =
   Printf.sprintf
     {|{
     "sha": %S,
@@ -110,9 +110,9 @@ let make_pr_payload ?(action = "opened") ?(number = 42) ?(title = "Add feature X
     action number number title body number number
     (if draft then "true" else "false")
     (user_json ~login:author ())
-    (branch_json ~sha:head_sha ~ref_:"feature/test" ~label:"ahrefs:feature/test" ())
+    (branch_json ~sha:head_sha ~ref_:"feature/test" ~label:"org:feature/test" ())
     (branch_json ~sha:"def456789012345678901234567890abcdef1234" ~ref_:base_ref
-       ~label:(Printf.sprintf "ahrefs:%s" base_ref) ())
+       ~label:(Printf.sprintf "org:%s" base_ref) ())
     additions deletions changed_files (repo_json ()) (user_json ~login:author ())
 
 (** Build a push webhook payload JSON string with sensible defaults. *)
@@ -192,9 +192,7 @@ let make_issue_comment_payload ?(action = "created") ?(number = 42) ?(title = "A
   "repository": %s,
   "sender": %s
 }|}
-    action number title state number
-    (user_json ~login:"developer1" ())
-    pr_marker body number
+    action number title state number (user_json ~login:"developer1" ()) pr_marker body number
     (user_json ~login:sender_login ~id:sender_id ())
     (repo_json ())
     (user_json ~login:sender_login ~id:sender_id ())

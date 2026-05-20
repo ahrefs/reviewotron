@@ -111,8 +111,8 @@ module Github : Api.Github = struct
     match result with
     | Error msg -> Lwt.return (Error msg)
     | Ok body ->
-      (try Lwt.return (Ok (Github_types.pull_request_of_json (Melange_json.of_string body)))
-       with exn -> Lwt.return (Error (Printf.sprintf "failed to parse pull_request response: %s" (Exn.str exn))))
+    try Lwt.return (Ok (Github_types.pull_request_of_json (Melange_json.of_string body)))
+    with exn -> Lwt.return (Error (Printf.sprintf "failed to parse pull_request response: %s" (Exn.str exn)))
 
   let get_compare_diff ~ctx ~repo_url ~base ~head =
     let path = Printf.sprintf "/compare/%s...%s" (Web.urlencode base) (Web.urlencode head) in
