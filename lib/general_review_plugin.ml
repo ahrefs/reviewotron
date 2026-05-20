@@ -2,12 +2,8 @@ open Devkit
 
 let log = Log.from "general_review_plugin"
 
-(** Extended-thinking budget for the general review agent.
-
-    Sized for a single-shot multi-finding review.  Sonnet 4.6's default
-    [max_output_tokens] is 64k, so 4096 leaves ample headroom for the
-    structured review output that follows the thinking block.  Tuned up
-    or down here without touching call sites. *)
+(* Sized for a single-shot multi-finding review; tune here without touching
+   call sites. *)
 let general_review_thinking_budget = 4096
 
 let build_agent_config ~system_prompt : Agent_runner.agent_config =

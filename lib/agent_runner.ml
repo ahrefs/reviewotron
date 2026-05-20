@@ -17,18 +17,18 @@ type agent_config = {
   thinking_budget : int option;
 }
 
-(** Anthropic enforces a minimum extended-thinking budget of 1024 tokens.
-    Callers that ask for less are clamped up so a misconfiguration does not
-    crash the agent loop. *)
 let anthropic_min_thinking_budget = 1024
+
+(* Sub-minimum budgets would be rejected by the Anthropic API; clamp up so a
+   misconfiguration cannot crash the agent loop. *)
+let clamp_thinking_budget n = max anthropic_min_thinking_budget n
 
 let build_provider_options (config : agent_config) : Ai_provider.Provider_options.t =
   match config.thinking_budget with
   | None -> Ai_provider.Provider_options.empty
   | Some n ->
-    let budget = max anthropic_min_thinking_budget n in
     let thinking : Ai_provider_anthropic.Thinking.t =
-      { enabled = true; budget_tokens = Ai_provider_anthropic.Thinking.budget_exn budget }
+      { enabled = true; budget_tokens = Ai_provider_anthropic.Thinking.budget_exn (clamp_thinking_budget n) }
     in
     let opts = { Ai_provider_anthropic.Anthropic_options.default with thinking = Some thinking } in
     Ai_provider_anthropic.Anthropic_options.to_provider_options opts
@@ -177,7 +177,7 @@ let finalization_instruction =
     Returns [Some finalized_result] on success with combined usage/steps,
     [None] when the recovery itself fails (the caller then errors out as
     before). *)
-let finalize_after_budget_exhaustion ~model ~config ~input ~output_spec ~max_retries
+let finalize_after_budget_exhaustion ~model ~config ~provider_options ~input ~output_spec ~max_retries
   ~(first : Ai_core.Generate_text_result.t) =
   let base_messages =
     Ai_provider.Prompt.User { content = [ Text { text = input; provider_options = po } ] }
@@ -189,7 +189,6 @@ let finalize_after_budget_exhaustion ~model ~config ~input ~output_spec ~max_ret
   let messages = base_messages @ [ follow_up ] in
   log#info "agent %s: budget exhausted, attempting graceful finalization with %d replayed turns" config.name
     (List.length base_messages - 1);
-  let provider_options = build_provider_options config in
   try%lwt
     let%lwt second =
       Ai_core.Generate_text.generate_text ~model ~system:config.system_prompt ~messages ~tools:[] ~output:output_spec
@@ -222,10 +221,13 @@ let run_agent ~model ?tools ?(max_retries = 2) ?debug_dir ~config ~input () =
   let output_spec = Ai_core.Output.object_ ~name:(config.name ^ "_output") ~schema:config.output_schema () in
   let model_id = Ai_provider.Language_model.model_id model in
   let provider_options = build_provider_options config in
-  log#info "agent %s: starting (model=%s, max_steps=%d, thinking_budget=%s)" config.name model_id config.max_steps
-    (match config.thinking_budget with
+  let thinking_budget_str =
+    match config.thinking_budget with
     | None -> "off"
-    | Some n -> string_of_int (max anthropic_min_thinking_budget n));
+    | Some n -> string_of_int (clamp_thinking_budget n)
+  in
+  log#info "agent %s: starting (model=%s, max_steps=%d, thinking_budget=%s)" config.name model_id config.max_steps
+    thinking_budget_str;
   let tools = Option.default [] tools in
   try%lwt
     let%lwt result =
@@ -272,7 +274,8 @@ let run_agent ~model ?tools ?(max_retries = 2) ?debug_dir ~config ~input () =
         Lwt.return_error msg
       | true ->
         let%lwt recovered =
-          finalize_after_budget_exhaustion ~model ~config ~input ~output_spec ~max_retries ~first:result
+          finalize_after_budget_exhaustion ~model ~config ~provider_options ~input ~output_spec ~max_retries
+            ~first:result
         in
         (match recovered with
         | Some second ->
