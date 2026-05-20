@@ -118,20 +118,12 @@ type finding = {
   category : finding_category;
      [@jsonschema.description
        "Category: bug, security, performance, style, logic, error-handling, naming, documentation"]
-  reasoning : string;
-       [@json.default ""]
-       [@jsonschema.description
-         "Private analyst scratchpad. Trace the defect, check edge cases, talk yourself in or out of it. This field is \
-          NEVER shown to humans — it is stripped from the finding before posting. Do your reasoning HERE, not in \
-          `message`. If your reasoning concludes the code is fine, do NOT emit the finding at all — drop it. The \
-          `message` field must be written from scratch after reasoning is complete and must stand alone without \
-          referencing this field."]
   message : string;
-       [@jsonschema.description
-         "Concise, human-facing description of the defect and (when useful) the fix. Must read as a finished comment — \
-          no reasoning trail, no hedging like 'actually', 'wait', 'never mind', 'no bug here', 'this is fine', 'ignore \
-          this', 'I think', or 'it seems'. If you cannot write the message without hedging, the finding does not \
-          belong in the output — drop it."]
+     [@jsonschema.description
+       "Concise, human-facing description of the defect and (when useful) the fix. Must read as a finished comment — no \
+        reasoning trail, no hedging like 'actually', 'wait', 'never mind', 'no bug here', 'this is fine', 'ignore \
+        this', 'I think', or 'it seems'. Do your reasoning in the model's extended-thinking channel; if you cannot \
+        write the message without hedging, the finding does not belong in the output — drop it."]
   suggested_fix : string option;
      [@json.option]
      [@jsonschema.description

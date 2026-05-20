@@ -243,36 +243,6 @@ let test_review_schema_valid () =
   (check bool) "has findings" true (CCString.find ~sub:{|"findings"|} json_str >= 0);
   (check bool) "has field descriptions" true (CCString.find ~sub:{|"description"|} json_str >= 0)
 
-(** The finding schema MUST declare a [reasoning] field AND list it in
-    [required].  The structural half of the reasoning-vs-comment separation:
-    the model must allocate output for the analyst scratchpad before drafting
-    [message]. *)
-let test_finding_schema_has_reasoning_field () =
-  let schema = Review_types.finding_jsonschema in
-  let required =
-    match schema with
-    | `Assoc fields ->
-      (match List.assoc_opt "required" fields with
-      | Some (`List xs) ->
-        List.filter_map
-          (function
-            | `String s -> Some s
-            | _ -> None)
-          xs
-      | _ -> [])
-    | _ -> []
-  in
-  let properties =
-    match schema with
-    | `Assoc fields ->
-      (match List.assoc_opt "properties" fields with
-      | Some (`Assoc props) -> List.map fst props
-      | _ -> [])
-    | _ -> []
-  in
-  (check bool) "schema declares reasoning property" true (List.mem "reasoning" properties);
-  (check bool) "schema marks reasoning as required" true (List.mem "reasoning" required)
-
 (** The system prompt must explicitly establish the workflow that separates
     reasoning from the human-facing comment.  Reasoning happens first, the
     verdict is decided, and only then is the comment articulated. *)
@@ -292,28 +262,6 @@ let test_system_prompt_banned_patterns () =
   (check bool) {|prompt bans "actually"|} true (CCString.find ~sub:{|"actually"|} prompt >= 0);
   (check bool) {|prompt bans "no bug here"|} true (CCString.find ~sub:{|"no bug here"|} prompt >= 0);
   (check bool) {|prompt bans "ignore this"|} true (CCString.find ~sub:{|"ignore this|} prompt >= 0)
-
-(** The general review plugin must strip the [reasoning] field from each
-    finding before returning to the orchestrator.  Reasoning is private model
-    scratchpad — it must never reach a posted PR comment. *)
-module General_for_test = General_review_plugin.Make (Api_local.Agent_runner)
-
-let test_general_plugin_strips_reasoning () =
-  Test_helpers.reset_test_state ();
-  Api_local.set_agent_response_map [ "general_review", "mock_api_responses/claude/review_response_with_reasoning.json" ];
-  let ctx = Test_helpers.make_test_context () in
-  let metadata : Review_plugin.review_metadata =
-    { pr_number = 1; pr_title = "test"; pr_description = "test"; file_contents = [] }
-  in
-  let findings, _costs =
-    Lwt_main.run
-      (General_for_test.run ~ctx ~repo_url:Test_helpers.test_repo_url ~diff:[] ~diff_text:"--- diff ---" ~metadata)
-  in
-  (check bool) "got findings from mock" true (List.length findings > 0);
-  List.iter
-    (fun (f : Review_types.finding) ->
-      (check string) (Printf.sprintf "reasoning stripped on %s:%d" f.path f.line) "" f.reasoning)
-    findings
 
 let rec collect_anthropic_schema_issues ~path (json : Yojson.Basic.t) =
   match json with
@@ -391,8 +339,8 @@ let test_prompt_token_estimation () =
 (** {2 Dedup tests} *)
 
 let mk_finding ~path ~line ?(end_line = None) ?(severity = Review_types.Warning) ?(category = Review_types.Security)
-  ?(message = "msg") ?(suggested_fix = None) ?(reasoning = "") () : Review_types.finding =
-  { path; line; end_line; severity; category; message; suggested_fix; reasoning }
+  ?(message = "msg") ?(suggested_fix = None) () : Review_types.finding =
+  { path; line; end_line; severity; category; message; suggested_fix }
 
 let finding_by_message msg (f : Review_types.finding) = String.equal f.message msg
 
@@ -854,7 +802,6 @@ let test_review_output_roundtrip () =
             end_line = None;
             severity = Warning;
             category = Error_handling;
-            reasoning = "";
             message = "Missing error handling";
             suggested_fix = Some "add try/with";
           };
@@ -2276,7 +2223,6 @@ let test_curator_input_never_contains_findings () =
         end_line = None;
         severity = Critical;
         category = Security;
-        reasoning = "";
         message = "SQL injection in query builder";
         suggested_fix = None;
       };
@@ -2286,7 +2232,6 @@ let test_curator_input_never_contains_findings () =
         end_line = None;
         severity = Warning;
         category = Security;
-        reasoning = "";
         message = "Missing authz check";
         suggested_fix = None;
       };
@@ -2900,11 +2845,8 @@ let () =
           test_case "build user message" `Quick test_build_user_message;
           test_case "build user message no description" `Quick test_build_user_message_no_description;
           test_case "review schema valid" `Quick test_review_schema_valid;
-          test_case "finding schema has reasoning field" `Quick test_finding_schema_has_reasoning_field;
           test_case "system prompt has reasoning workflow section" `Quick test_system_prompt_workflow_section;
           test_case "system prompt enumerates banned hedging patterns" `Quick test_system_prompt_banned_patterns;
-          test_case "general plugin strips reasoning before returning findings" `Quick
-            test_general_plugin_strips_reasoning;
           test_case "prompt token estimation" `Quick test_prompt_token_estimation;
         ] );
       ( "anthropic_schema_compat",
