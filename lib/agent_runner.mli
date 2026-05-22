@@ -67,6 +67,13 @@ val write_debug_dump :
     plumbing is unit-testable without dispatching a live agent run. *)
 val build_provider_options : agent_config -> Ai_provider.Provider_options.t
 
+(** [Provider_options.t] carrying an Anthropic ephemeral [cache_control]
+    breakpoint.  Attached to the long, stable user-input text block so that
+    every turn after the first within an agent run cache-hits on the
+    [tools + system + input] prefix (per Anthropic's prefix caching rules).
+    Exposed for unit testing. *)
+val cached_input_provider_options : Ai_provider.Provider_options.t
+
 (** Run an agent with the given configuration and input prompt.
 
     Creates structured output from [config.output_schema], executes

@@ -2810,6 +2810,17 @@ let test_provider_options_clamps_below_minimum () =
     (check int) "budget clamped to 1024 minimum" 1024 (Ai_provider_anthropic.Thinking.to_int t.budget_tokens)
   | Some { thinking = None; _ } -> fail "expected thinking config to be populated"
 
+(** The cached-input [Provider_options.t] must carry an ephemeral
+    [cache_control] breakpoint — that's the entire point of the value.  This
+    guards against regressions when bumping ocaml-ai-sdk (e.g. if the option
+    GADT key shape changes, or if someone "simplifies" the helper back to
+    [Provider_options.empty]). *)
+let test_cached_input_provider_options_marks_ephemeral () =
+  let po = Agent_runner.cached_input_provider_options in
+  match Ai_provider_anthropic.Cache_control_options.get_cache_control po with
+  | None -> fail "expected cache_control to be set on cached_input_provider_options"
+  | Some { cache_type = Ephemeral } -> ()
+
 let () =
   run "reviewotron"
     [
@@ -3128,5 +3139,10 @@ let () =
           test_case "provider_options clamps budget to 1024 minimum" `Quick test_provider_options_clamps_below_minimum;
           test_case "general review agent_config enables thinking" `Quick
             test_general_review_agent_config_enables_thinking;
+        ] );
+      ( "prompt_caching",
+        [
+          test_case "cached_input_provider_options carries an ephemeral breakpoint" `Quick
+            test_cached_input_provider_options_marks_ephemeral;
         ] );
     ]

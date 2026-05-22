@@ -33,6 +33,26 @@ let build_provider_options (config : agent_config) : Ai_provider.Provider_option
     let opts = { Ai_provider_anthropic.Anthropic_options.default with thinking = Some thinking } in
     Ai_provider_anthropic.Anthropic_options.to_provider_options opts
 
+(* Anthropic prompt caching is opt-in: without an explicit [cache_control]
+   marker on a content block, no caching happens and every step re-bills the
+   full accumulated context.  For our long-running tool-use agents this is the
+   single biggest cost lever — one breakpoint on the (long, stable) user input
+   caches [tools + system + input] across every subsequent turn of the run.
+   Per Anthropic's docs the cached prefix is "everything up to and including"
+   the marked block, so a single ephemeral breakpoint on the input is enough
+   to amortize the system prompt and tool schemas too.
+
+   TODO: ocaml-ai-sdk 0.3 exposes [Anthropic_options.cache_control] but does
+   NOT serialize it into the request (anthropic_model.ml never reads the
+   field, and anthropic_api.make_request_body has no top-level
+   [cache_control] parameter), and it serializes [system] as a plain string
+   so the system prompt cannot carry its own breakpoint.  When we bump the
+   SDK, revisit this: if the top-level "automatic caching" shortcut or a
+   block-form system field has landed, prefer that and drop this helper. *)
+let cached_input_provider_options : Ai_provider.Provider_options.t =
+  Ai_provider_anthropic.Cache_control_options.with_cache_control
+    ~cache_control:Ai_provider_anthropic.Cache_control.ephemeral Ai_provider.Provider_options.empty
+
 type agent_result = {
   output : Yojson.Basic.t;
   usage : Ai_provider.Usage.t;
@@ -179,8 +199,14 @@ let finalization_instruction =
     before). *)
 let finalize_after_budget_exhaustion ~model ~config ~provider_options ~input ~output_spec ~max_retries
   ~(first : Ai_core.Generate_text_result.t) =
+  (* Reuse the same cache breakpoint on the input block we put there in
+     [run_agent]: same prefix → same cache key, so this single-shot
+     finalization call (fired immediately after the main loop) gets a cache
+     hit on [tools + system + input], well within the 5-minute ephemeral TTL.
+     The trailing [finalization_instruction] is uncached on purpose — it's
+     only sent once, so caching it would be pure overhead. *)
   let base_messages =
-    Ai_provider.Prompt.User { content = [ Text { text = input; provider_options = po } ] }
+    Ai_provider.Prompt.User { content = [ Text { text = input; provider_options = cached_input_provider_options } ] }
     :: messages_of_steps first.steps
   in
   let follow_up =
@@ -229,10 +255,21 @@ let run_agent ~model ?tools ?(max_retries = 2) ?debug_dir ~config ~input () =
   log#info "agent %s: starting (model=%s, max_steps=%d, thinking_budget=%s)" config.name model_id config.max_steps
     thinking_budget_str;
   let tools = Option.default [] tools in
+  (* Hand-build the [messages] list (instead of using [~prompt:input]) so we
+     can attach a [cache_control] marker to the input text block.  The
+     [~prompt] convenience path inside ocaml-ai-sdk hard-codes the part's
+     [provider_options] to [Provider_options.empty], which would drop our
+     cache breakpoint on the floor. *)
+  let initial_messages =
+    [
+      Ai_provider.Prompt.User
+        { content = [ Text { text = input; provider_options = cached_input_provider_options } ] };
+    ]
+  in
   try%lwt
     let%lwt result =
-      Ai_core.Generate_text.generate_text ~model ~system:config.system_prompt ~prompt:input ~tools ~output:output_spec
-        ~max_steps:config.max_steps ~max_retries ~provider_options ()
+      Ai_core.Generate_text.generate_text ~model ~system:config.system_prompt ~messages:initial_messages ~tools
+        ~output:output_spec ~max_steps:config.max_steps ~max_retries ~provider_options ()
     in
     let steps_count = List.length result.steps in
     let cache_read_input_tokens, cache_creation_input_tokens = extract_cache_tokens result.response.body in
