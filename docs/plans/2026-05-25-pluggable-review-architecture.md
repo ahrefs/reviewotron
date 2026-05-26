@@ -1,6 +1,6 @@
 # Pluggable Review Architecture Plan
 
-Status: Stage 1 complete; Stage 2 next
+Status: Stage 2 complete; Stage 3 next
 Date: 2026-05-25
 
 ## Progress Notes
@@ -15,6 +15,12 @@ Date: 2026-05-25
   `finding_to_comment` GitHub compatibility wrapper and GitHub PR publishing
   behavior unchanged by converting neutral comments at the boundary.
   `make fmt`, `make build`, and `make test` passed.
+- 2026-05-26: Stage 2 completed. Added `Review_engine` for core review
+  mechanics: deduplication, diff preparation, neutral finding routing, plugin
+  execution, and PR-style report construction. `Reviewer.Make` now delegates
+  core review work to `Review_engine` while keeping GitHub event policy,
+  acquisition, publishing, retry, and state updates in the compatibility
+  wrapper. `make fmt`, `make build`, and `make test` passed.
 
 ## Goal
 

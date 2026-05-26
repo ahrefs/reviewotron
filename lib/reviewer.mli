@@ -3,7 +3,7 @@
 
 (** Origin of a finding.  Deduplication prefers [From_security] on same-line
     collisions because security findings carry source/sink/flow evidence. *)
-type finding_source =
+type finding_source = Review_engine.finding_source =
   | From_general
   | From_security
 
@@ -21,7 +21,7 @@ module Make (_ : Api.Github) (_ : Api.Agent_runner) (_ : Api.Slack) : sig
   val process_event : Context.t -> event:Github.event -> unit Lwt.t
 
   (** Where a finding goes when we try to turn it into an inline review comment. *)
-  type finding_routing =
+  type finding_routing = Review_engine.finding_routing =
     | Positioned of Review_comment.t  (** Successfully anchored to a line (or range) in the diff. *)
     | File_not_in_diff
       (** The finding's [path] doesn't match any file in the PR diff; typically
