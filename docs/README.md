@@ -199,7 +199,7 @@ curl http://localhost:1338/ping
 
 ## Configuration
 
-Each repo can have a `.reviewotron.json` file in its root. This is fetched from the repo via the GitHub Contents API on each event. If the file doesn't exist, defaults are used.
+Each repo can have a `.reviewotron.json` file in its root. For GitHub webhooks, this is fetched from the repo via the GitHub Contents API on each event. For local `review-diff`, the same file is loaded from the local review root. If the file doesn't exist, defaults are used.
 
 ### Full Configuration Reference
 
@@ -450,6 +450,8 @@ reviewotron review-diff [OPTIONS]
 
 Runs the same core review engine against a local unified diff and prints markdown to stdout. When `--diff` is omitted, Reviewotron generates a Git diff from the merge-base of `HEAD` and the inferred base ref, including working-tree changes. This path does not fetch or publish through GitHub; local file-content expansion uses `--root`.
 
+Local reviews load `.reviewotron.json` from `--root` before applying path filters and size limits. Use `--config-filename` to point at a different filename or absolute config path.
+
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--diff` | Git diff against inferred base | Path to a unified diff file |
@@ -459,6 +461,7 @@ Runs the same core review engine against a local unified diff and prints markdow
 | `--change-key` | digest of diff | Stable change key recorded in state |
 | `--title` | inferred from base or diff file | Title passed to review agents |
 | `--description-file` | (none) | Optional file used as the review description |
+| `--config-filename` | `.reviewotron.json` | Config file loaded from `--root`, or absolute config path |
 | `--output` | `markdown` | Output format |
 | `--secrets` | `./secrets.json` | Path to secrets file for the Anthropic API key |
 | `--state` | (none — in-memory) | Optional state file updated after a successful review |

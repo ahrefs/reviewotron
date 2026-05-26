@@ -12,6 +12,24 @@ let default_config_filename = ".reviewotron.json"
 
 let default_config () : Config_types.config = Config_types.config_of_json (Melange_json.of_string "{}")
 
+let load_config_file ~filepath =
+  match Config_types.config_of_json (Melange_json.of_string (Std.input_file ~bin:true filepath)) with
+  | exception exn ->
+    let msg = Printf.sprintf "failed to read config from %s: %s" filepath (Exn.str exn) in
+    Error msg
+  | config -> Ok config
+
+let config_path ~root ~config_filename =
+  match Filename.is_relative config_filename with
+  | true -> Filename.concat root config_filename
+  | false -> config_filename
+
+let load_local_config ~root ~config_filename =
+  let filepath = config_path ~root ~config_filename in
+  match Sys.file_exists filepath with
+  | false -> Ok (default_config ())
+  | true -> load_config_file ~filepath
+
 let load_secrets ~require_repos ~secrets_filepath =
   match Config_types.secrets_of_json (Melange_json.of_string (Std.input_file ~bin:true secrets_filepath)) with
   | exception exn ->

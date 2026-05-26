@@ -14,6 +14,13 @@ val default_config_filename : string
 (** Return a config with all defaults (equivalent to parsing ["{}"]). *)
 val default_config : unit -> Config_types.config
 
+(** Load a repository config file from disk. *)
+val load_config_file : filepath:string -> (Config_types.config, string) result
+
+(** Load [config_filename] from [root], returning defaults when the file is not
+    present. Absolute [config_filename] values are used as-is. *)
+val load_local_config : root:string -> config_filename:string -> (Config_types.config, string) result
+
 (** Create a context by loading secrets and optionally state from disk.
     Config is fetched lazily by source adapters.
 

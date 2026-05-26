@@ -184,6 +184,27 @@ let test_context_create_allows_repo_less_when_explicit () =
         (check int) "no repos" 0 (List.length secrets.repos);
         (check string) "api key" "sk-test" secrets.anthropic_api_key)
 
+let test_context_load_config_file () =
+  let tmp_path = Filename.temp_file "reviewotron_config_" ".json" in
+  Fun.protect
+    ~finally:(fun () -> Sys.remove tmp_path)
+    (fun () ->
+      write_file tmp_path {|{"max_diff_lines": 5000, "show_review_cost": true}|};
+      match Context.load_config_file ~filepath:tmp_path with
+      | Error msg -> fail msg
+      | Ok config ->
+        (check int) "max diff lines" 5000 config.max_diff_lines;
+        (check bool) "show review cost" true config.show_review_cost)
+
+let test_context_load_local_config_uses_defaults_when_missing () =
+  let tmp_dir = Filename.temp_dir "reviewotron_config_" "_test" in
+  Fun.protect
+    ~finally:(fun () -> Sys.rmdir tmp_dir)
+    (fun () ->
+      match Context.load_local_config ~root:tmp_dir ~config_filename:Context.default_config_filename with
+      | Error msg -> fail msg
+      | Ok config -> (check int) "default max diff lines" 2000 config.max_diff_lines)
+
 let test_vuln_class_roundtrip () =
   List.iter
     (fun vc ->
@@ -3067,6 +3088,9 @@ let () =
           test_case "context create requires repos by default" `Quick test_context_create_requires_repos_by_default;
           test_case "context create allows repo-less when explicit" `Quick
             test_context_create_allows_repo_less_when_explicit;
+          test_case "context load config file" `Quick test_context_load_config_file;
+          test_case "context load local config defaults when missing" `Quick
+            test_context_load_local_config_uses_defaults_when_missing;
           test_case "vuln_class roundtrip" `Quick test_vuln_class_roundtrip;
           test_case "security_plugin_config roundtrip" `Quick test_security_plugin_config_roundtrip;
         ] );

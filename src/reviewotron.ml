@@ -115,6 +115,13 @@ let resolve_diff_source ~root ~base diff_file =
   | Error msg -> Error msg
   | Ok diff_text -> Ok (`Text diff_text, Local_git.title_for_base base)
 
+let load_review_diff_config ~ctx ~root ~repo_key =
+  match Context.load_local_config ~root ~config_filename:(Context.config_filename ctx) with
+  | Error msg -> Error msg
+  | Ok config ->
+    Context.set_config ctx ~repo_key config;
+    Ok config
+
 let review_diff_action secrets_path config_filename state_path logfile loglevel root repo_key change_key title base
   description_file diff_file output =
   setup_logging logfile loglevel;
@@ -126,7 +133,10 @@ let review_diff_action secrets_path config_filename state_path logfile loglevel 
   | Ok ctx ->
     let root = resolve_local_root root in
     let repo_key = resolve_repo_key ~root repo_key in
-    (match resolve_diff_source ~root ~base diff_file with
+    (match load_review_diff_config ~ctx ~root ~repo_key with
+    | Error msg -> log#error "%s" msg
+    | Ok config ->
+    match resolve_diff_source ~root ~base diff_file with
     | Error msg -> log#error "%s" msg
     | Ok (diff_source, default_title) ->
     match read_description_file description_file with
@@ -134,7 +144,6 @@ let review_diff_action secrets_path config_filename state_path logfile loglevel 
     | Ok description ->
       let module Review = Local_review.Make (Api_remote.Agent_runner) in
       let title = CCOption.get_or ~default:default_title title in
-      let config = Context.get_config ctx ~repo_key in
       let result =
         match diff_source with
         | `File diff_path ->
