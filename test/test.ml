@@ -1975,6 +1975,23 @@ let test_local_source_rejects_symlink_escape () =
           | Ok (Some _) -> fail "symlink escape should not return content"
           | Ok None -> fail "symlink escape should return an error")))
 
+let test_local_source_reports_fetch_read_errors () =
+  with_local_root (fun root ->
+    let config = Context.default_config () in
+    let result =
+      Lwt_main.run
+        (Local_source.prepare_review ~root ~repo_key:"local/repo" ~title:"Local change" ~description:""
+           ~diff_path:"mock_api_responses/github/pr_42.diff" ~config ())
+    in
+    match result with
+    | Error error -> fail (Local_source.string_of_prepare_error error)
+    | Ok Local_source.{ job; filtered_diff = _ } ->
+      let fetch_result = Lwt_main.run (job.fetch_file ~path:"src") in
+      (match fetch_result with
+      | Error msg -> (check bool) "read error reported" true (CCString.find ~sub:"failed to read" msg >= 0)
+      | Ok (Some _) -> fail "directory fetch should not return content"
+      | Ok None -> fail "directory fetch should report a read error"))
+
 let test_local_review_diff_returns_markdown () =
   Test_helpers.reset_test_state ();
   let state = State.create () in
@@ -3324,6 +3341,7 @@ let () =
           test_case "source builds local job" `Quick test_local_source_prepare_review_builds_job;
           test_case "source rejects unsafe fetch path" `Quick test_local_source_rejects_unsafe_fetch_path;
           test_case "source rejects symlink escape" `Quick test_local_source_rejects_symlink_escape;
+          test_case "source reports fetch read errors" `Quick test_local_source_reports_fetch_read_errors;
           test_case "review diff returns markdown" `Quick test_local_review_diff_returns_markdown;
           test_case "review generated diff text returns markdown" `Quick test_local_review_diff_text_returns_markdown;
         ] );

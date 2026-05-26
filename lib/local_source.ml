@@ -77,7 +77,7 @@ let fetch_file_from_root ~root ~path =
   | Ok (Some full_path) ->
   match%lwt read_file full_path with
   | Ok contents -> Lwt.return (Ok (Some contents))
-  | Error _ -> Lwt.return (Ok None)
+  | Error msg -> Lwt.return (Error msg)
 
 let digest_change_key diff_text = Digest.(to_hex (string diff_text))
 

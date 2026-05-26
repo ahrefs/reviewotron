@@ -1,5 +1,16 @@
 type run_git = cwd:string -> string list -> (string, string) result
 
+let close_fd_noerr fd = try Unix.close fd with Unix.Unix_error _ -> ()
+
+let waitpid_noerr pid =
+  let rec loop () =
+    match Unix.waitpid [] pid with
+    | _pid, status -> Some status
+    | exception Unix.Unix_error (Unix.EINTR, _, _) -> loop ()
+    | exception Unix.Unix_error _ -> None
+  in
+  loop ()
+
 let read_all ic =
   let buffer = Buffer.create 4096 in
   let bytes = Bytes.create 4096 in
@@ -15,21 +26,36 @@ let read_all ic =
 let run_git ~cwd args =
   let process_args = Array.of_list ("git" :: "-C" :: cwd :: args) in
   let stdout_r, stdout_w = Unix.pipe () in
-  let dev_null = Unix.openfile "/dev/null" [ Unix.O_WRONLY ] 0 in
+  let dev_null =
+    match Unix.openfile "/dev/null" [ Unix.O_WRONLY ] 0 with
+    | dev_null -> dev_null
+    | exception exn ->
+      close_fd_noerr stdout_r;
+      close_fd_noerr stdout_w;
+      raise exn
+  in
   let pid =
     try Unix.create_process "git" process_args Unix.stdin stdout_w dev_null
     with exn ->
-      Unix.close stdout_r;
-      Unix.close stdout_w;
-      Unix.close dev_null;
+      close_fd_noerr stdout_r;
+      close_fd_noerr stdout_w;
+      close_fd_noerr dev_null;
       raise exn
   in
-  Unix.close stdout_w;
-  Unix.close dev_null;
+  close_fd_noerr stdout_w;
+  close_fd_noerr dev_null;
   let ic = Unix.in_channel_of_descr stdout_r in
-  let output = read_all ic in
-  close_in ic;
-  let _, status = Unix.waitpid [] pid in
+  let status = ref None in
+  let output =
+    Fun.protect
+      ~finally:(fun () ->
+        close_in_noerr ic;
+        status := waitpid_noerr pid)
+      (fun () -> read_all ic)
+  in
+  match !status with
+  | None -> Error (Printf.sprintf "git %s waitpid failed" (String.concat " " args))
+  | Some status ->
   match status with
   | Unix.WEXITED 0 -> Ok (String.trim output)
   | Unix.WEXITED code -> Error (Printf.sprintf "git %s exited with %d" (String.concat " " args) code)
