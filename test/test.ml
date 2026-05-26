@@ -4,6 +4,10 @@ open Alcotest
 
 let read_file path = Std.input_file ~bin:true path
 
+let write_file path contents =
+  let oc = open_out_bin path in
+  Fun.protect ~finally:(fun () -> close_out_noerr oc) (fun () -> output_string oc contents)
+
 (* Default-off auto-review flags mean every test that wants the review pipeline
    to actually run must opt in explicitly. The shared security config fixtures
    below opt into PR-open and PR-sync because the security e2e suite always
@@ -1785,6 +1789,90 @@ let test_ignored_author_push_skipped () =
   let write_log = Api_local.get_write_log () in
   (check string) "ignored author push skipped" "" write_log
 
+(** {2 Local diff review tests} *)
+
+module Local_review_test = Local_review.Make (Api_local.Agent_runner)
+
+let with_local_root f =
+  let tmp_dir = Filename.temp_dir "reviewotron_local_" "_test" in
+  let src_dir = Filename.concat tmp_dir "src" in
+  let main_path = Filename.concat src_dir "main.ml" in
+  Fun.protect
+    ~finally:(fun () ->
+      (try Sys.remove main_path with Sys_error _ -> ());
+      (try Unix.rmdir src_dir with Unix.Unix_error _ -> ());
+      try Unix.rmdir tmp_dir with Unix.Unix_error _ -> ())
+    (fun () ->
+      Unix.mkdir src_dir 0o755;
+      write_file main_path "let main () =\n  print_endline \"local\"\n";
+      f tmp_dir)
+
+let assert_local_trigger (trigger : Review_job.trigger) =
+  match trigger with
+  | Local -> ()
+  | Pull_request | Push | Manual | Other _ -> fail "expected local trigger"
+
+let assert_local_source_kind (source_kind : Review_job.source_kind) =
+  match source_kind with
+  | Local -> ()
+  | Github | Other _ -> fail "expected local source kind"
+
+let test_local_source_prepare_review_builds_job () =
+  with_local_root (fun root ->
+    let config = Context.default_config () in
+    let result =
+      Lwt_main.run
+        (Local_source.prepare_review ~root ~repo_key:"local/repo" ~change_key:"change-1" ~title:"Local change"
+           ~description:"Local description" ~diff_path:"mock_api_responses/github/pr_42.diff" ~config ())
+    in
+    match result with
+    | Error error -> fail (Local_source.string_of_prepare_error error)
+    | Ok Local_source.{ job; filtered_diff } ->
+      (check string) "repo key" "local/repo" job.repo_key;
+      (check string) "change key" "change-1" job.change_key;
+      (check string) "title" "Local change" job.title;
+      assert_local_trigger job.trigger;
+      assert_local_source_kind job.source_kind;
+      (check bool) "filtered diff populated" true (List.compare_length_with filtered_diff 0 > 0);
+      let fetch_result = Lwt_main.run (job.fetch_file ~path:"src/main.ml") in
+      (match fetch_result with
+      | Ok (Some contents) -> (check bool) "local file content" true (CCString.find ~sub:"print_endline" contents >= 0)
+      | Ok None -> fail "expected local file content"
+      | Error msg -> fail msg))
+
+let test_local_source_rejects_unsafe_fetch_path () =
+  with_local_root (fun root ->
+    let config = Context.default_config () in
+    let result =
+      Lwt_main.run
+        (Local_source.prepare_review ~root ~repo_key:"local/repo" ~title:"Local change" ~description:""
+           ~diff_path:"mock_api_responses/github/pr_42.diff" ~config ())
+    in
+    match result with
+    | Error error -> fail (Local_source.string_of_prepare_error error)
+    | Ok Local_source.{ job; filtered_diff = _ } ->
+      let fetch_result = Lwt_main.run (job.fetch_file ~path:"../secret.txt") in
+      (match fetch_result with
+      | Error msg -> (check bool) "unsafe path rejected" true (CCString.find ~sub:"unsafe local path" msg >= 0)
+      | Ok (Some _) -> fail "unsafe path should not return content"
+      | Ok None -> fail "unsafe path should return an error"))
+
+let test_local_review_diff_returns_markdown () =
+  Test_helpers.reset_test_state ();
+  let ctx = Test_helpers.make_test_context () in
+  let config = Context.default_config () in
+  let result =
+    Lwt_main.run
+      (Local_review_test.review_diff ~ctx ~root:"." ~repo_key:"local/repo" ~title:"Local change"
+         ~description:"Local description" ~diff_path:"mock_api_responses/github/pr_42.diff" ~config ())
+  in
+  match result with
+  | Error msg -> fail msg
+  | Ok markdown ->
+    (check bool) "has summary" true (CCString.find ~sub:"The changes look generally good" markdown >= 0);
+    (check bool) "has inline comments section" true (CCString.find ~sub:"### Inline comments" markdown >= 0);
+    (check bool) "has local inline location" true (CCString.find ~sub:"src/main.ml:14" markdown >= 0)
+
 (** {2 State persistence tests} *)
 
 let test_state_save_load_roundtrip () =
@@ -3041,6 +3129,12 @@ let () =
         [
           test_case "ignored author PR skipped" `Quick test_ignored_author_pr_skipped;
           test_case "ignored author push skipped" `Quick test_ignored_author_push_skipped;
+        ] );
+      ( "local_review",
+        [
+          test_case "source builds local job" `Quick test_local_source_prepare_review_builds_job;
+          test_case "source rejects unsafe fetch path" `Quick test_local_source_rejects_unsafe_fetch_path;
+          test_case "review diff returns markdown" `Quick test_local_review_diff_returns_markdown;
         ] );
       ( "state_persistence",
         [

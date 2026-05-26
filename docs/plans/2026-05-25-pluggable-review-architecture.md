@@ -1,6 +1,6 @@
 # Pluggable Review Architecture Plan
 
-Status: Stage 5 complete; Stage 6 next
+Status: Stage 6 complete; Stage 7 next
 Date: 2026-05-25
 
 ## Progress Notes
@@ -40,6 +40,12 @@ Date: 2026-05-25
   compatibility orchestrator that delegates GitHub source and sink work while
   preserving the public helper APIs and webhook behavior. `make fmt`,
   `make build`, and `make test` passed.
+- 2026-05-26: Stage 6 completed. Added `Local_source` to build `Review_job.t`
+  values from local unified diff files, `Local_sink` to render neutral review
+  reports as markdown, and `Local_review` to run the existing core engine
+  without GitHub acquisition or GitHub publication. Added the
+  `reviewotron review-diff` CLI command and local review tests using the mock
+  agent runner. `make fmt`, `make build`, and `make test` passed.
 
 ## Goal
 
@@ -602,4 +608,4 @@ When resuming this plan:
 5. Run the stage verification commands.
 6. Update this plan with a short status note before moving to the next stage.
 
-The next implementation step is Stage 6.
+The next implementation step is Stage 7.

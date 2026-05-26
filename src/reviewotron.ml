@@ -6,10 +6,13 @@ let log = Log.from "reviewotron"
 
 (* entrypoints *)
 
-let run_action addr port secrets_path config_filename state_path logfile loglevel =
+let setup_logging logfile loglevel =
   Daemon.logfile := logfile;
   Option.may Log.set_loglevels loglevel;
-  Log.reopen !Daemon.logfile;
+  Log.reopen !Daemon.logfile
+
+let run_action addr port secrets_path config_filename state_path logfile loglevel =
+  setup_logging logfile loglevel;
   Signal.setup_lwt ();
   Daemon.install_signal_handlers ();
   Mirage_crypto_rng_unix.use_default ();
@@ -80,6 +83,37 @@ let check_action secrets_path config_filename state_path event_type payload_file
         | Github.Unknown kind -> Printf.printf "Event: %s (unhandled)\n" kind)
       end)
 
+type output_format = Markdown
+
+let read_text_file path =
+  match Std.input_file ~bin:true path with
+  | contents -> Ok contents
+  | exception exn -> Error (Printf.sprintf "failed to read %s: %s" path (Exn.str exn))
+
+let read_description_file = function
+  | None -> Ok ""
+  | Some path -> read_text_file path
+
+let review_diff_action secrets_path config_filename state_path logfile loglevel root repo_key change_key title
+  description_file diff_file output =
+  setup_logging logfile loglevel;
+  Mirage_crypto_rng_unix.use_default ();
+  match Context.create ~secrets_filepath:secrets_path ?config_filename ?state_filepath:state_path () with
+  | Error e -> log#error "failed to initialize: %s" e
+  | Ok ctx ->
+  match read_description_file description_file with
+  | Error msg -> log#error "%s" msg
+  | Ok description ->
+    let module Review = Local_review.Make (Api_remote.Agent_runner) in
+    let config = Context.get_config ctx ~repo_url:repo_key in
+    let result =
+      Lwt_main.run
+        (Review.review_diff ~ctx ~root ~repo_key ?change_key ~title ~description ~diff_path:diff_file ~config ())
+    in
+    (match result, output with
+    | Error msg, Markdown -> log#error "%s" msg
+    | Ok markdown, Markdown -> Printf.printf "%s\n" markdown)
+
 (* flags *)
 
 let addr =
@@ -118,6 +152,35 @@ let payload_file =
   let doc = "Path to a JSON file containing a GitHub webhook payload." in
   Arg.(required & opt (some file) None & info [ "payload" ] ~docv:"PAYLOAD" ~doc)
 
+let local_root =
+  let doc = "Repository root used for local file-content lookups." in
+  Arg.(value & opt dir "." & info [ "root" ] ~docv:"ROOT" ~doc)
+
+let repo_key =
+  let doc = "Stable repository key for local review state, memory paths, and logs." in
+  Arg.(value & opt string "local" & info [ "repo-key" ] ~docv:"REPO_KEY" ~doc)
+
+let change_key =
+  let doc = "Stable change key for this local diff. Defaults to a digest of the diff." in
+  Arg.(value & opt (some string) None & info [ "change-key" ] ~docv:"CHANGE_KEY" ~doc)
+
+let title =
+  let doc = "Title passed to the review agents." in
+  Arg.(value & opt string "Local change" & info [ "title" ] ~docv:"TITLE" ~doc)
+
+let description_file =
+  let doc = "Optional markdown/text file whose contents are passed as the review description." in
+  Arg.(value & opt (some file) None & info [ "description-file" ] ~docv:"DESCRIPTION" ~doc)
+
+let diff_file =
+  let doc = "Path to a unified diff file to review." in
+  Arg.(required & opt (some file) None & info [ "diff" ] ~docv:"DIFF" ~doc)
+
+let output_format =
+  let formats = [ "markdown", Markdown ] in
+  let doc = "Output format. Supported value: $(b,markdown)." in
+  Arg.(value & opt (enum formats) Markdown & info [ "output" ] ~docv:"FORMAT" ~doc)
+
 (* commands *)
 
 let run_cmd =
@@ -132,11 +195,32 @@ let check_cmd =
   let term = Term.(const check_action $ secrets $ config_filename $ state_path $ event_type $ payload_file) in
   Cmd.v info term
 
+let review_diff_cmd =
+  let doc = "Review a local unified diff and print markdown." in
+  let info = Cmd.info "review-diff" ~doc in
+  let term =
+    Term.(
+      const review_diff_action
+      $ secrets
+      $ config_filename
+      $ state_path
+      $ logfile
+      $ loglevel
+      $ local_root
+      $ repo_key
+      $ change_key
+      $ title
+      $ description_file
+      $ diff_file
+      $ output_format)
+  in
+  Cmd.v info term
+
 let default, info =
   let doc = "Reviewotron - an agentic code review bot" in
   Term.(ret (const (`Help (`Pager, None)))), Cmd.info "reviewotron" ~doc
 
 let () =
-  let cmds = [ run_cmd; check_cmd ] in
+  let cmds = [ run_cmd; check_cmd; review_diff_cmd ] in
   let group = Cmd.group ~default info cmds in
   exit @@ Cmd.eval group
