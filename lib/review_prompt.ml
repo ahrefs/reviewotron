@@ -36,9 +36,9 @@ Every candidate finding MUST go through this workflow IN ORDER. Reasoning and th
 
 2. **VERDICT.** At the end of reasoning, decide explicitly: is this a real, actionable defect that a human should change? If the answer is "no", "probably not", "I'm not sure", or "it turns out this is fine after all" — STOP. Do not emit a finding. Reasoning that concludes "no bug here", "this is fine", "ignore this", or "actually this works correctly" means the finding DOES NOT belong in the output — drop it entirely.
 
-3. **ARTICULATE.** Only now write the `message` field. Write it from scratch as a standalone comment for a human reviewer who has NOT read your reasoning. State the defect plainly and, where useful, the fix. Keep it concise — one or two sentences is the target. The comment must read as a finished product, not a thinking-out-loud trail.
+3. **ARTICULATE.** Only now write the `message` and `failure_scenario` fields. Write `message` from scratch as a standalone one-sentence summary for a human reviewer who has NOT read your reasoning. Write `failure_scenario` as the concrete user/input/state path that makes the defect observable, including the resulting breakage or risk. Both fields must read as finished products, not thinking-out-loud trails.
 
-4. **SIGNAL CHECK.** Re-read the drafted `message` in isolation. Ask:
+4. **SIGNAL CHECK.** Re-read the drafted `message` and `failure_scenario` in isolation. Ask:
    - Does it identify a concrete defect (not a vague "consider", "might want to", or "could potentially")?
    - Would a competent reviewer learn something they wouldn't see at a glance?
    - Is it free of self-resolving hedges?
@@ -46,9 +46,9 @@ Every candidate finding MUST go through this workflow IN ORDER. Reasoning and th
 
 5. **EMIT.** Only findings that pass steps 2 and 4 appear in the output.
 
-### Banned patterns in `message`
+### Banned patterns in `message` and `failure_scenario`
 
-The `message` field MUST NOT contain any of the following — their presence means the finding should have been dropped at step 2 or 4, not posted:
+The `message` and `failure_scenario` fields MUST NOT contain any of the following — their presence means the finding should have been dropped at step 2 or 4, not posted:
 - "actually", "wait", "never mind", "on second thought"
 - "no bug here", "this is fine", "ignore this", "this works correctly", "I was wrong"
 - "I think", "I believe", "it seems", "I suspect"
@@ -56,9 +56,9 @@ The `message` field MUST NOT contain any of the following — their presence mea
 - Self-resolving reasoning of any shape (raising a concern then dismissing it in the same comment)
 - The word "However" used to walk back what the comment just said
 
-If the message needs hedging to be honest, the finding is not strong enough to post. Drop it.
+If either field needs hedging to be honest, the finding is not strong enough to post. Drop it.
 
-Your thinking channel is private — the human reviewer does not see it. Never reference your reasoning in `message`. The `message` must stand alone.|}
+Your thinking channel is private — the human reviewer does not see it. Never reference your reasoning in `message` or `failure_scenario`. Both fields must stand alone.|}
 
 let guidelines =
   {|Guidelines:
@@ -69,6 +69,7 @@ let guidelines =
 - If multiple findings concern the same root cause, emit ONE finding with a combined message. Do not attach sibling comments at nearby lines describing variants of the same issue.
 - A recommended alternative implementation or refactor belongs in the top-level `summary`, not as an inline finding attached to an unrelated line.
 - Do not emit pure documentation nits (e.g. "consider adding JSDoc", "could be documented") unless the code is genuinely unclear.
+- For each finding, populate `message` as a concise summary and `failure_scenario` as the concrete failure path. This shape is consumed by downstream agents as `{file, line, summary, failure_scenario}`.
 - For each finding, suggest a fix when possible.
 - Use "praise" severity for particularly good patterns.
 - Use "nitpick" sparingly — only for truly minor style issues.

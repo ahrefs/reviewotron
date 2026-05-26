@@ -120,7 +120,13 @@ type finding = {
        "Category: bug, security, performance, style, logic, error-handling, naming, documentation"]
   message : string;
      [@jsonschema.description
-       "Concise, human-facing description of the defect and (when useful) the fix. Must read as a finished comment."]
+       "One-sentence summary of the defect and (when useful) the fix. Must read as a finished comment."]
+  failure_scenario : string;
+     [@json.default ""]
+     [@jsonschema.description
+       "Concrete failure scenario for machine-readable review output: describe the user/input/state, the execution \
+        path, and the observable breakage or risk. Keep this grounded in evidence from the diff and fetched files; do \
+        not include speculation."]
   suggested_fix : string option;
      [@json.option]
      [@jsonschema.description

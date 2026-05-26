@@ -448,7 +448,7 @@ Parses and displays a GitHub webhook payload without starting the server or perf
 reviewotron review-diff [OPTIONS]
 ```
 
-Runs the same core review engine against a local unified diff and prints markdown to stdout. When `--diff` is omitted, Reviewotron generates a Git diff from the merge-base of `HEAD` and the inferred base ref, including working-tree changes. This path does not fetch or publish through GitHub; local file-content expansion uses `--root`.
+Runs the same core review engine against a local unified diff and prints the final review to stdout. Logs go to stderr unless `--logfile` is set. When `--diff` is omitted, Reviewotron generates a Git diff from the merge-base of `HEAD` and the inferred base ref, including working-tree changes. This path does not fetch or publish through GitHub; local file-content expansion uses `--root`.
 
 Local reviews load `.reviewotron.json` from `--root` before applying path filters and size limits. Use `--config-filename` to point at a different filename or absolute config path.
 
@@ -462,9 +462,20 @@ Local reviews load `.reviewotron.json` from `--root` before applying path filter
 | `--title` | inferred from base or diff file | Title passed to review agents |
 | `--description-file` | (none) | Optional file used as the review description |
 | `--config-filename` | `.reviewotron.json` | Config file loaded from `--root`, or absolute config path |
-| `--output` | `markdown` | Output format |
+| `--output` | `markdown` | Output format: `markdown` or `json` |
 | `--secrets` | `./secrets.json` | Path to secrets file for the Anthropic API key |
 | `--state` | (none — in-memory) | Optional state file updated after a successful review |
+
+JSON output is a list of machine-readable findings. Each item has this shape:
+
+```json
+{
+  "file": "backend/safer-claude-code/safer_claude_code.ml",
+  "line": 492,
+  "summary": "Legacy session-id file from old scc crashes startup because ensure_dir refuses to treat a regular file as a directory",
+  "failure_scenario": "Any user who ran a previous scc has a regular file at <scc_metadata>/sessions/<wt_basename> holding their last session UUID. After upgrading, the first scc -f or scc run-on calls prepare_session_id_mount, which calls ensure_dir(Filename.dirname host_path) — i.e. ensure_dir on the legacy file path. ensure_dir sees S_REG and fails. scc aborts on startup until the user manually removes the legacy file."
+}
+```
 
 ### Endpoints
 

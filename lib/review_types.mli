@@ -45,6 +45,7 @@ type finding = {
   severity : severity;
   category : finding_category;
   message : string;
+  failure_scenario : string;
   suggested_fix : string option;
 }
 

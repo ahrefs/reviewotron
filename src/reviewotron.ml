@@ -85,7 +85,14 @@ let check_action secrets_path config_filename state_path event_type payload_file
         | Github.Unknown kind -> Printf.printf "Event: %s (unhandled)\n" kind)
       end)
 
-type output_format = Markdown
+type output_format =
+  | Markdown
+  | Json
+
+let render_review_output output report =
+  match output with
+  | Markdown -> Local_sink.render_markdown report
+  | Json -> Local_sink.render_json report
 
 let read_text_file path =
   match Std.input_file ~bin:true path with
@@ -147,14 +154,15 @@ let review_diff_action secrets_path config_filename state_path logfile loglevel 
       let result =
         match diff_source with
         | `File diff_path ->
-          Lwt_main.run (Review.review_diff ~ctx ~root ~repo_key ?change_key ~title ~description ~diff_path ~config ())
+          Lwt_main.run
+            (Review.review_diff_report ~ctx ~root ~repo_key ?change_key ~title ~description ~diff_path ~config ())
         | `Text diff_text ->
           Lwt_main.run
-            (Review.review_diff_text ~ctx ~root ~repo_key ?change_key ~title ~description ~diff_text ~config ())
+            (Review.review_diff_text_report ~ctx ~root ~repo_key ?change_key ~title ~description ~diff_text ~config ())
       in
-      (match result, output with
-      | Error msg, Markdown -> log#error "%s" msg
-      | Ok markdown, Markdown -> Printf.printf "%s\n" markdown))
+      (match result with
+      | Error msg -> log#error "%s" msg
+      | Ok report -> Printf.printf "%s\n" (render_review_output output report)))
 
 (* flags *)
 
@@ -226,8 +234,8 @@ let diff_file =
   Arg.(value & opt (some file) None & info [ "diff" ] ~docv:"DIFF" ~doc)
 
 let output_format =
-  let formats = [ "markdown", Markdown ] in
-  let doc = "Output format. Supported value: $(b,markdown)." in
+  let formats = [ "markdown", Markdown; "json", Json ] in
+  let doc = "Output format. Supported values: $(b,markdown), $(b,json)." in
   Arg.(value & opt (enum formats) Markdown & info [ "output" ] ~docv:"FORMAT" ~doc)
 
 (* commands *)
@@ -245,7 +253,7 @@ let check_cmd =
   Cmd.v info term
 
 let review_diff_cmd =
-  let doc = "Review a local unified diff and print markdown." in
+  let doc = "Review a local unified diff and print markdown or JSON." in
   let info = Cmd.info "review-diff" ~doc in
   let term =
     Term.(

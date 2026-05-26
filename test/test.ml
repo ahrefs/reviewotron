@@ -289,6 +289,7 @@ let test_review_schema_valid () =
   (check bool) "has required" true (CCString.find ~sub:{|"required"|} json_str >= 0);
   (check bool) "has summary" true (CCString.find ~sub:{|"summary"|} json_str >= 0);
   (check bool) "has findings" true (CCString.find ~sub:{|"findings"|} json_str >= 0);
+  (check bool) "has failure scenario" true (CCString.find ~sub:{|"failure_scenario"|} json_str >= 0);
   (check bool) "has field descriptions" true (CCString.find ~sub:{|"description"|} json_str >= 0)
 
 (** The system prompt must explicitly establish the workflow that separates
@@ -300,7 +301,8 @@ let test_system_prompt_workflow_section () =
   (check bool) "prompt instructs to reason first" true (CCString.find ~sub:"REASON" prompt >= 0);
   (check bool) "prompt instructs to decide a verdict" true (CCString.find ~sub:"VERDICT" prompt >= 0);
   (check bool) "prompt instructs to articulate the comment last" true (CCString.find ~sub:"ARTICULATE" prompt >= 0);
-  (check bool) "prompt includes a signal/noise check" true (CCString.find ~sub:"SIGNAL CHECK" prompt >= 0)
+  (check bool) "prompt includes a signal/noise check" true (CCString.find ~sub:"SIGNAL CHECK" prompt >= 0);
+  (check bool) "prompt asks for failure scenarios" true (CCString.find ~sub:"failure_scenario" prompt >= 0)
 
 (** Specific hedging phrases that indicate the model resolved its own concern
     mid-message must be called out as banned in the message field. *)
@@ -387,8 +389,8 @@ let test_prompt_token_estimation () =
 (** {2 Dedup tests} *)
 
 let mk_finding ~path ~line ?(end_line = None) ?(severity = Review_types.Warning) ?(category = Review_types.Security)
-  ?(message = "msg") ?(suggested_fix = None) () : Review_types.finding =
-  { path; line; end_line; severity; category; message; suggested_fix }
+  ?(message = "msg") ?(failure_scenario = "") ?(suggested_fix = None) () : Review_types.finding =
+  { path; line; end_line; severity; category; message; failure_scenario; suggested_fix }
 
 let finding_by_message msg (f : Review_types.finding) = String.equal f.message msg
 
@@ -851,6 +853,7 @@ let test_review_output_roundtrip () =
             severity = Warning;
             category = Error_handling;
             message = "Missing error handling";
+            failure_scenario = "Invalid input raises and aborts request handling.";
             suggested_fix = Some "add try/with";
           };
         ];
@@ -863,6 +866,7 @@ let test_review_output_roundtrip () =
   (check int) "findings count" 1 (List.length parsed.findings);
   let f = List.hd parsed.findings in
   (check string) "finding path" "src/main.ml" f.path;
+  (check string) "failure scenario" "Invalid input raises and aborts request handling." f.failure_scenario;
   (check int) "finding line" 42 f.line
 
 let test_mock_claude_response () =
@@ -2028,6 +2032,49 @@ let test_local_review_diff_text_returns_markdown () =
     (check bool) "has summary" true (CCString.find ~sub:"The changes look generally good" markdown >= 0);
     (check bool) "has inline comments section" true (CCString.find ~sub:"### Inline comments" markdown >= 0)
 
+let json_string_field fields key =
+  match List.assoc_opt key fields with
+  | Some (`String value) -> value
+  | Some _ -> fail (Printf.sprintf "expected string JSON field %s" key)
+  | None -> fail (Printf.sprintf "missing JSON field %s" key)
+
+let json_int_field fields key =
+  match List.assoc_opt key fields with
+  | Some (`Int value) -> value
+  | Some _ -> fail (Printf.sprintf "expected int JSON field %s" key)
+  | None -> fail (Printf.sprintf "missing JSON field %s" key)
+
+let test_local_sink_render_json () =
+  let summary =
+    "Legacy session-id file from old scc crashes startup because ensure_dir refuses to treat a regular file as a \
+     directory"
+  in
+  let failure_scenario =
+    "Any user who ran a previous scc has a regular file at <scc_metadata>/sessions/<wt_basename> holding their last \
+     session UUID. After upgrading, scc calls ensure_dir on the legacy file path, sees S_REG, and aborts on startup."
+  in
+  let finding =
+    mk_finding ~path:"backend/safer-claude-code/safer_claude_code.ml" ~line:492 ~message:summary ~failure_scenario ()
+  in
+  let report : Review_engine.report =
+    {
+      body = "";
+      comments = [];
+      findings = [ finding ];
+      unchanged_findings = [];
+      anchor_failed_findings = [];
+      review_costs = [];
+      security_error = false;
+    }
+  in
+  match Yojson.Basic.from_string (Local_sink.render_json report) with
+  | `List [ `Assoc fields ] ->
+    (check string) "file" "backend/safer-claude-code/safer_claude_code.ml" (json_string_field fields "file");
+    (check int) "line" 492 (json_int_field fields "line");
+    (check string) "summary" summary (json_string_field fields "summary");
+    (check string) "failure_scenario" failure_scenario (json_string_field fields "failure_scenario")
+  | _ -> fail "expected a JSON list with one review finding"
+
 (** {2 State persistence tests} *)
 
 let test_state_save_load_roundtrip () =
@@ -2508,6 +2555,7 @@ let test_curator_input_never_contains_findings () =
         severity = Critical;
         category = Security;
         message = "SQL injection in query builder";
+        failure_scenario = "A crafted request value is concatenated into a SQL query.";
         suggested_fix = None;
       };
       {
@@ -2517,6 +2565,7 @@ let test_curator_input_never_contains_findings () =
         severity = Warning;
         category = Security;
         message = "Missing authz check";
+        failure_scenario = "A user can request another user's record without an ownership check.";
         suggested_fix = None;
       };
     ]
@@ -3344,6 +3393,7 @@ let () =
           test_case "source reports fetch read errors" `Quick test_local_source_reports_fetch_read_errors;
           test_case "review diff returns markdown" `Quick test_local_review_diff_returns_markdown;
           test_case "review generated diff text returns markdown" `Quick test_local_review_diff_text_returns_markdown;
+          test_case "local sink renders json" `Quick test_local_sink_render_json;
         ] );
       ( "state_persistence",
         [

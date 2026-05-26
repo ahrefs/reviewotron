@@ -216,6 +216,7 @@ module Make (AI : Api.Agent_runner) = struct
       severity = severity_of_confidence f.confidence;
       category = Security;
       message = enrich_message_with_sink ~anchor_kind ~f;
+      failure_scenario = f.description;
       suggested_fix = f.suggested_fix;
     }
 

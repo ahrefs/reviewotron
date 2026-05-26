@@ -7,7 +7,14 @@ let category_label cat = Review_types.finding_category_to_string cat
 
 let format_finding_body (finding : Review_types.finding) =
   let header = Printf.sprintf "%s %s" (severity_badge finding.severity) (category_label finding.category) in
-  let body = Printf.sprintf "%s\n\n%s" header finding.message in
+  let failure_scenario = String.trim finding.failure_scenario in
+  let body =
+    match failure_scenario with
+    | "" -> Printf.sprintf "%s\n\n%s" header finding.message
+    | scenario when String.equal scenario (String.trim finding.message) ->
+      Printf.sprintf "%s\n\n%s" header finding.message
+    | scenario -> Printf.sprintf "%s\n\n%s\n\nFailure scenario: %s" header finding.message scenario
+  in
   match finding.suggested_fix with
   | None -> body
   | Some fix -> Printf.sprintf "%s\n\n```suggestion\n%s\n```" body fix
