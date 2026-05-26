@@ -439,7 +439,7 @@ let test_single_hunk_contains_straddles_hunks () =
 
 (** Instantiate the reviewer against the in-memory api harness so we can call
     [finding_to_comment] without standing up a real GitHub client. *)
-module R_anchor_test = Reviewer.Make (Api_local.Github) (Api_local.Agent_runner) (Api_local.Slack)
+module R_anchor_test = Reviewer.Make (Api_local.Github) (Api_local.Github) (Api_local.Agent_runner) (Api_local.Slack)
 
 let test_finding_to_comment_multiline_valid () =
   let finding = mk_finding ~path:"src/main.ml" ~line:10 ~end_line:(Some 14) () in
@@ -1424,7 +1424,7 @@ let test_analysis_agent_vuln_class_section_all_classes () =
 
 (** {2 End-to-end reviewer tests} *)
 
-module R_test = Reviewer.Make (Api_local.Github) (Api_local.Agent_runner) (Api_local.Slack)
+module R_test = Reviewer.Make (Api_local.Github) (Api_local.Github) (Api_local.Agent_runner) (Api_local.Slack)
 
 let test_pr_review_e2e () =
   Test_helpers.reset_test_state ();

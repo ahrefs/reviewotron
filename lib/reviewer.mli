@@ -15,7 +15,7 @@ type finding_source = Review_engine.finding_source =
        the validator agent already filters for uniqueness. *)
 val deduplicate_findings : (finding_source * Review_types.finding) list -> Review_types.finding list
 
-module Make (_ : Api.Github) (_ : Api.Agent_runner) (_ : Api.Slack) : sig
+module Make (_ : Api.Review_source) (_ : Api.Review_sink) (_ : Api.Agent_runner) (_ : Api.Slack) : sig
   (** Dispatch a webhook event: check filters, run review, post results.
       Errors are logged but do not propagate — the caller gets [unit]. *)
   val process_event : Context.t -> event:Github.event -> unit Lwt.t

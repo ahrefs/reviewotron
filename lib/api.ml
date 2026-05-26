@@ -1,7 +1,7 @@
 (** Module type signatures for the functor-based API architecture.
     Real implementations live in {!Api_remote}, mock implementations in {!Api_local}. *)
 
-module type Github = sig
+module type Review_source = sig
   val get_config : ctx:Context.t -> repo_url:string -> (Config_types.config, string) result Lwt.t
 
   val get_pr_files :
@@ -16,12 +16,19 @@ module type Github = sig
 
   val get_file_content :
     ctx:Context.t -> repo_url:string -> path:string -> ref_:string -> (string option, string) result Lwt.t
+end
 
+module type Review_sink = sig
   val create_pr_review :
     ctx:Context.t -> repo_url:string -> number:int -> Github_types.create_review_req -> (unit, string) result Lwt.t
 
   val create_commit_comment :
     ctx:Context.t -> repo_url:string -> sha:string -> Github_types.commit_comment_req -> (unit, string) result Lwt.t
+end
+
+module type Github = sig
+  include Review_source
+  include Review_sink
 end
 
 module type Agent_runner = sig

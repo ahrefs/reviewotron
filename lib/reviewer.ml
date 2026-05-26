@@ -10,7 +10,7 @@ type finding_source = Review_engine.finding_source =
 
 let deduplicate_findings = Review_engine.deduplicate_findings
 
-module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
+module Make (SRC : Api.Review_source) (SNK : Api.Review_sink) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
   module Engine = Review_engine.Make (AI)
 
   (** Retry an Lwt operation once after a 1-second delay on failure.
@@ -25,7 +25,7 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
 
   (** Fetch config from the repo and cache it in context. *)
   let fetch_config ~ctx ~repo_url =
-    match%lwt GH.get_config ~ctx ~repo_url with
+    match%lwt SRC.get_config ~ctx ~repo_url with
     | Ok config ->
       Context.set_repo_config ctx ~repo_url config;
       Lwt.return (Ok ())
@@ -127,7 +127,7 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
     | Some sha ->
       Lwt_list.filter_map_p
         (fun path ->
-          let%lwt result = GH.get_file_content ~ctx ~repo_url ~path ~ref_:sha in
+          let%lwt result = SRC.get_file_content ~ctx ~repo_url ~path ~ref_:sha in
           match result with
           | Ok (Some content) -> Lwt.return (Some (path, content))
           | Ok None -> Lwt.return None
@@ -162,7 +162,7 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
     Option.map github_comment_of_review_comment (Review_engine.finding_to_review_comment ~diff finding)
 
   (** Run the plugin orchestrator and post the result as a GitHub PR review. *)
-  let fetch_file_at_ref ~ctx ~repo_url ~ref_ ~path = GH.get_file_content ~ctx ~repo_url ~path ~ref_
+  let fetch_file_at_ref ~ctx ~repo_url ~ref_ ~path = SRC.get_file_content ~ctx ~repo_url ~path ~ref_
 
   let execute_and_post_review ~ctx ~job ~number ~filtered_diff =
     let%lwt report = Engine.run_pr_review ~ctx ~job ~number ~filtered_diff in
@@ -172,7 +172,7 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
     in
     let%lwt post_result =
       retry_once ~label:(Printf.sprintf "create_pr_review PR #%d" number) (fun () ->
-        GH.create_pr_review ~ctx ~repo_url:job.repo_key ~number review_req)
+        SNK.create_pr_review ~ctx ~repo_url:job.repo_key ~number review_req)
     in
     (match post_result with
     | Ok () ->
@@ -190,7 +190,7 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
     let number = pr_notif.number in
     let pr = pr_notif.pull_request in
     log#info "reviewing PR #%d in %s" number pr_notif.repository.full_name;
-    let%lwt diff_result = GH.get_pr_diff ~ctx ~repo_url ~number in
+    let%lwt diff_result = SRC.get_pr_diff ~ctx ~repo_url ~number in
     match diff_result with
     | Error msg ->
       log#error "failed to fetch diff for PR #%d: %s" number msg;
@@ -244,7 +244,7 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
       [review_pr] reads it. *)
   let review_pr_from_comment ~ctx (n : Github_types.issue_comment_notification) =
     let repo_url = n.repository.url in
-    let%lwt result = GH.get_pull_request ~ctx ~repo_url ~number:n.issue.number in
+    let%lwt result = SRC.get_pull_request ~ctx ~repo_url ~number:n.issue.number in
     match result with
     | Error msg ->
       log#error "failed to fetch PR #%d for REVIEW comment trigger: %s" n.issue.number msg;
@@ -278,7 +278,7 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
           in
           let%lwt result =
             retry_once ~label:(Printf.sprintf "create_commit_comment %s" sha) (fun () ->
-              GH.create_commit_comment ~ctx ~repo_url ~sha comment)
+              SNK.create_commit_comment ~ctx ~repo_url ~sha comment)
           in
           (match result with
           | Ok () -> ()
@@ -293,7 +293,7 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
   let review_push ~ctx (push : Github_types.commit_pushed_notification) =
     let repo_url = push.repository.url in
     log#info "reviewing push to %s in %s" push.ref_ push.repository.full_name;
-    let%lwt diff_result = GH.get_compare_diff ~ctx ~repo_url ~base:push.before ~head:push.after in
+    let%lwt diff_result = SRC.get_compare_diff ~ctx ~repo_url ~base:push.before ~head:push.after in
     match diff_result with
     | Error msg ->
       log#error "failed to fetch compare diff for push %s...%s: %s" push.before push.after msg;

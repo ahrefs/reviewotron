@@ -1,6 +1,6 @@
 # Pluggable Review Architecture Plan
 
-Status: Stage 3 complete; Stage 4 next
+Status: Stage 4 complete; Stage 5 next
 Date: 2026-05-25
 
 ## Progress Notes
@@ -28,6 +28,11 @@ Date: 2026-05-25
   `Api.Github` module. GitHub PR and push controllers build jobs with callbacks
   closed over the PR head SHA or push after SHA. `make fmt`, `make build`, and
   `make test` passed.
+- 2026-05-26: Stage 4 completed. Split the combined API signature into
+  `Api.Review_source` and `Api.Review_sink`, keeping `Api.Github` as a combined
+  compatibility signature. `Reviewer.Make` now takes source and sink modules
+  separately; the existing GitHub implementation is passed for both sides in
+  production and tests. `make fmt`, `make build`, and `make test` passed.
 
 ## Goal
 
