@@ -1,6 +1,6 @@
 # Pluggable Review Architecture Plan
 
-Status: Stage 4 complete; Stage 5 next
+Status: Stage 5 complete; Stage 6 next
 Date: 2026-05-25
 
 ## Progress Notes
@@ -33,6 +33,13 @@ Date: 2026-05-25
   compatibility signature. `Reviewer.Make` now takes source and sink modules
   separately; the existing GitHub implementation is passed for both sides in
   production and tests. `make fmt`, `make build`, and `make test` passed.
+- 2026-05-26: Stage 5 completed. Added `Github_source` for GitHub event policy,
+  config refresh, diff acquisition, and `Review_job.t` preparation, and added
+  `Github_sink` for GitHub review-comment conversion, PR review publishing,
+  commit-comment publishing, and retry behavior. `Reviewer.Make` is now a
+  compatibility orchestrator that delegates GitHub source and sink work while
+  preserving the public helper APIs and webhook behavior. `make fmt`,
+  `make build`, and `make test` passed.
 
 ## Goal
 
@@ -595,4 +602,4 @@ When resuming this plan:
 5. Run the stage verification commands.
 6. Update this plan with a short status note before moving to the next stage.
 
-The next implementation step is Stage 0, followed by Stage 1.
+The next implementation step is Stage 6.
