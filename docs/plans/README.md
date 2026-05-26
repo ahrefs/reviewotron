@@ -4,7 +4,15 @@
 
 Reviewotron is an agentic code review bot that listens to GitHub webhooks and runs AI-powered reviews using the Claude API. It follows monorobot's architecture (functor-based API abstraction, ATDgen types, golden file testing).
 
-## Phases
+## Plans
+
+### Active Architecture Plans
+
+| Plan | Focus | Status |
+|------|-------|--------|
+| [Pluggable Review Architecture](2026-05-25-pluggable-review-architecture.md) | Split source adapters, core review engine, and sink adapters while keeping GitHub behavior working at each stage | Planned |
+
+### Original Implementation Phases
 
 | Phase | Focus | Est. Time | Status |
 |-------|-------|-----------|--------|

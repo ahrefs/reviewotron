@@ -2781,11 +2781,11 @@ let test_provider_options_carries_thinking_when_set () =
   match Ai_provider_anthropic.Anthropic_options.of_provider_options po with
   | None -> fail "expected Anthropic options to be present when thinking_budget is set"
   | Some opts ->
-    (match opts.thinking with
-    | None -> fail "expected thinking config to be populated"
-    | Some t ->
-      (check bool) "thinking enabled" true t.enabled;
-      (check int) "thinking budget matches" 4096 (Ai_provider_anthropic.Thinking.to_int t.budget_tokens))
+  match opts.thinking with
+  | None -> fail "expected thinking config to be populated"
+  | Some t ->
+    (check bool) "thinking enabled" true t.enabled;
+    (check int) "thinking budget matches" 4096 (Ai_provider_anthropic.Thinking.to_int t.budget_tokens)
 
 (** The general review agent must opt into Anthropic extended thinking.
     This is what gives the model a real reasoning channel instead of leaking

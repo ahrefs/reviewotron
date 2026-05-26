@@ -23,7 +23,7 @@ type agent_config = {
   output_schema : Yojson.Basic.t;
   max_steps : int;
   thinking_budget : int option;
-      (** Anthropic extended-thinking budget for this agent.  Set to give the
+    (** Anthropic extended-thinking budget for this agent.  Set to give the
           model a private reasoning channel that does not leak into structured
           output.  [None] keeps the agent single-pass; sub-1024 values are
           clamped to the Anthropic minimum. *)
