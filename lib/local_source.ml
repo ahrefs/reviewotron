@@ -51,10 +51,7 @@ let prepare_diff ~config diff_text =
   | Error `Empty -> Error Empty
   | Error (`Too_large total_lines) -> Error (Too_large total_lines)
 
-let prepare_review ~root ~repo_key ?change_key ~title ~description ~diff_path ~config () =
-  match%lwt read_file diff_path with
-  | Error msg -> Lwt.return (Error (Read_failed msg))
-  | Ok diff_text ->
+let prepare_review_from_text ~root ~repo_key ?change_key ~title ~description ~diff_text ~config () =
   match prepare_diff ~config diff_text with
   | Error error -> Lwt.return (Error error)
   | Ok (filtered_diff, filtered_text) ->
@@ -78,3 +75,8 @@ let prepare_review ~root ~repo_key ?change_key ~title ~description ~diff_path ~c
         }
     in
     Lwt.return (Ok { job; filtered_diff })
+
+let prepare_review ~root ~repo_key ?change_key ~title ~description ~diff_path ~config () =
+  match%lwt read_file diff_path with
+  | Error msg -> Lwt.return (Error (Read_failed msg))
+  | Ok diff_text -> prepare_review_from_text ~root ~repo_key ?change_key ~title ~description ~diff_text ~config ()

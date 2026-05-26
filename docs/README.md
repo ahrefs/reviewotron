@@ -445,21 +445,22 @@ Parses and displays a GitHub webhook payload without starting the server or perf
 ### `reviewotron review-diff` — Review a Local Unified Diff
 
 ```
-reviewotron review-diff --diff change.diff [OPTIONS]
+reviewotron review-diff [OPTIONS]
 ```
 
-Runs the same core review engine against a local unified diff and prints markdown to stdout. This path does not fetch or publish through GitHub; local file-content expansion uses `--root`.
+Runs the same core review engine against a local unified diff and prints markdown to stdout. When `--diff` is omitted, Reviewotron generates a Git diff from the merge-base of `HEAD` and the inferred base ref, including working-tree changes. This path does not fetch or publish through GitHub; local file-content expansion uses `--root`.
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--diff` | Required | Path to a unified diff file |
-| `--root` | `.` | Repository root for local file-content lookups |
-| `--repo-key` | `local` | Stable repository key for config, memory paths, and state |
+| `--diff` | Git diff against inferred base | Path to a unified diff file |
+| `--base` | inferred from Git | Base ref for generated diffs; tries `origin/HEAD`, `origin/main`, `origin/master`, then the upstream remote |
+| `--root` | Git worktree root, then cwd | Repository root for local file-content lookups |
+| `--repo-key` | `local:<root>` | Stable repository key for config, memory paths, and state |
 | `--change-key` | digest of diff | Stable change key recorded in state |
-| `--title` | `Local change` | Title passed to review agents |
+| `--title` | inferred from base or diff file | Title passed to review agents |
 | `--description-file` | (none) | Optional file used as the review description |
 | `--output` | `markdown` | Output format |
-| `--secrets` | `secrets.json` | Path to secrets file for the Anthropic API key |
+| `--secrets` | `./secrets.json` | Path to secrets file for the Anthropic API key |
 | `--state` | (none — in-memory) | Optional state file updated after a successful review |
 
 ### Endpoints

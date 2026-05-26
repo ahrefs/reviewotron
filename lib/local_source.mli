@@ -30,3 +30,15 @@ val prepare_review :
   config:Config_types.config ->
   unit ->
   (prepared_review, prepare_error) result Lwt.t
+
+(** Build a local review job from raw unified diff text. *)
+val prepare_review_from_text :
+  root:string ->
+  repo_key:string ->
+  ?change_key:string ->
+  title:string ->
+  description:string ->
+  diff_text:string ->
+  config:Config_types.config ->
+  unit ->
+  (prepared_review, prepare_error) result Lwt.t

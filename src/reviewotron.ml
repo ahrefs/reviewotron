@@ -96,7 +96,26 @@ let read_description_file = function
   | None -> Ok ""
   | Some path -> read_text_file path
 
-let review_diff_action secrets_path config_filename state_path logfile loglevel root repo_key change_key title
+let resolve_local_root = function
+  | Some root -> Local_git.normalize_path root
+  | None -> Local_git.default_root ~cwd:(Sys.getcwd ())
+
+let resolve_repo_key ~root = function
+  | Some repo_key -> repo_key
+  | None -> Local_git.default_repo_key ~root
+
+let resolve_diff_source ~root ~base diff_file =
+  match diff_file with
+  | Some path -> Ok (`File path, Local_git.title_for_diff_file path)
+  | None ->
+  match Local_git.infer_base ~root ~explicit:base with
+  | Error msg -> Error msg
+  | Ok base ->
+  match Local_git.diff_against_base ~root ~base with
+  | Error msg -> Error msg
+  | Ok diff_text -> Ok (`Text diff_text, Local_git.title_for_base base)
+
+let review_diff_action secrets_path config_filename state_path logfile loglevel root repo_key change_key title base
   description_file diff_file output =
   setup_logging logfile loglevel;
   Mirage_crypto_rng_unix.use_default ();
@@ -105,18 +124,28 @@ let review_diff_action secrets_path config_filename state_path logfile loglevel 
   with
   | Error e -> log#error "failed to initialize: %s" e
   | Ok ctx ->
-  match read_description_file description_file with
-  | Error msg -> log#error "%s" msg
-  | Ok description ->
-    let module Review = Local_review.Make (Api_remote.Agent_runner) in
-    let config = Context.get_config ctx ~repo_key in
-    let result =
-      Lwt_main.run
-        (Review.review_diff ~ctx ~root ~repo_key ?change_key ~title ~description ~diff_path:diff_file ~config ())
-    in
-    (match result, output with
-    | Error msg, Markdown -> log#error "%s" msg
-    | Ok markdown, Markdown -> Printf.printf "%s\n" markdown)
+    let root = resolve_local_root root in
+    let repo_key = resolve_repo_key ~root repo_key in
+    (match resolve_diff_source ~root ~base diff_file with
+    | Error msg -> log#error "%s" msg
+    | Ok (diff_source, default_title) ->
+    match read_description_file description_file with
+    | Error msg -> log#error "%s" msg
+    | Ok description ->
+      let module Review = Local_review.Make (Api_remote.Agent_runner) in
+      let title = CCOption.get_or ~default:default_title title in
+      let config = Context.get_config ctx ~repo_key in
+      let result =
+        match diff_source with
+        | `File diff_path ->
+          Lwt_main.run (Review.review_diff ~ctx ~root ~repo_key ?change_key ~title ~description ~diff_path ~config ())
+        | `Text diff_text ->
+          Lwt_main.run
+            (Review.review_diff_text ~ctx ~root ~repo_key ?change_key ~title ~description ~diff_text ~config ())
+      in
+      (match result, output with
+      | Error msg, Markdown -> log#error "%s" msg
+      | Ok markdown, Markdown -> Printf.printf "%s\n" markdown))
 
 (* flags *)
 
@@ -129,7 +158,7 @@ let port =
   Arg.(value & opt int 1338 & info [ "p"; "port" ] ~docv:"PORT" ~doc)
 
 let secrets =
-  let doc = "Path to secrets.json file." in
+  let doc = "Path to secrets.json file (default: ./secrets.json)." in
   Arg.(value & opt file "secrets.json" & info [ "secrets" ] ~docv:"SECRETS" ~doc)
 
 let config_filename =
@@ -157,28 +186,35 @@ let payload_file =
   Arg.(required & opt (some file) None & info [ "payload" ] ~docv:"PAYLOAD" ~doc)
 
 let local_root =
-  let doc = "Repository root used for local file-content lookups." in
-  Arg.(value & opt dir "." & info [ "root" ] ~docv:"ROOT" ~doc)
+  let doc = "Repository root used for local file-content lookups. Defaults to the Git worktree root, then cwd." in
+  Arg.(value & opt (some dir) None & info [ "root" ] ~docv:"ROOT" ~doc)
 
 let repo_key =
-  let doc = "Stable repository key for local review state, memory paths, and logs." in
-  Arg.(value & opt string "local" & info [ "repo-key" ] ~docv:"REPO_KEY" ~doc)
+  let doc = "Stable repository key for local review state, memory paths, and logs. Defaults to local:<root>." in
+  Arg.(value & opt (some string) None & info [ "repo-key" ] ~docv:"REPO_KEY" ~doc)
 
 let change_key =
   let doc = "Stable change key for this local diff. Defaults to a digest of the diff." in
   Arg.(value & opt (some string) None & info [ "change-key" ] ~docv:"CHANGE_KEY" ~doc)
 
 let title =
-  let doc = "Title passed to the review agents." in
-  Arg.(value & opt string "Local change" & info [ "title" ] ~docv:"TITLE" ~doc)
+  let doc = "Title passed to the review agents. Defaults to the inferred base or diff file." in
+  Arg.(value & opt (some string) None & info [ "title" ] ~docv:"TITLE" ~doc)
+
+let base_ref =
+  let doc =
+    "Base ref for default Git diff generation. When omitted, reviewotron tries origin/HEAD, origin/main, \
+     origin/master, and the current branch upstream remote."
+  in
+  Arg.(value & opt (some string) None & info [ "base" ] ~docv:"BASE" ~doc)
 
 let description_file =
   let doc = "Optional markdown/text file whose contents are passed as the review description." in
   Arg.(value & opt (some file) None & info [ "description-file" ] ~docv:"DESCRIPTION" ~doc)
 
 let diff_file =
-  let doc = "Path to a unified diff file to review." in
-  Arg.(required & opt (some file) None & info [ "diff" ] ~docv:"DIFF" ~doc)
+  let doc = "Path to a unified diff file to review. Defaults to a Git diff against the inferred base ref." in
+  Arg.(value & opt (some file) None & info [ "diff" ] ~docv:"DIFF" ~doc)
 
 let output_format =
   let formats = [ "markdown", Markdown ] in
@@ -214,6 +250,7 @@ let review_diff_cmd =
       $ repo_key
       $ change_key
       $ title
+      $ base_ref
       $ description_file
       $ diff_file
       $ output_format)

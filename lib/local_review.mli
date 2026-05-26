@@ -17,4 +17,18 @@ module Make (_ : Api.Agent_runner) : sig
     config:Config_types.config ->
     unit ->
     (string, string) result Lwt.t
+
+  (** Review raw unified diff text, record the generic [change_key] in state,
+      and return markdown output. *)
+  val review_diff_text :
+    ctx:Context.t ->
+    root:string ->
+    repo_key:string ->
+    ?change_key:string ->
+    title:string ->
+    description:string ->
+    diff_text:string ->
+    config:Config_types.config ->
+    unit ->
+    (string, string) result Lwt.t
 end

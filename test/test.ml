@@ -1816,6 +1816,54 @@ let test_ignored_author_push_skipped () =
 
 module Local_review_test = Local_review.Make (Api_local.Agent_runner)
 
+let fake_git mapping ~cwd:_ args =
+  let key = String.concat "\n" args in
+  match List.find_opt (fun (candidate, _) -> String.equal candidate key) mapping with
+  | Some (_, `Ok output) -> Ok output
+  | Some (_, `Error msg) -> Error msg
+  | None -> Error (Printf.sprintf "unexpected git args: %s" (String.concat " " args))
+
+let git_key args = String.concat "\n" args
+
+let test_local_git_default_repo_key () =
+  (check string) "repo key" "local:/tmp/reviewotron" (Local_git.default_repo_key ~root:"/tmp/reviewotron")
+
+let test_local_git_infer_base_uses_explicit_base () =
+  let run_git =
+    fake_git
+      [
+        git_key [ "rev-parse"; "--verify"; "--quiet"; "upstream/main^{commit}" ], `Ok "upstream/main";
+        git_key [ "merge-base"; "HEAD"; "upstream/main" ], `Ok "abc123";
+      ]
+  in
+  match Local_git.infer_base_with ~run_git ~root:"/repo" ~explicit:(Some "upstream/main") with
+  | Ok base -> (check string) "base" "upstream/main" base
+  | Error msg -> fail msg
+
+let test_local_git_infer_base_uses_origin_head () =
+  let run_git =
+    fake_git
+      [
+        git_key [ "symbolic-ref"; "--quiet"; "--short"; "refs/remotes/origin/HEAD" ], `Ok "origin/trunk";
+        git_key [ "rev-parse"; "--abbrev-ref"; "--symbolic-full-name"; "@{upstream}" ], `Error "no upstream";
+        git_key [ "rev-parse"; "--verify"; "--quiet"; "origin/trunk^{commit}" ], `Ok "origin/trunk";
+        git_key [ "merge-base"; "HEAD"; "origin/trunk" ], `Ok "abc123";
+      ]
+  in
+  match Local_git.infer_base_with ~run_git ~root:"/repo" ~explicit:None with
+  | Ok base -> (check string) "base" "origin/trunk" base
+  | Error msg -> fail msg
+
+let test_local_git_diff_against_base_uses_merge_base () =
+  let diff_text = "diff --git a/a.ml b/a.ml\n" in
+  let run_git =
+    fake_git
+      [ git_key [ "merge-base"; "HEAD"; "origin/main" ], `Ok "abc123"; git_key [ "diff"; "abc123" ], `Ok diff_text ]
+  in
+  match Local_git.diff_against_base_with ~run_git ~root:"/repo" ~base:"origin/main" with
+  | Ok diff -> (check string) "diff" diff_text diff
+  | Error msg -> fail msg
+
 let with_local_root f =
   let tmp_dir = Filename.temp_dir "reviewotron_local_" "_test" in
   let src_dir = Filename.concat tmp_dir "src" in
@@ -1899,6 +1947,22 @@ let test_local_review_diff_returns_markdown () =
     (check bool) "has local inline location" true (CCString.find ~sub:"src/main.ml:14" markdown >= 0);
     (check bool) "records generic change review" true
       (State.is_change_reviewed state ~repo_key:"local/repo" ~change_key:"local-change")
+
+let test_local_review_diff_text_returns_markdown () =
+  Test_helpers.reset_test_state ();
+  let ctx = Test_helpers.make_test_context () in
+  let config = Context.default_config () in
+  let diff_text = read_file "mock_api_responses/github/pr_42.diff" in
+  let result =
+    Lwt_main.run
+      (Local_review_test.review_diff_text ~ctx ~root:"." ~repo_key:"local/repo" ~title:"Generated local diff"
+         ~description:"Local description" ~diff_text ~config ())
+  in
+  match result with
+  | Error msg -> fail msg
+  | Ok markdown ->
+    (check bool) "has summary" true (CCString.find ~sub:"The changes look generally good" markdown >= 0);
+    (check bool) "has inline comments section" true (CCString.find ~sub:"### Inline comments" markdown >= 0)
 
 (** {2 State persistence tests} *)
 
@@ -3203,9 +3267,14 @@ let () =
         ] );
       ( "local_review",
         [
+          test_case "git default repo key" `Quick test_local_git_default_repo_key;
+          test_case "git infer base uses explicit base" `Quick test_local_git_infer_base_uses_explicit_base;
+          test_case "git infer base uses origin HEAD" `Quick test_local_git_infer_base_uses_origin_head;
+          test_case "git diff uses merge-base" `Quick test_local_git_diff_against_base_uses_merge_base;
           test_case "source builds local job" `Quick test_local_source_prepare_review_builds_job;
           test_case "source rejects unsafe fetch path" `Quick test_local_source_rejects_unsafe_fetch_path;
           test_case "review diff returns markdown" `Quick test_local_review_diff_returns_markdown;
+          test_case "review generated diff text returns markdown" `Quick test_local_review_diff_text_returns_markdown;
         ] );
       ( "state_persistence",
         [
