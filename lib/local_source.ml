@@ -34,14 +34,50 @@ let safe_relative_path path =
         | _ -> true)
       parts
 
-let fetch_file_from_root ~root ~path =
+let has_prefix ~prefix value =
+  let prefix_len = String.length prefix in
+  String.length value >= prefix_len && String.equal (String.sub value 0 prefix_len) prefix
+
+let has_trailing_separator path =
+  match String.length path with
+  | 0 -> false
+  | len -> String.equal (String.sub path (len - 1) 1) Filename.dir_sep
+
+let with_trailing_separator path =
+  match has_trailing_separator path with
+  | true -> path
+  | false -> path ^ Filename.dir_sep
+
+let path_is_under_root ~root path = String.equal root path || has_prefix ~prefix:(with_trailing_separator root) path
+
+let realpath path =
+  match Unix.realpath path with
+  | resolved -> Ok resolved
+  | exception Unix.Unix_error (error, fn, arg) ->
+    Error (Printf.sprintf "%s %s failed: %s" fn arg (Unix.error_message error))
+
+let resolve_fetch_path ~root ~path =
   match safe_relative_path path with
-  | false -> Lwt.return (Error (Printf.sprintf "refusing to read unsafe local path: %s" path))
+  | false -> Error (Printf.sprintf "refusing to read unsafe local path: %s" path)
   | true ->
     let full_path = Filename.concat root path in
-    (match%lwt read_file full_path with
-    | Ok contents -> Lwt.return (Ok (Some contents))
-    | Error _ -> Lwt.return (Ok None))
+    (match realpath root with
+    | Error msg -> Error msg
+    | Ok root ->
+    match Unix.realpath full_path with
+    | exception Unix.Unix_error _ -> Ok None
+    | resolved_path when path_is_under_root ~root resolved_path -> Ok (Some resolved_path)
+    | resolved_path ->
+      Error (Printf.sprintf "refusing to read local path outside root: %s resolves to %s" path resolved_path))
+
+let fetch_file_from_root ~root ~path =
+  match resolve_fetch_path ~root ~path with
+  | Error msg -> Lwt.return (Error msg)
+  | Ok None -> Lwt.return (Ok None)
+  | Ok (Some full_path) ->
+  match%lwt read_file full_path with
+  | Ok contents -> Lwt.return (Ok (Some contents))
+  | Error _ -> Lwt.return (Ok None)
 
 let digest_change_key diff_text = Digest.(to_hex (string diff_text))
 

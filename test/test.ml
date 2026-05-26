@@ -1949,6 +1949,32 @@ let test_local_source_rejects_unsafe_fetch_path () =
       | Ok (Some _) -> fail "unsafe path should not return content"
       | Ok None -> fail "unsafe path should return an error"))
 
+let test_local_source_rejects_symlink_escape () =
+  with_local_root (fun root ->
+    let outside_path = Filename.temp_file "reviewotron_secret_" ".txt" in
+    let link_path = Filename.concat root "link.txt" in
+    Fun.protect
+      ~finally:(fun () ->
+        (try Sys.remove link_path with Sys_error _ -> ());
+        try Sys.remove outside_path with Sys_error _ -> ())
+      (fun () ->
+        write_file outside_path "secret\n";
+        Unix.symlink outside_path link_path;
+        let config = Context.default_config () in
+        let result =
+          Lwt_main.run
+            (Local_source.prepare_review ~root ~repo_key:"local/repo" ~title:"Local change" ~description:""
+               ~diff_path:"mock_api_responses/github/pr_42.diff" ~config ())
+        in
+        match result with
+        | Error error -> fail (Local_source.string_of_prepare_error error)
+        | Ok Local_source.{ job; filtered_diff = _ } ->
+          let fetch_result = Lwt_main.run (job.fetch_file ~path:"link.txt") in
+          (match fetch_result with
+          | Error msg -> (check bool) "symlink escape rejected" true (CCString.find ~sub:"outside root" msg >= 0)
+          | Ok (Some _) -> fail "symlink escape should not return content"
+          | Ok None -> fail "symlink escape should return an error")))
+
 let test_local_review_diff_returns_markdown () =
   Test_helpers.reset_test_state ();
   let state = State.create () in
@@ -3297,6 +3323,7 @@ let () =
           test_case "git diff uses merge-base" `Quick test_local_git_diff_against_base_uses_merge_base;
           test_case "source builds local job" `Quick test_local_source_prepare_review_builds_job;
           test_case "source rejects unsafe fetch path" `Quick test_local_source_rejects_unsafe_fetch_path;
+          test_case "source rejects symlink escape" `Quick test_local_source_rejects_symlink_escape;
           test_case "review diff returns markdown" `Quick test_local_review_diff_returns_markdown;
           test_case "review generated diff text returns markdown" `Quick test_local_review_diff_text_returns_markdown;
         ] );
