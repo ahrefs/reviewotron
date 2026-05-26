@@ -26,7 +26,7 @@ let make_test_context ?state ?(config = Config_types.config_of_json (Melange_jso
     }
   in
   let ctx = Context.make ~secrets ?state () in
-  Context.set_repo_config ctx ~repo_url:test_repo_url config;
+  Context.set_config ctx ~repo_key:test_repo_url config;
   ctx
 
 (** Reset all mock state between tests. *)

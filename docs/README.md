@@ -143,6 +143,10 @@ Create a `secrets.json` file (see `secrets.json.example`):
 
 *Either `gh_token` or `auth` must be set per repo. Using `gh_token` is the simpler option.
 
+For local-only `review-diff` usage, `repos` may be an empty list as long as the
+secrets file still provides `anthropic_api_key`. The webhook server still
+requires at least one configured repo by default.
+
 #### GitHub App Installation Auth
 
 Instead of a personal access token, you can authenticate as a GitHub App installation:
@@ -382,8 +386,9 @@ The `--state` flag enables persistent state tracking. The state file (JSON) reco
 
 - **PR reviews**: repo URL, PR number, head SHA, timestamp, review costs
 - **Push reviews**: repo URL, after SHA
+- **Generic change reviews**: repo key, change key, timestamp, review costs
 
-This prevents duplicate reviews — if the same PR at the same commit SHA is already recorded, the review is skipped. State is trimmed to the 500 most recent records per repo.
+For GitHub webhooks, this prevents duplicate reviews — if the same PR at the same commit SHA is already recorded, the review is skipped. Local diff reviews record their `repo_key` and `change_key` in the same state file, but currently do not skip duplicates. State is trimmed to the 500 most recent records per repo key.
 
 Without `--state`, state is in-memory only and lost on restart. This means reviews may be duplicated after a server restart.
 
@@ -436,6 +441,26 @@ Parses and displays a GitHub webhook payload without starting the server or perf
 | `--event-type` | Yes | GitHub event type (`pull_request` or `push`) |
 | `--payload` | Yes | Path to JSON payload file |
 | `--secrets` | No | Path to secrets file (defaults to `secrets.json`; must exist for initialization) |
+
+### `reviewotron review-diff` — Review a Local Unified Diff
+
+```
+reviewotron review-diff --diff change.diff [OPTIONS]
+```
+
+Runs the same core review engine against a local unified diff and prints markdown to stdout. This path does not fetch or publish through GitHub; local file-content expansion uses `--root`.
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--diff` | Required | Path to a unified diff file |
+| `--root` | `.` | Repository root for local file-content lookups |
+| `--repo-key` | `local` | Stable repository key for config, memory paths, and state |
+| `--change-key` | digest of diff | Stable change key recorded in state |
+| `--title` | `Local change` | Title passed to review agents |
+| `--description-file` | (none) | Optional file used as the review description |
+| `--output` | `markdown` | Output format |
+| `--secrets` | `secrets.json` | Path to secrets file for the Anthropic API key |
+| `--state` | (none — in-memory) | Optional state file updated after a successful review |
 
 ### Endpoints
 

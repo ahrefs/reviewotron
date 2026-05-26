@@ -4,7 +4,8 @@
     GitHub publication. *)
 
 module Make (_ : Api.Agent_runner) : sig
-  (** Review a local unified diff and return markdown output. *)
+  (** Review a local unified diff, record the generic [change_key] in state,
+      and return markdown output. *)
   val review_diff :
     ctx:Context.t ->
     root:string ->

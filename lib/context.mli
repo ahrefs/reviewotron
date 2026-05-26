@@ -1,5 +1,6 @@
-(** Application context: secrets and per-repo configuration management.
-    Config is fetched from each repo's default branch (like monorobot). *)
+(** Application context: secrets and per-repository configuration management.
+    Config is fetched lazily by source adapters when they support remote
+    configuration. *)
 
 (** The application context holding secrets and a per-repo config cache. *)
 type t
@@ -14,9 +15,29 @@ val default_config_filename : string
 val default_config : unit -> Config_types.config
 
 (** Create a context by loading secrets and optionally state from disk.
-    Config is fetched lazily from each repo via the GitHub API.
-    Returns [Error] if secrets cannot be loaded or contain no repos. *)
-val create : secrets_filepath:string -> ?config_filename:string -> ?state_filepath:string -> unit -> (t, string) result
+    Config is fetched lazily by source adapters.
+
+    [require_repos] defaults to [true] for webhook/server safety. Local-only
+    commands can set it to [false] so a secrets file with ["repos": []] is
+    accepted. *)
+val create :
+  secrets_filepath:string ->
+  ?config_filename:string ->
+  ?state_filepath:string ->
+  ?require_repos:bool ->
+  unit ->
+  (t, string) result
+
+(** Look up cached config by neutral repository key. Returns [None] if not yet
+    fetched or explicitly set. *)
+val find_config : t -> repo_key:string -> Config_types.config option
+
+(** Cache config by neutral repository key. *)
+val set_config : t -> repo_key:string -> Config_types.config -> unit
+
+(** Get the effective configuration for a repository key.
+    Returns the cached config if available, otherwise returns defaults. *)
+val get_config : t -> repo_key:string -> Config_types.config
 
 (** Look up the cached config for a repository. Returns [None] if not yet fetched. *)
 val find_repo_config : t -> repo_url:string -> Config_types.config option
@@ -24,9 +45,8 @@ val find_repo_config : t -> repo_url:string -> Config_types.config option
 (** Cache a fetched config for a repository. *)
 val set_repo_config : t -> repo_url:string -> Config_types.config -> unit
 
-(** Get the effective configuration for a repository.
-    Returns the cached config if available, otherwise returns defaults. *)
-val get_config : t -> repo_url:string -> Config_types.config
+(** Compatibility wrapper for GitHub URL-keyed configuration. *)
+val get_repo_config : t -> repo_url:string -> Config_types.config
 
 (** Get the webhook secret for a repository, if configured. *)
 val get_hook_secret : t -> repo_url:string -> string option

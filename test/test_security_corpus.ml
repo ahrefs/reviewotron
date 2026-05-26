@@ -34,7 +34,7 @@ let corpus_repo_url = "https://github.com/test/security-corpus"
 let make_corpus_context ~api_key =
   let secrets : Config_types.secrets = { repos = []; anthropic_api_key = api_key; slack_access_token = None } in
   let ctx = Context.make ~secrets () in
-  Context.set_repo_config ctx ~repo_url:corpus_repo_url (Context.default_config ());
+  Context.set_config ctx ~repo_key:corpus_repo_url (Context.default_config ());
   ctx
 
 (** Read a corpus diff file and parse it. Returns [(diff_text, file_diffs)]. *)

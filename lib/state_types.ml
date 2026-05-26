@@ -16,9 +16,22 @@ type push_review_record = {
 }
 [@@deriving json]
 
+(** Generic source-independent review record.
+
+    Used by non-GitHub sources where [change_key] is the stable identifier
+    supplied by the source adapter. GitHub PR/push records remain separate so
+    their existing dedup semantics and JSON fields stay unchanged. *)
+type change_review_record = {
+  change_key : string;
+  reviewed_at : string;
+  review_costs : Cost_tracking.review_cost list; [@json.default []]
+}
+[@@deriving json]
+
 type repo_state = {
   pr_reviews : review_record list; [@json.default []]
   push_reviews : push_review_record list; [@json.default []]
+  change_reviews : change_review_record list; [@json.default []]
 }
 [@@deriving json]
 

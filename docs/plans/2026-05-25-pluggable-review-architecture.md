@@ -1,6 +1,6 @@
 # Pluggable Review Architecture Plan
 
-Status: Stage 6 complete; Stage 7 next
+Status: Stage 7 complete
 Date: 2026-05-25
 
 ## Progress Notes
@@ -46,6 +46,15 @@ Date: 2026-05-25
   without GitHub acquisition or GitHub publication. Added the
   `reviewotron review-diff` CLI command and local review tests using the mock
   agent runner. `make fmt`, `make build`, and `make test` passed.
+- 2026-05-26: Stage 7 completed. Added neutral `Context` config helpers keyed
+  by `repo_key` while keeping GitHub URL compatibility helpers for auth,
+  webhook secrets, and existing config call sites. Local-only commands can now
+  opt into repo-less secrets while the webhook server remains strict by
+  default. Added generic
+  `change_reviews` state records keyed by `repo_key` and `change_key`, with
+  legacy state JSON loading preserved. Local diff reviews now record generic
+  change reviews after successful markdown generation. Updated docs for local
+  review state behavior. `make fmt`, `make build`, and `make test` passed.
 
 ## Goal
 
@@ -608,4 +617,6 @@ When resuming this plan:
 5. Run the stage verification commands.
 6. Update this plan with a short status note before moving to the next stage.
 
-The next implementation step is Stage 7.
+All planned implementation stages are complete. Future work should start from
+the follow-up decisions in this document rather than continuing the staged
+architecture split.

@@ -10,7 +10,7 @@ Reviewotron is an agentic code review bot that listens to GitHub webhooks and ru
 
 | Plan | Focus | Status |
 |------|-------|--------|
-| [Pluggable Review Architecture](2026-05-25-pluggable-review-architecture.md) | Split source adapters, core review engine, and sink adapters while keeping GitHub behavior working at each stage | Stage 6 complete |
+| [Pluggable Review Architecture](2026-05-25-pluggable-review-architecture.md) | Split source adapters, core review engine, and sink adapters while keeping GitHub behavior working at each stage | Stage 7 complete |
 
 ### Original Implementation Phases
 

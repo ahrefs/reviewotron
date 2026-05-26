@@ -30,7 +30,9 @@ let run_action addr port secrets_path config_filename state_path logfile logleve
 
 let check_action secrets_path config_filename state_path event_type payload_file =
   log#info "check mode: event_type=%s, payload=%s" event_type payload_file;
-  match Context.create ~secrets_filepath:secrets_path ?config_filename ?state_filepath:state_path () with
+  match
+    Context.create ~secrets_filepath:secrets_path ?config_filename ?state_filepath:state_path ~require_repos:false ()
+  with
   | Error e ->
     log#error "failed to initialize: %s" e;
     ()
@@ -98,14 +100,16 @@ let review_diff_action secrets_path config_filename state_path logfile loglevel 
   description_file diff_file output =
   setup_logging logfile loglevel;
   Mirage_crypto_rng_unix.use_default ();
-  match Context.create ~secrets_filepath:secrets_path ?config_filename ?state_filepath:state_path () with
+  match
+    Context.create ~secrets_filepath:secrets_path ?config_filename ?state_filepath:state_path ~require_repos:false ()
+  with
   | Error e -> log#error "failed to initialize: %s" e
   | Ok ctx ->
   match read_description_file description_file with
   | Error msg -> log#error "%s" msg
   | Ok description ->
     let module Review = Local_review.Make (Api_remote.Agent_runner) in
-    let config = Context.get_config ctx ~repo_url:repo_key in
+    let config = Context.get_config ctx ~repo_key in
     let result =
       Lwt_main.run
         (Review.review_diff ~ctx ~root ~repo_key ?change_key ~title ~description ~diff_path:diff_file ~config ())

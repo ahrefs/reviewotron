@@ -161,6 +161,29 @@ let test_config_review_plugins_explicit () =
   (check int) "vuln_classes count" 2 (List.length config.review_plugins.security.vuln_classes);
   (check int) "memory_max_tokens" 10000 config.review_plugins.security.memory_max_tokens
 
+let test_context_create_requires_repos_by_default () =
+  let tmp_path = Filename.temp_file "reviewotron_secrets_" ".json" in
+  Fun.protect
+    ~finally:(fun () -> Sys.remove tmp_path)
+    (fun () ->
+      write_file tmp_path {|{"repos": [], "anthropic_api_key": "sk-test"}|};
+      match Context.create ~secrets_filepath:tmp_path () with
+      | Ok _ -> fail "expected empty repos to be rejected by default"
+      | Error msg -> (check bool) "mentions repos" true (CCString.find ~sub:"at least one repo" msg >= 0))
+
+let test_context_create_allows_repo_less_when_explicit () =
+  let tmp_path = Filename.temp_file "reviewotron_secrets_" ".json" in
+  Fun.protect
+    ~finally:(fun () -> Sys.remove tmp_path)
+    (fun () ->
+      write_file tmp_path {|{"repos": [], "anthropic_api_key": "sk-test"}|};
+      match Context.create ~secrets_filepath:tmp_path ~require_repos:false () with
+      | Error msg -> fail msg
+      | Ok ctx ->
+        let secrets = Context.secrets ctx in
+        (check int) "no repos" 0 (List.length secrets.repos);
+        (check string) "api key" "sk-test" secrets.anthropic_api_key)
+
 let test_vuln_class_roundtrip () =
   List.iter
     (fun vc ->
@@ -1859,19 +1882,23 @@ let test_local_source_rejects_unsafe_fetch_path () =
 
 let test_local_review_diff_returns_markdown () =
   Test_helpers.reset_test_state ();
-  let ctx = Test_helpers.make_test_context () in
+  let state = State.create () in
+  let ctx = Test_helpers.make_test_context ~state () in
   let config = Context.default_config () in
   let result =
     Lwt_main.run
-      (Local_review_test.review_diff ~ctx ~root:"." ~repo_key:"local/repo" ~title:"Local change"
-         ~description:"Local description" ~diff_path:"mock_api_responses/github/pr_42.diff" ~config ())
+      (Local_review_test.review_diff ~ctx ~root:"." ~repo_key:"local/repo" ~change_key:"local-change"
+         ~title:"Local change" ~description:"Local description" ~diff_path:"mock_api_responses/github/pr_42.diff"
+         ~config ())
   in
   match result with
   | Error msg -> fail msg
   | Ok markdown ->
     (check bool) "has summary" true (CCString.find ~sub:"The changes look generally good" markdown >= 0);
     (check bool) "has inline comments section" true (CCString.find ~sub:"### Inline comments" markdown >= 0);
-    (check bool) "has local inline location" true (CCString.find ~sub:"src/main.ml:14" markdown >= 0)
+    (check bool) "has local inline location" true (CCString.find ~sub:"src/main.ml:14" markdown >= 0);
+    (check bool) "records generic change review" true
+      (State.is_change_reviewed state ~repo_key:"local/repo" ~change_key:"local-change")
 
 (** {2 State persistence tests} *)
 
@@ -1898,6 +1925,47 @@ let test_state_empty_load () =
   Sys.remove tmp_path;
   let loaded = State.load ~filepath:tmp_path in
   (check bool) "no pr reviewed" false (State.is_pr_reviewed loaded ~repo_url:"x" ~pr_number:1 ~head_sha:"abc")
+
+let test_state_change_review_roundtrip () =
+  let tmp_path = Filename.temp_file "reviewotron_change_state_" ".json" in
+  Fun.protect
+    ~finally:(fun () -> Sys.remove tmp_path)
+    (fun () ->
+      let state = State.create ~filepath:tmp_path () in
+      State.record_change_review state ~repo_key:"local/repo" ~change_key:"diff/abc" ~review_costs:[];
+      State.save state;
+      let loaded = State.load ~filepath:tmp_path in
+      (check bool) "change review found" true
+        (State.is_change_reviewed loaded ~repo_key:"local/repo" ~change_key:"diff/abc");
+      (check bool) "different change not found" false
+        (State.is_change_reviewed loaded ~repo_key:"local/repo" ~change_key:"diff/def"))
+
+let test_state_loads_legacy_repo_state_without_change_reviews () =
+  let tmp_path = Filename.temp_file "reviewotron_legacy_state_" ".json" in
+  Fun.protect
+    ~finally:(fun () -> Sys.remove tmp_path)
+    (fun () ->
+      write_file tmp_path
+        {|{
+  "repos": {
+    "https://github.com/test/repo": {
+      "pr_reviews": [
+        {
+          "pr_number": 1,
+          "head_sha": "abc123",
+          "reviewed_at": "Mon, 01 Jan 2024 00:00:00 GMT",
+          "review_costs": []
+        }
+      ],
+      "push_reviews": []
+    }
+  }
+}|};
+      let loaded = State.load ~filepath:tmp_path in
+      (check bool) "legacy PR review found" true
+        (State.is_pr_reviewed loaded ~repo_url:"https://github.com/test/repo" ~pr_number:1 ~head_sha:"abc123");
+      (check bool) "legacy state has no generic change review" false
+        (State.is_change_reviewed loaded ~repo_key:"https://github.com/test/repo" ~change_key:"diff/abc"))
 
 (** {2 Cost tracking tests} *)
 
@@ -2932,6 +3000,9 @@ let () =
           test_case "config ignores removed fields" `Quick test_config_ignores_removed_fields;
           test_case "review_plugins defaults" `Quick test_config_review_plugins_defaults;
           test_case "review_plugins explicit" `Quick test_config_review_plugins_explicit;
+          test_case "context create requires repos by default" `Quick test_context_create_requires_repos_by_default;
+          test_case "context create allows repo-less when explicit" `Quick
+            test_context_create_allows_repo_less_when_explicit;
           test_case "vuln_class roundtrip" `Quick test_vuln_class_roundtrip;
           test_case "security_plugin_config roundtrip" `Quick test_security_plugin_config_roundtrip;
         ] );
@@ -3140,6 +3211,9 @@ let () =
         [
           test_case "save/load roundtrip" `Quick test_state_save_load_roundtrip;
           test_case "load from non-existent file" `Quick test_state_empty_load;
+          test_case "generic change review roundtrip" `Quick test_state_change_review_roundtrip;
+          test_case "legacy repo state without change_reviews loads" `Quick
+            test_state_loads_legacy_repo_state_without_change_reviews;
         ] );
       ( "cost_tracking",
         [

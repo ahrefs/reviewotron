@@ -20,7 +20,7 @@ module Make (AI : Api.Agent_runner) = struct
   let name = "general"
 
   let run_review ~ctx ~repo_url ~diff_text ~metadata ?debug_dir () =
-    let config = Context.get_config ctx ~repo_url in
+    let config = Context.get_config ctx ~repo_key:repo_url in
     let security_covered_elsewhere = config.review_plugins.security.enabled in
     let system = Review_prompt.system_prompt ?override:config.system_prompt_override ~security_covered_elsewhere () in
     let Review_plugin.{ pr_title; pr_description; file_contents; _ } = metadata in

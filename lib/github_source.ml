@@ -23,13 +23,13 @@ module Make (SRC : Api.Review_source) = struct
   let fetch_config ~ctx ~repo_url =
     match%lwt SRC.get_config ~ctx ~repo_url with
     | Ok config ->
-      Context.set_repo_config ctx ~repo_url config;
+      Context.set_config ctx ~repo_key:repo_url config;
       Lwt.return (Ok ())
     | Error e -> Lwt.return (Error e)
 
   let refresh_repo_config ctx event =
     let repo_url = Github.repo_url_of_event event in
-    match Context.find_repo_config ctx ~repo_url with
+    match Context.find_config ctx ~repo_key:repo_url with
     | None -> fetch_config ~ctx ~repo_url
     | Some _ ->
     match event with
@@ -42,7 +42,7 @@ module Make (SRC : Api.Review_source) = struct
   let is_bot_sender login = CCString.suffix ~suf:"[bot]" login
 
   let pr_skip_reason ~ctx (pr : Github_types.pr_notification) =
-    let config = Context.get_config ctx ~repo_url:pr.repository.url in
+    let config = Context.get_config ctx ~repo_key:pr.repository.url in
     let state = Context.state ctx in
     let head_sha = pr.pull_request.head.sha in
     let is_ignored_author = List.exists (fun a -> String.equal a pr.sender.login) config.ignored_authors in
@@ -63,7 +63,7 @@ module Make (SRC : Api.Review_source) = struct
     | () -> None
 
   let push_skip_reason ~ctx (push : Github_types.commit_pushed_notification) =
-    let config = Context.get_config ctx ~repo_url:push.repository.url in
+    let config = Context.get_config ctx ~repo_key:push.repository.url in
     let state = Context.state ctx in
     let is_develop = String.equal push.ref_ "refs/heads/develop" in
     let is_ignored_author = List.exists (fun a -> String.equal a push.sender.login) config.ignored_authors in
@@ -80,7 +80,7 @@ module Make (SRC : Api.Review_source) = struct
     | () -> None
 
   let comment_skip_reason ~ctx (n : Github_types.issue_comment_notification) =
-    let config = Context.get_config ctx ~repo_url:n.repository.url in
+    let config = Context.get_config ctx ~repo_key:n.repository.url in
     let is_ignored_author = List.exists (fun a -> String.equal a n.sender.login) config.ignored_authors in
     match () with
     | () when not (String.equal n.action "created") -> Some (Printf.sprintf "comment action %s not reviewable" n.action)
@@ -134,7 +134,7 @@ module Make (SRC : Api.Review_source) = struct
       log#error "failed to fetch diff for PR #%d: %s" number msg;
       Lwt.return (Error (Fetch_failed msg))
     | Ok diff_text ->
-      let config = Context.get_config ctx ~repo_url in
+      let config = Context.get_config ctx ~repo_key:repo_url in
       (match prepare_diff ~config diff_text with
       | Error Empty ->
         log#info "PR #%d skipped: all files filtered out" number;
@@ -197,7 +197,7 @@ module Make (SRC : Api.Review_source) = struct
       log#error "failed to fetch compare diff for push %s...%s: %s" push.before push.after msg;
       Lwt.return (Error (Fetch_failed msg))
     | Ok diff_text ->
-      let config = Context.get_config ctx ~repo_url in
+      let config = Context.get_config ctx ~repo_key:repo_url in
       (match prepare_diff ~config diff_text with
       | Error Empty ->
         log#info "push %s skipped: all files ignored" push.after;
