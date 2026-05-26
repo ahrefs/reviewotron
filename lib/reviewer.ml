@@ -254,6 +254,21 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
       None
     | () -> Some (resolved_line, end_line)
 
+  let github_side_of_review_comment = function
+    | Review_comment.Left -> Github_types.Left
+    | Review_comment.Right -> Github_types.Right
+
+  let github_comment_of_review_comment (comment : Review_comment.t) : Github_types.review_comment_req =
+    {
+      path = comment.path;
+      position = None;
+      line = Some comment.line;
+      side = Some (github_side_of_review_comment comment.side);
+      start_line = comment.start_line;
+      start_side = Option.map github_side_of_review_comment comment.start_side;
+      body = comment.body;
+    }
+
   (** Outcome of attempting to render a finding as an inline review comment.
 
       - [Positioned] — successfully mapped to a line in the diff.
@@ -263,7 +278,7 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
         derive a usable line (line ≤ 0, or the file has no right-side hunks).
         Treated as a bug report for prompt tuning. *)
   type finding_routing =
-    | Positioned of Github_types.review_comment_req
+    | Positioned of Review_comment.t
     | File_not_in_diff
     | Anchor_failed
 
@@ -280,16 +295,15 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
     | Some resolved_line ->
       let start_line, start_side, end_line =
         match valid_multiline_range fd finding ~resolved_line with
-        | Some (s, e) -> Some s, Some Github_types.Right, e
+        | Some (s, e) -> Some s, Some Review_comment.Right, e
         | None -> None, None, resolved_line
       in
       Positioned
-        Github_types.
+        Review_comment.
           {
             path = fd.path;
-            position = None;
-            line = Some end_line;
-            side = Some Right;
+            line = end_line;
+            side = Right;
             start_line;
             start_side;
             body = Review_format.format_finding_body finding;
@@ -297,7 +311,7 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
 
   let finding_to_comment ~diff finding =
     match route_finding ~diff finding with
-    | Positioned c -> Some c
+    | Positioned c -> Some (github_comment_of_review_comment c)
     | File_not_in_diff | Anchor_failed -> None
 
   module General_plugin = General_review_plugin.Make (AI)
@@ -412,6 +426,7 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
         ([], [], []) findings
     in
     let comments = List.rev comments_rev in
+    let github_comments = List.map github_comment_of_review_comment comments in
     let unchanged_findings = List.rev unchanged_rev in
     let anchor_failed_findings = List.rev anchor_failed_rev in
     let to_bullet (f : Review_types.finding) = Printf.sprintf "- `%s:%d` %s" f.path f.line f.message in
@@ -456,7 +471,9 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
     let review_body =
       if config.show_review_cost then review_body ^ Cost_tracking.format_footer review_costs else review_body
     in
-    let review_req = Github_types.{ commit_id = Some head_sha; body = review_body; event = Comment; comments } in
+    let review_req =
+      Github_types.{ commit_id = Some head_sha; body = review_body; event = Comment; comments = github_comments }
+    in
     let%lwt post_result =
       retry_once ~label:(Printf.sprintf "create_pr_review PR #%d" number) (fun () ->
         GH.create_pr_review ~ctx ~repo_url ~number review_req)

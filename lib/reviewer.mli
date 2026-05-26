@@ -20,9 +20,9 @@ module Make (_ : Api.Github) (_ : Api.Agent_runner) (_ : Api.Slack) : sig
       Errors are logged but do not propagate — the caller gets [unit]. *)
   val process_event : Context.t -> event:Github.event -> unit Lwt.t
 
-  (** Where a finding goes when we try to turn it into a GitHub review comment. *)
+  (** Where a finding goes when we try to turn it into an inline review comment. *)
   type finding_routing =
-    | Positioned of Github_types.review_comment_req  (** Successfully anchored to a line (or range) in the diff. *)
+    | Positioned of Review_comment.t  (** Successfully anchored to a line (or range) in the diff. *)
     | File_not_in_diff
       (** The finding's [path] doesn't match any file in the PR diff; typically
             a legitimate finding on unchanged code that the change touches. *)
@@ -35,7 +35,8 @@ module Make (_ : Api.Github) (_ : Api.Agent_runner) (_ : Api.Slack) : sig
   (** Classify a finding into one of the [finding_routing] cases. *)
   val route_finding : diff:Diff_parser.file_diff list -> Review_types.finding -> finding_routing
 
-  (** Convenience wrapper: returns [Some _] only for the [Positioned] case. *)
+  (** Compatibility wrapper for the current GitHub publisher.
+      Returns [Some _] only for the [Positioned] case. *)
   val finding_to_comment :
     diff:Diff_parser.file_diff list -> Review_types.finding -> Github_types.review_comment_req option
 end

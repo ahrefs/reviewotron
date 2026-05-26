@@ -1,6 +1,6 @@
 # Pluggable Review Architecture Plan
 
-Status: Stage 0 complete; Stage 1 next
+Status: Stage 1 complete; Stage 2 next
 Date: 2026-05-25
 
 ## Progress Notes
@@ -10,6 +10,11 @@ Date: 2026-05-25
   `make fmt` found pre-existing formatting drift and auto-promoted
   `lib/agent_runner.ml`, `lib/agent_runner.mli`, and `test/test.ml`.
   A second `make fmt` passed. `make build` and `make test` passed.
+- 2026-05-26: Stage 1 completed. Added neutral `Review_comment` types and
+  changed finding routing to produce `Review_comment.t`. Kept the
+  `finding_to_comment` GitHub compatibility wrapper and GitHub PR publishing
+  behavior unchanged by converting neutral comments at the boundary.
+  `make fmt`, `make build`, and `make test` passed.
 
 ## Goal
 
