@@ -569,7 +569,7 @@ let test_annotate_file_content_empty () =
     anchor must snap onto the earliest in-diff evidence step, and the sink
     must be surfaced in the comment body. *)
 
-module Sec_test = Security_review_plugin.Make (Api_local.Github) (Api_local.Agent_runner)
+module Sec_test = Security_review_plugin.Make (Api_local.Agent_runner)
 
 (** Same two-hunk diff we use for the multi-line tests: file [src/main.ml]
     with hunks at [10..14] and [40..43]. *)

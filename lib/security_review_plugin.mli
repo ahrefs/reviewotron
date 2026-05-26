@@ -36,11 +36,10 @@ val agent_model_tier : Config_types.model_tier -> Agent_runner.model_tier
     [vuln_classes] list. *)
 val should_analyze : security_config:Config_types.security_plugin_config -> Security_types.triage_signal -> bool
 
-(** Security review plugin functor.
-
-    Takes a GitHub API module (for file content fetching during analysis
-    agent context expansion) and an agent runner. *)
-module Make (_ : Api.Github) (_ : Api.Agent_runner) : sig
+(** Security review plugin functor. File content fetching is supplied through
+    {!Review_plugin.review_metadata}, so the plugin is independent of any
+    specific source adapter. *)
+module Make (_ : Api.Agent_runner) : sig
   val name : string
 
   val run :
@@ -50,7 +49,6 @@ module Make (_ : Api.Github) (_ : Api.Agent_runner) : sig
     diff_text:string ->
     metadata:Review_plugin.review_metadata ->
     debug_dir:string ->
-    head_sha:string ->
     (Review_types.finding list * Cost_tracking.agent_cost list) Lwt.t
 
   (** Convert a validated security finding into a review finding, choosing the

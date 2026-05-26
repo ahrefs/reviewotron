@@ -1,6 +1,6 @@
 # Pluggable Review Architecture Plan
 
-Status: Stage 2 complete; Stage 3 next
+Status: Stage 3 complete; Stage 4 next
 Date: 2026-05-25
 
 ## Progress Notes
@@ -21,6 +21,13 @@ Date: 2026-05-25
   core review work to `Review_engine` while keeping GitHub event policy,
   acquisition, publishing, retry, and state updates in the compatibility
   wrapper. `make fmt`, `make build`, and `make test` passed.
+- 2026-05-26: Stage 3 completed. Added `Review_job` as the normalized prepared
+  review input and threaded `fetch_file` through `Review_plugin.review_metadata`.
+  `Security_review_plugin.Make` now depends only on the agent runner; file
+  content tools use the job/source-provided fetch callback instead of an
+  `Api.Github` module. GitHub PR and push controllers build jobs with callbacks
+  closed over the PR head SHA or push after SHA. `make fmt`, `make build`, and
+  `make test` passed.
 
 ## Goal
 

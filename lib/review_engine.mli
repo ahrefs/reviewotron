@@ -65,31 +65,18 @@ type report = {
   security_error : bool;
 }
 
-module Make (_ : Api.Github) (_ : Api.Agent_runner) : sig
+module Make (_ : Api.Agent_runner) : sig
   (** Run all enabled review plugins and collect findings and costs. *)
   val run_plugins :
     ctx:Context.t ->
-    repo_url:string ->
-    config:Config_types.config ->
+    job:Review_job.t ->
+    number:int ->
     diff:Diff_parser.file_diff list ->
-    diff_text:string ->
-    metadata:Review_plugin.review_metadata ->
     debug_dir:string ->
-    head_sha:string ->
     plugin_result Lwt.t
 
   (** Run the core PR review mechanics and return a neutral report. The caller
       remains responsible for publishing and state updates. *)
   val run_pr_review :
-    ctx:Context.t ->
-    repo_url:string ->
-    config:Config_types.config ->
-    number:int ->
-    pr_title:string ->
-    diff_text:string ->
-    filtered_diff:Diff_parser.file_diff list ->
-    file_contents:(string * string) list ->
-    description:string ->
-    head_sha:string ->
-    report Lwt.t
+    ctx:Context.t -> job:Review_job.t -> number:int -> filtered_diff:Diff_parser.file_diff list -> report Lwt.t
 end

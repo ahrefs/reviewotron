@@ -213,15 +213,30 @@ let review_body ~number ~general_result ~findings ~unchanged_findings ~anchor_fa
   let body = if security_error then body ^ security_error_notice else body in
   if config.show_review_cost then body ^ Cost_tracking.format_footer review_costs else body
 
-module Make (GH : Api.Github) (AI : Api.Agent_runner) = struct
+module Make (AI : Api.Agent_runner) = struct
   module General_plugin = General_review_plugin.Make (AI)
-  module Security_plugin = Security_review_plugin.Make (GH) (AI)
+  module Security_plugin = Security_review_plugin.Make (AI)
 
-  let run_plugins ~ctx ~repo_url ~config ~diff ~diff_text ~metadata ~debug_dir ~head_sha =
+  let metadata_of_job ~number (job : Review_job.t) =
+    Review_plugin.
+      {
+        pr_number = number;
+        pr_title = job.title;
+        pr_description = job.description;
+        file_contents = job.file_contents;
+        fetch_file = job.fetch_file;
+      }
+
+  let run_plugins ~ctx ~job ~number ~diff ~debug_dir =
+    let repo_url = job.Review_job.repo_key in
+    let config = job.config in
+    let metadata = metadata_of_job ~number job in
     let plugins_config = config.Config_types.review_plugins in
     let general_promise =
       if plugins_config.general.enabled then begin
-        let%lwt result, costs = General_plugin.run_review ~ctx ~repo_url ~diff_text ~metadata ~debug_dir () in
+        let%lwt result, costs =
+          General_plugin.run_review ~ctx ~repo_url ~diff_text:job.diff_text ~metadata ~debug_dir ()
+        in
         match result with
         | Ok review -> Lwt.return (Some review, costs)
         | Error msg ->
@@ -235,7 +250,7 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) = struct
         Lwt.catch
           (fun () ->
             let%lwt findings, costs =
-              Security_plugin.run ~ctx ~repo_url ~diff ~diff_text ~metadata ~debug_dir ~head_sha
+              Security_plugin.run ~ctx ~repo_url ~diff ~diff_text:job.diff_text ~metadata ~debug_dir
             in
             Lwt.return (findings, costs, false))
           (fun exn ->
@@ -292,17 +307,13 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) = struct
           comments, unchanged, finding :: anchor_failed)
       ([], [], []) findings
 
-  let run_pr_review ~ctx ~repo_url ~config ~number ~pr_title ~diff_text ~filtered_diff ~file_contents ~description
-    ~head_sha =
-    let metadata = Review_plugin.{ pr_number = number; pr_title; pr_description = description; file_contents } in
+  let run_pr_review ~ctx ~(job : Review_job.t) ~number ~filtered_diff =
     let debug_dir =
-      let slug = Security_memory.repo_slug repo_url in
-      let sha_prefix = String.sub head_sha 0 (min 8 (String.length head_sha)) in
+      let slug = Security_memory.repo_slug job.repo_key in
+      let sha_prefix = String.sub job.head_sha 0 (min 8 (String.length job.head_sha)) in
       Printf.sprintf "debug/%s/%s" slug sha_prefix
     in
-    let%lwt plugin_result =
-      run_plugins ~ctx ~repo_url ~config ~diff:filtered_diff ~diff_text ~metadata ~debug_dir ~head_sha
-    in
+    let%lwt plugin_result = run_plugins ~ctx ~job ~number ~diff:filtered_diff ~debug_dir in
     Cost_tracking.log_review_costs plugin_result.review_costs;
     let comments_rev, unchanged_rev, anchor_failed_rev = route_findings ~number ~filtered_diff plugin_result.findings in
     let comments = List.rev comments_rev in
@@ -311,7 +322,7 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) = struct
     let body =
       review_body ~number ~general_result:plugin_result.general_result ~findings:plugin_result.findings
         ~unchanged_findings ~anchor_failed_findings ~review_costs:plugin_result.review_costs
-        ~security_error:plugin_result.security_error ~config
+        ~security_error:plugin_result.security_error ~config:job.config
     in
     Lwt.return
       {

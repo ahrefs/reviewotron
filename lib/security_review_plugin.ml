@@ -41,7 +41,7 @@ let should_analyze ~security_config (signal : Security_types.triage_signal) =
   confidence_rank signal.confidence >= confidence_rank threshold
   || List.exists (vuln_class_equal signal.vuln_class) security_config.vuln_classes
 
-module Make (GH : Api.Github) (AI : Api.Agent_runner) = struct
+module Make (AI : Api.Agent_runner) = struct
   let name = "security"
 
   (** Run the triage agent and parse its structured output.
@@ -81,23 +81,17 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) = struct
         (vc, signal :: existing) :: others)
       [] signals
 
-  (** Fetch file content from the repository via the GitHub API.
-
-      Uses the provided git ref (PR head SHA or push after SHA) so that
-      agents see files from the PR branch, not the default branch. *)
-  let fetch_file ~ctx ~repo_url ~ref_ path = GH.get_file_content ~ctx ~repo_url ~path ~ref_
-
   (** Run a single analysis agent for one vulnerability class.
 
       Returns the list of candidate findings and the agent cost on success,
       or an empty list with no cost if the agent fails. *)
-  let run_single_analysis ~ctx ~repo_url ~head_sha ~security_config ~diff_text ~file_paths ~language_hints ~vuln_class
+  let run_single_analysis ~ctx ~repo_url ~fetch_file ~security_config ~diff_text ~file_paths ~language_hints ~vuln_class
     ~triage_signals ?debug_dir () =
     let vc_name = Security_types.vuln_class_to_string vuln_class in
     let model_tier = agent_model_tier security_config.Config_types.analysis_model_tier in
     let agent_config = Analysis_agent.config ~vuln_class ~model_tier ~language_hints in
     let input = Analysis_agent.build_input ~diff_text ~triage_signals ~file_paths () in
-    let tools = Analysis_agent.tools ~fetch_file:(fetch_file ~ctx ~repo_url ~ref_:head_sha) in
+    let tools = Analysis_agent.tools ~fetch_file:(fun path -> fetch_file ~path) in
     let%lwt result = AI.run ~ctx ~repo_url ~tools ?debug_dir ~config:agent_config ~input () in
     match result with
     | Error msg ->
@@ -230,11 +224,11 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) = struct
       Returns the list of validated findings and the agent cost on success.
       If the validator agent fails or its output cannot be parsed, returns
       an empty list — unvalidated findings are never reported. *)
-  let run_validator ~ctx ~repo_url ~head_sha ~security_config ~diff_text ~candidate_findings ?debug_dir () =
+  let run_validator ~ctx ~repo_url ~fetch_file ~security_config ~diff_text ~candidate_findings ?debug_dir () =
     let model_tier = agent_model_tier security_config.Config_types.validator_model_tier in
     let agent_config = Validator_agent.config ~model_tier in
     let input = Validator_agent.build_input ~diff_text ~candidate_findings () in
-    let tools = Validator_agent.tools ~fetch_file:(fetch_file ~ctx ~repo_url ~ref_:head_sha) in
+    let tools = Validator_agent.tools ~fetch_file:(fun path -> fetch_file ~path) in
     let%lwt result = AI.run ~ctx ~repo_url ~tools ?debug_dir ~config:agent_config ~input () in
     match result with
     | Error msg ->
@@ -354,7 +348,7 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) = struct
       single agent invocation with all relevant triage context.  Candidate
       findings are passed through the validator agent; only confirmed
       findings are converted to review findings. *)
-  let run_analysis ~ctx ~repo_url ~head_sha ~security_config ~diff ~diff_text ~file_paths ~language_hints ?debug_dir
+  let run_analysis ~ctx ~repo_url ~fetch_file ~security_config ~diff ~diff_text ~file_paths ~language_hints ?debug_dir
     signals =
     let actionable = List.filter (should_analyze ~security_config) signals in
     match actionable with
@@ -369,7 +363,7 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) = struct
           (fun (vuln_class, triage_signals) ->
             Lwt.catch
               (fun () ->
-                run_single_analysis ~ctx ~repo_url ~head_sha ~security_config ~diff_text ~file_paths ~language_hints
+                run_single_analysis ~ctx ~repo_url ~fetch_file ~security_config ~diff_text ~file_paths ~language_hints
                   ~vuln_class ~triage_signals ?debug_dir ())
               (fun exn ->
                 log#error "analysis agent %s raised: %s" (Security_types.vuln_class_to_string vuln_class) (Exn.str exn);
@@ -390,7 +384,7 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) = struct
       | [] -> Lwt.return ([], analysis_costs)
       | _ :: _ ->
         let%lwt validated, validator_costs =
-          run_validator ~ctx ~repo_url ~head_sha ~security_config ~diff_text ~candidate_findings:candidates ?debug_dir
+          run_validator ~ctx ~repo_url ~fetch_file ~security_config ~diff_text ~candidate_findings:candidates ?debug_dir
             ()
         in
         log_rejected validated;
@@ -469,7 +463,7 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) = struct
         log#error "failed to parse curator output: %s" (Exn.str exn);
         Lwt.return [ cost ])
 
-  let run ~ctx ~repo_url ~diff ~diff_text ~metadata:_ ~debug_dir ~head_sha =
+  let run ~ctx ~repo_url ~diff ~diff_text ~(metadata : Review_plugin.review_metadata) ~debug_dir =
     let config = Context.get_config ctx ~repo_url in
     let security_config = config.review_plugins.security in
     let memory_dir = "memory" in
@@ -499,7 +493,7 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) = struct
         Lwt.return ([], triage_costs)
       | None ->
         let%lwt findings, analysis_costs =
-          run_analysis ~ctx ~repo_url ~head_sha ~security_config ~diff ~diff_text ~file_paths
+          run_analysis ~ctx ~repo_url ~fetch_file:metadata.fetch_file ~security_config ~diff ~diff_text ~file_paths
             ~language_hints:triage_output.language_hints ~debug_dir triage_output.signals
         in
         let observations = build_observations ~triage_output ~file_paths in

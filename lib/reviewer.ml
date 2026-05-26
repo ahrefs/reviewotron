@@ -11,7 +11,7 @@ type finding_source = Review_engine.finding_source =
 let deduplicate_findings = Review_engine.deduplicate_findings
 
 module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
-  module Engine = Review_engine.Make (GH) (AI)
+  module Engine = Review_engine.Make (AI)
 
   (** Retry an Lwt operation once after a 1-second delay on failure.
       The operation is passed as a thunk to ensure the retry executes fresh. *)
@@ -162,26 +162,25 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
     Option.map github_comment_of_review_comment (Review_engine.finding_to_review_comment ~diff finding)
 
   (** Run the plugin orchestrator and post the result as a GitHub PR review. *)
-  let execute_and_post_review ~ctx ~repo_url ~config ~number ~pr_title ~diff_text ~filtered_diff ~file_contents
-    ~description ~head_sha =
-    let%lwt report =
-      Engine.run_pr_review ~ctx ~repo_url ~config ~number ~pr_title ~diff_text ~filtered_diff ~file_contents
-        ~description ~head_sha
-    in
+  let fetch_file_at_ref ~ctx ~repo_url ~ref_ ~path = GH.get_file_content ~ctx ~repo_url ~path ~ref_
+
+  let execute_and_post_review ~ctx ~job ~number ~filtered_diff =
+    let%lwt report = Engine.run_pr_review ~ctx ~job ~number ~filtered_diff in
     let github_comments = List.map github_comment_of_review_comment report.comments in
     let review_req =
-      Github_types.{ commit_id = Some head_sha; body = report.body; event = Comment; comments = github_comments }
+      Github_types.{ commit_id = Some job.head_sha; body = report.body; event = Comment; comments = github_comments }
     in
     let%lwt post_result =
       retry_once ~label:(Printf.sprintf "create_pr_review PR #%d" number) (fun () ->
-        GH.create_pr_review ~ctx ~repo_url ~number review_req)
+        GH.create_pr_review ~ctx ~repo_url:job.repo_key ~number review_req)
     in
     (match post_result with
     | Ok () ->
-      log#info "posted review for PR #%d (%s): %d inline comments" number pr_title (List.length report.comments)
+      log#info "posted review for PR #%d (%s): %d inline comments" number job.title (List.length report.comments)
     | Error msg -> log#error "failed to post review for PR #%d after retry: %s" number msg);
     let state = Context.state ctx in
-    State.record_pr_review state ~repo_url ~pr_number:number ~head_sha ~review_costs:report.review_costs;
+    State.record_pr_review state ~repo_url:job.repo_key ~pr_number:number ~head_sha:job.head_sha
+      ~review_costs:report.review_costs;
     State.save state;
     Lwt.return_unit
 
@@ -209,8 +208,24 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
         let head_sha = pr.head.sha in
         let%lwt file_contents = fetch_key_files ~ctx ~repo_url ~diff:filtered_diff ~ref_:(Some head_sha) in
         let description = CCOption.get_or ~default:"" pr.body in
-        execute_and_post_review ~ctx ~repo_url ~config ~number ~pr_title:pr.title ~diff_text:filtered_text
-          ~filtered_diff ~file_contents ~description ~head_sha)
+        let fetch_file = fetch_file_at_ref ~ctx ~repo_url ~ref_:head_sha in
+        let job =
+          Review_job.
+            {
+              repo_key = repo_url;
+              change_key = Printf.sprintf "pr/%d/%s" number head_sha;
+              title = pr.title;
+              description;
+              head_sha;
+              diff_text = filtered_text;
+              config;
+              file_contents;
+              fetch_file;
+              trigger = Pull_request;
+              source_kind = Github;
+            }
+        in
+        execute_and_post_review ~ctx ~job ~number ~filtered_diff)
 
   (** Review the PR referenced by an [issue_comment] webhook.
 
@@ -299,16 +314,29 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
           |> String.concat "\n"
         in
         let pr_title = Printf.sprintf "Push to %s" push.ref_ in
-        let metadata = Review_plugin.{ pr_number = 0; pr_title; pr_description = description; file_contents = [] } in
+        let fetch_file = fetch_file_at_ref ~ctx ~repo_url ~ref_:push.after in
+        let job =
+          Review_job.
+            {
+              repo_key = repo_url;
+              change_key = push.after;
+              title = pr_title;
+              description;
+              head_sha = push.after;
+              diff_text = filtered_text;
+              config;
+              file_contents = [];
+              fetch_file;
+              trigger = Push;
+              source_kind = Github;
+            }
+        in
         let debug_dir =
           let slug = Security_memory.repo_slug repo_url in
           let sha_prefix = String.sub push.after 0 (min 8 (String.length push.after)) in
           Printf.sprintf "debug/%s/%s" slug sha_prefix
         in
-        let%lwt plugin_result =
-          Engine.run_plugins ~ctx ~repo_url ~config ~diff:filtered_diff ~diff_text:filtered_text ~metadata ~debug_dir
-            ~head_sha:push.after
-        in
+        let%lwt plugin_result = Engine.run_plugins ~ctx ~job ~number:0 ~diff:filtered_diff ~debug_dir in
         let Review_engine.{ general_result; findings; review_costs; security_error } = plugin_result in
         Cost_tracking.log_review_costs review_costs;
         let%lwt () = post_push_comments ~ctx ~repo_url ~sha:push.after findings in

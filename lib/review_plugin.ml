@@ -3,6 +3,7 @@ type review_metadata = {
   pr_title : string;
   pr_description : string;
   file_contents : (string * string) list;
+  fetch_file : Review_job.fetch_file;
 }
 
 module type S = sig

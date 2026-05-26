@@ -13,6 +13,9 @@ type review_metadata = {
     (** [(path, content)] pairs for key changed files, fetched by the
           orchestrator before plugin invocation. Plugins that expand context
           on demand (e.g. via tools) may ignore this field. *)
+  fetch_file : Review_job.fetch_file;
+    (** Fetch repository file content for demand-driven context expansion.
+          Source adapters close over the correct revision. *)
 }
 
 (** Signature that every review plugin must implement. *)

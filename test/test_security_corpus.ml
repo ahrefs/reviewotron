@@ -18,7 +18,7 @@ open Alcotest
     (real Claude) agent runner.  The local GitHub implementation returns
     [Ok None] for any [get_file_content] call that lacks a mock fixture,
     which is acceptable because all corpus diffs are self-contained. *)
-module SP = Security_review_plugin.Make (Api_local.Github) (Api_remote.Agent_runner)
+module SP = Security_review_plugin.Make (Api_remote.Agent_runner)
 
 (** Skip this test if [ANTHROPIC_API_KEY] is not set; otherwise return the key. *)
 let require_api_key () =
@@ -62,12 +62,12 @@ let run_triage ~ctx ~diff_text ~file_paths : Security_types.triage_output =
 
 (** Run the full security pipeline on a diff and return the findings. *)
 let run_pipeline ~ctx ~diff_text ~diff =
+  let fetch_file ~path:_ = Lwt.return (Ok None) in
   let metadata : Review_plugin.review_metadata =
-    { pr_number = 0; pr_title = "corpus test"; pr_description = ""; file_contents = [] }
+    { pr_number = 0; pr_title = "corpus test"; pr_description = ""; file_contents = []; fetch_file }
   in
   let findings, _costs =
-    Lwt_main.run
-      (SP.run ~ctx ~repo_url:corpus_repo_url ~diff ~diff_text ~metadata ~debug_dir:"debug/corpus" ~head_sha:"HEAD")
+    Lwt_main.run (SP.run ~ctx ~repo_url:corpus_repo_url ~diff ~diff_text ~metadata ~debug_dir:"debug/corpus")
   in
   findings
 
