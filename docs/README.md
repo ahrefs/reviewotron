@@ -35,7 +35,7 @@ For each enabled trigger, the bot:
    - **General review** — Claude analyzes the diff for bugs, style, logic, performance, etc.
    - **Security review** — A multi-agent pipeline scans for vulnerabilities (see [below](#security-review-pipeline))
 7. **Posts results**:
-   - PR events: a single GitHub PR review with inline comments
+   - PR events: a single GitHub PR review with inline comments when findings or errors exist
    - Push events: commit comments for critical/warning findings + a Slack message
    - `REVIEW` comments: same as PR events
 
@@ -61,7 +61,7 @@ GitHub Webhook (POST /github)
     ├─ Merge + deduplicate findings
     │
     └─ Post results
-          ├─ PR → GitHub PR review (inline comments)
+          ├─ PR → GitHub PR review when there is something to report
           └─ Push → commit comments + Slack notification
 ```
 
@@ -69,12 +69,14 @@ GitHub Webhook (POST /github)
 
 | Event | Trigger | Gated by | Output |
 |-------|---------|----------|--------|
-| `pull_request` (opened, reopened, ready_for_review) | PR opened, reopened, or marked ready | `auto_review_pr_open` | GitHub PR review with inline comments |
-| `pull_request` (synchronize) | New commits pushed to a PR | `auto_review_pr_sync` | GitHub PR review with inline comments |
+| `pull_request` (opened, reopened, ready_for_review) | PR opened, reopened, or marked ready | `auto_review_pr_open` | GitHub PR review with inline comments when there is something to report |
+| `pull_request` (synchronize) | New commits pushed to a PR | `auto_review_pr_sync` | GitHub PR review with inline comments when there is something to report |
 | `push` (to `refs/heads/develop`) | Code pushed to develop | `review_pushes_to_develop` | Commit comments + Slack message |
-| `issue_comment` (created, on a PR, body equals `REVIEW`) | Manual trigger via PR comment | `auto_review_on_comment` | GitHub PR review with inline comments |
+| `issue_comment` (created, on a PR, body equals `REVIEW`) | Manual trigger via PR comment | `auto_review_on_comment` | GitHub PR review with inline comments when there is something to report |
 
 The `REVIEW` trigger is exact-match: the comment body must equal the literal string `REVIEW` after trimming whitespace. Anything else (including `REVIEW please` or quoted text) is ignored silently. The bot must have the `pull_request` GitHub App permission and the **Issue comment** webhook event subscribed.
+
+For PR reviews, Reviewotron adds an `eyes` reaction while a review is running. On automatic PR events the reaction is attached to the PR; on manual `REVIEW` comments it is attached to the trigger comment. The `eyes` reaction is removed before posting a review. If the review completes with no findings and no failure notice, no PR review is posted and Reviewotron adds a `+1` reaction instead.
 
 Events are processed asynchronously — the webhook returns `200 accepted` immediately, and the review runs in the background.
 
