@@ -2068,12 +2068,17 @@ let test_local_sink_render_json () =
     }
   in
   match Yojson.Basic.from_string (Local_sink.render_json report) with
-  | `List [ `Assoc fields ] ->
-    (check string) "file" "backend/safer-claude-code/safer_claude_code.ml" (json_string_field fields "file");
-    (check int) "line" 492 (json_int_field fields "line");
-    (check string) "summary" summary (json_string_field fields "summary");
-    (check string) "failure_scenario" failure_scenario (json_string_field fields "failure_scenario")
-  | _ -> fail "expected a JSON list with one review finding"
+  | `Assoc fields ->
+    (check string) "review summary" "" (json_string_field fields "summary");
+    (match List.assoc_opt "findings" fields with
+    | Some (`List [ `Assoc fields ]) ->
+      (check string) "file" "backend/safer-claude-code/safer_claude_code.ml" (json_string_field fields "file");
+      (check int) "line" 492 (json_int_field fields "line");
+      (check string) "summary" summary (json_string_field fields "summary");
+      (check string) "failure_scenario" failure_scenario (json_string_field fields "failure_scenario")
+    | Some _ -> fail "expected findings to contain one review finding"
+    | None -> fail "missing JSON field findings")
+  | _ -> fail "expected a JSON review object"
 
 (** {2 State persistence tests} *)
 

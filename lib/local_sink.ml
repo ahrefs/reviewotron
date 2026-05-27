@@ -29,5 +29,5 @@ let include_finding_in_json (finding : Review_types.finding) =
   | Critical | Warning | Suggestion | Nitpick | Other _ -> true
 
 let render_json (report : Review_engine.report) =
-  report.findings |> List.filter include_finding_in_json |> List.map finding_to_json |> fun findings ->
-  Yojson.Basic.pretty_to_string (`List findings)
+  let findings = report.findings |> List.filter include_finding_in_json |> List.map finding_to_json in
+  Yojson.Basic.pretty_to_string (`Assoc [ "summary", `String (String.trim report.body); "findings", `List findings ])
