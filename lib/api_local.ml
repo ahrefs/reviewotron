@@ -103,34 +103,63 @@ end
 
 module Agent_runner : Api.Agent_runner = struct
   (* Test-only agent runner. This deliberately exercises the same orchestration
-     path as the remote runner while returning deterministic fixture JSON. These
-     fixtures prove schema and control-flow contracts, not prompt quality. *)
-  let run ~ctx:_ ~repo_url:_ ?model_id:_ ?tools:_ ?debug_dir:_ ~config ~input:_ () =
-    let default_path =
-      match config.Agent_runner.name with
-      | "general_validator" when String.equal !agent_response_path "mock_api_responses/claude/push_review_response.json"
-        ->
-        "mock_api_responses/claude/push_general_validator_confirmed.json"
-      | "general_validator" -> "mock_api_responses/claude/general_validator_confirmed.json"
-      | _ -> !agent_response_path
+     path as the remote runner while returning deterministic outputs. These
+     outputs prove schema and control-flow contracts, not prompt quality. *)
+  let result output =
+    let usage : Ai_provider.Usage.t = { input_tokens = 0; output_tokens = 0; total_tokens = None } in
+    Ok
+      Agent_runner.
+        {
+          output;
+          usage;
+          cache_read_input_tokens = 0;
+          cache_creation_input_tokens = 0;
+          steps_count = 1;
+          model_id = "mock";
+        }
+
+  let validator_output ~path ~line ~severity ~category ~message =
+    let finding : Review_types.finding =
+      {
+        path;
+        line;
+        end_line = None;
+        severity;
+        category;
+        message;
+        failure_scenario = "mock validator scenario";
+        evidence_snippet = "mock validator evidence";
+        why_now = "mock validator why_now";
+        confidence = Review_types.High;
+        suggested_fix = None;
+      }
     in
-    let path = Option.default default_path (List.assoc_opt config.Agent_runner.name !agent_response_map) in
-    match read_mock_file path with
-    | Ok json_str ->
-      let output = Melange_json.of_string json_str in
-      let usage : Ai_provider.Usage.t = { input_tokens = 0; output_tokens = 0; total_tokens = None } in
-      Lwt.return
-        (Ok
-           Agent_runner.
-             {
-               output;
-               usage;
-               cache_read_input_tokens = 0;
-               cache_creation_input_tokens = 0;
-               steps_count = 1;
-               model_id = "mock";
-             })
-    | Error msg -> Lwt.return (Error msg)
+    Review_types.validator_output_to_json
+      { results = [ { finding; verdict = Review_types.Confirmed; evidence_notes = "mock validator confirmation" } ] }
+
+  let default_validator_output () =
+    let general_review_path =
+      Option.default !agent_response_path (List.assoc_opt "general_review" !agent_response_map)
+    in
+    match String.equal general_review_path "mock_api_responses/claude/push_review_response.json" with
+    | true ->
+      validator_output ~path:"backend/api/src/request_handler.ml" ~line:15 ~severity:Review_types.Warning
+        ~category:Review_types.Security
+        ~message:
+          "The webhook handler processes the request body without any validation or signature verification. This could \
+           allow unauthorized webhook deliveries."
+    | false ->
+      validator_output ~path:"src/main.ml" ~line:14 ~severity:Review_types.Warning ~category:Review_types.Error_handling
+        ~message:"The `process` function can raise exceptions but the result is used without error handling."
+
+  let run ~ctx:_ ~repo_url:_ ?model_id:_ ?tools:_ ?debug_dir:_ ~config ~input:_ () =
+    match List.assoc_opt config.Agent_runner.name !agent_response_map, config.Agent_runner.name with
+    | None, "general_validator" -> Lwt.return (result (default_validator_output ()))
+    | path_opt, _ ->
+      let path = Option.default !agent_response_path path_opt in
+      (match read_mock_file path with
+      | Ok json_str -> Lwt.return (result (Melange_json.of_string json_str))
+      | Error msg -> Lwt.return (Error msg))
 end
 
 (** Recorded Slack messages for test assertions. *)

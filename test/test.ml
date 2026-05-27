@@ -3,6 +3,7 @@ open Reviewotron_lib
 open Alcotest
 
 let read_file path = Std.input_file ~bin:true path
+let read_json path = Melange_json.of_string (read_file path)
 
 (* Default-off auto-review flags mean every test that wants the review pipeline
    to actually run must opt in explicitly. The shared security config fixtures
@@ -2832,14 +2833,56 @@ let test_general_review_agent_config_enables_thinking () =
     (check bool) "general_review thinking budget >= 4096" true (n >= 4096);
     (check string) "agent name preserved" "general_review" cfg.name
 
-module General_plugin_test = General_review_plugin.Make (Api_local.Agent_runner)
+module General_plugin_agent_runner = struct
+  let outputs : (string * Yojson.Basic.t) list ref = ref []
+  let set_outputs entries = outputs := entries
+
+  let run ~ctx:_ ~repo_url:_ ?model_id:_ ?tools:_ ?debug_dir:_ ~config ~input:_ () =
+    match List.assoc_opt config.Agent_runner.name !outputs with
+    | None -> Lwt.return (Error (Printf.sprintf "missing mock output for %s" config.Agent_runner.name))
+    | Some output ->
+      let usage : Ai_provider.Usage.t = { input_tokens = 0; output_tokens = 0; total_tokens = None } in
+      Lwt.return
+        (Ok
+           Agent_runner.
+             {
+               output;
+               usage;
+               cache_read_input_tokens = 0;
+               cache_creation_input_tokens = 0;
+               steps_count = 1;
+               model_id = "mock";
+             })
+end
+
+module General_plugin_test = General_review_plugin.Make (General_plugin_agent_runner)
 
 let general_plugin_metadata : Review_plugin.review_metadata =
   { pr_number = 42; pr_title = "Test PR"; pr_description = ""; file_contents = [] }
 
-let run_general_plugin_with_responses responses =
+let process_finding_message =
+  "The `process` function can raise exceptions but the result is used without error handling."
+
+let process_finding_fix = "match process new_value with\n| exception exn -> log_error exn; 0\n| result -> result"
+
+let validator_output ~verdict ~severity ~suggested_fix =
+  let finding =
+    mk_finding ~path:"src/main.ml" ~line:14 ~severity ~category:Review_types.Error_handling
+      ~message:process_finding_message ~suggested_fix ()
+  in
+  Review_types.validator_output_to_json
+    { results = [ { finding; verdict; evidence_notes = "validator fixture decision" } ] }
+
+let validator_echoes_damaged_confirmed_finding =
+  validator_output ~verdict:Review_types.Confirmed ~severity:Review_types.Suggestion ~suggested_fix:None
+
+let validator_rejects_process_finding =
+  validator_output ~verdict:Review_types.Rejected ~severity:Review_types.Warning
+    ~suggested_fix:(Some process_finding_fix)
+
+let run_general_plugin_with_outputs outputs =
   Test_helpers.reset_test_state ();
-  Api_local.set_agent_response_map responses;
+  General_plugin_agent_runner.set_outputs outputs;
   let ctx = Test_helpers.make_test_context ~config:Test_helpers.auto_review_enabled_config () in
   Lwt_main.run
     (General_plugin_test.run_review ~ctx ~repo_url:"https://github.com/org/repo" ~diff_text:"diff"
@@ -2847,10 +2890,10 @@ let run_general_plugin_with_responses responses =
 
 let test_general_review_filters_low_value_and_validates () =
   let result, costs =
-    run_general_plugin_with_responses
+    run_general_plugin_with_outputs
       [
-        "general_review", "mock_api_responses/claude/review_response.json";
-        "general_validator", "mock_api_responses/claude/general_validator_confirmed.json";
+        "general_review", read_json "mock_api_responses/claude/review_response.json";
+        "general_validator", validator_echoes_damaged_confirmed_finding;
       ]
   in
   match result with
@@ -2859,23 +2902,19 @@ let test_general_review_filters_low_value_and_validates () =
     (check int) "only validated actionable finding remains" 1 (List.length review.findings);
     (match review.findings with
     | [ finding ] ->
-      (check string) "validated finding kept"
-        "The `process` function can raise exceptions but the result is used without error handling." finding.message;
+      (check string) "validated finding kept" process_finding_message finding.message;
       (check string) "keeps original candidate severity" "warning" (Review_types.severity_to_string finding.severity);
-      (check (option string))
-        "keeps original candidate suggested fix"
-        (Some "match process new_value with\n| exception exn -> log_error exn; 0\n| result -> result")
-        finding.suggested_fix
+      (check (option string)) "keeps original candidate suggested fix" (Some process_finding_fix) finding.suggested_fix
     | [] | _ :: _ :: _ -> fail "expected exactly one validated finding");
     (check bool) "validator cost recorded" true
       (List.exists (fun (c : Cost_tracking.agent_cost) -> String.equal c.agent_name "general_validator") costs)
 
 let test_general_review_validator_rejection_drops_finding () =
   let result, _costs =
-    run_general_plugin_with_responses
+    run_general_plugin_with_outputs
       [
-        "general_review", "mock_api_responses/claude/review_response.json";
-        "general_validator", "mock_api_responses/claude/general_validator_rejected.json";
+        "general_review", read_json "mock_api_responses/claude/review_response.json";
+        "general_validator", validator_rejects_process_finding;
       ]
   in
   match result with
