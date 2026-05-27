@@ -1,0 +1,21 @@
+{
+  "results": [
+    {
+      "finding": {
+        "path": "backend/api/src/request_handler.ml",
+        "line": 15,
+        "end_line": null,
+        "severity": "warning",
+        "category": "security",
+        "message": "The webhook handler processes the request body without any validation or signature verification. This could allow unauthorized webhook deliveries.",
+        "failure_scenario": "An attacker can send an unsigned webhook payload to the new handler and have it processed as trusted input.",
+        "evidence_snippet": "process_webhook ~ctx body",
+        "why_now": "This PR adds the webhook handler path, so request authentication needs to be enforced at the new entry point.",
+        "confidence": "high",
+        "suggested_fix": "let body = Request.body request in\nmatch verify_signature ~ctx body with\n| Ok () -> process_webhook ~ctx body\n| Error _ -> Response.json `Unauthorized {|{\"error\": \"invalid signature\"}|}"
+      },
+      "verdict": "confirmed",
+      "evidence_notes": "The finding is tied to the new webhook entry point and describes a concrete unsigned-request path."
+    }
+  ]
+}

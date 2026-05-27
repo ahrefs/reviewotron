@@ -59,6 +59,7 @@ val default_general_plugin_config : general_plugin_config
 type security_plugin_config = {
   enabled : bool;
   vuln_classes : vuln_class list;
+  always_analyze_vuln_classes : vuln_class list;
   triage_model_tier : model_tier;
   analysis_model_tier : model_tier;
   validator_model_tier : model_tier;

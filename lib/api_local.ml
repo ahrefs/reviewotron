@@ -102,8 +102,19 @@ module Github : Api.Github = struct
 end
 
 module Agent_runner : Api.Agent_runner = struct
+  (* Test-only agent runner. This deliberately exercises the same orchestration
+     path as the remote runner while returning deterministic fixture JSON. These
+     fixtures prove schema and control-flow contracts, not prompt quality. *)
   let run ~ctx:_ ~repo_url:_ ?model_id:_ ?tools:_ ?debug_dir:_ ~config ~input:_ () =
-    let path = Option.default !agent_response_path (List.assoc_opt config.Agent_runner.name !agent_response_map) in
+    let default_path =
+      match config.Agent_runner.name with
+      | "general_validator" when String.equal !agent_response_path "mock_api_responses/claude/push_review_response.json"
+        ->
+        "mock_api_responses/claude/push_general_validator_confirmed.json"
+      | "general_validator" -> "mock_api_responses/claude/general_validator_confirmed.json"
+      | _ -> !agent_response_path
+    in
+    let path = Option.default default_path (List.assoc_opt config.Agent_runner.name !agent_response_map) in
     match read_mock_file path with
     | Ok json_str ->
       let output = Melange_json.of_string json_str in

@@ -33,13 +33,17 @@ let agent_model_tier : Config_types.model_tier -> Agent_runner.model_tier = func
 
 (** Determine whether a triage signal should trigger a full analysis agent.
 
-    Signals at or above the configured confidence threshold always trigger
-    analysis. Signals below the threshold only trigger if the vulnerability
-    class is explicitly listed in the repo's [vuln_classes] config. *)
+    [vuln_classes] is the enabled-class allowlist. Signals for disabled
+    classes never trigger analysis. For enabled classes, signals at or above
+    the configured confidence threshold trigger analysis. Signals below the
+    threshold only trigger if the vulnerability class is explicitly listed in
+    [always_analyze_vuln_classes]. *)
 let should_analyze ~security_config (signal : Security_types.triage_signal) =
   let threshold = security_config.Config_types.confidence_threshold in
-  confidence_rank signal.confidence >= confidence_rank threshold
-  || List.exists (vuln_class_equal signal.vuln_class) security_config.vuln_classes
+  let enabled = List.exists (vuln_class_equal signal.vuln_class) security_config.vuln_classes in
+  let above_threshold = confidence_rank signal.confidence >= confidence_rank threshold in
+  let always_analyze = List.exists (vuln_class_equal signal.vuln_class) security_config.always_analyze_vuln_classes in
+  enabled && (above_threshold || always_analyze)
 
 module Make (GH : Api.Github) (AI : Api.Agent_runner) = struct
   let name = "security"
@@ -222,6 +226,10 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) = struct
       severity = severity_of_confidence f.confidence;
       category = Security;
       message = enrich_message_with_sink ~anchor_kind ~f;
+      failure_scenario = f.description;
+      evidence_snippet = f.sink.description;
+      why_now = "This PR introduces or exposes the source-to-sink path described in the validated security finding.";
+      confidence = f.confidence;
       suggested_fix = f.suggested_fix;
     }
 

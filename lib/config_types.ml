@@ -85,6 +85,7 @@ type general_plugin_config = {
 type security_plugin_config = {
   enabled : bool; [@json.default false]
   vuln_classes : vuln_class list; [@json.default all_vuln_classes]
+  always_analyze_vuln_classes : vuln_class list; [@json.default []]
   triage_model_tier : model_tier; [@json.default Fast]
   analysis_model_tier : model_tier; [@json.default Standard]
   validator_model_tier : model_tier; [@json.default Standard]
@@ -99,6 +100,7 @@ let default_security_plugin_config =
   {
     enabled = false;
     vuln_classes = all_vuln_classes;
+    always_analyze_vuln_classes = [];
     triage_model_tier = Fast;
     analysis_model_tier = Standard;
     validator_model_tier = Standard;

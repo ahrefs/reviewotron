@@ -131,6 +131,8 @@ let test_config_review_plugins_defaults () =
   (check bool) "general prompt override" true (Option.is_none config.review_plugins.general.system_prompt_override);
   (check bool) "security disabled by default" false config.review_plugins.security.enabled;
   (check int) "vuln_classes count" 6 (List.length config.review_plugins.security.vuln_classes);
+  (check int) "always_analyze_vuln_classes default empty" 0
+    (List.length config.review_plugins.security.always_analyze_vuln_classes);
   (check int) "memory_max_tokens" 5000 config.review_plugins.security.memory_max_tokens;
   (check bool) "show_review_cost" false config.show_review_cost
 
@@ -143,6 +145,7 @@ let test_config_review_plugins_explicit () =
       "security": {
         "enabled": true,
         "vuln_classes": ["injection", "xss"],
+        "always_analyze_vuln_classes": ["xss"],
         "triage_model_tier": "standard",
         "confidence_threshold": "high",
         "memory_max_tokens": 10000
@@ -155,6 +158,7 @@ let test_config_review_plugins_explicit () =
   (check bool) "general disabled" false config.review_plugins.general.enabled;
   (check bool) "security enabled" true config.review_plugins.security.enabled;
   (check int) "vuln_classes count" 2 (List.length config.review_plugins.security.vuln_classes);
+  (check int) "always_analyze count" 1 (List.length config.review_plugins.security.always_analyze_vuln_classes);
   (check int) "memory_max_tokens" 10000 config.review_plugins.security.memory_max_tokens
 
 let test_vuln_class_roundtrip () =
@@ -170,6 +174,7 @@ let test_security_plugin_config_roundtrip () =
     {
       enabled = true;
       vuln_classes = [ Injection; Xss ];
+      always_analyze_vuln_classes = [ Xss ];
       triage_model_tier = Fast;
       analysis_model_tier = Standard;
       validator_model_tier = Strong;
@@ -181,6 +186,7 @@ let test_security_plugin_config_roundtrip () =
   let parsed = Config_types.security_plugin_config_of_json json in
   (check bool) "enabled" true parsed.enabled;
   (check int) "vuln_classes" 2 (List.length parsed.vuln_classes);
+  (check int) "always_analyze_vuln_classes" 1 (List.length parsed.always_analyze_vuln_classes);
   (check int) "memory_max_tokens" 3000 parsed.memory_max_tokens;
   (check string) "confidence" "high" (Config_types.confidence_to_string parsed.confidence_threshold);
   (check string) "validator tier" "strong" (Config_types.model_tier_to_string parsed.validator_model_tier)
@@ -312,6 +318,7 @@ let test_anthropic_structured_output_schemas_compatible () =
   let schemas : (string * Yojson.Basic.t) list =
     [
       "general_review", Review_types.review_output_jsonschema;
+      "general_validator", Review_types.validator_output_jsonschema;
       "security_triage", Security_types.triage_output_jsonschema;
       "security_analysis", Security_types.analysis_output_jsonschema;
       "security_validator", Security_types.validator_output_jsonschema;
@@ -340,7 +347,19 @@ let test_prompt_token_estimation () =
 
 let mk_finding ~path ~line ?(end_line = None) ?(severity = Review_types.Warning) ?(category = Review_types.Security)
   ?(message = "msg") ?(suggested_fix = None) () : Review_types.finding =
-  { path; line; end_line; severity; category; message; suggested_fix }
+  {
+    path;
+    line;
+    end_line;
+    severity;
+    category;
+    message;
+    failure_scenario = "scenario";
+    evidence_snippet = "snippet";
+    why_now = "changed in this PR";
+    confidence = Review_types.Medium;
+    suggested_fix;
+  }
 
 let finding_by_message msg (f : Review_types.finding) = String.equal f.message msg
 
@@ -803,6 +822,10 @@ let test_review_output_roundtrip () =
             severity = Warning;
             category = Error_handling;
             message = "Missing error handling";
+            failure_scenario = "Bad input raises and escapes the caller.";
+            evidence_snippet = "process input";
+            why_now = "The changed call site now invokes process directly.";
+            confidence = Review_types.High;
             suggested_fix = Some "add try/with";
           };
         ];
@@ -1152,19 +1175,25 @@ let test_security_should_analyze_above_threshold () =
   (check bool) "Medium >= Medium threshold" true (Security_review_plugin.should_analyze ~security_config medium_signal)
 
 let test_security_should_analyze_below_threshold_in_config () =
-  let security_config = Config_types.default_security_plugin_config in
-  (* Default config has all vuln_classes. Low signal for a configured class should trigger. *)
+  let security_config =
+    { Config_types.default_security_plugin_config with always_analyze_vuln_classes = [ Injection ] }
+  in
+  (* Low signal for an explicitly always-analyzed enabled class should trigger. *)
   let low_signal = make_triage_signal ~vuln_class:Injection ~confidence:Low in
-  (check bool) "Low in vuln_classes" true (Security_review_plugin.should_analyze ~security_config low_signal)
+  (check bool) "Low in always_analyze_vuln_classes" true
+    (Security_review_plugin.should_analyze ~security_config low_signal)
 
 let test_security_should_analyze_below_threshold_not_in_config () =
   let security_config = { Config_types.default_security_plugin_config with vuln_classes = [ Xss; Ssrf ] } in
-  (* Low confidence for a class NOT in the restricted list should not trigger. *)
+  (* Disabled classes never trigger, even if confidence is low or high. *)
   let low_injection = make_triage_signal ~vuln_class:Injection ~confidence:Low in
-  (check bool) "Low not in vuln_classes" false (Security_review_plugin.should_analyze ~security_config low_injection);
-  (* But Low for a class that IS in the list should still trigger. *)
+  (check bool) "Low disabled class" false (Security_review_plugin.should_analyze ~security_config low_injection);
+  let high_injection = make_triage_signal ~vuln_class:Injection ~confidence:High in
+  (check bool) "High disabled class" false (Security_review_plugin.should_analyze ~security_config high_injection);
+  (* Low for an enabled class still stays below the threshold unless it is explicitly always-analyzed. *)
   let low_xss = make_triage_signal ~vuln_class:Xss ~confidence:Low in
-  (check bool) "Low in vuln_classes" true (Security_review_plugin.should_analyze ~security_config low_xss)
+  (check bool) "Low enabled class below threshold" false
+    (Security_review_plugin.should_analyze ~security_config low_xss)
 
 let test_security_should_analyze_high_threshold () =
   let security_config = { Config_types.default_security_plugin_config with confidence_threshold = High } in
@@ -1172,22 +1201,19 @@ let test_security_should_analyze_high_threshold () =
   let high_signal = make_triage_signal ~vuln_class:Injection ~confidence:High in
   let medium_signal = make_triage_signal ~vuln_class:Injection ~confidence:Medium in
   (check bool) "High >= High threshold" true (Security_review_plugin.should_analyze ~security_config high_signal);
-  (* Medium is below High threshold but Injection is in default vuln_classes. *)
-  (check bool) "Medium < High, but in vuln_classes" true
-    (Security_review_plugin.should_analyze ~security_config medium_signal)
+  (* Medium is below High threshold, even though Injection is enabled. *)
+  (check bool) "Medium < High threshold" false (Security_review_plugin.should_analyze ~security_config medium_signal)
 
 let test_security_should_analyze_high_threshold_restricted () =
   let security_config =
     { Config_types.default_security_plugin_config with confidence_threshold = High; vuln_classes = [ Xss ] }
   in
-  (* Medium confidence for Injection (not in vuln_classes) should not trigger. *)
+  (* Medium confidence for Injection (not enabled) should not trigger. *)
   let medium_injection = make_triage_signal ~vuln_class:Injection ~confidence:Medium in
-  (check bool) "Medium < High, not in vuln_classes" false
-    (Security_review_plugin.should_analyze ~security_config medium_injection);
-  (* High confidence always triggers regardless of vuln_classes. *)
+  (check bool) "Medium disabled class" false (Security_review_plugin.should_analyze ~security_config medium_injection);
+  (* High confidence does not bypass disabled classes. *)
   let high_injection = make_triage_signal ~vuln_class:Injection ~confidence:High in
-  (check bool) "High >= High threshold, even if not in vuln_classes" true
-    (Security_review_plugin.should_analyze ~security_config high_injection)
+  (check bool) "High disabled class" false (Security_review_plugin.should_analyze ~security_config high_injection)
 
 let test_security_should_analyze_low_threshold () =
   let security_config = { Config_types.default_security_plugin_config with confidence_threshold = Low } in
@@ -2224,6 +2250,10 @@ let test_curator_input_never_contains_findings () =
         severity = Critical;
         category = Security;
         message = "SQL injection in query builder";
+        failure_scenario = "Attacker controls SQL text.";
+        evidence_snippet = "ORDER BY ${orderBy}";
+        why_now = "The query builder changed in this PR.";
+        confidence = Review_types.High;
         suggested_fix = None;
       };
       {
@@ -2233,6 +2263,10 @@ let test_curator_input_never_contains_findings () =
         severity = Warning;
         category = Security;
         message = "Missing authz check";
+        failure_scenario = "Authenticated user can access another resource.";
+        evidence_snippet = "get_resource id";
+        why_now = "The route changed in this PR.";
+        confidence = Review_types.Medium;
         suggested_fix = None;
       };
     ]
@@ -2781,11 +2815,11 @@ let test_provider_options_carries_thinking_when_set () =
   match Ai_provider_anthropic.Anthropic_options.of_provider_options po with
   | None -> fail "expected Anthropic options to be present when thinking_budget is set"
   | Some opts ->
-    (match opts.thinking with
-    | None -> fail "expected thinking config to be populated"
-    | Some t ->
-      (check bool) "thinking enabled" true t.enabled;
-      (check int) "thinking budget matches" 4096 (Ai_provider_anthropic.Thinking.to_int t.budget_tokens))
+  match opts.thinking with
+  | None -> fail "expected thinking config to be populated"
+  | Some t ->
+    (check bool) "thinking enabled" true t.enabled;
+    (check int) "thinking budget matches" 4096 (Ai_provider_anthropic.Thinking.to_int t.budget_tokens)
 
 (** The general review agent must opt into Anthropic extended thinking.
     This is what gives the model a real reasoning channel instead of leaking
@@ -2797,6 +2831,56 @@ let test_general_review_agent_config_enables_thinking () =
   | Some n ->
     (check bool) "general_review thinking budget >= 4096" true (n >= 4096);
     (check string) "agent name preserved" "general_review" cfg.name
+
+module General_plugin_test = General_review_plugin.Make (Api_local.Agent_runner)
+
+let general_plugin_metadata : Review_plugin.review_metadata =
+  { pr_number = 42; pr_title = "Test PR"; pr_description = ""; file_contents = [] }
+
+let run_general_plugin_with_responses responses =
+  Test_helpers.reset_test_state ();
+  Api_local.set_agent_response_map responses;
+  let ctx = Test_helpers.make_test_context ~config:Test_helpers.auto_review_enabled_config () in
+  Lwt_main.run
+    (General_plugin_test.run_review ~ctx ~repo_url:"https://github.com/org/repo" ~diff_text:"diff"
+       ~metadata:general_plugin_metadata ())
+
+let test_general_review_filters_low_value_and_validates () =
+  let result, costs =
+    run_general_plugin_with_responses
+      [
+        "general_review", "mock_api_responses/claude/review_response.json";
+        "general_validator", "mock_api_responses/claude/general_validator_confirmed.json";
+      ]
+  in
+  match result with
+  | Error msg -> fail msg
+  | Ok review ->
+    (check int) "only validated actionable finding remains" 1 (List.length review.findings);
+    (match review.findings with
+    | [ finding ] ->
+      (check string) "validated finding kept"
+        "The `process` function can raise exceptions but the result is used without error handling." finding.message;
+      (check string) "keeps original candidate severity" "warning" (Review_types.severity_to_string finding.severity);
+      (check (option string))
+        "keeps original candidate suggested fix"
+        (Some "match process new_value with\n| exception exn -> log_error exn; 0\n| result -> result")
+        finding.suggested_fix
+    | [] | _ :: _ :: _ -> fail "expected exactly one validated finding");
+    (check bool) "validator cost recorded" true
+      (List.exists (fun (c : Cost_tracking.agent_cost) -> String.equal c.agent_name "general_validator") costs)
+
+let test_general_review_validator_rejection_drops_finding () =
+  let result, _costs =
+    run_general_plugin_with_responses
+      [
+        "general_review", "mock_api_responses/claude/review_response.json";
+        "general_validator", "mock_api_responses/claude/general_validator_rejected.json";
+      ]
+  in
+  match result with
+  | Error msg -> fail msg
+  | Ok review -> (check int) "validator rejection suppresses general finding" 0 (List.length review.findings)
 
 let test_provider_options_clamps_below_minimum () =
   (* Anthropic requires budget_tokens >= 1024.  When a caller asks for less,
@@ -2992,6 +3076,12 @@ let () =
           test_case "output schema" `Quick test_analysis_agent_output_schema;
           test_case "shared methodology" `Quick test_analysis_agent_shared_methodology;
           test_case "vuln class sections" `Quick test_analysis_agent_vuln_class_section_all_classes;
+        ] );
+      ( "general_review_plugin",
+        [
+          test_case "filters low-value candidates and validates" `Quick
+            test_general_review_filters_low_value_and_validates;
+          test_case "validator rejection drops finding" `Quick test_general_review_validator_rejection_drops_finding;
         ] );
       ( "reviewer_e2e",
         [

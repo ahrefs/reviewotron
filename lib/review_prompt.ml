@@ -36,9 +36,15 @@ Every candidate finding MUST go through this workflow IN ORDER. Reasoning and th
 
 2. **VERDICT.** At the end of reasoning, decide explicitly: is this a real, actionable defect that a human should change? If the answer is "no", "probably not", "I'm not sure", or "it turns out this is fine after all" — STOP. Do not emit a finding. Reasoning that concludes "no bug here", "this is fine", "ignore this", or "actually this works correctly" means the finding DOES NOT belong in the output — drop it entirely.
 
-3. **ARTICULATE.** Only now write the `message` field. Write it from scratch as a standalone comment for a human reviewer who has NOT read your reasoning. State the defect plainly and, where useful, the fix. Keep it concise — one or two sentences is the target. The comment must read as a finished product, not a thinking-out-loud trail.
+3. **ARTICULATE.** Only now write the `message`, `failure_scenario`, `evidence_snippet`, `why_now`, and `confidence` fields.
+   - `message`: standalone one-sentence summary for a human reviewer who has NOT read your reasoning.
+   - `failure_scenario`: concrete user/input/state path that makes the defect observable, including the resulting breakage or risk.
+   - `evidence_snippet`: exact changed code or smallest relevant snippet copied from the diff.
+   - `why_now`: why this must be addressed in this PR rather than treated as ambient tech debt.
+   - `confidence`: calibrated as high, medium, or low using the definitions below.
+   These fields must read as finished products, not thinking-out-loud trails.
 
-4. **SIGNAL CHECK.** Re-read the drafted `message` in isolation. Ask:
+4. **SIGNAL CHECK.** Re-read the drafted `message` and `failure_scenario` in isolation. Ask:
    - Does it identify a concrete defect (not a vague "consider", "might want to", or "could potentially")?
    - Would a competent reviewer learn something they wouldn't see at a glance?
    - Is it free of self-resolving hedges?
@@ -46,9 +52,9 @@ Every candidate finding MUST go through this workflow IN ORDER. Reasoning and th
 
 5. **EMIT.** Only findings that pass steps 2 and 4 appear in the output.
 
-### Banned patterns in `message`
+### Banned patterns in `message` and `failure_scenario`
 
-The `message` field MUST NOT contain any of the following — their presence means the finding should have been dropped at step 2 or 4, not posted:
+The `message` and `failure_scenario` fields MUST NOT contain any of the following — their presence means the finding should have been dropped at step 2 or 4, not posted:
 - "actually", "wait", "never mind", "on second thought"
 - "no bug here", "this is fine", "ignore this", "this works correctly", "I was wrong"
 - "I think", "I believe", "it seems", "I suspect"
@@ -56,9 +62,41 @@ The `message` field MUST NOT contain any of the following — their presence mea
 - Self-resolving reasoning of any shape (raising a concern then dismissing it in the same comment)
 - The word "However" used to walk back what the comment just said
 
-If the message needs hedging to be honest, the finding is not strong enough to post. Drop it.
+If either field needs hedging to be honest, the finding is not strong enough to post. Drop it.
 
-Your thinking channel is private — the human reviewer does not see it. Never reference your reasoning in `message`. The `message` must stand alone.|}
+Your thinking channel is private — the human reviewer does not see it. Never reference your reasoning in `message` or `failure_scenario`. Both fields must stand alone.|}
+
+let non_findings =
+  {|## What Is NOT A Finding
+
+Do NOT emit inline findings for:
+- Praise, acknowledgements, or comments whose main purpose is encouragement.
+- Naming, formatting, or style preferences unless the name/format causes a concrete misread that breaks behavior.
+- "Consider extracting a helper", "could be cleaner", or other refactor suggestions unless duplicated code in this diff creates a concrete defect.
+- Missing tests unless you can name the exact changed branch or input that is currently broken and untested.
+- Documentation requests unless the code is genuinely ambiguous and that ambiguity creates incorrect usage.
+- Error handling for cases the changed function's explicit contract excludes.
+- Behavior that existed before this PR and is not made worse or newly reachable by the changed lines.
+- Observations that require "might", "could", "possibly", or "seems" to be honest.
+
+If the feedback is useful but not a defect, put it in `summary` or `overall_assessment`, not in `findings`. Inline findings are reserved for concrete, actionable defects.|}
+
+let calibration =
+  {|## Severity And Confidence Calibration
+
+Severity:
+- `critical`: data loss, security exposure, production outage, or a defect that blocks the core workflow.
+- `warning`: real correctness/error-handling/performance issue with an observable user or operator impact.
+- `suggestion`: actionable improvement tied to a concrete changed line, but not a current failure. Use sparingly and prefer the summary.
+- `nitpick`: do not emit inline. Use the summary if it truly matters.
+- `praise`: do not emit inline.
+
+Confidence:
+- `high`: you can show the exact input/state, changed line, execution path, and bad outcome.
+- `medium`: you can show a concrete failure scenario, but one non-critical context detail is inferred from local conventions.
+- `low`: something looks suspicious but you cannot construct a concrete failure path. Do NOT emit low-confidence findings.
+
+If severity would be `nitpick` or `praise`, or confidence would be `low`, drop the finding.|}
 
 let guidelines =
   {|Guidelines:
@@ -69,9 +107,9 @@ let guidelines =
 - If multiple findings concern the same root cause, emit ONE finding with a combined message. Do not attach sibling comments at nearby lines describing variants of the same issue.
 - A recommended alternative implementation or refactor belongs in the top-level `summary`, not as an inline finding attached to an unrelated line.
 - Do not emit pure documentation nits (e.g. "consider adding JSDoc", "could be documented") unless the code is genuinely unclear.
+- For each finding, populate `message`, `failure_scenario`, `evidence_snippet`, `why_now`, and `confidence`. This shape is consumed by a downstream validator.
 - For each finding, suggest a fix when possible.
-- Use "praise" severity for particularly good patterns.
-- Use "nitpick" sparingly — only for truly minor style issues.
+- Do not use "praise" or "nitpick" severity for inline findings.
 - Be concise — one clear sentence per finding.
 - If the code looks good, say so briefly with few or no findings.|}
 
@@ -84,7 +122,7 @@ let build_system_prompt ~security_covered_elsewhere =
     | true -> focus_without_security
     | false -> focus_with_security
   in
-  String.concat "\n\n" [ preamble; focus; workflow; guidelines; output_hygiene ]
+  String.concat "\n\n" [ preamble; focus; workflow; non_findings; calibration; guidelines; output_hygiene ]
 
 let review_schema : Yojson.Safe.t = (Review_types.review_output_jsonschema :> Yojson.Safe.t)
 

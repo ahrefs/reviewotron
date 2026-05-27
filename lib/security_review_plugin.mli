@@ -8,9 +8,10 @@
     confirmed findings are converted to review findings.
 
     The plugin follows a two-gate structure:
-    - Signals at or above the confidence threshold always trigger analysis.
-    - Signals below the threshold only trigger if the vulnerability class
-      is explicitly listed in the repo's [vuln_classes] config. *)
+    - [vuln_classes] enables/disables vulnerability classes.
+    - For enabled classes, signals at or above the confidence threshold trigger
+      analysis. Signals below the threshold only trigger if the class is listed
+      in [always_analyze_vuln_classes]. *)
 
 (** Numeric rank for confidence levels — higher means more confident.
 
@@ -31,9 +32,9 @@ val agent_model_tier : Config_types.model_tier -> Agent_runner.model_tier
 
 (** Determine whether a triage signal should trigger a full analysis agent.
 
-    Returns [true] if the signal's confidence is at or above the configured
-    threshold, or if the signal's vulnerability class appears in the repo's
-    [vuln_classes] list. *)
+    Returns [true] only when the vulnerability class is enabled and either the
+    signal's confidence is at or above the configured threshold, or the class is
+    explicitly listed in [always_analyze_vuln_classes]. *)
 val should_analyze : security_config:Config_types.security_plugin_config -> Security_types.triage_signal -> bool
 
 (** Security review plugin functor.
