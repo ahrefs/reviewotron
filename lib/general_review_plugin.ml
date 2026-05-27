@@ -16,11 +16,6 @@ let build_agent_config ~system_prompt : Agent_runner.agent_config =
     thinking_budget = Some general_review_thinking_budget;
   }
 
-let confidence_rank : Review_types.confidence -> int = function
-  | High -> 3
-  | Medium -> 2
-  | Low -> 1
-
 let low_value_inline (f : Review_types.finding) =
   match f.severity, f.category with
   | Praise, _ | Nitpick, _ | _, Style | _, Naming | _, Documentation -> true
@@ -39,7 +34,7 @@ let security_category (f : Review_types.finding) =
 let should_validate_candidate ~security_covered_elsewhere (f : Review_types.finding) =
   (not (security_covered_elsewhere && security_category f))
   && (not (low_value_inline f))
-  && confidence_rank f.confidence >= confidence_rank Medium
+  && Config_types.confidence_rank f.confidence >= Config_types.confidence_rank Medium
   && has_required_grounding f
 
 let filter_candidates ~security_covered_elsewhere findings =
@@ -61,12 +56,6 @@ module Make (AI : Api.Agent_runner) = struct
     match candidate_findings with
     | [] -> Lwt.return ([], [])
     | _ :: _ ->
-      let matching_candidate (f : Review_types.finding) =
-        List.find_opt
-          (fun (c : Review_types.finding) ->
-            String.equal c.path f.path && Int.equal c.line f.line && String.equal c.message f.message)
-          candidate_findings
-      in
       let input = General_validator_agent.build_input ~diff_text ~candidate_findings () in
       let%lwt result = AI.run ~ctx ~repo_url ?debug_dir ~config:General_validator_agent.config ~input () in
       (match result with
@@ -77,23 +66,28 @@ module Make (AI : Api.Agent_runner) = struct
         let cost = Cost_tracking.of_agent_result ~agent_name:"general_validator" ~files_fetched:0 agent_result in
         (match Review_types.validator_output_of_json agent_result.output with
         | output ->
-          let confirmed =
-            List.filter_map
-              (fun (vf : Review_types.validated_finding) ->
-                match vf.verdict with
-                | Confirmed ->
-                  (match matching_candidate vf.finding with
-                  | Some candidate -> Some candidate
-                  | None ->
-                    log#warn "general validator confirmed non-candidate finding %s:%d; dropping" vf.finding.path
-                      vf.finding.line;
+          (* The validator schema guarantees one result per candidate in order,
+             so pair positionally. Falling back to (path, line, message) string
+             equality silently dropped findings whenever the model paraphrased
+             the message field. *)
+          let n_candidates = List.length candidate_findings in
+          let n_results = List.length output.results in
+          (match Int.equal n_candidates n_results with
+          | false ->
+            log#warn "general validator returned %d results for %d candidates; dropping all" n_results n_candidates;
+            Lwt.return ([], [ cost ])
+          | true ->
+            let confirmed =
+              List.filter_map
+                (fun (candidate, (vf : Review_types.validated_finding)) ->
+                  match vf.verdict with
+                  | Confirmed -> Some candidate
+                  | Rejected ->
+                    log#info "general validator rejected %s:%d: %s" vf.finding.path vf.finding.line vf.evidence_notes;
                     None)
-                | Rejected ->
-                  log#info "general validator rejected %s:%d: %s" vf.finding.path vf.finding.line vf.evidence_notes;
-                  None)
-              output.results
-          in
-          Lwt.return (confirmed, [ cost ])
+                (List.combine candidate_findings output.results)
+            in
+            Lwt.return (confirmed, [ cost ]))
         | exception exn ->
           log#error "failed to parse general validator output: %s" (Exn.str exn);
           Lwt.return ([], [ cost ])))

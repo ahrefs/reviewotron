@@ -141,14 +141,13 @@ module Agent_runner : Api.Agent_runner = struct
     let general_review_path =
       Option.default !agent_response_path (List.assoc_opt "general_review" !agent_response_map)
     in
-    match String.equal general_review_path "mock_api_responses/claude/push_review_response.json" with
-    | true ->
+    if String.equal general_review_path "mock_api_responses/claude/push_review_response.json" then
       validator_output ~path:"backend/api/src/request_handler.ml" ~line:15 ~severity:Review_types.Warning
         ~category:Review_types.Security
         ~message:
           "The webhook handler processes the request body without any validation or signature verification. This could \
            allow unauthorized webhook deliveries."
-    | false ->
+    else
       validator_output ~path:"src/main.ml" ~line:14 ~severity:Review_types.Warning ~category:Review_types.Error_handling
         ~message:"The `process` function can raise exceptions but the result is used without error handling."
 

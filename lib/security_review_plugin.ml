@@ -3,10 +3,7 @@ open Devkit
 let log = Log.from "security_plugin"
 
 (** Numeric rank for confidence levels — higher means more confident. *)
-let confidence_rank = function
-  | Config_types.High -> 3
-  | Medium -> 2
-  | Low -> 1
+let confidence_rank = Config_types.confidence_rank
 
 (** Compare two vuln_class values for equality.
 
@@ -226,9 +223,9 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) = struct
       severity = severity_of_confidence f.confidence;
       category = Security;
       message = enrich_message_with_sink ~anchor_kind ~f;
-      failure_scenario = f.description;
-      evidence_snippet = f.sink.description;
-      why_now = "This PR introduces or exposes the source-to-sink path described in the validated security finding.";
+      failure_scenario = "";
+      evidence_snippet = "";
+      why_now = "";
       confidence = f.confidence;
       suggested_fix = f.suggested_fix;
     }

@@ -45,6 +45,14 @@ let confidence_to_string = function
   | Low -> "low"
 
 let all_confidences = [ High; Medium; Low ]
+
+(** Numeric rank for confidence levels — higher means more confident.
+    Used to compare against a configured threshold. *)
+let confidence_rank = function
+  | High -> 3
+  | Medium -> 2
+  | Low -> 1
+
 let confidence_to_json c = `String (confidence_to_string c)
 
 let confidence_of_json = function

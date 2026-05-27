@@ -27,6 +27,9 @@ type confidence =
 (** All supported confidence levels. *)
 val all_confidences : confidence list
 
+(** Numeric rank for confidence levels — higher means more confident. *)
+val confidence_rank : confidence -> int
+
 val confidence_to_string : confidence -> string
 val confidence_to_json : confidence -> Yojson.Basic.t
 val confidence_of_json : Yojson.Basic.t -> confidence
