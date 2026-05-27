@@ -464,8 +464,8 @@ module Make (AI : Api.Agent_runner) = struct
         log#error "failed to parse curator output: %s" (Exn.str exn);
         Lwt.return [ cost ])
 
-  let run ~ctx ~repo_url ~diff ~diff_text ~(metadata : Review_plugin.review_metadata) ~debug_dir =
-    let config = Context.get_config ctx ~repo_key:repo_url in
+  let run ~ctx ~repo_url ~(config : Config_types.config) ~diff ~diff_text ~(metadata : Review_plugin.review_metadata)
+    ~debug_dir =
     let security_config = config.review_plugins.security in
     let memory_dir = "memory" in
     let security_memory = Security_memory.load ~memory_dir ~repo_url in

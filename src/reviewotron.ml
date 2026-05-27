@@ -94,6 +94,9 @@ let render_review_output output report =
   | Markdown -> Local_sink.render_markdown report
   | Json -> Local_sink.render_json report
 
+let run_local_review f =
+  try Lwt_main.run (f ()) with exn -> Error (Printf.sprintf "local review failed: %s" (Exn.str exn))
+
 let read_text_file path =
   match Std.input_file ~bin:true path with
   | contents -> Ok contents
@@ -154,11 +157,11 @@ let review_diff_action secrets_path config_filename state_path logfile loglevel 
       let result =
         match diff_source with
         | `File diff_path ->
-          Lwt_main.run
-            (Review.review_diff_report ~ctx ~root ~repo_key ?change_key ~title ~description ~diff_path ~config ())
+          run_local_review (fun () ->
+            Review.review_diff_report ~ctx ~root ~repo_key ?change_key ~title ~description ~diff_path ~config ())
         | `Text diff_text ->
-          Lwt_main.run
-            (Review.review_diff_text_report ~ctx ~root ~repo_key ?change_key ~title ~description ~diff_text ~config ())
+          run_local_review (fun () ->
+            Review.review_diff_text_report ~ctx ~root ~repo_key ?change_key ~title ~description ~diff_text ~config ())
       in
       (match result with
       | Error msg -> log#error "%s" msg

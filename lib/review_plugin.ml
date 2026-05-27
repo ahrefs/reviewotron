@@ -12,6 +12,7 @@ module type S = sig
   val run :
     ctx:Context.t ->
     repo_url:string ->
+    config:Config_types.config ->
     diff:Diff_parser.file_diff list ->
     diff_text:string ->
     metadata:review_metadata ->

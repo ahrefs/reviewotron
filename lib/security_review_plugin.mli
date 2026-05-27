@@ -45,6 +45,7 @@ module Make (_ : Api.Agent_runner) : sig
   val run :
     ctx:Context.t ->
     repo_url:string ->
+    config:Config_types.config ->
     diff:Diff_parser.file_diff list ->
     diff_text:string ->
     metadata:Review_plugin.review_metadata ->

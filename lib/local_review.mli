@@ -5,7 +5,8 @@
 
 module Make (_ : Api.Agent_runner) : sig
   (** Review a local unified diff, record the generic [change_key] in state,
-      and return markdown output. *)
+      and return markdown output. Returns [Error _] if the change was already
+      reviewed in the current state. *)
   val review_diff :
     ctx:Context.t ->
     root:string ->
@@ -19,7 +20,8 @@ module Make (_ : Api.Agent_runner) : sig
     (string, string) result Lwt.t
 
   (** Review raw unified diff text, record the generic [change_key] in state,
-      and return markdown output. *)
+      and return markdown output. Returns [Error _] if the change was already
+      reviewed in the current state. *)
   val review_diff_text :
     ctx:Context.t ->
     root:string ->

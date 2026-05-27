@@ -24,25 +24,28 @@ module Make (SRC : Api.Review_source) = struct
     match%lwt SRC.get_config ~ctx ~repo_url with
     | Ok config ->
       Context.set_config ctx ~repo_key:repo_url config;
-      Lwt.return (Ok ())
+      Lwt.return (Ok config)
     | Error e -> Lwt.return (Error e)
 
   let refresh_repo_config ctx event =
-    let repo_url = Github.repo_url_of_event event in
-    match Context.find_config ctx ~repo_key:repo_url with
-    | None -> fetch_config ~ctx ~repo_url
-    | Some _ ->
     match event with
-    | Github.Push push ->
-      let modified_files = List.concat_map (fun (c : Github_types.commit) -> c.added @ c.modified) push.commits in
-      let config_modified = List.exists (String.equal (Context.config_filename ctx)) modified_files in
-      if config_modified then fetch_config ~ctx ~repo_url else Lwt.return (Ok ())
-    | Github.Pull_request _ | Github.Issue_comment _ | Github.Unknown _ -> Lwt.return (Ok ())
+    | Github.Unknown _ -> Lwt.return (Ok (Context.default_config ()))
+    | Github.Pull_request _ | Github.Push _ | Github.Issue_comment _ ->
+      let repo_url = Github.repo_url_of_event event in
+      (match Context.find_config ctx ~repo_key:repo_url with
+      | None -> fetch_config ~ctx ~repo_url
+      | Some config ->
+      match event with
+      | Github.Push push ->
+        let modified_files = List.concat_map (fun (c : Github_types.commit) -> c.added @ c.modified) push.commits in
+        let config_modified = List.exists (String.equal (Context.config_filename ctx)) modified_files in
+        if config_modified then fetch_config ~ctx ~repo_url else Lwt.return (Ok config)
+      | Github.Pull_request _ | Github.Issue_comment _ -> Lwt.return (Ok config)
+      | Github.Unknown _ -> Lwt.return (Ok config))
 
   let is_bot_sender login = CCString.suffix ~suf:"[bot]" login
 
-  let pr_skip_reason ~ctx (pr : Github_types.pr_notification) =
-    let config = Context.get_config ctx ~repo_key:pr.repository.url in
+  let pr_skip_reason ~ctx ~(config : Config_types.config) (pr : Github_types.pr_notification) =
     let state = Context.state ctx in
     let head_sha = pr.pull_request.head.sha in
     let is_ignored_author = List.exists (fun a -> String.equal a pr.sender.login) config.ignored_authors in
@@ -62,8 +65,7 @@ module Make (SRC : Api.Review_source) = struct
       Some (Printf.sprintf "already reviewed at %s" (String.sub head_sha 0 (min 8 (String.length head_sha))))
     | () -> None
 
-  let push_skip_reason ~ctx (push : Github_types.commit_pushed_notification) =
-    let config = Context.get_config ctx ~repo_key:push.repository.url in
+  let push_skip_reason ~ctx ~(config : Config_types.config) (push : Github_types.commit_pushed_notification) =
     let state = Context.state ctx in
     let is_develop = String.equal push.ref_ "refs/heads/develop" in
     let is_ignored_author = List.exists (fun a -> String.equal a push.sender.login) config.ignored_authors in
@@ -79,8 +81,8 @@ module Make (SRC : Api.Review_source) = struct
       Some (Printf.sprintf "already reviewed at %s" (String.sub push.after 0 (min 8 (String.length push.after))))
     | () -> None
 
-  let comment_skip_reason ~ctx (n : Github_types.issue_comment_notification) =
-    let config = Context.get_config ctx ~repo_key:n.repository.url in
+  let comment_skip_reason ~ctx:(_ : Context.t) ~(config : Config_types.config)
+    (n : Github_types.issue_comment_notification) =
     let is_ignored_author = List.exists (fun a -> String.equal a n.sender.login) config.ignored_authors in
     match () with
     | () when not (String.equal n.action "created") -> Some (Printf.sprintf "comment action %s not reviewable" n.action)
@@ -122,8 +124,8 @@ module Make (SRC : Api.Review_source) = struct
     | Error `Empty -> Error Empty
     | Error (`Too_large total_lines) -> Error (Too_large total_lines)
 
-  let prepare_pr_review_with_trigger ?(trigger = Review_job.Pull_request) ~ctx (pr_notif : Github_types.pr_notification)
-      =
+  let prepare_pr_review_with_trigger ?(trigger = Review_job.Pull_request) ~ctx ~(config : Config_types.config)
+    (pr_notif : Github_types.pr_notification) =
     let repo_url = pr_notif.repository.url in
     let number = pr_notif.number in
     let pr = pr_notif.pull_request in
@@ -134,39 +136,39 @@ module Make (SRC : Api.Review_source) = struct
       log#error "failed to fetch diff for PR #%d: %s" number msg;
       Lwt.return (Error (Fetch_failed msg))
     | Ok diff_text ->
-      let config = Context.get_config ctx ~repo_key:repo_url in
-      (match prepare_diff ~config diff_text with
-      | Error Empty ->
-        log#info "PR #%d skipped: all files filtered out" number;
-        Lwt.return (Error Empty)
-      | Error (Too_large total_lines) ->
-        log#info "PR #%d skipped: %d diff lines exceeds limit of %d" number total_lines config.max_diff_lines;
-        Lwt.return (Error (Too_large total_lines))
-      | Error (Fetch_failed msg) -> Lwt.return (Error (Fetch_failed msg))
-      | Ok (filtered_diff, filtered_text) ->
-        let head_sha = pr.head.sha in
-        let%lwt file_contents = fetch_key_files ~ctx ~repo_url ~diff:filtered_diff ~ref_:head_sha in
-        let description = CCOption.get_or ~default:"" pr.body in
-        let fetch_file = fetch_file_at_ref ~ctx ~repo_url ~ref_:head_sha in
-        let job =
-          Review_job.
-            {
-              repo_key = repo_url;
-              change_key = Printf.sprintf "pr/%d/%s" number head_sha;
-              title = pr.title;
-              description;
-              head_sha;
-              diff_text = filtered_text;
-              config;
-              file_contents;
-              fetch_file;
-              trigger;
-              source_kind = Github;
-            }
-        in
-        Lwt.return (Ok { number; job; filtered_diff }))
+    match prepare_diff ~config diff_text with
+    | Error Empty ->
+      log#info "PR #%d skipped: all files filtered out" number;
+      Lwt.return (Error Empty)
+    | Error (Too_large total_lines) ->
+      log#info "PR #%d skipped: %d diff lines exceeds limit of %d" number total_lines config.max_diff_lines;
+      Lwt.return (Error (Too_large total_lines))
+    | Error (Fetch_failed msg) -> Lwt.return (Error (Fetch_failed msg))
+    | Ok (filtered_diff, filtered_text) ->
+      let head_sha = pr.head.sha in
+      let%lwt file_contents = fetch_key_files ~ctx ~repo_url ~diff:filtered_diff ~ref_:head_sha in
+      let description = CCOption.get_or ~default:"" pr.body in
+      let fetch_file = fetch_file_at_ref ~ctx ~repo_url ~ref_:head_sha in
+      let job =
+        Review_job.
+          {
+            repo_key = repo_url;
+            change_key = Printf.sprintf "pr/%d/%s" number head_sha;
+            title = pr.title;
+            description;
+            head_sha;
+            diff_text = filtered_text;
+            config;
+            file_contents;
+            fetch_file;
+            trigger;
+            source_kind = Github;
+          }
+      in
+      Lwt.return (Ok { number; job; filtered_diff })
 
-  let prepare_pr_review_from_comment ~ctx (n : Github_types.issue_comment_notification) =
+  let prepare_pr_review_from_comment ~ctx ~(config : Config_types.config) (n : Github_types.issue_comment_notification)
+      =
     let repo_url = n.repository.url in
     let%lwt result = SRC.get_pull_request ~ctx ~repo_url ~number:n.issue.number in
     match result with
@@ -184,11 +186,11 @@ module Make (SRC : Api.Review_source) = struct
           installation = n.installation;
         }
       in
-      prepare_pr_review_with_trigger ~trigger:Review_job.Manual ~ctx synthesised
+      prepare_pr_review_with_trigger ~trigger:Review_job.Manual ~ctx ~config synthesised
 
-  let prepare_pr_review ~ctx pr_notif = prepare_pr_review_with_trigger ~ctx pr_notif
+  let prepare_pr_review ~ctx ~config pr_notif = prepare_pr_review_with_trigger ~ctx ~config pr_notif
 
-  let prepare_push_review ~ctx (push : Github_types.commit_pushed_notification) =
+  let prepare_push_review ~ctx ~(config : Config_types.config) (push : Github_types.commit_pushed_notification) =
     let repo_url = push.repository.url in
     log#info "reviewing push to %s in %s" push.ref_ push.repository.full_name;
     let%lwt diff_result = SRC.get_compare_diff ~ctx ~repo_url ~base:push.before ~head:push.after in
@@ -197,38 +199,37 @@ module Make (SRC : Api.Review_source) = struct
       log#error "failed to fetch compare diff for push %s...%s: %s" push.before push.after msg;
       Lwt.return (Error (Fetch_failed msg))
     | Ok diff_text ->
-      let config = Context.get_config ctx ~repo_key:repo_url in
-      (match prepare_diff ~config diff_text with
-      | Error Empty ->
-        log#info "push %s skipped: all files ignored" push.after;
-        Lwt.return (Error Empty)
-      | Error (Too_large total_lines) ->
-        log#info "push %s skipped: %d diff lines exceeds limit of %d" push.after total_lines config.max_diff_lines;
-        Lwt.return (Error (Too_large total_lines))
-      | Error (Fetch_failed msg) -> Lwt.return (Error (Fetch_failed msg))
-      | Ok (filtered_diff, filtered_text) ->
-        let description =
-          push.commits
-          |> List.map (fun (c : Github_types.commit) -> Printf.sprintf "- %s" c.message)
-          |> String.concat "\n"
-        in
-        let title = Printf.sprintf "Push to %s" push.ref_ in
-        let fetch_file = fetch_file_at_ref ~ctx ~repo_url ~ref_:push.after in
-        let job =
-          Review_job.
-            {
-              repo_key = repo_url;
-              change_key = push.after;
-              title;
-              description;
-              head_sha = push.after;
-              diff_text = filtered_text;
-              config;
-              file_contents = [];
-              fetch_file;
-              trigger = Push;
-              source_kind = Github;
-            }
-        in
-        Lwt.return (Ok { job; filtered_diff; push }))
+    match prepare_diff ~config diff_text with
+    | Error Empty ->
+      log#info "push %s skipped: all files ignored" push.after;
+      Lwt.return (Error Empty)
+    | Error (Too_large total_lines) ->
+      log#info "push %s skipped: %d diff lines exceeds limit of %d" push.after total_lines config.max_diff_lines;
+      Lwt.return (Error (Too_large total_lines))
+    | Error (Fetch_failed msg) -> Lwt.return (Error (Fetch_failed msg))
+    | Ok (filtered_diff, filtered_text) ->
+      let description =
+        push.commits
+        |> List.map (fun (c : Github_types.commit) -> Printf.sprintf "- %s" c.message)
+        |> String.concat "\n"
+      in
+      let title = Printf.sprintf "Push to %s" push.ref_ in
+      let fetch_file = fetch_file_at_ref ~ctx ~repo_url ~ref_:push.after in
+      let job =
+        Review_job.
+          {
+            repo_key = repo_url;
+            change_key = push.after;
+            title;
+            description;
+            head_sha = push.after;
+            diff_text = filtered_text;
+            config;
+            file_contents = [];
+            fetch_file;
+            trigger = Push;
+            source_kind = Github;
+          }
+      in
+      Lwt.return (Ok { job; filtered_diff; push })
 end

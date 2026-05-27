@@ -66,8 +66,9 @@ let run_pipeline ~ctx ~diff_text ~diff =
   let metadata : Review_plugin.review_metadata =
     { pr_number = 0; pr_title = "corpus test"; pr_description = ""; file_contents = []; fetch_file }
   in
+  let config = Context.get_config ctx ~repo_key:corpus_repo_url in
   let findings, _costs =
-    Lwt_main.run (SP.run ~ctx ~repo_url:corpus_repo_url ~diff ~diff_text ~metadata ~debug_dir:"debug/corpus")
+    Lwt_main.run (SP.run ~ctx ~repo_url:corpus_repo_url ~config ~diff ~diff_text ~metadata ~debug_dir:"debug/corpus")
   in
   findings
 

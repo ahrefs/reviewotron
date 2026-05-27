@@ -37,18 +37,18 @@ module Make (SRC : Api.Review_source) (SNK : Api.Review_sink) (AI : Api.Agent_ru
 
   let ignore_prepare_error (_ : Github_source.prepare_error) = Lwt.return_unit
 
-  let review_pr ~ctx (pr_notif : Github_types.pr_notification) =
-    match%lwt Source.prepare_pr_review ~ctx pr_notif with
+  let review_pr ~ctx ~config (pr_notif : Github_types.pr_notification) =
+    match%lwt Source.prepare_pr_review ~ctx ~config pr_notif with
     | Ok prepared -> run_prepared_pr_review ~ctx prepared
     | Error error -> ignore_prepare_error error
 
-  let review_pr_from_comment ~ctx (n : Github_types.issue_comment_notification) =
-    match%lwt Source.prepare_pr_review_from_comment ~ctx n with
+  let review_pr_from_comment ~ctx ~config (n : Github_types.issue_comment_notification) =
+    match%lwt Source.prepare_pr_review_from_comment ~ctx ~config n with
     | Ok prepared -> run_prepared_pr_review ~ctx prepared
     | Error error -> ignore_prepare_error error
 
-  let review_push ~ctx (push : Github_types.commit_pushed_notification) =
-    match%lwt Source.prepare_push_review ~ctx push with
+  let review_push ~ctx ~config (push : Github_types.commit_pushed_notification) =
+    match%lwt Source.prepare_push_review ~ctx ~config push with
     | Error error -> ignore_prepare_error error
     | Ok prepared ->
       let Github_source.{ job; filtered_diff; push } = prepared in
@@ -108,27 +108,30 @@ module Make (SRC : Api.Review_source) (SNK : Api.Review_sink) (AI : Api.Agent_ru
       State.save state;
       Lwt.return_unit
 
+  let event_config ctx event =
+    let repo_key = Github.repo_url_of_event event in
+    match%lwt Source.refresh_repo_config ctx event with
+    | Ok config -> Lwt.return config
+    | Error msg ->
+      log#warn "failed to refresh repo config: %s" msg;
+      Lwt.return (Context.get_config ctx ~repo_key)
+
   let process_event ctx ~event =
-    let%lwt () =
+    let%lwt config =
       match event with
-      | Github.Unknown _ -> Lwt.return_unit
-      | _ ->
-      match%lwt Source.refresh_repo_config ctx event with
-      | Ok () -> Lwt.return_unit
-      | Error msg ->
-        log#warn "failed to refresh repo config: %s" msg;
-        Lwt.return_unit
+      | Github.Unknown _ -> Lwt.return (Context.default_config ())
+      | Github.Pull_request _ | Github.Push _ | Github.Issue_comment _ -> event_config ctx event
     in
     match event with
     | Github.Pull_request pr ->
-      (match Source.pr_skip_reason ~ctx pr with
-      | None -> review_pr ~ctx pr
+      (match Source.pr_skip_reason ~ctx ~config pr with
+      | None -> review_pr ~ctx ~config pr
       | Some reason ->
         log#info "PR #%d skipped: %s" pr.number reason;
         Lwt.return_unit)
     | Github.Push push ->
-      (match Source.push_skip_reason ~ctx push with
-      | None -> review_push ~ctx push
+      (match Source.push_skip_reason ~ctx ~config push with
+      | None -> review_push ~ctx ~config push
       | Some reason ->
         log#info "push %s skipped: %s" push.after reason;
         Lwt.return_unit)
@@ -140,10 +143,10 @@ module Make (SRC : Api.Review_source) (SNK : Api.Review_sink) (AI : Api.Agent_ru
       (match String.equal (String.trim n.comment.body) "REVIEW" with
       | false -> Lwt.return_unit
       | true ->
-      match Source.comment_skip_reason ~ctx n with
+      match Source.comment_skip_reason ~ctx ~config n with
       | None ->
         log#info "REVIEW comment on PR #%d by %s: triggering review" n.issue.number n.sender.login;
-        review_pr_from_comment ~ctx n
+        review_pr_from_comment ~ctx ~config n
       | Some reason ->
         log#info "REVIEW comment on PR #%d skipped: %s" n.issue.number reason;
         Lwt.return_unit)

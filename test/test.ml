@@ -1839,7 +1839,68 @@ let test_ignored_author_push_skipped () =
 
 (** {2 Local diff review tests} *)
 
+module Capturing_agent_runner = struct
+  let model_ids : string option list ref = ref []
+
+  let reset () = model_ids := []
+  let get_model_ids () = List.rev !model_ids
+
+  let run ~ctx:_ ~repo_url:_ ?model_id ?tools ?debug_dir ~config ~input:_ () =
+    let tools_count =
+      match tools with
+      | None -> 0
+      | Some tools -> List.length tools
+    in
+    ignore (tools_count : int);
+    ignore (debug_dir : string option);
+    model_ids := model_id :: !model_ids;
+    let output = Melange_json.of_string (read_file "mock_api_responses/claude/review_response.json") in
+    let usage : Ai_provider.Usage.t = { input_tokens = 0; output_tokens = 0; total_tokens = None } in
+    Lwt.return
+      (Ok
+         Agent_runner.
+           {
+             output;
+             usage;
+             cache_read_input_tokens = 0;
+             cache_creation_input_tokens = 0;
+             steps_count = 1;
+             model_id = config.name;
+           })
+end
+
 module Local_review_test = Local_review.Make (Api_local.Agent_runner)
+module Local_review_capture = Local_review.Make (Capturing_agent_runner)
+
+module Config_mutating_source = struct
+  let replacement_config : Config_types.config option ref = ref None
+
+  let set_replacement_config config = replacement_config := Some config
+  let clear_replacement_config () = replacement_config := None
+
+  let replace_config ctx repo_url =
+    match !replacement_config with
+    | None -> ()
+    | Some config -> Context.set_config ctx ~repo_key:repo_url config
+
+  let get_config = Api_local.Github.get_config
+  let get_pr_files = Api_local.Github.get_pr_files
+
+  let get_pr_diff ~ctx ~repo_url ~number =
+    replace_config ctx repo_url;
+    Api_local.Github.get_pr_diff ~ctx ~repo_url ~number
+
+  let get_pull_request = Api_local.Github.get_pull_request
+
+  let get_compare_diff ~ctx ~repo_url ~base ~head =
+    replace_config ctx repo_url;
+    Api_local.Github.get_compare_diff ~ctx ~repo_url ~base ~head
+
+  let get_file_content = Api_local.Github.get_file_content
+end
+
+module Reviewer_config_capture =
+  Reviewer.Make (Config_mutating_source) (Api_local.Github) (Capturing_agent_runner) (Api_local.Slack)
 
 let fake_git mapping ~cwd:_ args =
   let key = String.concat "\n" args in
@@ -1949,7 +2010,9 @@ let test_local_source_rejects_unsafe_fetch_path () =
     | Ok Local_source.{ job; filtered_diff = _ } ->
       let fetch_result = Lwt_main.run (job.fetch_file ~path:"../secret.txt") in
       (match fetch_result with
-      | Error msg -> (check bool) "unsafe path rejected" true (CCString.find ~sub:"unsafe local path" msg >= 0)
+      | Error msg ->
+        (check bool) "unsafe path rejected" true (CCString.find ~sub:"unsafe local path" msg >= 0);
+        (check bool) "unsafe path reason" true (CCString.find ~sub:"parent-directory" msg >= 0)
       | Ok (Some _) -> fail "unsafe path should not return content"
       | Ok None -> fail "unsafe path should return an error"))
 
@@ -2031,6 +2094,73 @@ let test_local_review_diff_text_returns_markdown () =
   | Ok markdown ->
     (check bool) "has summary" true (CCString.find ~sub:"The changes look generally good" markdown >= 0);
     (check bool) "has inline comments section" true (CCString.find ~sub:"### Inline comments" markdown >= 0)
+
+let test_local_review_uses_supplied_config_for_plugins () =
+  Test_helpers.reset_test_state ();
+  Capturing_agent_runner.reset ();
+  let repo_key = "local/repo" in
+  let ctx = Test_helpers.make_test_context () in
+  let context_config = Config_types.config_of_json (Melange_json.of_string {|{"model": "context-model"}|}) in
+  let supplied_config = Config_types.config_of_json (Melange_json.of_string {|{"model": "supplied-model"}|}) in
+  Context.set_config ctx ~repo_key context_config;
+  let diff_text = read_file "mock_api_responses/github/pr_42.diff" in
+  let result =
+    Lwt_main.run
+      (Local_review_capture.review_diff_text ~ctx ~root:"." ~repo_key ~title:"Generated local diff"
+         ~description:"Local description" ~diff_text ~config:supplied_config ())
+  in
+  match result with
+  | Error msg -> fail msg
+  | Ok _markdown ->
+  match Capturing_agent_runner.get_model_ids () with
+  | [ Some model_id ] -> check string "plugin model" "supplied-model" model_id
+  | [] -> fail "expected one plugin agent call"
+  | _ :: _ -> fail "expected exactly one plugin agent call"
+
+let test_local_review_skips_duplicate_change () =
+  Test_helpers.reset_test_state ();
+  Capturing_agent_runner.reset ();
+  let state = State.create () in
+  let ctx = Test_helpers.make_test_context ~state () in
+  let config = Context.default_config () in
+  let diff_text = read_file "mock_api_responses/github/pr_42.diff" in
+  let review () =
+    Lwt_main.run
+      (Local_review_capture.review_diff_text ~ctx ~root:"." ~repo_key:"local/repo" ~change_key:"local-change"
+         ~title:"Generated local diff" ~description:"Local description" ~diff_text ~config ())
+  in
+  (match review () with
+  | Error msg -> fail msg
+  | Ok _markdown -> ());
+  let second = review () in
+  (match second with
+  | Error msg -> (check bool) "duplicate skipped" true (CCString.find ~sub:"already reviewed" msg >= 0)
+  | Ok _markdown -> fail "duplicate local review should be skipped");
+  (check int) "agent calls" 1 (List.length (Capturing_agent_runner.get_model_ids ()))
+
+let test_github_review_uses_captured_config_for_plugins () =
+  Test_helpers.reset_test_state ();
+  Capturing_agent_runner.reset ();
+  Config_mutating_source.clear_replacement_config ();
+  let captured_config =
+    Config_types.config_of_json
+      (Melange_json.of_string {|{"auto_review_pr_open": true, "auto_review_pr_sync": true, "model": "captured-model"}|})
+  in
+  let replacement_config =
+    Config_types.config_of_json
+      (Melange_json.of_string
+         {|{"auto_review_pr_open": true, "auto_review_pr_sync": true, "model": "replacement-model"}|})
+  in
+  let ctx = Test_helpers.make_test_context ~config:captured_config () in
+  let payload = read_file "mock_payloads/pr_opened.json" in
+  let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
+  Config_mutating_source.set_replacement_config replacement_config;
+  Fun.protect ~finally:Config_mutating_source.clear_replacement_config (fun () ->
+    Lwt_main.run (Reviewer_config_capture.process_event ctx ~event));
+  match Capturing_agent_runner.get_model_ids () with
+  | [ Some model_id ] -> check string "plugin model" "captured-model" model_id
+  | [] -> fail "expected one plugin agent call"
+  | _ :: _ -> fail "expected exactly one plugin agent call"
 
 let json_string_field fields key =
   match List.assoc_opt key fields with
@@ -3400,6 +3530,9 @@ let () =
           test_case "source reports fetch read errors" `Quick test_local_source_reports_fetch_read_errors;
           test_case "review diff returns markdown" `Quick test_local_review_diff_returns_markdown;
           test_case "review generated diff text returns markdown" `Quick test_local_review_diff_text_returns_markdown;
+          test_case "review plugins use supplied config" `Quick test_local_review_uses_supplied_config_for_plugins;
+          test_case "duplicate local change skipped" `Quick test_local_review_skips_duplicate_change;
+          test_case "github plugins use captured config" `Quick test_github_review_uses_captured_config_for_plugins;
           test_case "local sink renders json" `Quick test_local_sink_render_json;
         ] );
       ( "state_persistence",

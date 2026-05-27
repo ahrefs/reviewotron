@@ -14,12 +14,12 @@ let severity_rank = function
   | Praise -> 1
   | Other _ -> 0
 
-let pick_for_same_line (_sa, fa) (sb, fb) =
-  match _sa, sb with
-  | From_security, From_general -> _sa, fa
+let pick_for_same_line (sa, fa) (sb, fb) =
+  match sa, sb with
+  | From_security, From_general -> sa, fa
   | From_general, From_security -> sb, fb
   | From_general, From_general | From_security, From_security ->
-    if severity_rank fa.Review_types.severity >= severity_rank fb.Review_types.severity then _sa, fa else sb, fb
+    if severity_rank fa.Review_types.severity >= severity_rank fb.Review_types.severity then sa, fa else sb, fb
 
 let collapse_same_line sourced_findings =
   let tbl = Hashtbl.create (List.length sourced_findings) in
@@ -235,7 +235,7 @@ module Make (AI : Api.Agent_runner) = struct
     let general_promise =
       if plugins_config.general.enabled then begin
         let%lwt result, costs =
-          General_plugin.run_review ~ctx ~repo_url ~diff_text:job.diff_text ~metadata ~debug_dir ()
+          General_plugin.run_review ~ctx ~repo_url ~config ~diff_text:job.diff_text ~metadata ~debug_dir ()
         in
         match result with
         | Ok review -> Lwt.return (Some review, costs)
@@ -250,7 +250,7 @@ module Make (AI : Api.Agent_runner) = struct
         Lwt.catch
           (fun () ->
             let%lwt findings, costs =
-              Security_plugin.run ~ctx ~repo_url ~diff ~diff_text:job.diff_text ~metadata ~debug_dir
+              Security_plugin.run ~ctx ~repo_url ~config ~diff ~diff_text:job.diff_text ~metadata ~debug_dir
             in
             Lwt.return (findings, costs, false))
           (fun exn ->

@@ -22,17 +22,16 @@ let read_file path =
       Lwt.return (Ok contents))
     (fun exn -> Lwt.return (Error (Printf.sprintf "failed to read %s: %s" path (Exn.str exn))))
 
-let safe_relative_path path =
-  Filename.is_relative path
-  &&
-  match String.split_on_char '/' path with
-  | [] -> false
-  | parts ->
-    List.for_all
-      (function
-        | "" | "." | ".." -> false
-        | _ -> true)
-      parts
+let unsafe_path_component_reason = function
+  | "" -> Some "empty path components are not allowed"
+  | "." -> Some "current-directory path components are not allowed"
+  | ".." -> Some "parent-directory path components are not allowed"
+  | _ -> None
+
+let unsafe_relative_path_reason path =
+  match Filename.is_relative path with
+  | false -> Some "absolute paths are not allowed"
+  | true -> List.find_map unsafe_path_component_reason (String.split_on_char '/' path)
 
 let has_prefix ~prefix value =
   let prefix_len = String.length prefix in
@@ -57,9 +56,9 @@ let realpath path =
     Error (Printf.sprintf "%s %s failed: %s" fn arg (Unix.error_message error))
 
 let resolve_fetch_path ~root ~path =
-  match safe_relative_path path with
-  | false -> Error (Printf.sprintf "refusing to read unsafe local path: %s" path)
-  | true ->
+  match unsafe_relative_path_reason path with
+  | Some reason -> Error (Printf.sprintf "refusing to read unsafe local path %S: %s" path reason)
+  | None ->
     let full_path = Filename.concat root path in
     (match realpath root with
     | Error msg -> Error msg

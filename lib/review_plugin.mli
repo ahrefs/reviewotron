@@ -23,7 +23,7 @@ module type S = sig
   (** Human-readable plugin name, used in logs and cost tracking. *)
   val name : string
 
-  (** Run the plugin against a PR diff.
+  (** Run the plugin against a PR diff using the config captured for this review.
 
       Returns a list of findings paired with per-agent cost records.
       An empty findings list means the plugin found nothing noteworthy.
@@ -32,6 +32,7 @@ module type S = sig
   val run :
     ctx:Context.t ->
     repo_url:string ->
+    config:Config_types.config ->
     diff:Diff_parser.file_diff list ->
     diff_text:string ->
     metadata:review_metadata ->

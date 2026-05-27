@@ -23,32 +23,43 @@ type prepared_push_review = {
 
 module Make (_ : Api.Review_source) : sig
   (** Fetch config if missing, or refresh it when a push modifies the config
-      file. Unknown events do nothing. *)
-  val refresh_repo_config : Context.t -> Github.event -> (unit, string) result Lwt.t
+      file. Returns the config captured for this event. *)
+  val refresh_repo_config : Context.t -> Github.event -> (Config_types.config, string) result Lwt.t
 
   (** Return [None] when a PR should be reviewed, or [Some reason] when it
       should be skipped. *)
-  val pr_skip_reason : ctx:Context.t -> Github_types.pr_notification -> string option
+  val pr_skip_reason : ctx:Context.t -> config:Config_types.config -> Github_types.pr_notification -> string option
 
   (** Return [None] when a push should be reviewed, or [Some reason] when it
       should be skipped. *)
-  val push_skip_reason : ctx:Context.t -> Github_types.commit_pushed_notification -> string option
+  val push_skip_reason :
+    ctx:Context.t -> config:Config_types.config -> Github_types.commit_pushed_notification -> string option
 
   (** Return [None] when a REVIEW issue-comment should run, or [Some reason]
       when it should be skipped. The exact trigger phrase check remains at the
       dispatch site. *)
-  val comment_skip_reason : ctx:Context.t -> Github_types.issue_comment_notification -> string option
+  val comment_skip_reason :
+    ctx:Context.t -> config:Config_types.config -> Github_types.issue_comment_notification -> string option
 
   (** Build a normalized PR review job from a pull_request webhook. *)
   val prepare_pr_review :
-    ctx:Context.t -> Github_types.pr_notification -> (prepared_pr_review, prepare_error) result Lwt.t
+    ctx:Context.t ->
+    config:Config_types.config ->
+    Github_types.pr_notification ->
+    (prepared_pr_review, prepare_error) result Lwt.t
 
   (** Fetch the full PR referenced by an issue_comment webhook and build a
       normalized manual-review job. *)
   val prepare_pr_review_from_comment :
-    ctx:Context.t -> Github_types.issue_comment_notification -> (prepared_pr_review, prepare_error) result Lwt.t
+    ctx:Context.t ->
+    config:Config_types.config ->
+    Github_types.issue_comment_notification ->
+    (prepared_pr_review, prepare_error) result Lwt.t
 
   (** Build a normalized push review job from a push webhook. *)
   val prepare_push_review :
-    ctx:Context.t -> Github_types.commit_pushed_notification -> (prepared_push_review, prepare_error) result Lwt.t
+    ctx:Context.t ->
+    config:Config_types.config ->
+    Github_types.commit_pushed_notification ->
+    (prepared_push_review, prepare_error) result Lwt.t
 end

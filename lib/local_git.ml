@@ -27,7 +27,7 @@ let run_git ~cwd args =
   let process_args = Array.of_list ("git" :: "-C" :: cwd :: args) in
   let stdout_r, stdout_w = Unix.pipe () in
   let dev_null =
-    match Unix.openfile "/dev/null" [ Unix.O_WRONLY ] 0 with
+    match Unix.openfile "/dev/null" [ Unix.O_RDWR ] 0 with
     | dev_null -> dev_null
     | exception exn ->
       close_fd_noerr stdout_r;
@@ -35,7 +35,7 @@ let run_git ~cwd args =
       raise exn
   in
   let pid =
-    try Unix.create_process "git" process_args Unix.stdin stdout_w dev_null
+    try Unix.create_process "git" process_args dev_null stdout_w dev_null
     with exn ->
       close_fd_noerr stdout_r;
       close_fd_noerr stdout_w;
