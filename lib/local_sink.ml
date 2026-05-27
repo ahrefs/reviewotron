@@ -19,6 +19,8 @@ let finding_to_json (finding : Review_types.finding) =
     [
       "file", `String finding.path;
       "line", `Int finding.line;
+      "level", `String (Review_types.severity_to_string finding.severity);
+      "category", `String (Review_types.finding_category_to_string finding.category);
       "summary", `String finding.message;
       "failure_scenario", `String (non_empty_or ~default:finding.message finding.failure_scenario);
     ]

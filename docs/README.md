@@ -475,6 +475,8 @@ JSON output is an object with a review-level summary and a machine-readable find
     {
       "file": "backend/safer-claude-code/safer_claude_code.ml",
       "line": 492,
+      "level": "warning",
+      "category": "bug",
       "summary": "Legacy session-id file from old scc crashes startup because ensure_dir refuses to treat a regular file as a directory",
       "failure_scenario": "Any user who ran a previous scc has a regular file at <scc_metadata>/sessions/<wt_basename> holding their last session UUID. After upgrading, the first scc -f or scc run-on calls prepare_session_id_mount, which calls ensure_dir(Filename.dirname host_path) — i.e. ensure_dir on the legacy file path. ensure_dir sees S_REG and fails. scc aborts on startup until the user manually removes the legacy file."
     }

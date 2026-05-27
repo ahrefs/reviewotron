@@ -2074,6 +2074,8 @@ let test_local_sink_render_json () =
     | Some (`List [ `Assoc fields ]) ->
       (check string) "file" "backend/safer-claude-code/safer_claude_code.ml" (json_string_field fields "file");
       (check int) "line" 492 (json_int_field fields "line");
+      (check string) "level" "warning" (json_string_field fields "level");
+      (check string) "category" "security" (json_string_field fields "category");
       (check string) "summary" summary (json_string_field fields "summary");
       (check string) "failure_scenario" failure_scenario (json_string_field fields "failure_scenario")
     | Some _ -> fail "expected findings to contain one review finding"
