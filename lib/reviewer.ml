@@ -98,6 +98,19 @@ let deduplicate_findings sourced_findings =
     | n -> n)
 
 module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
+  type reaction_target =
+    | Pull_request of int
+    | Issue_comment of int
+
+  type progress_reaction = {
+    target : reaction_target;
+    reaction_id : int;
+  }
+
+  type pr_review_outcome =
+    | Review_posted
+    | Review_quiet
+
   (** Retry an Lwt operation once after a 1-second delay on failure.
       The operation is passed as a thunk to ensure the retry executes fresh. *)
   let retry_once ~label f =
@@ -107,6 +120,45 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
       log#warn "%s failed (will retry once): %s" label msg;
       let%lwt () = Lwt_unix.sleep 1.0 in
       f ()
+
+  let create_reaction ~ctx ~repo_url target ~content =
+    match target with
+    | Pull_request number -> GH.create_issue_reaction ~ctx ~repo_url ~number ~content
+    | Issue_comment comment_id -> GH.create_issue_comment_reaction ~ctx ~repo_url ~comment_id ~content
+
+  let start_progress_reaction ~ctx ~repo_url = function
+    | None -> Lwt.return None
+    | Some target ->
+      let%lwt result = create_reaction ~ctx ~repo_url target ~content:"eyes" in
+      (match result with
+      | Ok reaction_id -> Lwt.return (Some { target; reaction_id })
+      | Error msg ->
+        log#warn "failed to add review progress reaction: %s" msg;
+        Lwt.return None)
+
+  let remove_progress_reaction ~ctx ~repo_url = function
+    | None -> Lwt.return_unit
+    | Some { reaction_id; _ } ->
+      let%lwt result = GH.delete_reaction ~ctx ~repo_url ~reaction_id in
+      (match result with
+      | Ok () -> Lwt.return_unit
+      | Error msg ->
+        log#warn "failed to remove review progress reaction %d: %s" reaction_id msg;
+        Lwt.return_unit)
+
+  let add_quiet_success_reaction ~ctx ~repo_url = function
+    | None -> Lwt.return_unit
+    | Some { target; _ } ->
+      let%lwt result = create_reaction ~ctx ~repo_url target ~content:"+1" in
+      (match result with
+      | Ok _reaction_id -> Lwt.return_unit
+      | Error msg ->
+        log#warn "failed to add quiet-success reaction: %s" msg;
+        Lwt.return_unit)
+
+  let finish_progress_reaction ~ctx ~repo_url progress ~quiet_success =
+    let%lwt () = remove_progress_reaction ~ctx ~repo_url progress in
+    if quiet_success then add_quiet_success_reaction ~ctx ~repo_url progress else Lwt.return_unit
 
   (** Fetch config from the repo and cache it in context. *)
   let fetch_config ~ctx ~repo_url =
@@ -374,8 +426,8 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
      incomplete._"
 
   (** Run the plugin orchestrator and post the result as a GitHub PR review. *)
-  let execute_and_post_review ~ctx ~repo_url ~config ~number ~pr_title ~diff_text ~filtered_diff ~file_contents
-    ~description ~head_sha =
+  let execute_and_post_review ~progress ~ctx ~repo_url ~config ~number ~pr_title ~diff_text ~filtered_diff
+    ~file_contents ~description ~head_sha =
     let metadata = Review_plugin.{ pr_number = number; pr_title; pr_description = description; file_contents } in
     let debug_dir =
       let slug = Security_memory.repo_slug repo_url in
@@ -414,6 +466,11 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
     let comments = List.rev comments_rev in
     let unchanged_findings = List.rev unchanged_rev in
     let anchor_failed_findings = List.rev anchor_failed_rev in
+    let surfaced_findings_count =
+      List.length comments + List.length unchanged_findings + List.length anchor_failed_findings
+    in
+    let review_has_surface = surfaced_findings_count > 0 in
+    let general_failed = Option.is_none general_result in
     let to_bullet (f : Review_types.finding) = Printf.sprintf "- `%s:%d` %s" f.path f.line f.message in
     let render_section ~title ~lead = function
       | [] -> ""
@@ -435,42 +492,54 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
            mis-anchoring — please report:"
         anchor_failed_findings
     in
-    let review_body =
-      match general_result with
-      | Some review ->
-        (match review.Review_types.overall_assessment with
-        | "" -> review.summary
-        | assessment -> Printf.sprintf "%s\n\n**Overall**: %s" review.summary assessment)
-      | None ->
-        log#error "review failed for PR #%d: no review output produced" number;
-        (match findings with
-        | _ :: _ ->
-          "\xE2\x9A\xA0\xEF\xB8\x8F **Review partially failed** \xE2\x80\x94 the general code review agent encountered \
-           an error. Security findings (if any) are shown below. You may want to re-trigger the review."
-        | [] ->
-          "\xE2\x9A\xA0\xEF\xB8\x8F **Review failed** \xE2\x80\x94 the code review encountered an error and could not \
-           produce results. Please re-trigger the review. If this persists, check the service logs.")
-    in
-    let review_body = review_body ^ unchanged_section ^ anchor_failed_section in
-    let review_body = if security_error then review_body ^ security_error_notice else review_body in
-    let review_body =
-      if config.show_review_cost then review_body ^ Cost_tracking.format_footer review_costs else review_body
-    in
-    let review_req = Github_types.{ commit_id = Some head_sha; body = review_body; event = Comment; comments } in
-    let%lwt post_result =
-      retry_once ~label:(Printf.sprintf "create_pr_review PR #%d" number) (fun () ->
-        GH.create_pr_review ~ctx ~repo_url ~number review_req)
-    in
-    (match post_result with
-    | Ok () -> log#info "posted review for PR #%d (%s): %d inline comments" number pr_title (List.length comments)
-    | Error msg -> log#error "failed to post review for PR #%d after retry: %s" number msg);
     let state = Context.state ctx in
-    State.record_pr_review state ~repo_url ~pr_number:number ~head_sha ~review_costs;
-    State.save state;
-    Lwt.return_unit
+    let record_reviewed () =
+      State.record_pr_review state ~repo_url ~pr_number:number ~head_sha ~review_costs;
+      State.save state
+    in
+    match review_has_surface || general_failed || security_error with
+    | false ->
+      let%lwt () = finish_progress_reaction ~ctx ~repo_url progress ~quiet_success:true in
+      log#info "PR #%d (%s): review completed with no findings; not posting a PR review" number pr_title;
+      record_reviewed ();
+      Lwt.return Review_quiet
+    | true ->
+      let review_body =
+        match general_result with
+        | Some _review ->
+          (match surfaced_findings_count with
+          | 0 -> "Review completed with no code findings."
+          | 1 -> "Review completed. 1 finding is surfaced below."
+          | n -> Printf.sprintf "Review completed. %d findings are surfaced below." n)
+        | None ->
+          log#error "review failed for PR #%d: no review output produced" number;
+          (match findings with
+          | _ :: _ ->
+            "\xE2\x9A\xA0\xEF\xB8\x8F **Review partially failed** \xE2\x80\x94 the general code review agent \
+             encountered an error. Security findings (if any) are shown below. You may want to re-trigger the review."
+          | [] ->
+            "\xE2\x9A\xA0\xEF\xB8\x8F **Review failed** \xE2\x80\x94 the code review encountered an error and could \
+             not produce results. Please re-trigger the review. If this persists, check the service logs.")
+      in
+      let review_body = review_body ^ unchanged_section ^ anchor_failed_section in
+      let review_body = if security_error then review_body ^ security_error_notice else review_body in
+      let review_body =
+        if config.show_review_cost then review_body ^ Cost_tracking.format_footer review_costs else review_body
+      in
+      let review_req = Github_types.{ commit_id = Some head_sha; body = review_body; event = Comment; comments } in
+      let%lwt () = finish_progress_reaction ~ctx ~repo_url progress ~quiet_success:false in
+      let%lwt post_result =
+        retry_once ~label:(Printf.sprintf "create_pr_review PR #%d" number) (fun () ->
+          GH.create_pr_review ~ctx ~repo_url ~number review_req)
+      in
+      (match post_result with
+      | Ok () -> log#info "posted review for PR #%d (%s): %d inline comments" number pr_title (List.length comments)
+      | Error msg -> log#error "failed to post review for PR #%d after retry: %s" number msg);
+      record_reviewed ();
+      Lwt.return Review_posted
 
   (** Orchestrate a full PR review: fetch diff, run review agent, post review. *)
-  let review_pr ~ctx (pr_notif : Github_types.pr_notification) =
+  let review_pr ?reaction_target ~ctx (pr_notif : Github_types.pr_notification) =
     let repo_url = pr_notif.repository.url in
     let number = pr_notif.number in
     let pr = pr_notif.pull_request in
@@ -491,10 +560,14 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
         Lwt.return_unit
       | Ok (filtered_diff, filtered_text) ->
         let head_sha = pr.head.sha in
+        let%lwt progress = start_progress_reaction ~ctx ~repo_url reaction_target in
         let%lwt file_contents = fetch_key_files ~ctx ~repo_url ~diff:filtered_diff ~ref_:(Some head_sha) in
         let description = CCOption.get_or ~default:"" pr.body in
-        execute_and_post_review ~ctx ~repo_url ~config ~number ~pr_title:pr.title ~diff_text:filtered_text
-          ~filtered_diff ~file_contents ~description ~head_sha)
+        let%lwt (_outcome : pr_review_outcome) =
+          execute_and_post_review ~progress ~ctx ~repo_url ~config ~number ~pr_title:pr.title ~diff_text:filtered_text
+            ~filtered_diff ~file_contents ~description ~head_sha
+        in
+        Lwt.return_unit)
 
   (** Review the PR referenced by an [issue_comment] webhook.
 
@@ -529,7 +602,7 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
           installation = n.installation;
         }
       in
-      review_pr ~ctx synthesised
+      review_pr ~reaction_target:(Issue_comment n.comment.id) ~ctx synthesised
 
   (** Post commit comments for critical/warning findings from a push review. *)
   let post_push_comments ~ctx ~repo_url ~sha findings =
@@ -657,7 +730,7 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
     match event with
     | Github.Pull_request pr ->
       (match pr_skip_reason ~ctx pr with
-      | None -> review_pr ~ctx pr
+      | None -> review_pr ~reaction_target:(Pull_request pr.number) ~ctx pr
       | Some reason ->
         log#info "PR #%d skipped: %s" pr.number reason;
         Lwt.return_unit)

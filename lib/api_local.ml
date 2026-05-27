@@ -41,6 +41,9 @@ let fail_next_commit_comment = ref false
 let set_fail_next_commit_comment () = fail_next_commit_comment := true
 let reset_fail_next_commit_comment () = fail_next_commit_comment := false
 
+let next_reaction_id = ref 1
+let reset_reactions () = next_reaction_id := 1
+
 module Github : Api.Github = struct
   let get_config ~ctx:_ ~repo_url:_ = Lwt.return (Ok (Context.default_config ()))
 
@@ -99,6 +102,33 @@ module Github : Api.Github = struct
       log#info "%s" entry;
       Lwt.return (Ok ())
     end
+
+  let create_issue_reaction ~ctx:_ ~repo_url ~number ~content =
+    let reaction_id = !next_reaction_id in
+    next_reaction_id := reaction_id + 1;
+    let entry =
+      Printf.sprintf "[create_issue_reaction] repo=%s number=%d content=%s id=%d\n" repo_url number content reaction_id
+    in
+    Buffer.add_string write_log entry;
+    log#info "%s" entry;
+    Lwt.return (Ok reaction_id)
+
+  let create_issue_comment_reaction ~ctx:_ ~repo_url ~comment_id ~content =
+    let reaction_id = !next_reaction_id in
+    next_reaction_id := reaction_id + 1;
+    let entry =
+      Printf.sprintf "[create_issue_comment_reaction] repo=%s comment_id=%d content=%s id=%d\n" repo_url comment_id
+        content reaction_id
+    in
+    Buffer.add_string write_log entry;
+    log#info "%s" entry;
+    Lwt.return (Ok reaction_id)
+
+  let delete_reaction ~ctx:_ ~repo_url ~reaction_id =
+    let entry = Printf.sprintf "[delete_reaction] repo=%s id=%d\n" repo_url reaction_id in
+    Buffer.add_string write_log entry;
+    log#info "%s" entry;
+    Lwt.return (Ok ())
 end
 
 module Agent_runner : Api.Agent_runner = struct

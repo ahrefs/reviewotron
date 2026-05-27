@@ -5,6 +5,8 @@ open Alcotest
 let read_file path = Std.input_file ~bin:true path
 let read_json path = Melange_json.of_string (read_file path)
 
+let contains_sub ~sub s = CCString.find ~sub s >= 0
+
 (* Default-off auto-review flags mean every test that wants the review pipeline
    to actually run must opt in explicitly. The shared security config fixtures
    below opt into PR-open and PR-sync because the security e2e suite always
@@ -1460,11 +1462,18 @@ let test_pr_review_e2e () =
   let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
   Lwt_main.run (R_test.process_event ctx ~event);
   let write_log = Api_local.get_write_log () in
-  (check bool) "review posted" true (CCString.find ~sub:"[create_pr_review]" write_log >= 0);
-  (check bool) "correct repo" true (CCString.find ~sub:"repo=https://github.com/org/monorepo" write_log >= 0);
-  (check bool) "correct PR number" true (CCString.find ~sub:"number=42" write_log >= 0);
-  (check bool) "has summary" true (CCString.find ~sub:"The changes look generally good" write_log >= 0);
-  (check bool) "has comments" true (CCString.find ~sub:"error-handling" write_log >= 0)
+  let eyes_pos = CCString.find ~sub:"[create_issue_reaction]" write_log in
+  let delete_pos = CCString.find ~sub:"[delete_reaction]" write_log in
+  let review_pos = CCString.find ~sub:"[create_pr_review]" write_log in
+  (check bool) "progress reaction added" true (eyes_pos >= 0);
+  (check bool) "progress reaction removed before review" true (delete_pos > eyes_pos && review_pos > delete_pos);
+  (check bool) "review posted" true (review_pos >= 0);
+  (check bool) "correct repo" true (contains_sub ~sub:"repo=https://github.com/org/monorepo" write_log);
+  (check bool) "correct PR number" true (contains_sub ~sub:"number=42" write_log);
+  (check bool) "deterministic review body" true
+    (contains_sub ~sub:"Review completed. 1 finding is surfaced below." write_log);
+  (check bool) "does not publish agent summary" false (contains_sub ~sub:"The changes look generally good" write_log);
+  (check bool) "has comments" true (contains_sub ~sub:"error-handling" write_log)
 
 let test_pr_skipped_when_draft () =
   Test_helpers.reset_test_state ();
@@ -1519,8 +1528,33 @@ let test_comment_trigger_reviews_pr () =
   let event = Test_helpers.parse_event_exn ~event_type:"issue_comment" ~body:payload in
   Lwt_main.run (R_test.process_event ctx ~event);
   let write_log = Api_local.get_write_log () in
-  (check bool) "review posted via REVIEW comment" true (CCString.find ~sub:"[create_pr_review]" write_log >= 0);
-  (check bool) "uses general review pipeline" true (CCString.find ~sub:"The changes look generally good" write_log >= 0)
+  let eyes_pos = CCString.find ~sub:"[create_issue_comment_reaction]" write_log in
+  let delete_pos = CCString.find ~sub:"[delete_reaction]" write_log in
+  let review_pos = CCString.find ~sub:"[create_pr_review]" write_log in
+  (check bool) "progress reaction added to trigger comment" true (eyes_pos >= 0);
+  (check bool) "progress reaction removed before review" true (delete_pos > eyes_pos && review_pos > delete_pos);
+  (check bool) "review posted via REVIEW comment" true (review_pos >= 0);
+  (check bool) "uses general review pipeline" true
+    (contains_sub ~sub:"Review completed. 1 finding is surfaced below." write_log)
+
+let test_comment_trigger_quiet_success_reacts () =
+  Test_helpers.reset_test_state ();
+  Api_local.set_agent_response_path "mock_api_responses/claude/empty_findings_response.json";
+  let ctx = Test_helpers.make_test_context ~config:comment_trigger_config () in
+  let payload = Test_helpers.make_issue_comment_payload () in
+  let event = Test_helpers.parse_event_exn ~event_type:"issue_comment" ~body:payload in
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let write_log = Api_local.get_write_log () in
+  (check bool) "progress reaction added to trigger comment" true
+    (contains_sub
+       ~sub:"[create_issue_comment_reaction] repo=https://github.com/org/monorepo comment_id=9001 content=eyes"
+       write_log);
+  (check bool) "progress reaction removed" true (contains_sub ~sub:"[delete_reaction]" write_log);
+  (check bool) "quiet success reaction added to trigger comment" true
+    (contains_sub
+       ~sub:"[create_issue_comment_reaction] repo=https://github.com/org/monorepo comment_id=9001 content=+1"
+       write_log);
+  (check bool) "no PR review when there is nothing to add" false (contains_sub ~sub:"[create_pr_review]" write_log)
 
 let test_comment_trigger_disabled () =
   Test_helpers.reset_test_state ();
@@ -1673,11 +1707,17 @@ let test_pr_empty_findings_review () =
   let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
   Lwt_main.run (R_test.process_event ctx ~event);
   let write_log = Api_local.get_write_log () in
-  (* Review should still be posted with summary only *)
-  (check bool) "review posted" true (CCString.find ~sub:"[create_pr_review]" write_log >= 0);
-  (check bool) "has summary" true (CCString.find ~sub:"The code looks clean" write_log >= 0);
-  (* No inline comments since findings list is empty — ATD omits empty default *)
-  (check bool) "no inline comments" true (CCString.find ~sub:{|"comments":|} write_log < 0)
+  (check bool) "progress reaction added" true (contains_sub ~sub:"[create_issue_reaction]" write_log);
+  (check bool) "progress reaction removed" true (contains_sub ~sub:"[delete_reaction]" write_log);
+  (check bool) "quiet success reaction added" true
+    (contains_sub ~sub:"[create_issue_reaction] repo=https://github.com/org/monorepo number=42 content=+1" write_log);
+  (check bool) "no PR review when there is nothing to add" false (contains_sub ~sub:"[create_pr_review]" write_log);
+  match event with
+  | Github.Pull_request pr ->
+    (check bool) "quiet review recorded in state" true
+      (State.is_pr_reviewed (Context.state ctx) ~repo_url:pr.repository.url ~pr_number:pr.number
+         ~head_sha:pr.pull_request.head.sha)
+  | Github.Push _ | Github.Issue_comment _ | Github.Unknown _ -> fail "expected pull_request event"
 
 let test_pr_large_diff_skipped () =
   Test_helpers.reset_test_state ();
@@ -2335,7 +2375,8 @@ let test_security_e2e_vulnerable () =
   Lwt_main.run (R_test.process_event ctx ~event);
   let write_log = Api_local.get_write_log () in
   (check bool) "review posted" true (CCString.find ~sub:"[create_pr_review]" write_log >= 0);
-  (check bool) "has general review summary" true (CCString.find ~sub:"The changes look generally good" write_log >= 0);
+  (check bool) "has deterministic review body" true
+    (contains_sub ~sub:"Review completed. 1 finding is surfaced below." write_log);
   (check bool) "has security finding" true (CCString.find ~sub:"**[critical]** security" write_log >= 0);
   (check bool) "has injection description" true
     (CCString.find ~sub:"SQL query string without parameterization" write_log >= 0);
@@ -2355,7 +2396,8 @@ let test_security_e2e_safe () =
   Lwt_main.run (R_test.process_event ctx ~event);
   let write_log = Api_local.get_write_log () in
   (check bool) "review posted" true (CCString.find ~sub:"[create_pr_review]" write_log >= 0);
-  (check bool) "has general review" true (CCString.find ~sub:"The changes look generally good" write_log >= 0);
+  (check bool) "has deterministic review body" true
+    (contains_sub ~sub:"Review completed. 1 finding is surfaced below." write_log);
   (check bool) "no security category" true (CCString.find ~sub:{|"security"|} write_log < 0)
 
 let test_security_e2e_rejected () =
@@ -2373,7 +2415,8 @@ let test_security_e2e_rejected () =
   Lwt_main.run (R_test.process_event ctx ~event);
   let write_log = Api_local.get_write_log () in
   (check bool) "review posted" true (CCString.find ~sub:"[create_pr_review]" write_log >= 0);
-  (check bool) "has general review" true (CCString.find ~sub:"The changes look generally good" write_log >= 0);
+  (check bool) "has deterministic review body" true
+    (contains_sub ~sub:"Review completed. 1 finding is surfaced below." write_log);
   (check bool) "no security findings after rejection" true (CCString.find ~sub:{|"security"|} write_log < 0)
 
 (** Triage occasionally emits [skip_reason: ""] (an empty string) instead of
@@ -2416,7 +2459,8 @@ let test_security_e2e_disabled () =
   Lwt_main.run (R_test.process_event ctx ~event);
   let write_log = Api_local.get_write_log () in
   (check bool) "review posted" true (CCString.find ~sub:"[create_pr_review]" write_log >= 0);
-  (check bool) "has general review" true (CCString.find ~sub:"The changes look generally good" write_log >= 0);
+  (check bool) "has deterministic review body" true
+    (contains_sub ~sub:"Review completed. 1 finding is surfaced below." write_log);
   (check bool) "no security category" true (CCString.find ~sub:{|"security"|} write_log < 0)
 
 (** {2 General review failure robustness tests} *)
@@ -2522,7 +2566,8 @@ let test_pr_security_failure_notice () =
   Lwt_main.run (R_test.process_event ctx ~event);
   let write_log = Api_local.get_write_log () in
   (check bool) "review posted" true (CCString.find ~sub:"[create_pr_review]" write_log >= 0);
-  (check bool) "has general review summary" true (CCString.find ~sub:"The changes look generally good" write_log >= 0);
+  (check bool) "has deterministic review body" true
+    (contains_sub ~sub:"Review completed. 1 finding is surfaced below." write_log);
   (check bool) "has security failure notice" true
     (CCString.find ~sub:"security review plugin encountered an error" write_log >= 0);
   (check bool) "has incompleteness warning" true
@@ -2584,7 +2629,8 @@ let test_pr_review_retry_on_failure () =
   let write_log = Api_local.get_write_log () in
   (* The review should still be posted after the retry *)
   (check bool) "review posted after retry" true (CCString.find ~sub:"[create_pr_review]" write_log >= 0);
-  (check bool) "has summary" true (CCString.find ~sub:"The changes look generally good" write_log >= 0)
+  (check bool) "has deterministic review body" true
+    (contains_sub ~sub:"Review completed. 1 finding is surfaced below." write_log)
 
 let test_commit_comment_retry_on_failure () =
   Test_helpers.reset_test_state ();
@@ -3133,6 +3179,7 @@ let () =
       ( "comment_trigger",
         [
           test_case "REVIEW comment triggers PR review" `Quick test_comment_trigger_reviews_pr;
+          test_case "REVIEW quiet success reacts without posting" `Quick test_comment_trigger_quiet_success_reacts;
           test_case "REVIEW comment ignored when auto_review_on_comment disabled" `Quick test_comment_trigger_disabled;
           test_case "non-trigger body silently ignored" `Quick test_comment_trigger_non_review_body_silent;
           test_case "REVIEW with extra text does not trigger" `Quick test_comment_trigger_body_with_extra_text;
