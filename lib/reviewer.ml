@@ -510,11 +510,7 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
     | true ->
       let review_body =
         match general_result with
-        | Some _review ->
-          (match surfaced_findings_count with
-          | 0 -> "Review completed with no code findings."
-          | 1 -> "Review completed. 1 finding is surfaced below."
-          | n -> Printf.sprintf "Review completed. %d findings are surfaced below." n)
+        | Some review -> review.summary
         | None ->
           log#error "review failed for PR #%d: no review output produced" number;
           (match findings with
@@ -565,13 +561,22 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
       | Ok (filtered_diff, filtered_text) ->
         let head_sha = pr.head.sha in
         let%lwt progress = start_progress_reaction ~ctx ~repo_url reaction_target in
-        let%lwt file_contents = fetch_key_files ~ctx ~repo_url ~diff:filtered_diff ~ref_:(Some head_sha) in
-        let description = CCOption.get_or ~default:"" pr.body in
-        let%lwt (_outcome : pr_review_outcome) =
-          execute_and_post_review ~progress ~ctx ~repo_url ~config ~number ~pr_title:pr.title ~diff_text:filtered_text
-            ~filtered_diff ~file_contents ~description ~head_sha
-        in
-        Lwt.return_unit)
+        (* The review pipeline can raise (network errors, SDK schema drift,
+           etc.).  Ensure the progress reaction is cleared even when the
+           pipeline crashes — otherwise the "eyes" reaction is orphaned on the
+           PR / comment and the user has no signal that the bot gave up. *)
+        try%lwt
+          let%lwt file_contents = fetch_key_files ~ctx ~repo_url ~diff:filtered_diff ~ref_:(Some head_sha) in
+          let description = CCOption.get_or ~default:"" pr.body in
+          let%lwt (_outcome : pr_review_outcome) =
+            execute_and_post_review ~progress ~ctx ~repo_url ~config ~number ~pr_title:pr.title ~diff_text:filtered_text
+              ~filtered_diff ~file_contents ~description ~head_sha
+          in
+          Lwt.return_unit
+        with exn ->
+          log#error "review pipeline for PR #%d raised: %s" number (Exn.str exn);
+          let%lwt () = remove_progress_reaction ~ctx ~repo_url progress in
+          Lwt.fail exn)
 
   (** Review the PR referenced by an [issue_comment] webhook.
 

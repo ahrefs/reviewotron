@@ -2691,6 +2691,7 @@ let test_write_debug_dump () =
       tool_results = [];
       finish_reason = Ai_provider.Finish_reason.Tool_calls;
       usage = { input_tokens = 0; output_tokens = 0; total_tokens = None };
+      provider_metadata = None;
     }
   in
   let step1 : Ai_core.Generate_text_result.step =
@@ -2701,6 +2702,7 @@ let test_write_debug_dump () =
       tool_results = [];
       finish_reason = Ai_provider.Finish_reason.Stop;
       usage = { input_tokens = 0; output_tokens = 0; total_tokens = None };
+      provider_metadata = None;
     }
   in
   let steps = [ step0; step1 ] in
@@ -2740,7 +2742,7 @@ let zero_usage : Ai_provider.Usage.t = { input_tokens = 0; output_tokens = 0; to
 
 let mk_step ?(text = "") ?(tool_calls = []) ?(tool_results = []) ?(finish_reason = Ai_provider.Finish_reason.Stop) () :
   Ai_core.Generate_text_result.step =
-  { text; reasoning = ""; tool_calls; tool_results; finish_reason; usage = zero_usage }
+  { text; reasoning = ""; tool_calls; tool_results; finish_reason; usage = zero_usage; provider_metadata = None }
 
 let mk_tool_call ~id ~name ~args : Ai_core.Generate_text_result.tool_call =
   { tool_call_id = id; tool_name = name; args }
@@ -3073,7 +3075,7 @@ let test_cached_input_provider_options_marks_ephemeral () =
   let po = Agent_runner.cached_input_provider_options in
   match Ai_provider_anthropic.Cache_control_options.get_cache_control po with
   | None -> fail "expected cache_control to be set on cached_input_provider_options"
-  | Some { cache_type = Ephemeral } -> ()
+  | Some { cache_type = Ephemeral; _ } -> ()
 
 let () =
   run "reviewotron"

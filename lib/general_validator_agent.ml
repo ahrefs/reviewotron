@@ -34,6 +34,10 @@ A competent engineer should be able to change code in response to the comment. R
 
 Reject low-confidence findings. Reject nitpick or praise severity. Reject suggestion-level findings unless the candidate still names a concrete changed-line defect or a directly actionable correctness improvement.
 
+## Scope Of Your Mandate
+
+You are filtering for noise and groundedness, not re-deriving the technical analysis. If the candidate's claim is internally consistent and grounded in the diff, do not reject it on the grounds that 'a broader change might be needed' or 'this isn't the root cause.' Those are reviewer-level judgments outside your mandate.
+
 ## Common False Positives To Reject
 
 - Naming, formatting, or style preferences.
