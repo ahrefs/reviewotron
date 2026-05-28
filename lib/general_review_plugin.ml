@@ -64,33 +64,29 @@ module Make (AI : Api.Agent_runner) = struct
         Lwt.return ([], [])
       | Ok agent_result ->
         let cost = Cost_tracking.of_agent_result ~agent_name:"general_validator" ~files_fetched:0 agent_result in
-        (match Review_types.validator_output_of_json agent_result.output with
-        | output ->
-          (* The validator schema guarantees one result per candidate in order,
-             so pair positionally. Falling back to (path, line, message) string
-             equality silently dropped findings whenever the model paraphrased
-             the message field. *)
-          let n_candidates = List.length candidate_findings in
-          let n_results = List.length output.results in
-          (match Int.equal n_candidates n_results with
-          | false ->
-            log#warn "general validator returned %d results for %d candidates; dropping all" n_results n_candidates;
-            Lwt.return ([], [ cost ])
-          | true ->
-            let confirmed =
-              List.filter_map
-                (fun (candidate, (vf : Review_types.validated_finding)) ->
-                  match vf.verdict with
-                  | Confirmed -> Some candidate
-                  | Rejected ->
-                    log#info "general validator rejected %s:%d: %s" vf.finding.path vf.finding.line vf.evidence_notes;
-                    None)
-                (List.combine candidate_findings output.results)
-            in
-            Lwt.return (confirmed, [ cost ]))
-        | exception exn ->
-          log#error "failed to parse general validator output: %s" (Exn.str exn);
-          Lwt.return ([], [ cost ])))
+        let output = Review_types.validator_output_of_json agent_result.output in
+        (* The validator schema guarantees one result per candidate in order,
+           so pair positionally. Falling back to (path, line, message) string
+           equality silently dropped findings whenever the model paraphrased
+           the message field. *)
+        let n_candidates = List.length candidate_findings in
+        let n_results = List.length output.results in
+        (match Int.equal n_candidates n_results with
+        | false ->
+          log#warn "general validator returned %d results for %d candidates; dropping all" n_results n_candidates;
+          Lwt.return ([], [ cost ])
+        | true ->
+          let confirmed =
+            List.filter_map
+              (fun (candidate, (vf : Review_types.validated_finding)) ->
+                match vf.verdict with
+                | Confirmed -> Some candidate
+                | Rejected ->
+                  log#info "general validator rejected %s:%d: %s" vf.finding.path vf.finding.line vf.evidence_notes;
+                  None)
+              (List.combine candidate_findings output.results)
+          in
+          Lwt.return (confirmed, [ cost ])))
 
   let run_review ~ctx ~repo_url ~diff_text ~metadata ?debug_dir () =
     let config = Context.get_config ctx ~repo_url in
@@ -104,30 +100,28 @@ module Make (AI : Api.Agent_runner) = struct
     | Error _ as e -> Lwt.return (e, [])
     | Ok agent_result ->
       let cost = Cost_tracking.of_agent_result ~agent_name:"general_review" ~files_fetched:0 agent_result in
-      (match Review_types.review_output_of_json agent_result.output with
-      | review ->
-        let counts = Hashtbl.create 8 in
-        List.iter
-          (fun (f : Review_types.finding) ->
-            let key = Review_types.finding_category_to_string f.category in
-            let n = try Hashtbl.find counts key with Not_found -> 0 in
-            Hashtbl.replace counts key (n + 1))
-          review.findings;
-        let dist =
-          Hashtbl.fold (fun k v acc -> (k, v) :: acc) counts []
-          |> List.sort (fun (a, _) (b, _) -> String.compare a b)
-          |> List.map (fun (k, v) -> Printf.sprintf "%s=%d" k v)
-          |> String.concat " "
-        in
-        log#info "review agent: %d findings (%s), summary length %d" (List.length review.findings) dist
-          (String.length review.summary);
-        let candidates = filter_candidates ~security_covered_elsewhere review.findings in
-        let%lwt confirmed, validator_costs =
-          run_validator ~ctx ~repo_url ~diff_text ~candidate_findings:candidates ?debug_dir ()
-        in
-        log#info "general validator: %d/%d candidates confirmed" (List.length confirmed) (List.length candidates);
-        Lwt.return (Ok { review with findings = confirmed }, cost :: validator_costs)
-      | exception exn -> Lwt.return (Error (Printf.sprintf "failed to parse review output: %s" (Exn.str exn)), [ cost ]))
+      let review = Review_types.review_output_of_json agent_result.output in
+      let counts = Hashtbl.create 8 in
+      List.iter
+        (fun (f : Review_types.finding) ->
+          let key = Review_types.finding_category_to_string f.category in
+          let n = try Hashtbl.find counts key with Not_found -> 0 in
+          Hashtbl.replace counts key (n + 1))
+        review.findings;
+      let dist =
+        Hashtbl.fold (fun k v acc -> (k, v) :: acc) counts []
+        |> List.sort (fun (a, _) (b, _) -> String.compare a b)
+        |> List.map (fun (k, v) -> Printf.sprintf "%s=%d" k v)
+        |> String.concat " "
+      in
+      log#info "review agent: %d findings (%s), summary length %d" (List.length review.findings) dist
+        (String.length review.summary);
+      let candidates = filter_candidates ~security_covered_elsewhere review.findings in
+      let%lwt confirmed, validator_costs =
+        run_validator ~ctx ~repo_url ~diff_text ~candidate_findings:candidates ?debug_dir ()
+      in
+      log#info "general validator: %d/%d candidates confirmed" (List.length confirmed) (List.length candidates);
+      Lwt.return (Ok { review with findings = confirmed }, cost :: validator_costs)
 
   let run ~ctx ~repo_url ~diff:_ ~diff_text ~metadata =
     let%lwt result, costs = run_review ~ctx ~repo_url ~diff_text ~metadata () in

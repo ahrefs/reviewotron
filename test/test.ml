@@ -1188,7 +1188,7 @@ let test_security_should_analyze_below_threshold_in_config () =
 
 let test_security_should_analyze_below_threshold_not_in_config () =
   let security_config = { Config_types.default_security_plugin_config with vuln_classes = [ Xss; Ssrf ] } in
-  (* Disabled classes never trigger, even if confidence is low or high. *)
+  (* Classes that appear in neither vuln_classes nor always_analyze_vuln_classes never trigger. *)
   let low_injection = make_triage_signal ~vuln_class:Injection ~confidence:Low in
   (check bool) "Low disabled class" false (Security_review_plugin.should_analyze ~security_config low_injection);
   let high_injection = make_triage_signal ~vuln_class:Injection ~confidence:High in
@@ -1197,6 +1197,23 @@ let test_security_should_analyze_below_threshold_not_in_config () =
   let low_xss = make_triage_signal ~vuln_class:Xss ~confidence:Low in
   (check bool) "Low enabled class below threshold" false
     (Security_review_plugin.should_analyze ~security_config low_xss)
+
+let test_security_always_analyze_implies_enabled () =
+  (* A class listed only in always_analyze_vuln_classes (absent from vuln_classes)
+     must still trigger — otherwise the override is silently dead. *)
+  let security_config =
+    {
+      Config_types.default_security_plugin_config with
+      vuln_classes = [ Xss ];
+      always_analyze_vuln_classes = [ Injection ];
+    }
+  in
+  let low_injection = make_triage_signal ~vuln_class:Injection ~confidence:Low in
+  (check bool) "Low always_analyze-only class triggers" true
+    (Security_review_plugin.should_analyze ~security_config low_injection);
+  let high_injection = make_triage_signal ~vuln_class:Injection ~confidence:High in
+  (check bool) "High always_analyze-only class triggers" true
+    (Security_review_plugin.should_analyze ~security_config high_injection)
 
 let test_security_should_analyze_high_threshold () =
   let security_config = { Config_types.default_security_plugin_config with confidence_threshold = High } in
@@ -3132,6 +3149,7 @@ let () =
             test_security_should_analyze_below_threshold_in_config;
           test_case "should analyze below threshold not in config" `Quick
             test_security_should_analyze_below_threshold_not_in_config;
+          test_case "always_analyze implies enabled" `Quick test_security_always_analyze_implies_enabled;
           test_case "should analyze high threshold" `Quick test_security_should_analyze_high_threshold;
           test_case "should analyze high threshold restricted" `Quick
             test_security_should_analyze_high_threshold_restricted;

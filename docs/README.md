@@ -271,7 +271,7 @@ Each repo can have a `.reviewotron.json` file in its root. This is fetched from 
 |-------|---------|-------------|
 | `enabled` | `false` | Enable/disable security analysis. |
 | `vuln_classes` | All 6 classes | Which vulnerability types to scan for. |
-| `always_analyze_vuln_classes` | `[]` | Enabled vulnerability classes that bypass `confidence_threshold`. Use sparingly for high-risk repos or temporarily while tuning recall. |
+| `always_analyze_vuln_classes` | `[]` | Vulnerability classes that bypass `confidence_threshold`. Classes listed here are implicitly enabled even if absent from `vuln_classes`. Use sparingly for high-risk repos or temporarily while tuning recall. |
 | `triage_model_tier` | `"fast"` | Model tier for the triage agent. |
 | `analysis_model_tier` | `"standard"` | Model tier for per-class analysis agents. |
 | `validator_model_tier` | `"standard"` | Model tier for the adversarial validator. |
@@ -320,7 +320,7 @@ When the security plugin is enabled, every diff goes through a multi-agent pipel
 
 Scans the diff for security-relevant patterns and classifies them by vulnerability type. This is intentionally biased toward **over-flagging** — it's cheap to run an analysis agent that finds nothing, costly to miss a real issue.
 
-The triage agent outputs signals with confidence levels (`high`, `medium`, `low`). The `confidence_threshold` config controls which signals proceed to analysis for enabled vulnerability classes. `always_analyze_vuln_classes` is the explicit override for enabled classes that should bypass the threshold.
+The triage agent outputs signals with confidence levels (`high`, `medium`, `low`). The `confidence_threshold` config controls which signals proceed to analysis for enabled vulnerability classes. `always_analyze_vuln_classes` is the explicit override that bypasses the threshold; classes listed there are implicitly enabled even if absent from `vuln_classes`.
 
 ### 2. Analysis (Sonnet, per vulnerability class, parallel)
 
