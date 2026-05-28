@@ -47,6 +47,7 @@ Reject low-confidence findings. Reject nitpick or praise severity. Reject sugges
 ## Output Instructions
 
 Produce a JSON object matching the schema. The `results` array must contain one entry per candidate finding. Each entry includes:
+- `candidate_id`: the exact integer shown in the candidate's `Candidate ID` field.
 - `finding`: the original candidate finding object, reproduced exactly as provided.
 - `verdict`: one of `"confirmed"` or `"rejected"`.
 - `evidence_notes`: concise reasoning for the verdict. When rejecting, name the failed criterion.
@@ -68,7 +69,8 @@ let config : Agent_runner.agent_config =
 let confidence_name = Review_types.confidence_to_string
 
 let format_finding buf ~index (f : Review_types.finding) =
-  Printf.bprintf buf "### Finding %d\n\n" (index + 1);
+  Printf.bprintf buf "### Candidate %d\n\n" index;
+  Printf.bprintf buf "**Candidate ID:** %d\n" index;
   Printf.bprintf buf "**Location:** %s:%d\n" f.path f.line;
   (match f.end_line with
   | Some end_line -> Printf.bprintf buf "**End line:** %d\n" end_line

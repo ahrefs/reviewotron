@@ -124,8 +124,16 @@ module Github : Api.Github = struct
     log#info "%s" entry;
     Lwt.return (Ok reaction_id)
 
-  let delete_reaction ~ctx:_ ~repo_url ~reaction_id =
-    let entry = Printf.sprintf "[delete_reaction] repo=%s id=%d\n" repo_url reaction_id in
+  let delete_issue_reaction ~ctx:_ ~repo_url ~number ~reaction_id =
+    let entry = Printf.sprintf "[delete_issue_reaction] repo=%s number=%d id=%d\n" repo_url number reaction_id in
+    Buffer.add_string write_log entry;
+    log#info "%s" entry;
+    Lwt.return (Ok ())
+
+  let delete_issue_comment_reaction ~ctx:_ ~repo_url ~comment_id ~reaction_id =
+    let entry =
+      Printf.sprintf "[delete_issue_comment_reaction] repo=%s comment_id=%d id=%d\n" repo_url comment_id reaction_id
+    in
     Buffer.add_string write_log entry;
     log#info "%s" entry;
     Lwt.return (Ok ())
@@ -165,7 +173,17 @@ module Agent_runner : Api.Agent_runner = struct
       }
     in
     Review_types.validator_output_to_json
-      { results = [ { finding; verdict = Review_types.Confirmed; evidence_notes = "mock validator confirmation" } ] }
+      {
+        results =
+          [
+            {
+              candidate_id = 0;
+              finding;
+              verdict = Review_types.Confirmed;
+              evidence_notes = "mock validator confirmation";
+            };
+          ];
+      }
 
   let default_validator_output () =
     let general_review_path =

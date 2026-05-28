@@ -159,8 +159,13 @@ module Github : Api.Github = struct
     let path = Printf.sprintf "/issues/comments/%d/reactions" comment_id in
     create_reaction ~ctx ~repo_url ~path ~content
 
-  let delete_reaction ~ctx ~repo_url ~reaction_id =
-    let path = Printf.sprintf "/reactions/%d" reaction_id in
+  let delete_issue_reaction ~ctx ~repo_url ~number ~reaction_id =
+    let path = Printf.sprintf "/issues/%d/reactions/%d" number reaction_id in
+    let%lwt result = github_delete ~ctx ~repo_url ~path ~accept:"application/vnd.github+json" () in
+    Lwt.return (Result.map (fun (_body : string) -> ()) result)
+
+  let delete_issue_comment_reaction ~ctx ~repo_url ~comment_id ~reaction_id =
+    let path = Printf.sprintf "/issues/comments/%d/reactions/%d" comment_id reaction_id in
     let%lwt result = github_delete ~ctx ~repo_url ~path ~accept:"application/vnd.github+json" () in
     Lwt.return (Result.map (fun (_body : string) -> ()) result)
 end

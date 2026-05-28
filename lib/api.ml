@@ -29,7 +29,11 @@ module type Github = sig
   val create_issue_comment_reaction :
     ctx:Context.t -> repo_url:string -> comment_id:int -> content:string -> (int, string) result Lwt.t
 
-  val delete_reaction : ctx:Context.t -> repo_url:string -> reaction_id:int -> (unit, string) result Lwt.t
+  val delete_issue_reaction :
+    ctx:Context.t -> repo_url:string -> number:int -> reaction_id:int -> (unit, string) result Lwt.t
+
+  val delete_issue_comment_reaction :
+    ctx:Context.t -> repo_url:string -> comment_id:int -> reaction_id:int -> (unit, string) result Lwt.t
 end
 
 module type Agent_runner = sig

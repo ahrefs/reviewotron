@@ -80,6 +80,7 @@ val validation_verdict_of_json : Yojson.Basic.t -> validation_verdict
 val validation_verdict_jsonschema : Yojson.Basic.t
 
 type validated_finding = {
+  candidate_id : int;
   finding : finding;
   verdict : validation_verdict;
   evidence_notes : string;

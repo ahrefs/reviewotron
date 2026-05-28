@@ -138,8 +138,12 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
 
   let remove_progress_reaction ~ctx ~repo_url = function
     | None -> Lwt.return_unit
-    | Some { reaction_id; _ } ->
-      let%lwt result = GH.delete_reaction ~ctx ~repo_url ~reaction_id in
+    | Some { target; reaction_id } ->
+      let%lwt result =
+        match target with
+        | Pull_request number -> GH.delete_issue_reaction ~ctx ~repo_url ~number ~reaction_id
+        | Issue_comment comment_id -> GH.delete_issue_comment_reaction ~ctx ~repo_url ~comment_id ~reaction_id
+      in
       (match result with
       | Ok () -> Lwt.return_unit
       | Error msg ->

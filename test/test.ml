@@ -1480,7 +1480,7 @@ let test_pr_review_e2e () =
   Lwt_main.run (R_test.process_event ctx ~event);
   let write_log = Api_local.get_write_log () in
   let eyes_pos = CCString.find ~sub:"[create_issue_reaction]" write_log in
-  let delete_pos = CCString.find ~sub:"[delete_reaction]" write_log in
+  let delete_pos = CCString.find ~sub:"[delete_issue_reaction]" write_log in
   let review_pos = CCString.find ~sub:"[create_pr_review]" write_log in
   (check bool) "progress reaction added" true (eyes_pos >= 0);
   (check bool) "progress reaction removed before review" true (delete_pos > eyes_pos && review_pos > delete_pos);
@@ -1546,7 +1546,7 @@ let test_comment_trigger_reviews_pr () =
   Lwt_main.run (R_test.process_event ctx ~event);
   let write_log = Api_local.get_write_log () in
   let eyes_pos = CCString.find ~sub:"[create_issue_comment_reaction]" write_log in
-  let delete_pos = CCString.find ~sub:"[delete_reaction]" write_log in
+  let delete_pos = CCString.find ~sub:"[delete_issue_comment_reaction]" write_log in
   let review_pos = CCString.find ~sub:"[create_pr_review]" write_log in
   (check bool) "progress reaction added to trigger comment" true (eyes_pos >= 0);
   (check bool) "progress reaction removed before review" true (delete_pos > eyes_pos && review_pos > delete_pos);
@@ -1566,7 +1566,8 @@ let test_comment_trigger_quiet_success_reacts () =
     (contains_sub
        ~sub:"[create_issue_comment_reaction] repo=https://github.com/org/monorepo comment_id=9001 content=eyes"
        write_log);
-  (check bool) "progress reaction removed" true (contains_sub ~sub:"[delete_reaction]" write_log);
+  (check bool) "progress reaction removed" true
+    (contains_sub ~sub:"[delete_issue_comment_reaction] repo=https://github.com/org/monorepo comment_id=9001" write_log);
   (check bool) "quiet success reaction added to trigger comment" true
     (contains_sub
        ~sub:"[create_issue_comment_reaction] repo=https://github.com/org/monorepo comment_id=9001 content=+1"
@@ -1725,7 +1726,8 @@ let test_pr_empty_findings_review () =
   Lwt_main.run (R_test.process_event ctx ~event);
   let write_log = Api_local.get_write_log () in
   (check bool) "progress reaction added" true (contains_sub ~sub:"[create_issue_reaction]" write_log);
-  (check bool) "progress reaction removed" true (contains_sub ~sub:"[delete_reaction]" write_log);
+  (check bool) "progress reaction removed" true
+    (contains_sub ~sub:"[delete_issue_reaction] repo=https://github.com/org/monorepo number=42" write_log);
   (check bool) "quiet success reaction added" true
     (contains_sub ~sub:"[create_issue_reaction] repo=https://github.com/org/monorepo number=42 content=+1" write_log);
   (check bool) "no PR review when there is nothing to add" false (contains_sub ~sub:"[create_pr_review]" write_log);
@@ -2928,20 +2930,26 @@ let process_finding_message =
 
 let process_finding_fix = "match process new_value with\n| exception exn -> log_error exn; 0\n| result -> result"
 
-let validator_output ~verdict ~severity ~suggested_fix =
+let validator_output ?(candidate_id = 0) ~verdict ~severity ~suggested_fix () =
   let finding =
     mk_finding ~path:"src/main.ml" ~line:14 ~severity ~category:Review_types.Error_handling
       ~message:process_finding_message ~suggested_fix ()
   in
   Review_types.validator_output_to_json
-    { results = [ { finding; verdict; evidence_notes = "validator fixture decision" } ] }
+    { results = [ { candidate_id; finding; verdict; evidence_notes = "validator fixture decision" } ] }
 
 let validator_echoes_damaged_confirmed_finding =
-  validator_output ~verdict:Review_types.Confirmed ~severity:Review_types.Suggestion ~suggested_fix:None
+  validator_output ~verdict:Review_types.Confirmed ~severity:Review_types.Suggestion ~suggested_fix:None ()
 
 let validator_rejects_process_finding =
   validator_output ~verdict:Review_types.Rejected ~severity:Review_types.Warning
-    ~suggested_fix:(Some process_finding_fix)
+    ~suggested_fix:(Some process_finding_fix) ()
+
+let review_output_with_findings findings =
+  Review_types.review_output_to_json
+    { summary = "review fixture summary"; findings; overall_assessment = "review fixture assessment" }
+
+let validator_output_with_results results = Review_types.validator_output_to_json { results }
 
 let run_general_plugin_with_outputs outputs =
   Test_helpers.reset_test_state ();
@@ -2983,6 +2991,66 @@ let test_general_review_validator_rejection_drops_finding () =
   match result with
   | Error msg -> fail msg
   | Ok review -> (check int) "validator rejection suppresses general finding" 0 (List.length review.findings)
+
+let test_general_review_matches_reordered_validator_results_by_id () =
+  let first =
+    mk_finding ~path:"src/main.ml" ~line:14 ~severity:Review_types.Warning ~category:Review_types.Error_handling
+      ~message:"first actionable issue" ~suggested_fix:(Some process_finding_fix) ()
+  in
+  let second =
+    mk_finding ~path:"src/main.ml" ~line:24 ~severity:Review_types.Warning ~category:Review_types.Logic
+      ~message:"second actionable issue" ~suggested_fix:None ()
+  in
+  let validator_output =
+    validator_output_with_results
+      [
+        { candidate_id = 1; finding = second; verdict = Review_types.Rejected; evidence_notes = "second rejected" };
+        { candidate_id = 0; finding = first; verdict = Review_types.Confirmed; evidence_notes = "first confirmed" };
+      ]
+  in
+  let result, _costs =
+    run_general_plugin_with_outputs
+      [ "general_review", review_output_with_findings [ first; second ]; "general_validator", validator_output ]
+  in
+  match result with
+  | Error msg -> fail msg
+  | Ok review ->
+    (check int) "only confirmed finding remains" 1 (List.length review.findings);
+    (match review.findings with
+    | [ finding ] -> (check string) "matched by candidate_id" first.message finding.message
+    | [] | _ :: _ :: _ -> fail "expected exactly one validated finding")
+
+let test_general_review_validator_failure_is_error () =
+  let result, costs =
+    run_general_plugin_with_outputs [ "general_review", read_json "mock_api_responses/claude/review_response.json" ]
+  in
+  (check bool) "general review cost retained" true
+    (List.exists (fun (c : Cost_tracking.agent_cost) -> String.equal c.agent_name "general_review") costs);
+  match result with
+  | Ok _ -> fail "expected validator failure to propagate"
+  | Error msg -> (check bool) "validator failure surfaced" true (contains_sub ~sub:"general validator failed" msg)
+
+let test_general_review_validator_parse_failure_is_error () =
+  let result, costs =
+    run_general_plugin_with_outputs
+      [
+        "general_review", read_json "mock_api_responses/claude/review_response.json";
+        "general_validator", `Assoc [ "not_results", `List [] ];
+      ]
+  in
+  (check bool) "validator cost retained" true
+    (List.exists (fun (c : Cost_tracking.agent_cost) -> String.equal c.agent_name "general_validator") costs);
+  match result with
+  | Ok _ -> fail "expected validator parse failure to propagate"
+  | Error msg -> (check bool) "validator parse failure surfaced" true (contains_sub ~sub:"parse general validator" msg)
+
+let test_general_review_parse_failure_is_error () =
+  let result, costs = run_general_plugin_with_outputs [ "general_review", `Assoc [ "findings", `List [] ] ] in
+  (check bool) "general review cost retained" true
+    (List.exists (fun (c : Cost_tracking.agent_cost) -> String.equal c.agent_name "general_review") costs);
+  match result with
+  | Ok _ -> fail "expected review parse failure to propagate"
+  | Error msg -> (check bool) "review parse failure surfaced" true (contains_sub ~sub:"parse general review" msg)
 
 let test_provider_options_clamps_below_minimum () =
   (* Anthropic requires budget_tokens >= 1024.  When a caller asks for less,
@@ -3185,6 +3253,11 @@ let () =
           test_case "filters low-value candidates and validates" `Quick
             test_general_review_filters_low_value_and_validates;
           test_case "validator rejection drops finding" `Quick test_general_review_validator_rejection_drops_finding;
+          test_case "matches reordered validator results by candidate_id" `Quick
+            test_general_review_matches_reordered_validator_results_by_id;
+          test_case "validator failure propagates" `Quick test_general_review_validator_failure_is_error;
+          test_case "validator parse failure propagates" `Quick test_general_review_validator_parse_failure_is_error;
+          test_case "review parse failure propagates" `Quick test_general_review_parse_failure_is_error;
         ] );
       ( "reviewer_e2e",
         [

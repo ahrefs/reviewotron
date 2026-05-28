@@ -194,6 +194,7 @@ let validation_verdict_jsonschema =
     ]
 
 type validated_finding = {
+  candidate_id : int; [@jsonschema.description "Stable zero-based candidate identifier from the validator input"]
   finding : finding; [@jsonschema.description "The original candidate finding, reproduced exactly"]
   verdict : validation_verdict; [@jsonschema.description "Validator decision: confirmed or rejected"]
   evidence_notes : string; [@jsonschema.description "Validator rationale for the decision"]
