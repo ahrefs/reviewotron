@@ -209,7 +209,11 @@ type validator_output = {
 (** {2 Review output} *)
 
 type review_output = {
-  summary : string; [@jsonschema.description "High-level summary of the review (2-4 sentences)"]
+  summary : string;
+     [@jsonschema.description
+       "Markdown bullet list of non-finding observations worth flagging that did not become inline findings. Empty \
+        string if there are none. Do not mention inline findings at all — not their count, not a preview, not a \
+        pointer. Do not include a headline, lead-in, or framing sentence."]
   findings : finding list; [@jsonschema.description "List of inline findings to post on changed files and lines"]
   overall_assessment : string; [@json.default ""] [@jsonschema.description "Brief overall quality assessment"]
 }

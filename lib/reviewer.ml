@@ -510,7 +510,10 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
     | true ->
       let review_body =
         match general_result with
-        | Some review -> review.summary
+        | Some review ->
+          (match String.trim review.summary with
+          | "" -> ":robot: **REVIEW**"
+          | summary -> Printf.sprintf ":robot: **REVIEW**\n\nMinor:\n%s" summary)
         | None ->
           log#error "review failed for PR #%d: no review output produced" number;
           (match findings with
@@ -526,6 +529,8 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
       let review_body =
         if config.show_review_cost then review_body ^ Cost_tracking.format_footer review_costs else review_body
       in
+      let short_sha = if String.length head_sha >= 7 then String.sub head_sha 0 7 else head_sha in
+      let review_body = Printf.sprintf "%s\n\n**Reviewed commit:** `%s`" review_body short_sha in
       let review_req = Github_types.{ commit_id = Some head_sha; body = review_body; event = Comment; comments } in
       let%lwt () = finish_progress_reaction ~ctx ~repo_url progress ~quiet_success:false in
       let%lwt post_result =

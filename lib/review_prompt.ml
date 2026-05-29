@@ -79,7 +79,9 @@ Do NOT emit inline findings for:
 - Behavior that existed before this PR and is not made worse or newly reachable by the changed lines.
 - Observations that require "might", "could", "possibly", or "seems" to be honest.
 
-If the feedback is useful but not a defect, put it in `summary` or `overall_assessment`, not in `findings`. Inline findings are reserved for concrete, actionable defects.|}
+If the feedback is useful but not a defect, put it in `summary` or `overall_assessment`, not in `findings`. Inline findings are reserved for concrete, actionable defects.
+
+The `summary` is ONLY a markdown bullet list of non-finding observations worth flagging that did not become inline findings. No headline, no lead-in, no framing sentence. If there are no such observations, `summary` MUST be an empty string. The `summary` MUST NOT reference inline findings in any form: no count, no preview, no "see below", no "detailed in the inline comments". Inline findings stand alone where they are anchored.|}
 
 let calibration =
   {|## Severity And Confidence Calibration
