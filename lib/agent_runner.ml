@@ -262,8 +262,7 @@ let run_agent ~model ?tools ?(max_retries = 2) ?debug_dir ~config ~input () =
      cache breakpoint on the floor. *)
   let initial_messages =
     [
-      Ai_provider.Prompt.User
-        { content = [ Text { text = input; provider_options = cached_input_provider_options } ] };
+      Ai_provider.Prompt.User { content = [ Text { text = input; provider_options = cached_input_provider_options } ] };
     ]
   in
   try%lwt

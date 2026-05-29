@@ -224,6 +224,16 @@ type commit_comment_req = {
 }
 [@@deriving json]
 
+(** {2 Reactions} *)
+
+type reaction_req = { content : string } [@@deriving json]
+
+type reaction = {
+  id : int;
+  content : string;
+}
+[@@deriving json]
+
 (** {2 Webhook envelope} *)
 
 type webhook_envelope = { repository : repository } [@@deriving json]

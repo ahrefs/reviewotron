@@ -7,6 +7,10 @@
       "severity": "warning",
       "category": "security",
       "message": "The webhook handler processes the request body without any validation or signature verification. This could allow unauthorized webhook deliveries.",
+      "failure_scenario": "An attacker can send an unsigned webhook payload to the new handler and have it processed as trusted input.",
+      "evidence_snippet": "process_webhook ~ctx body",
+      "why_now": "This PR adds the webhook handler path, so request authentication needs to be enforced at the new entry point.",
+      "confidence": "high",
       "suggested_fix": "let body = Request.body request in\nmatch verify_signature ~ctx body with\n| Ok () -> process_webhook ~ctx body\n| Error _ -> Response.json `Unauthorized {|{\"error\": \"invalid signature\"}|}"
     },
     {
@@ -14,14 +18,22 @@
       "line": 15,
       "severity": "suggestion",
       "category": "style",
-      "message": "Consider using Stre.shorten from Devkit instead of a hand-rolled truncate function."
+      "message": "Consider using Stre.shorten from Devkit instead of a hand-rolled truncate function.",
+      "failure_scenario": "",
+      "evidence_snippet": "let truncate",
+      "why_now": "This is style feedback only.",
+      "confidence": "low"
     },
     {
       "path": "backend/lib/string_utils.ml",
       "line": 12,
       "severity": "praise",
       "category": "quality",
-      "message": "Clean implementation of is_blank with good use of String.trim."
+      "message": "Clean implementation of is_blank with good use of String.trim.",
+      "failure_scenario": "",
+      "evidence_snippet": "String.trim",
+      "why_now": "This is praise only.",
+      "confidence": "low"
     }
   ],
   "overall_assessment": "Solid additions. The main concern is the missing webhook signature verification in the new endpoint."

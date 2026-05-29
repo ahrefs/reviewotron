@@ -3,6 +3,9 @@ open Reviewotron_lib
 open Alcotest
 
 let read_file path = Std.input_file ~bin:true path
+let read_json path = Melange_json.of_string (read_file path)
+
+let contains_sub ~sub s = CCString.find ~sub s >= 0
 
 (* Default-off auto-review flags mean every test that wants the review pipeline
    to actually run must opt in explicitly. The shared security config fixtures
@@ -131,6 +134,8 @@ let test_config_review_plugins_defaults () =
   (check bool) "general prompt override" true (Option.is_none config.review_plugins.general.system_prompt_override);
   (check bool) "security disabled by default" false config.review_plugins.security.enabled;
   (check int) "vuln_classes count" 6 (List.length config.review_plugins.security.vuln_classes);
+  (check int) "always_analyze_vuln_classes default empty" 0
+    (List.length config.review_plugins.security.always_analyze_vuln_classes);
   (check int) "memory_max_tokens" 5000 config.review_plugins.security.memory_max_tokens;
   (check bool) "show_review_cost" false config.show_review_cost
 
@@ -143,6 +148,7 @@ let test_config_review_plugins_explicit () =
       "security": {
         "enabled": true,
         "vuln_classes": ["injection", "xss"],
+        "always_analyze_vuln_classes": ["xss"],
         "triage_model_tier": "standard",
         "confidence_threshold": "high",
         "memory_max_tokens": 10000
@@ -155,6 +161,7 @@ let test_config_review_plugins_explicit () =
   (check bool) "general disabled" false config.review_plugins.general.enabled;
   (check bool) "security enabled" true config.review_plugins.security.enabled;
   (check int) "vuln_classes count" 2 (List.length config.review_plugins.security.vuln_classes);
+  (check int) "always_analyze count" 1 (List.length config.review_plugins.security.always_analyze_vuln_classes);
   (check int) "memory_max_tokens" 10000 config.review_plugins.security.memory_max_tokens
 
 let test_vuln_class_roundtrip () =
@@ -170,6 +177,7 @@ let test_security_plugin_config_roundtrip () =
     {
       enabled = true;
       vuln_classes = [ Injection; Xss ];
+      always_analyze_vuln_classes = [ Xss ];
       triage_model_tier = Fast;
       analysis_model_tier = Standard;
       validator_model_tier = Strong;
@@ -181,6 +189,7 @@ let test_security_plugin_config_roundtrip () =
   let parsed = Config_types.security_plugin_config_of_json json in
   (check bool) "enabled" true parsed.enabled;
   (check int) "vuln_classes" 2 (List.length parsed.vuln_classes);
+  (check int) "always_analyze_vuln_classes" 1 (List.length parsed.always_analyze_vuln_classes);
   (check int) "memory_max_tokens" 3000 parsed.memory_max_tokens;
   (check string) "confidence" "high" (Config_types.confidence_to_string parsed.confidence_threshold);
   (check string) "validator tier" "strong" (Config_types.model_tier_to_string parsed.validator_model_tier)
@@ -312,6 +321,7 @@ let test_anthropic_structured_output_schemas_compatible () =
   let schemas : (string * Yojson.Basic.t) list =
     [
       "general_review", Review_types.review_output_jsonschema;
+      "general_validator", Review_types.validator_output_jsonschema;
       "security_triage", Security_types.triage_output_jsonschema;
       "security_analysis", Security_types.analysis_output_jsonschema;
       "security_validator", Security_types.validator_output_jsonschema;
@@ -340,7 +350,19 @@ let test_prompt_token_estimation () =
 
 let mk_finding ~path ~line ?(end_line = None) ?(severity = Review_types.Warning) ?(category = Review_types.Security)
   ?(message = "msg") ?(suggested_fix = None) () : Review_types.finding =
-  { path; line; end_line; severity; category; message; suggested_fix }
+  {
+    path;
+    line;
+    end_line;
+    severity;
+    category;
+    message;
+    failure_scenario = "scenario";
+    evidence_snippet = "snippet";
+    why_now = "changed in this PR";
+    confidence = Review_types.Medium;
+    suggested_fix;
+  }
 
 let finding_by_message msg (f : Review_types.finding) = String.equal f.message msg
 
@@ -803,6 +825,10 @@ let test_review_output_roundtrip () =
             severity = Warning;
             category = Error_handling;
             message = "Missing error handling";
+            failure_scenario = "Bad input raises and escapes the caller.";
+            evidence_snippet = "process input";
+            why_now = "The changed call site now invokes process directly.";
+            confidence = Review_types.High;
             suggested_fix = Some "add try/with";
           };
         ];
@@ -1152,19 +1178,42 @@ let test_security_should_analyze_above_threshold () =
   (check bool) "Medium >= Medium threshold" true (Security_review_plugin.should_analyze ~security_config medium_signal)
 
 let test_security_should_analyze_below_threshold_in_config () =
-  let security_config = Config_types.default_security_plugin_config in
-  (* Default config has all vuln_classes. Low signal for a configured class should trigger. *)
+  let security_config =
+    { Config_types.default_security_plugin_config with always_analyze_vuln_classes = [ Injection ] }
+  in
+  (* Low signal for an explicitly always-analyzed enabled class should trigger. *)
   let low_signal = make_triage_signal ~vuln_class:Injection ~confidence:Low in
-  (check bool) "Low in vuln_classes" true (Security_review_plugin.should_analyze ~security_config low_signal)
+  (check bool) "Low in always_analyze_vuln_classes" true
+    (Security_review_plugin.should_analyze ~security_config low_signal)
 
 let test_security_should_analyze_below_threshold_not_in_config () =
   let security_config = { Config_types.default_security_plugin_config with vuln_classes = [ Xss; Ssrf ] } in
-  (* Low confidence for a class NOT in the restricted list should not trigger. *)
+  (* Classes that appear in neither vuln_classes nor always_analyze_vuln_classes never trigger. *)
   let low_injection = make_triage_signal ~vuln_class:Injection ~confidence:Low in
-  (check bool) "Low not in vuln_classes" false (Security_review_plugin.should_analyze ~security_config low_injection);
-  (* But Low for a class that IS in the list should still trigger. *)
+  (check bool) "Low disabled class" false (Security_review_plugin.should_analyze ~security_config low_injection);
+  let high_injection = make_triage_signal ~vuln_class:Injection ~confidence:High in
+  (check bool) "High disabled class" false (Security_review_plugin.should_analyze ~security_config high_injection);
+  (* Low for an enabled class still stays below the threshold unless it is explicitly always-analyzed. *)
   let low_xss = make_triage_signal ~vuln_class:Xss ~confidence:Low in
-  (check bool) "Low in vuln_classes" true (Security_review_plugin.should_analyze ~security_config low_xss)
+  (check bool) "Low enabled class below threshold" false
+    (Security_review_plugin.should_analyze ~security_config low_xss)
+
+let test_security_always_analyze_implies_enabled () =
+  (* A class listed only in always_analyze_vuln_classes (absent from vuln_classes)
+     must still trigger — otherwise the override is silently dead. *)
+  let security_config =
+    {
+      Config_types.default_security_plugin_config with
+      vuln_classes = [ Xss ];
+      always_analyze_vuln_classes = [ Injection ];
+    }
+  in
+  let low_injection = make_triage_signal ~vuln_class:Injection ~confidence:Low in
+  (check bool) "Low always_analyze-only class triggers" true
+    (Security_review_plugin.should_analyze ~security_config low_injection);
+  let high_injection = make_triage_signal ~vuln_class:Injection ~confidence:High in
+  (check bool) "High always_analyze-only class triggers" true
+    (Security_review_plugin.should_analyze ~security_config high_injection)
 
 let test_security_should_analyze_high_threshold () =
   let security_config = { Config_types.default_security_plugin_config with confidence_threshold = High } in
@@ -1172,22 +1221,19 @@ let test_security_should_analyze_high_threshold () =
   let high_signal = make_triage_signal ~vuln_class:Injection ~confidence:High in
   let medium_signal = make_triage_signal ~vuln_class:Injection ~confidence:Medium in
   (check bool) "High >= High threshold" true (Security_review_plugin.should_analyze ~security_config high_signal);
-  (* Medium is below High threshold but Injection is in default vuln_classes. *)
-  (check bool) "Medium < High, but in vuln_classes" true
-    (Security_review_plugin.should_analyze ~security_config medium_signal)
+  (* Medium is below High threshold, even though Injection is enabled. *)
+  (check bool) "Medium < High threshold" false (Security_review_plugin.should_analyze ~security_config medium_signal)
 
 let test_security_should_analyze_high_threshold_restricted () =
   let security_config =
     { Config_types.default_security_plugin_config with confidence_threshold = High; vuln_classes = [ Xss ] }
   in
-  (* Medium confidence for Injection (not in vuln_classes) should not trigger. *)
+  (* Medium confidence for Injection (not enabled) should not trigger. *)
   let medium_injection = make_triage_signal ~vuln_class:Injection ~confidence:Medium in
-  (check bool) "Medium < High, not in vuln_classes" false
-    (Security_review_plugin.should_analyze ~security_config medium_injection);
-  (* High confidence always triggers regardless of vuln_classes. *)
+  (check bool) "Medium disabled class" false (Security_review_plugin.should_analyze ~security_config medium_injection);
+  (* High confidence does not bypass disabled classes. *)
   let high_injection = make_triage_signal ~vuln_class:Injection ~confidence:High in
-  (check bool) "High >= High threshold, even if not in vuln_classes" true
-    (Security_review_plugin.should_analyze ~security_config high_injection)
+  (check bool) "High disabled class" false (Security_review_plugin.should_analyze ~security_config high_injection)
 
 let test_security_should_analyze_low_threshold () =
   let security_config = { Config_types.default_security_plugin_config with confidence_threshold = Low } in
@@ -1433,11 +1479,17 @@ let test_pr_review_e2e () =
   let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
   Lwt_main.run (R_test.process_event ctx ~event);
   let write_log = Api_local.get_write_log () in
-  (check bool) "review posted" true (CCString.find ~sub:"[create_pr_review]" write_log >= 0);
-  (check bool) "correct repo" true (CCString.find ~sub:"repo=https://github.com/org/monorepo" write_log >= 0);
-  (check bool) "correct PR number" true (CCString.find ~sub:"number=42" write_log >= 0);
-  (check bool) "has summary" true (CCString.find ~sub:"The changes look generally good" write_log >= 0);
-  (check bool) "has comments" true (CCString.find ~sub:"error-handling" write_log >= 0)
+  let eyes_pos = CCString.find ~sub:"[create_issue_reaction]" write_log in
+  let delete_pos = CCString.find ~sub:"[delete_issue_reaction]" write_log in
+  let review_pos = CCString.find ~sub:"[create_pr_review]" write_log in
+  (check bool) "progress reaction added" true (eyes_pos >= 0);
+  (check bool) "progress reaction removed before review" true (delete_pos > eyes_pos && review_pos > delete_pos);
+  (check bool) "review posted" true (review_pos >= 0);
+  (check bool) "correct repo" true (contains_sub ~sub:"repo=https://github.com/org/monorepo" write_log);
+  (check bool) "correct PR number" true (contains_sub ~sub:"number=42" write_log);
+  (check bool) "deterministic review body" true (contains_sub ~sub:":robot: **REVIEW**" write_log);
+  (check bool) "publishes agent summary" true (contains_sub ~sub:"The changes look generally good" write_log);
+  (check bool) "has comments" true (contains_sub ~sub:"error-handling" write_log)
 
 let test_pr_skipped_when_draft () =
   Test_helpers.reset_test_state ();
@@ -1492,8 +1544,33 @@ let test_comment_trigger_reviews_pr () =
   let event = Test_helpers.parse_event_exn ~event_type:"issue_comment" ~body:payload in
   Lwt_main.run (R_test.process_event ctx ~event);
   let write_log = Api_local.get_write_log () in
-  (check bool) "review posted via REVIEW comment" true (CCString.find ~sub:"[create_pr_review]" write_log >= 0);
-  (check bool) "uses general review pipeline" true (CCString.find ~sub:"The changes look generally good" write_log >= 0)
+  let eyes_pos = CCString.find ~sub:"[create_issue_comment_reaction]" write_log in
+  let delete_pos = CCString.find ~sub:"[delete_issue_comment_reaction]" write_log in
+  let review_pos = CCString.find ~sub:"[create_pr_review]" write_log in
+  (check bool) "progress reaction added to trigger comment" true (eyes_pos >= 0);
+  (check bool) "progress reaction removed before review" true (delete_pos > eyes_pos && review_pos > delete_pos);
+  (check bool) "review posted via REVIEW comment" true (review_pos >= 0);
+  (check bool) "uses general review pipeline" true (contains_sub ~sub:":robot: **REVIEW**" write_log)
+
+let test_comment_trigger_quiet_success_reacts () =
+  Test_helpers.reset_test_state ();
+  Api_local.set_agent_response_path "mock_api_responses/claude/empty_findings_response.json";
+  let ctx = Test_helpers.make_test_context ~config:comment_trigger_config () in
+  let payload = Test_helpers.make_issue_comment_payload () in
+  let event = Test_helpers.parse_event_exn ~event_type:"issue_comment" ~body:payload in
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let write_log = Api_local.get_write_log () in
+  (check bool) "progress reaction added to trigger comment" true
+    (contains_sub
+       ~sub:"[create_issue_comment_reaction] repo=https://github.com/org/monorepo comment_id=9001 content=eyes"
+       write_log);
+  (check bool) "progress reaction removed" true
+    (contains_sub ~sub:"[delete_issue_comment_reaction] repo=https://github.com/org/monorepo comment_id=9001" write_log);
+  (check bool) "quiet success reaction added to trigger comment" true
+    (contains_sub
+       ~sub:"[create_issue_comment_reaction] repo=https://github.com/org/monorepo comment_id=9001 content=+1"
+       write_log);
+  (check bool) "no PR review when there is nothing to add" false (contains_sub ~sub:"[create_pr_review]" write_log)
 
 let test_comment_trigger_disabled () =
   Test_helpers.reset_test_state ();
@@ -1646,11 +1723,18 @@ let test_pr_empty_findings_review () =
   let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
   Lwt_main.run (R_test.process_event ctx ~event);
   let write_log = Api_local.get_write_log () in
-  (* Review should still be posted with summary only *)
-  (check bool) "review posted" true (CCString.find ~sub:"[create_pr_review]" write_log >= 0);
-  (check bool) "has summary" true (CCString.find ~sub:"The code looks clean" write_log >= 0);
-  (* No inline comments since findings list is empty — ATD omits empty default *)
-  (check bool) "no inline comments" true (CCString.find ~sub:{|"comments":|} write_log < 0)
+  (check bool) "progress reaction added" true (contains_sub ~sub:"[create_issue_reaction]" write_log);
+  (check bool) "progress reaction removed" true
+    (contains_sub ~sub:"[delete_issue_reaction] repo=https://github.com/org/monorepo number=42" write_log);
+  (check bool) "quiet success reaction added" true
+    (contains_sub ~sub:"[create_issue_reaction] repo=https://github.com/org/monorepo number=42 content=+1" write_log);
+  (check bool) "no PR review when there is nothing to add" false (contains_sub ~sub:"[create_pr_review]" write_log);
+  match event with
+  | Github.Pull_request pr ->
+    (check bool) "quiet review recorded in state" true
+      (State.is_pr_reviewed (Context.state ctx) ~repo_url:pr.repository.url ~pr_number:pr.number
+         ~head_sha:pr.pull_request.head.sha)
+  | Github.Push _ | Github.Issue_comment _ | Github.Unknown _ -> fail "expected pull_request event"
 
 let test_pr_large_diff_skipped () =
   Test_helpers.reset_test_state ();
@@ -2224,6 +2308,10 @@ let test_curator_input_never_contains_findings () =
         severity = Critical;
         category = Security;
         message = "SQL injection in query builder";
+        failure_scenario = "Attacker controls SQL text.";
+        evidence_snippet = "ORDER BY ${orderBy}";
+        why_now = "The query builder changed in this PR.";
+        confidence = Review_types.High;
         suggested_fix = None;
       };
       {
@@ -2233,6 +2321,10 @@ let test_curator_input_never_contains_findings () =
         severity = Warning;
         category = Security;
         message = "Missing authz check";
+        failure_scenario = "Authenticated user can access another resource.";
+        evidence_snippet = "get_resource id";
+        why_now = "The route changed in this PR.";
+        confidence = Review_types.Medium;
         suggested_fix = None;
       };
     ]
@@ -2300,7 +2392,7 @@ let test_security_e2e_vulnerable () =
   Lwt_main.run (R_test.process_event ctx ~event);
   let write_log = Api_local.get_write_log () in
   (check bool) "review posted" true (CCString.find ~sub:"[create_pr_review]" write_log >= 0);
-  (check bool) "has general review summary" true (CCString.find ~sub:"The changes look generally good" write_log >= 0);
+  (check bool) "has deterministic review body" true (contains_sub ~sub:":robot: **REVIEW**" write_log);
   (check bool) "has security finding" true (CCString.find ~sub:"**[critical]** security" write_log >= 0);
   (check bool) "has injection description" true
     (CCString.find ~sub:"SQL query string without parameterization" write_log >= 0);
@@ -2320,7 +2412,7 @@ let test_security_e2e_safe () =
   Lwt_main.run (R_test.process_event ctx ~event);
   let write_log = Api_local.get_write_log () in
   (check bool) "review posted" true (CCString.find ~sub:"[create_pr_review]" write_log >= 0);
-  (check bool) "has general review" true (CCString.find ~sub:"The changes look generally good" write_log >= 0);
+  (check bool) "has deterministic review body" true (contains_sub ~sub:":robot: **REVIEW**" write_log);
   (check bool) "no security category" true (CCString.find ~sub:{|"security"|} write_log < 0)
 
 let test_security_e2e_rejected () =
@@ -2338,7 +2430,7 @@ let test_security_e2e_rejected () =
   Lwt_main.run (R_test.process_event ctx ~event);
   let write_log = Api_local.get_write_log () in
   (check bool) "review posted" true (CCString.find ~sub:"[create_pr_review]" write_log >= 0);
-  (check bool) "has general review" true (CCString.find ~sub:"The changes look generally good" write_log >= 0);
+  (check bool) "has deterministic review body" true (contains_sub ~sub:":robot: **REVIEW**" write_log);
   (check bool) "no security findings after rejection" true (CCString.find ~sub:{|"security"|} write_log < 0)
 
 (** Triage occasionally emits [skip_reason: ""] (an empty string) instead of
@@ -2381,7 +2473,7 @@ let test_security_e2e_disabled () =
   Lwt_main.run (R_test.process_event ctx ~event);
   let write_log = Api_local.get_write_log () in
   (check bool) "review posted" true (CCString.find ~sub:"[create_pr_review]" write_log >= 0);
-  (check bool) "has general review" true (CCString.find ~sub:"The changes look generally good" write_log >= 0);
+  (check bool) "has deterministic review body" true (contains_sub ~sub:":robot: **REVIEW**" write_log);
   (check bool) "no security category" true (CCString.find ~sub:{|"security"|} write_log < 0)
 
 (** {2 General review failure robustness tests} *)
@@ -2487,7 +2579,7 @@ let test_pr_security_failure_notice () =
   Lwt_main.run (R_test.process_event ctx ~event);
   let write_log = Api_local.get_write_log () in
   (check bool) "review posted" true (CCString.find ~sub:"[create_pr_review]" write_log >= 0);
-  (check bool) "has general review summary" true (CCString.find ~sub:"The changes look generally good" write_log >= 0);
+  (check bool) "has deterministic review body" true (contains_sub ~sub:":robot: **REVIEW**" write_log);
   (check bool) "has security failure notice" true
     (CCString.find ~sub:"security review plugin encountered an error" write_log >= 0);
   (check bool) "has incompleteness warning" true
@@ -2549,7 +2641,7 @@ let test_pr_review_retry_on_failure () =
   let write_log = Api_local.get_write_log () in
   (* The review should still be posted after the retry *)
   (check bool) "review posted after retry" true (CCString.find ~sub:"[create_pr_review]" write_log >= 0);
-  (check bool) "has summary" true (CCString.find ~sub:"The changes look generally good" write_log >= 0)
+  (check bool) "has deterministic review body" true (contains_sub ~sub:":robot: **REVIEW**" write_log)
 
 let test_commit_comment_retry_on_failure () =
   Test_helpers.reset_test_state ();
@@ -2591,6 +2683,7 @@ let test_write_debug_dump () =
       tool_results = [];
       finish_reason = Ai_provider.Finish_reason.Tool_calls;
       usage = { input_tokens = 0; output_tokens = 0; total_tokens = None };
+      provider_metadata = None;
     }
   in
   let step1 : Ai_core.Generate_text_result.step =
@@ -2601,6 +2694,7 @@ let test_write_debug_dump () =
       tool_results = [];
       finish_reason = Ai_provider.Finish_reason.Stop;
       usage = { input_tokens = 0; output_tokens = 0; total_tokens = None };
+      provider_metadata = None;
     }
   in
   let steps = [ step0; step1 ] in
@@ -2640,7 +2734,7 @@ let zero_usage : Ai_provider.Usage.t = { input_tokens = 0; output_tokens = 0; to
 
 let mk_step ?(text = "") ?(tool_calls = []) ?(tool_results = []) ?(finish_reason = Ai_provider.Finish_reason.Stop) () :
   Ai_core.Generate_text_result.step =
-  { text; reasoning = ""; tool_calls; tool_results; finish_reason; usage = zero_usage }
+  { text; reasoning = ""; tool_calls; tool_results; finish_reason; usage = zero_usage; provider_metadata = None }
 
 let mk_tool_call ~id ~name ~args : Ai_core.Generate_text_result.tool_call =
   { tool_call_id = id; tool_name = name; args }
@@ -2781,11 +2875,11 @@ let test_provider_options_carries_thinking_when_set () =
   match Ai_provider_anthropic.Anthropic_options.of_provider_options po with
   | None -> fail "expected Anthropic options to be present when thinking_budget is set"
   | Some opts ->
-    (match opts.thinking with
-    | None -> fail "expected thinking config to be populated"
-    | Some t ->
-      (check bool) "thinking enabled" true t.enabled;
-      (check int) "thinking budget matches" 4096 (Ai_provider_anthropic.Thinking.to_int t.budget_tokens))
+  match opts.thinking with
+  | None -> fail "expected thinking config to be populated"
+  | Some t ->
+    (check bool) "thinking enabled" true t.enabled;
+    (check int) "thinking budget matches" 4096 (Ai_provider_anthropic.Thinking.to_int t.budget_tokens)
 
 (** The general review agent must opt into Anthropic extended thinking.
     This is what gives the model a real reasoning channel instead of leaking
@@ -2797,6 +2891,160 @@ let test_general_review_agent_config_enables_thinking () =
   | Some n ->
     (check bool) "general_review thinking budget >= 4096" true (n >= 4096);
     (check string) "agent name preserved" "general_review" cfg.name
+
+module General_plugin_agent_runner = struct
+  let outputs : (string * Yojson.Basic.t) list ref = ref []
+  let set_outputs entries = outputs := entries
+
+  let run ~ctx:_ ~repo_url:_ ?model_id:_ ?tools:_ ?debug_dir:_ ~config ~input:_ () =
+    match List.assoc_opt config.Agent_runner.name !outputs with
+    | None -> Lwt.return (Error (Printf.sprintf "missing mock output for %s" config.Agent_runner.name))
+    | Some output ->
+      let usage : Ai_provider.Usage.t = { input_tokens = 0; output_tokens = 0; total_tokens = None } in
+      Lwt.return
+        (Ok
+           Agent_runner.
+             {
+               output;
+               usage;
+               cache_read_input_tokens = 0;
+               cache_creation_input_tokens = 0;
+               steps_count = 1;
+               model_id = "mock";
+             })
+end
+
+module General_plugin_test = General_review_plugin.Make (General_plugin_agent_runner)
+
+let general_plugin_metadata : Review_plugin.review_metadata =
+  { pr_number = 42; pr_title = "Test PR"; pr_description = ""; file_contents = [] }
+
+let process_finding_message =
+  "The `process` function can raise exceptions but the result is used without error handling."
+
+let process_finding_fix = "match process new_value with\n| exception exn -> log_error exn; 0\n| result -> result"
+
+let validator_output ?(candidate_id = 0) ~verdict ~severity ~suggested_fix () =
+  let finding =
+    mk_finding ~path:"src/main.ml" ~line:14 ~severity ~category:Review_types.Error_handling
+      ~message:process_finding_message ~suggested_fix ()
+  in
+  Review_types.validator_output_to_json
+    { results = [ { candidate_id; finding; verdict; evidence_notes = "validator fixture decision" } ] }
+
+let validator_echoes_damaged_confirmed_finding =
+  validator_output ~verdict:Review_types.Confirmed ~severity:Review_types.Suggestion ~suggested_fix:None ()
+
+let validator_rejects_process_finding =
+  validator_output ~verdict:Review_types.Rejected ~severity:Review_types.Warning
+    ~suggested_fix:(Some process_finding_fix) ()
+
+let review_output_with_findings findings =
+  Review_types.review_output_to_json
+    { summary = "review fixture summary"; findings; overall_assessment = "review fixture assessment" }
+
+let validator_output_with_results results = Review_types.validator_output_to_json { results }
+
+let run_general_plugin_with_outputs outputs =
+  Test_helpers.reset_test_state ();
+  General_plugin_agent_runner.set_outputs outputs;
+  let ctx = Test_helpers.make_test_context ~config:Test_helpers.auto_review_enabled_config () in
+  Lwt_main.run
+    (General_plugin_test.run_review ~ctx ~repo_url:"https://github.com/org/repo" ~diff_text:"diff"
+       ~metadata:general_plugin_metadata ())
+
+let test_general_review_filters_low_value_and_validates () =
+  let result, costs =
+    run_general_plugin_with_outputs
+      [
+        "general_review", read_json "mock_api_responses/claude/review_response.json";
+        "general_validator", validator_echoes_damaged_confirmed_finding;
+      ]
+  in
+  match result with
+  | Error msg -> fail msg
+  | Ok review ->
+    (check int) "only validated actionable finding remains" 1 (List.length review.findings);
+    (match review.findings with
+    | [ finding ] ->
+      (check string) "validated finding kept" process_finding_message finding.message;
+      (check string) "keeps original candidate severity" "warning" (Review_types.severity_to_string finding.severity);
+      (check (option string)) "keeps original candidate suggested fix" (Some process_finding_fix) finding.suggested_fix
+    | [] | _ :: _ :: _ -> fail "expected exactly one validated finding");
+    (check bool) "validator cost recorded" true
+      (List.exists (fun (c : Cost_tracking.agent_cost) -> String.equal c.agent_name "general_validator") costs)
+
+let test_general_review_validator_rejection_drops_finding () =
+  let result, _costs =
+    run_general_plugin_with_outputs
+      [
+        "general_review", read_json "mock_api_responses/claude/review_response.json";
+        "general_validator", validator_rejects_process_finding;
+      ]
+  in
+  match result with
+  | Error msg -> fail msg
+  | Ok review -> (check int) "validator rejection suppresses general finding" 0 (List.length review.findings)
+
+let test_general_review_matches_reordered_validator_results_by_id () =
+  let first =
+    mk_finding ~path:"src/main.ml" ~line:14 ~severity:Review_types.Warning ~category:Review_types.Error_handling
+      ~message:"first actionable issue" ~suggested_fix:(Some process_finding_fix) ()
+  in
+  let second =
+    mk_finding ~path:"src/main.ml" ~line:24 ~severity:Review_types.Warning ~category:Review_types.Logic
+      ~message:"second actionable issue" ~suggested_fix:None ()
+  in
+  let validator_output =
+    validator_output_with_results
+      [
+        { candidate_id = 1; finding = second; verdict = Review_types.Rejected; evidence_notes = "second rejected" };
+        { candidate_id = 0; finding = first; verdict = Review_types.Confirmed; evidence_notes = "first confirmed" };
+      ]
+  in
+  let result, _costs =
+    run_general_plugin_with_outputs
+      [ "general_review", review_output_with_findings [ first; second ]; "general_validator", validator_output ]
+  in
+  match result with
+  | Error msg -> fail msg
+  | Ok review ->
+    (check int) "only confirmed finding remains" 1 (List.length review.findings);
+    (match review.findings with
+    | [ finding ] -> (check string) "matched by candidate_id" first.message finding.message
+    | [] | _ :: _ :: _ -> fail "expected exactly one validated finding")
+
+let test_general_review_validator_failure_is_error () =
+  let result, costs =
+    run_general_plugin_with_outputs [ "general_review", read_json "mock_api_responses/claude/review_response.json" ]
+  in
+  (check bool) "general review cost retained" true
+    (List.exists (fun (c : Cost_tracking.agent_cost) -> String.equal c.agent_name "general_review") costs);
+  match result with
+  | Ok _ -> fail "expected validator failure to propagate"
+  | Error msg -> (check bool) "validator failure surfaced" true (contains_sub ~sub:"general validator failed" msg)
+
+let test_general_review_validator_parse_failure_is_error () =
+  let result, costs =
+    run_general_plugin_with_outputs
+      [
+        "general_review", read_json "mock_api_responses/claude/review_response.json";
+        "general_validator", `Assoc [ "not_results", `List [] ];
+      ]
+  in
+  (check bool) "validator cost retained" true
+    (List.exists (fun (c : Cost_tracking.agent_cost) -> String.equal c.agent_name "general_validator") costs);
+  match result with
+  | Ok _ -> fail "expected validator parse failure to propagate"
+  | Error msg -> (check bool) "validator parse failure surfaced" true (contains_sub ~sub:"parse general validator" msg)
+
+let test_general_review_parse_failure_is_error () =
+  let result, costs = run_general_plugin_with_outputs [ "general_review", `Assoc [ "findings", `List [] ] ] in
+  (check bool) "general review cost retained" true
+    (List.exists (fun (c : Cost_tracking.agent_cost) -> String.equal c.agent_name "general_review") costs);
+  match result with
+  | Ok _ -> fail "expected review parse failure to propagate"
+  | Error msg -> (check bool) "review parse failure surfaced" true (contains_sub ~sub:"parse general review" msg)
 
 let test_provider_options_clamps_below_minimum () =
   (* Anthropic requires budget_tokens >= 1024.  When a caller asks for less,
@@ -2819,7 +3067,7 @@ let test_cached_input_provider_options_marks_ephemeral () =
   let po = Agent_runner.cached_input_provider_options in
   match Ai_provider_anthropic.Cache_control_options.get_cache_control po with
   | None -> fail "expected cache_control to be set on cached_input_provider_options"
-  | Some { cache_type = Ephemeral } -> ()
+  | Some { cache_type = Ephemeral; _ } -> ()
 
 let () =
   run "reviewotron"
@@ -2963,6 +3211,7 @@ let () =
             test_security_should_analyze_below_threshold_in_config;
           test_case "should analyze below threshold not in config" `Quick
             test_security_should_analyze_below_threshold_not_in_config;
+          test_case "always_analyze implies enabled" `Quick test_security_always_analyze_implies_enabled;
           test_case "should analyze high threshold" `Quick test_security_should_analyze_high_threshold;
           test_case "should analyze high threshold restricted" `Quick
             test_security_should_analyze_high_threshold_restricted;
@@ -2993,6 +3242,17 @@ let () =
           test_case "shared methodology" `Quick test_analysis_agent_shared_methodology;
           test_case "vuln class sections" `Quick test_analysis_agent_vuln_class_section_all_classes;
         ] );
+      ( "general_review_plugin",
+        [
+          test_case "filters low-value candidates and validates" `Quick
+            test_general_review_filters_low_value_and_validates;
+          test_case "validator rejection drops finding" `Quick test_general_review_validator_rejection_drops_finding;
+          test_case "matches reordered validator results by candidate_id" `Quick
+            test_general_review_matches_reordered_validator_results_by_id;
+          test_case "validator failure propagates" `Quick test_general_review_validator_failure_is_error;
+          test_case "validator parse failure propagates" `Quick test_general_review_validator_parse_failure_is_error;
+          test_case "review parse failure propagates" `Quick test_general_review_parse_failure_is_error;
+        ] );
       ( "reviewer_e2e",
         [
           test_case "PR review end-to-end" `Quick test_pr_review_e2e;
@@ -3004,6 +3264,7 @@ let () =
       ( "comment_trigger",
         [
           test_case "REVIEW comment triggers PR review" `Quick test_comment_trigger_reviews_pr;
+          test_case "REVIEW quiet success reacts without posting" `Quick test_comment_trigger_quiet_success_reacts;
           test_case "REVIEW comment ignored when auto_review_on_comment disabled" `Quick test_comment_trigger_disabled;
           test_case "non-trigger body silently ignored" `Quick test_comment_trigger_non_review_body_silent;
           test_case "REVIEW with extra text does not trigger" `Quick test_comment_trigger_body_with_extra_text;

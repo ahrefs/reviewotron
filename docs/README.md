@@ -35,7 +35,7 @@ For each enabled trigger, the bot:
    - **General review** — Claude analyzes the diff for bugs, style, logic, performance, etc.
    - **Security review** — A multi-agent pipeline scans for vulnerabilities (see [below](#security-review-pipeline))
 7. **Posts results**:
-   - PR events: a single GitHub PR review with inline comments
+   - PR events: a single GitHub PR review with inline comments when findings or errors exist
    - Push events: commit comments for critical/warning findings + a Slack message
    - `REVIEW` comments: same as PR events
 
@@ -61,7 +61,7 @@ GitHub Webhook (POST /github)
     ├─ Merge + deduplicate findings
     │
     └─ Post results
-          ├─ PR → GitHub PR review (inline comments)
+          ├─ PR → GitHub PR review when there is something to report
           └─ Push → commit comments + Slack notification
 ```
 
@@ -69,12 +69,14 @@ GitHub Webhook (POST /github)
 
 | Event | Trigger | Gated by | Output |
 |-------|---------|----------|--------|
-| `pull_request` (opened, reopened, ready_for_review) | PR opened, reopened, or marked ready | `auto_review_pr_open` | GitHub PR review with inline comments |
-| `pull_request` (synchronize) | New commits pushed to a PR | `auto_review_pr_sync` | GitHub PR review with inline comments |
+| `pull_request` (opened, reopened, ready_for_review) | PR opened, reopened, or marked ready | `auto_review_pr_open` | GitHub PR review with inline comments when there is something to report |
+| `pull_request` (synchronize) | New commits pushed to a PR | `auto_review_pr_sync` | GitHub PR review with inline comments when there is something to report |
 | `push` (to `refs/heads/develop`) | Code pushed to develop | `review_pushes_to_develop` | Commit comments + Slack message |
-| `issue_comment` (created, on a PR, body equals `REVIEW`) | Manual trigger via PR comment | `auto_review_on_comment` | GitHub PR review with inline comments |
+| `issue_comment` (created, on a PR, body equals `REVIEW`) | Manual trigger via PR comment | `auto_review_on_comment` | GitHub PR review with inline comments when there is something to report |
 
 The `REVIEW` trigger is exact-match: the comment body must equal the literal string `REVIEW` after trimming whitespace. Anything else (including `REVIEW please` or quoted text) is ignored silently. The bot must have the `pull_request` GitHub App permission and the **Issue comment** webhook event subscribed.
+
+For PR reviews, Reviewotron adds an `eyes` reaction while a review is running. On automatic PR events the reaction is attached to the PR; on manual `REVIEW` comments it is attached to the trigger comment. The `eyes` reaction is removed before posting a review. If the review completes with no findings and no failure notice, no PR review is posted and Reviewotron adds a `+1` reaction instead.
 
 Events are processed asynchronously — the webhook returns `200 accepted` immediately, and the review runs in the background.
 
@@ -223,6 +225,7 @@ Each repo can have a `.reviewotron.json` file in its root. This is fetched from 
     "security": {
       "enabled": false,
       "vuln_classes": ["injection", "xss", "command_injection", "authn", "authz", "ssrf"],
+      "always_analyze_vuln_classes": [],
       "triage_model_tier": "fast",
       "analysis_model_tier": "standard",
       "validator_model_tier": "standard",
@@ -268,10 +271,11 @@ Each repo can have a `.reviewotron.json` file in its root. This is fetched from 
 |-------|---------|-------------|
 | `enabled` | `false` | Enable/disable security analysis. |
 | `vuln_classes` | All 6 classes | Which vulnerability types to scan for. |
+| `always_analyze_vuln_classes` | `[]` | Vulnerability classes that bypass `confidence_threshold`. Classes listed here are implicitly enabled even if absent from `vuln_classes`. Use sparingly for high-risk repos or temporarily while tuning recall. |
 | `triage_model_tier` | `"fast"` | Model tier for the triage agent. |
 | `analysis_model_tier` | `"standard"` | Model tier for per-class analysis agents. |
 | `validator_model_tier` | `"standard"` | Model tier for the adversarial validator. |
-| `confidence_threshold` | `"medium"` | Minimum triage confidence to trigger analysis. `"high"` = only high-confidence signals. `"medium"` = high + medium. `"low"` = all signals. **Note:** signals whose vuln class is explicitly listed in `vuln_classes` always pass through regardless of this threshold. |
+| `confidence_threshold` | `"medium"` | Minimum triage confidence to trigger analysis for enabled classes. `"high"` = only high-confidence signals. `"medium"` = high + medium. `"low"` = all signals. |
 | `memory_max_tokens` | `5000` | Target size limit for the repo's security memory file. |
 
 #### Model Tiers
@@ -316,7 +320,7 @@ When the security plugin is enabled, every diff goes through a multi-agent pipel
 
 Scans the diff for security-relevant patterns and classifies them by vulnerability type. This is intentionally biased toward **over-flagging** — it's cheap to run an analysis agent that finds nothing, costly to miss a real issue.
 
-The triage agent outputs signals with confidence levels (`high`, `medium`, `low`). The `confidence_threshold` config controls which signals proceed to analysis.
+The triage agent outputs signals with confidence levels (`high`, `medium`, `low`). The `confidence_threshold` config controls which signals proceed to analysis for enabled vulnerability classes. `always_analyze_vuln_classes` is the explicit override that bypasses the threshold; classes listed there are implicitly enabled even if absent from `vuln_classes`.
 
 ### 2. Analysis (Sonnet, per vulnerability class, parallel)
 
@@ -547,7 +551,7 @@ Multiple reviews can run concurrently (events are processed via `Lwt.async`). Th
 ### Security findings not appearing
 
 1. Check that `review_plugins.security.enabled` is `true` in `.reviewotron.json` (it is `false` by default)
-2. Check the `confidence_threshold` — `"high"` is very selective. Try `"medium"` or `"low"`
+2. Check the `confidence_threshold` — `"high"` is very selective. Try `"medium"` or `"low"`; for temporary high-recall tuning, add specific enabled classes to `always_analyze_vuln_classes`
 3. Check the logs for `"triage: no actionable signals"` (the diff may not contain security-relevant code)
 4. Check for `"validator rejected"` messages — the finding was detected but rejected as a false positive
 5. Bump `analysis_model_tier` to `"strong"` for complex codebases
@@ -586,7 +590,7 @@ lib/
 
   reviewer.ml             Plugin orchestrator (Make functor)
   review_plugin.ml        Plugin interface type
-  general_review_plugin.ml  General code review (single Claude agent)
+  general_review_plugin.ml  General code review + validation
   security_review_plugin.ml Multi-agent security pipeline
 
   agent_runner.ml         Generic agent execution via ocaml-ai-sdk
@@ -618,4 +622,19 @@ test/
   security_corpus/        Synthetic vulnerable/safe diffs per vuln class
 ```
 
-The codebase uses OCaml functors for testability — `Reviewer.Make` takes `Github`, `Agent_runner`, and `Slack` module implementations, so tests can inject mock versions (`Api_local`) without any HTTP calls.
+The codebase uses OCaml functors for testability - `Reviewer.Make` takes `Github`, `Agent_runner`, and `Slack` module implementations, so tests can inject mock versions (`Api_local`) without any HTTP calls.
+
+### Mock Agent Tests
+
+The default test suite does not call external LLM providers. Tests instantiate plugins with `Api_local.Agent_runner`, which still exercises the production orchestration path but returns deterministic JSON from `test/mock_api_responses/` based on the agent `config.name`.
+
+These mock-agent tests are intended to cover agent plumbing and contracts:
+
+- the expected agents are invoked in order
+- mock JSON parses against the current schemas
+- filtering, validation, deduplication, error handling, and cost tracking behave deterministically
+- accepted/rejected findings are mapped into the final review output correctly
+
+They are not evidence that a prompt is high quality, that confidence is calibrated, or that a real model will find the right issues. Prompt quality should be measured separately with an eval corpus that runs real model calls on labeled diffs. The on-demand security corpus runner is the current pattern for that kind of provider-backed check.
+
+Keep file-based mock responses small and purposeful. Prefer adversarial fixtures that lock down one contract edge, such as a validator confirming a finding while echoing a damaged copy, over large "realistic" model transcripts. When a test only needs plugin-local behavior, prefer a small in-memory fake runner instead of adding another broad JSON fixture.

@@ -66,8 +66,10 @@ let github_request ~ctx ~repo_url ~path ?(accept = "application/json") ?body met
 
 let github_get ~ctx ~repo_url ~path ?accept () = github_request ~ctx ~repo_url ~path ?accept `GET
 
-let github_post ~ctx ~repo_url ~path ~body () =
-  github_request ~ctx ~repo_url ~path ~body:(`Raw ("application/json; charset=utf-8", body)) `POST
+let github_post ~ctx ~repo_url ~path ?accept ~body () =
+  github_request ~ctx ~repo_url ~path ?accept ~body:(`Raw ("application/json; charset=utf-8", body)) `POST
+
+let github_delete ~ctx ~repo_url ~path ?accept () = github_request ~ctx ~repo_url ~path ?accept `DELETE
 
 (** {2 Github module implementation} *)
 
@@ -130,13 +132,41 @@ module Github : Api.Github = struct
   let create_pr_review ~ctx ~repo_url ~number review =
     let path = Printf.sprintf "/pulls/%d/reviews" number in
     let body = Melange_json.to_string (Github_types.create_review_req_to_json review) in
-    let%lwt result = github_post ~ctx ~repo_url ~path ~body () in
+    let%lwt result = github_post ~ctx ~repo_url ~path ~accept:"application/vnd.github+json" ~body () in
     Lwt.return (Result.map (fun (_body : string) -> ()) result)
 
   let create_commit_comment ~ctx ~repo_url ~sha comment =
     let path = Printf.sprintf "/commits/%s/comments" sha in
     let body = Melange_json.to_string (Github_types.commit_comment_req_to_json comment) in
     let%lwt result = github_post ~ctx ~repo_url ~path ~body () in
+    Lwt.return (Result.map (fun (_body : string) -> ()) result)
+
+  let create_reaction ~ctx ~repo_url ~path ~content =
+    let body = Melange_json.to_string (Github_types.reaction_req_to_json { content }) in
+    let%lwt result = github_post ~ctx ~repo_url ~path ~body () in
+    match result with
+    | Error _ as e -> Lwt.return e
+    | Ok body ->
+    match Github_types.reaction_of_json (Melange_json.of_string body) with
+    | reaction -> Lwt.return (Ok reaction.id)
+    | exception exn -> Lwt.return (Error (Printf.sprintf "failed to parse reaction response: %s" (Exn.str exn)))
+
+  let create_issue_reaction ~ctx ~repo_url ~number ~content =
+    let path = Printf.sprintf "/issues/%d/reactions" number in
+    create_reaction ~ctx ~repo_url ~path ~content
+
+  let create_issue_comment_reaction ~ctx ~repo_url ~comment_id ~content =
+    let path = Printf.sprintf "/issues/comments/%d/reactions" comment_id in
+    create_reaction ~ctx ~repo_url ~path ~content
+
+  let delete_issue_reaction ~ctx ~repo_url ~number ~reaction_id =
+    let path = Printf.sprintf "/issues/%d/reactions/%d" number reaction_id in
+    let%lwt result = github_delete ~ctx ~repo_url ~path ~accept:"application/vnd.github+json" () in
+    Lwt.return (Result.map (fun (_body : string) -> ()) result)
+
+  let delete_issue_comment_reaction ~ctx ~repo_url ~comment_id ~reaction_id =
+    let path = Printf.sprintf "/issues/comments/%d/reactions/%d" comment_id reaction_id in
+    let%lwt result = github_delete ~ctx ~repo_url ~path ~accept:"application/vnd.github+json" () in
     Lwt.return (Result.map (fun (_body : string) -> ()) result)
 end
 

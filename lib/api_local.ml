@@ -41,6 +41,9 @@ let fail_next_commit_comment = ref false
 let set_fail_next_commit_comment () = fail_next_commit_comment := true
 let reset_fail_next_commit_comment () = fail_next_commit_comment := false
 
+let next_reaction_id = ref 1
+let reset_reactions () = next_reaction_id := 1
+
 module Github : Api.Github = struct
   let get_config ~ctx:_ ~repo_url:_ = Lwt.return (Ok (Context.default_config ()))
 
@@ -99,27 +102,111 @@ module Github : Api.Github = struct
       log#info "%s" entry;
       Lwt.return (Ok ())
     end
+
+  let create_issue_reaction ~ctx:_ ~repo_url ~number ~content =
+    let reaction_id = !next_reaction_id in
+    next_reaction_id := reaction_id + 1;
+    let entry =
+      Printf.sprintf "[create_issue_reaction] repo=%s number=%d content=%s id=%d\n" repo_url number content reaction_id
+    in
+    Buffer.add_string write_log entry;
+    log#info "%s" entry;
+    Lwt.return (Ok reaction_id)
+
+  let create_issue_comment_reaction ~ctx:_ ~repo_url ~comment_id ~content =
+    let reaction_id = !next_reaction_id in
+    next_reaction_id := reaction_id + 1;
+    let entry =
+      Printf.sprintf "[create_issue_comment_reaction] repo=%s comment_id=%d content=%s id=%d\n" repo_url comment_id
+        content reaction_id
+    in
+    Buffer.add_string write_log entry;
+    log#info "%s" entry;
+    Lwt.return (Ok reaction_id)
+
+  let delete_issue_reaction ~ctx:_ ~repo_url ~number ~reaction_id =
+    let entry = Printf.sprintf "[delete_issue_reaction] repo=%s number=%d id=%d\n" repo_url number reaction_id in
+    Buffer.add_string write_log entry;
+    log#info "%s" entry;
+    Lwt.return (Ok ())
+
+  let delete_issue_comment_reaction ~ctx:_ ~repo_url ~comment_id ~reaction_id =
+    let entry =
+      Printf.sprintf "[delete_issue_comment_reaction] repo=%s comment_id=%d id=%d\n" repo_url comment_id reaction_id
+    in
+    Buffer.add_string write_log entry;
+    log#info "%s" entry;
+    Lwt.return (Ok ())
 end
 
 module Agent_runner : Api.Agent_runner = struct
+  (* Test-only agent runner. This deliberately exercises the same orchestration
+     path as the remote runner while returning deterministic outputs. These
+     outputs prove schema and control-flow contracts, not prompt quality. *)
+  let result output =
+    let usage : Ai_provider.Usage.t = { input_tokens = 0; output_tokens = 0; total_tokens = None } in
+    Ok
+      Agent_runner.
+        {
+          output;
+          usage;
+          cache_read_input_tokens = 0;
+          cache_creation_input_tokens = 0;
+          steps_count = 1;
+          model_id = "mock";
+        }
+
+  let validator_output ~path ~line ~severity ~category ~message =
+    let finding : Review_types.finding =
+      {
+        path;
+        line;
+        end_line = None;
+        severity;
+        category;
+        message;
+        failure_scenario = "mock validator scenario";
+        evidence_snippet = "mock validator evidence";
+        why_now = "mock validator why_now";
+        confidence = Review_types.High;
+        suggested_fix = None;
+      }
+    in
+    Review_types.validator_output_to_json
+      {
+        results =
+          [
+            {
+              candidate_id = 0;
+              finding;
+              verdict = Review_types.Confirmed;
+              evidence_notes = "mock validator confirmation";
+            };
+          ];
+      }
+
+  let default_validator_output () =
+    let general_review_path =
+      Option.default !agent_response_path (List.assoc_opt "general_review" !agent_response_map)
+    in
+    if String.equal general_review_path "mock_api_responses/claude/push_review_response.json" then
+      validator_output ~path:"backend/api/src/request_handler.ml" ~line:15 ~severity:Review_types.Warning
+        ~category:Review_types.Security
+        ~message:
+          "The webhook handler processes the request body without any validation or signature verification. This could \
+           allow unauthorized webhook deliveries."
+    else
+      validator_output ~path:"src/main.ml" ~line:14 ~severity:Review_types.Warning ~category:Review_types.Error_handling
+        ~message:"The `process` function can raise exceptions but the result is used without error handling."
+
   let run ~ctx:_ ~repo_url:_ ?model_id:_ ?tools:_ ?debug_dir:_ ~config ~input:_ () =
-    let path = Option.default !agent_response_path (List.assoc_opt config.Agent_runner.name !agent_response_map) in
-    match read_mock_file path with
-    | Ok json_str ->
-      let output = Melange_json.of_string json_str in
-      let usage : Ai_provider.Usage.t = { input_tokens = 0; output_tokens = 0; total_tokens = None } in
-      Lwt.return
-        (Ok
-           Agent_runner.
-             {
-               output;
-               usage;
-               cache_read_input_tokens = 0;
-               cache_creation_input_tokens = 0;
-               steps_count = 1;
-               model_id = "mock";
-             })
-    | Error msg -> Lwt.return (Error msg)
+    match List.assoc_opt config.Agent_runner.name !agent_response_map, config.Agent_runner.name with
+    | None, "general_validator" -> Lwt.return (result (default_validator_output ()))
+    | path_opt, _ ->
+      let path = Option.default !agent_response_path path_opt in
+      (match read_mock_file path with
+      | Ok json_str -> Lwt.return (result (Melange_json.of_string json_str))
+      | Error msg -> Lwt.return (Error msg))
 end
 
 (** Recorded Slack messages for test assertions. *)

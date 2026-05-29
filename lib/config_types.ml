@@ -45,6 +45,14 @@ let confidence_to_string = function
   | Low -> "low"
 
 let all_confidences = [ High; Medium; Low ]
+
+(** Numeric rank for confidence levels — higher means more confident.
+    Used to compare against a configured threshold. *)
+let confidence_rank = function
+  | High -> 3
+  | Medium -> 2
+  | Low -> 1
+
 let confidence_to_json c = `String (confidence_to_string c)
 
 let confidence_of_json = function
@@ -85,6 +93,7 @@ type general_plugin_config = {
 type security_plugin_config = {
   enabled : bool; [@json.default false]
   vuln_classes : vuln_class list; [@json.default all_vuln_classes]
+  always_analyze_vuln_classes : vuln_class list; [@json.default []]
   triage_model_tier : model_tier; [@json.default Fast]
   analysis_model_tier : model_tier; [@json.default Standard]
   validator_model_tier : model_tier; [@json.default Standard]
@@ -99,6 +108,7 @@ let default_security_plugin_config =
   {
     enabled = false;
     vuln_classes = all_vuln_classes;
+    always_analyze_vuln_classes = [];
     triage_model_tier = Fast;
     analysis_model_tier = Standard;
     validator_model_tier = Standard;

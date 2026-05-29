@@ -3,10 +3,7 @@ open Devkit
 let log = Log.from "security_plugin"
 
 (** Numeric rank for confidence levels — higher means more confident. *)
-let confidence_rank = function
-  | Config_types.High -> 3
-  | Medium -> 2
-  | Low -> 1
+let confidence_rank = Config_types.confidence_rank
 
 (** Compare two vuln_class values for equality.
 
@@ -33,13 +30,17 @@ let agent_model_tier : Config_types.model_tier -> Agent_runner.model_tier = func
 
 (** Determine whether a triage signal should trigger a full analysis agent.
 
-    Signals at or above the configured confidence threshold always trigger
-    analysis. Signals below the threshold only trigger if the vulnerability
-    class is explicitly listed in the repo's [vuln_classes] config. *)
+    A class is enabled if it appears in [vuln_classes] or in
+    [always_analyze_vuln_classes]. Disabled classes never trigger analysis.
+    For enabled classes, signals at or above the configured confidence
+    threshold trigger analysis. Signals below the threshold only trigger if
+    the class is listed in [always_analyze_vuln_classes]. *)
 let should_analyze ~security_config (signal : Security_types.triage_signal) =
   let threshold = security_config.Config_types.confidence_threshold in
-  confidence_rank signal.confidence >= confidence_rank threshold
-  || List.exists (vuln_class_equal signal.vuln_class) security_config.vuln_classes
+  let always_analyze = List.exists (vuln_class_equal signal.vuln_class) security_config.always_analyze_vuln_classes in
+  let enabled = always_analyze || List.exists (vuln_class_equal signal.vuln_class) security_config.vuln_classes in
+  let above_threshold = confidence_rank signal.confidence >= confidence_rank threshold in
+  enabled && (above_threshold || always_analyze)
 
 module Make (GH : Api.Github) (AI : Api.Agent_runner) = struct
   let name = "security"
@@ -58,11 +59,8 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) = struct
       Lwt.return (None, [])
     | Ok agent_result ->
       let cost = Cost_tracking.of_agent_result ~agent_name:"triage" ~files_fetched:0 agent_result in
-      (match Security_types.triage_output_of_json agent_result.output with
-      | triage_output -> Lwt.return (Some triage_output, [ cost ])
-      | exception exn ->
-        log#error "failed to parse triage output: %s" (Exn.str exn);
-        Lwt.return (None, [ cost ]))
+      let triage_output = Security_types.triage_output_of_json agent_result.output in
+      Lwt.return (Some triage_output, [ cost ])
 
   (** Group triage signals by vulnerability class.
 
@@ -107,14 +105,10 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) = struct
       let agent_name = Printf.sprintf "%s_analysis" vc_name in
       let files_fetched = agent_result.steps_count - 1 |> max 0 in
       let cost = Cost_tracking.of_agent_result ~agent_name ~files_fetched agent_result in
-      (match Security_types.analysis_output_of_json agent_result.output with
-      | analysis ->
-        log#info "analysis agent %s: %d findings, %d files examined" vc_name (List.length analysis.findings)
-          (List.length analysis.files_examined);
-        Lwt.return (analysis.findings, [ cost ])
-      | exception exn ->
-        log#error "failed to parse analysis output for %s: %s" vc_name (Exn.str exn);
-        Lwt.return ([], [ cost ]))
+      let analysis = Security_types.analysis_output_of_json agent_result.output in
+      log#info "analysis agent %s: %d findings, %d files examined" vc_name (List.length analysis.findings)
+        (List.length analysis.files_examined);
+      Lwt.return (analysis.findings, [ cost ])
 
   (** Map confidence from a candidate finding to review severity.
 
@@ -222,6 +216,10 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) = struct
       severity = severity_of_confidence f.confidence;
       category = Security;
       message = enrich_message_with_sink ~anchor_kind ~f;
+      failure_scenario = "";
+      evidence_snippet = "";
+      why_now = "";
+      confidence = f.confidence;
       suggested_fix = f.suggested_fix;
     }
 
@@ -243,13 +241,9 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) = struct
     | Ok agent_result ->
       let files_fetched = agent_result.steps_count - 1 |> max 0 in
       let cost = Cost_tracking.of_agent_result ~agent_name:"validator" ~files_fetched agent_result in
-      (match Security_types.validator_output_of_json agent_result.output with
-      | output ->
-        log#info "validator: %d results" (List.length output.results);
-        Lwt.return (output.results, [ cost ])
-      | exception exn ->
-        log#error "failed to parse validator output: %s" (Exn.str exn);
-        Lwt.return ([], [ cost ]))
+      let output = Security_types.validator_output_of_json agent_result.output in
+      log#info "validator: %d results" (List.length output.results);
+      Lwt.return (output.results, [ cost ])
 
   (** Collapse candidate findings that share the same [(sink.path, sink.line)].
 
@@ -457,17 +451,13 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) = struct
       Lwt.return []
     | Ok agent_result ->
       let cost = Cost_tracking.of_agent_result ~agent_name:"memory_curator" ~files_fetched:0 agent_result in
-      (match Security_types.curator_output_of_json agent_result.output with
-      | output ->
-        let estimated = Memory_curator_agent.estimate_tokens output.updated_memory in
-        if estimated > memory_max_tokens then
-          log#warn "curator output exceeds token limit (%d > %d), saving anyway" estimated memory_max_tokens;
-        Security_memory.save ~memory_dir ~repo_url ~content:output.updated_memory;
-        log#info "memory brief updated";
-        Lwt.return [ cost ]
-      | exception exn ->
-        log#error "failed to parse curator output: %s" (Exn.str exn);
-        Lwt.return [ cost ])
+      let output = Security_types.curator_output_of_json agent_result.output in
+      let estimated = Memory_curator_agent.estimate_tokens output.updated_memory in
+      if estimated > memory_max_tokens then
+        log#warn "curator output exceeds token limit (%d > %d), saving anyway" estimated memory_max_tokens;
+      Security_memory.save ~memory_dir ~repo_url ~content:output.updated_memory;
+      log#info "memory brief updated";
+      Lwt.return [ cost ]
 
   let run ~ctx ~repo_url ~diff ~diff_text ~metadata:_ ~debug_dir ~head_sha =
     let config = Context.get_config ctx ~repo_url in
