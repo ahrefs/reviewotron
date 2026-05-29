@@ -570,18 +570,18 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
            etc.).  Ensure the progress reaction is cleared even when the
            pipeline crashes — otherwise the "eyes" reaction is orphaned on the
            PR / comment and the user has no signal that the bot gave up. *)
-        try%lwt
-          let%lwt file_contents = fetch_key_files ~ctx ~repo_url ~diff:filtered_diff ~ref_:(Some head_sha) in
-          let description = CCOption.get_or ~default:"" pr.body in
-          let%lwt (_outcome : pr_review_outcome) =
-            execute_and_post_review ~progress ~ctx ~repo_url ~config ~number ~pr_title:pr.title ~diff_text:filtered_text
-              ~filtered_diff ~file_contents ~description ~head_sha
-          in
-          Lwt.return_unit
-        with exn ->
-          log#error "review pipeline for PR #%d raised: %s" number (Exn.str exn);
-          let%lwt () = remove_progress_reaction ~ctx ~repo_url progress in
-          Lwt.fail exn)
+        (try%lwt
+           let%lwt file_contents = fetch_key_files ~ctx ~repo_url ~diff:filtered_diff ~ref_:(Some head_sha) in
+           let description = CCOption.get_or ~default:"" pr.body in
+           let%lwt (_outcome : pr_review_outcome) =
+             execute_and_post_review ~progress ~ctx ~repo_url ~config ~number ~pr_title:pr.title
+               ~diff_text:filtered_text ~filtered_diff ~file_contents ~description ~head_sha
+           in
+           Lwt.return_unit
+         with exn ->
+           log#error "review pipeline for PR #%d raised: %s" number (Exn.str exn);
+           let%lwt () = remove_progress_reaction ~ctx ~repo_url progress in
+           Lwt.fail exn))
 
   (** Review the PR referenced by an [issue_comment] webhook.
 

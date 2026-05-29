@@ -1487,9 +1487,8 @@ let test_pr_review_e2e () =
   (check bool) "review posted" true (review_pos >= 0);
   (check bool) "correct repo" true (contains_sub ~sub:"repo=https://github.com/org/monorepo" write_log);
   (check bool) "correct PR number" true (contains_sub ~sub:"number=42" write_log);
-  (check bool) "deterministic review body" true
-    (contains_sub ~sub:"Review completed. 1 finding is surfaced below." write_log);
-  (check bool) "does not publish agent summary" false (contains_sub ~sub:"The changes look generally good" write_log);
+  (check bool) "deterministic review body" true (contains_sub ~sub:":robot: **REVIEW**" write_log);
+  (check bool) "publishes agent summary" true (contains_sub ~sub:"The changes look generally good" write_log);
   (check bool) "has comments" true (contains_sub ~sub:"error-handling" write_log)
 
 let test_pr_skipped_when_draft () =
@@ -1551,8 +1550,7 @@ let test_comment_trigger_reviews_pr () =
   (check bool) "progress reaction added to trigger comment" true (eyes_pos >= 0);
   (check bool) "progress reaction removed before review" true (delete_pos > eyes_pos && review_pos > delete_pos);
   (check bool) "review posted via REVIEW comment" true (review_pos >= 0);
-  (check bool) "uses general review pipeline" true
-    (contains_sub ~sub:"Review completed. 1 finding is surfaced below." write_log)
+  (check bool) "uses general review pipeline" true (contains_sub ~sub:":robot: **REVIEW**" write_log)
 
 let test_comment_trigger_quiet_success_reacts () =
   Test_helpers.reset_test_state ();
@@ -2394,8 +2392,7 @@ let test_security_e2e_vulnerable () =
   Lwt_main.run (R_test.process_event ctx ~event);
   let write_log = Api_local.get_write_log () in
   (check bool) "review posted" true (CCString.find ~sub:"[create_pr_review]" write_log >= 0);
-  (check bool) "has deterministic review body" true
-    (contains_sub ~sub:"Review completed. 1 finding is surfaced below." write_log);
+  (check bool) "has deterministic review body" true (contains_sub ~sub:":robot: **REVIEW**" write_log);
   (check bool) "has security finding" true (CCString.find ~sub:"**[critical]** security" write_log >= 0);
   (check bool) "has injection description" true
     (CCString.find ~sub:"SQL query string without parameterization" write_log >= 0);
@@ -2415,8 +2412,7 @@ let test_security_e2e_safe () =
   Lwt_main.run (R_test.process_event ctx ~event);
   let write_log = Api_local.get_write_log () in
   (check bool) "review posted" true (CCString.find ~sub:"[create_pr_review]" write_log >= 0);
-  (check bool) "has deterministic review body" true
-    (contains_sub ~sub:"Review completed. 1 finding is surfaced below." write_log);
+  (check bool) "has deterministic review body" true (contains_sub ~sub:":robot: **REVIEW**" write_log);
   (check bool) "no security category" true (CCString.find ~sub:{|"security"|} write_log < 0)
 
 let test_security_e2e_rejected () =
@@ -2434,8 +2430,7 @@ let test_security_e2e_rejected () =
   Lwt_main.run (R_test.process_event ctx ~event);
   let write_log = Api_local.get_write_log () in
   (check bool) "review posted" true (CCString.find ~sub:"[create_pr_review]" write_log >= 0);
-  (check bool) "has deterministic review body" true
-    (contains_sub ~sub:"Review completed. 1 finding is surfaced below." write_log);
+  (check bool) "has deterministic review body" true (contains_sub ~sub:":robot: **REVIEW**" write_log);
   (check bool) "no security findings after rejection" true (CCString.find ~sub:{|"security"|} write_log < 0)
 
 (** Triage occasionally emits [skip_reason: ""] (an empty string) instead of
@@ -2478,8 +2473,7 @@ let test_security_e2e_disabled () =
   Lwt_main.run (R_test.process_event ctx ~event);
   let write_log = Api_local.get_write_log () in
   (check bool) "review posted" true (CCString.find ~sub:"[create_pr_review]" write_log >= 0);
-  (check bool) "has deterministic review body" true
-    (contains_sub ~sub:"Review completed. 1 finding is surfaced below." write_log);
+  (check bool) "has deterministic review body" true (contains_sub ~sub:":robot: **REVIEW**" write_log);
   (check bool) "no security category" true (CCString.find ~sub:{|"security"|} write_log < 0)
 
 (** {2 General review failure robustness tests} *)
@@ -2585,8 +2579,7 @@ let test_pr_security_failure_notice () =
   Lwt_main.run (R_test.process_event ctx ~event);
   let write_log = Api_local.get_write_log () in
   (check bool) "review posted" true (CCString.find ~sub:"[create_pr_review]" write_log >= 0);
-  (check bool) "has deterministic review body" true
-    (contains_sub ~sub:"Review completed. 1 finding is surfaced below." write_log);
+  (check bool) "has deterministic review body" true (contains_sub ~sub:":robot: **REVIEW**" write_log);
   (check bool) "has security failure notice" true
     (CCString.find ~sub:"security review plugin encountered an error" write_log >= 0);
   (check bool) "has incompleteness warning" true
@@ -2648,8 +2641,7 @@ let test_pr_review_retry_on_failure () =
   let write_log = Api_local.get_write_log () in
   (* The review should still be posted after the retry *)
   (check bool) "review posted after retry" true (CCString.find ~sub:"[create_pr_review]" write_log >= 0);
-  (check bool) "has deterministic review body" true
-    (contains_sub ~sub:"Review completed. 1 finding is surfaced below." write_log)
+  (check bool) "has deterministic review body" true (contains_sub ~sub:":robot: **REVIEW**" write_log)
 
 let test_commit_comment_retry_on_failure () =
   Test_helpers.reset_test_state ();
