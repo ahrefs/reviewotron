@@ -63,6 +63,10 @@ type report = {
   anchor_failed_findings : Review_types.finding list;
   review_costs : Cost_tracking.review_cost list;
   security_error : bool;
+  general_failed : bool;
+    (** [true] when the general review plugin was enabled but produced no
+          output. GitHub publishing uses this to decide whether a no-finding
+          review can stay quiet (reaction only) or must post a failure notice. *)
 }
 
 module Make (_ : Api.Agent_runner) : sig

@@ -98,6 +98,28 @@ let finding_category_jsonschema =
            documentation." );
     ]
 
+(** {2 Review confidence} *)
+
+type confidence = Config_types.confidence =
+  | High
+  | Medium
+  | Low
+
+let confidence_to_string = Config_types.confidence_to_string
+let confidence_to_json = Config_types.confidence_to_json
+let confidence_of_json = Config_types.confidence_of_json
+
+let confidence_jsonschema =
+  `Assoc
+    [
+      "type", `String "string";
+      "enum", `List (List.map (fun c -> `String (Config_types.confidence_to_string c)) Config_types.all_confidences);
+      ( "description",
+        `String
+          "Reviewer confidence. high = exact input/path/outcome are proven; medium = concrete scenario with some \
+           unresolved context; low = suspicious but no concrete failure path." );
+    ]
+
 (** {2 Finding} *)
 
 type finding = {
@@ -120,13 +142,23 @@ type finding = {
        "Category: bug, security, performance, style, logic, error-handling, naming, documentation"]
   message : string;
      [@jsonschema.description
-       "One-sentence summary of the defect and (when useful) the fix. Must read as a finished comment."]
+       "Concise, human-facing description of the defect and (when useful) the fix. Must read as a finished comment."]
   failure_scenario : string;
      [@json.default ""]
      [@jsonschema.description
-       "Concrete failure scenario for machine-readable review output: describe the user/input/state, the execution \
-        path, and the observable breakage or risk. Keep this grounded in evidence from the diff and fetched files; do \
-        not include speculation."]
+       "Concrete user/input/state path that makes the defect observable, including the resulting breakage or risk. \
+        Leave empty only for legacy data; new model output must populate it."]
+  evidence_snippet : string;
+     [@json.default ""]
+     [@jsonschema.description
+       "Exact changed code or smallest relevant snippet that grounds the finding. This is validator input and should \
+        be copied from the diff, not paraphrased."]
+  why_now : string;
+     [@json.default ""]
+     [@jsonschema.description
+       "Why this must be addressed in this PR rather than treated as ambient tech debt. Tie it to the changed line."]
+  confidence : confidence;
+     [@json.default Medium] [@jsonschema.description "Calibrated confidence for this finding: high, medium, or low."]
   suggested_fix : string option;
      [@json.option]
      [@jsonschema.description
@@ -135,10 +167,53 @@ type finding = {
 }
 [@@deriving json, jsonschema] [@@json.allow_extra_fields]
 
+(** {2 General finding validation} *)
+
+type validation_verdict =
+  | Confirmed
+  | Rejected
+
+let validation_verdict_to_string = function
+  | Confirmed -> "confirmed"
+  | Rejected -> "rejected"
+
+let all_validation_verdicts = [ Confirmed; Rejected ]
+let validation_verdict_to_json verdict = `String (validation_verdict_to_string verdict)
+
+let validation_verdict_of_json = function
+  | `String "confirmed" -> Confirmed
+  | `String "rejected" -> Rejected
+  | json -> Melange_json.of_json_error ~json "expected validation_verdict string"
+
+let validation_verdict_jsonschema =
+  `Assoc
+    [
+      "type", `String "string";
+      "enum", `List (List.map (fun v -> `String (validation_verdict_to_string v)) all_validation_verdicts);
+      "description", `String "Validation outcome for a general-review candidate finding.";
+    ]
+
+type validated_finding = {
+  candidate_id : int; [@jsonschema.description "Stable zero-based candidate identifier from the validator input"]
+  finding : finding; [@jsonschema.description "The original candidate finding, reproduced exactly"]
+  verdict : validation_verdict; [@jsonschema.description "Validator decision: confirmed or rejected"]
+  evidence_notes : string; [@jsonschema.description "Validator rationale for the decision"]
+}
+[@@deriving json, jsonschema] [@@json.allow_extra_fields]
+
+type validator_output = {
+  results : validated_finding list; [@jsonschema.description "One validation result per candidate finding"]
+}
+[@@deriving json, jsonschema] [@@json.allow_extra_fields]
+
 (** {2 Review output} *)
 
 type review_output = {
-  summary : string; [@jsonschema.description "High-level summary of the review (2-4 sentences)"]
+  summary : string;
+     [@jsonschema.description
+       "Markdown bullet list of non-finding observations worth flagging that did not become inline findings. Empty \
+        string if there are none. Do not mention inline findings at all — not their count, not a preview, not a \
+        pointer. Do not include a headline, lead-in, or framing sentence."]
   findings : finding list; [@jsonschema.description "List of inline findings to post on changed files and lines"]
   overall_assessment : string; [@json.default ""] [@jsonschema.description "Brief overall quality assessment"]
 }

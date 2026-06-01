@@ -162,6 +162,11 @@ type report = {
   anchor_failed_findings : Review_types.finding list;
   review_costs : Cost_tracking.review_cost list;
   security_error : bool;
+  general_failed : bool;
+    (** [true] when the general review plugin was expected to produce output
+          but failed. Used by GitHub publishing to decide whether a no-finding
+          review can stay quiet (just a reaction) or must still post a failure
+          notice. *)
 }
 
 let surfaces_in_unchanged_section (f : Review_types.finding) =
@@ -196,9 +201,9 @@ let review_body ~number ~general_result ~findings ~unchanged_findings ~anchor_fa
   let body =
     match general_result with
     | Some review ->
-      (match review.Review_types.overall_assessment with
-      | "" -> review.summary
-      | assessment -> Printf.sprintf "%s\n\n**Overall**: %s" review.summary assessment)
+      (match String.trim review.Review_types.summary with
+      | "" -> ":robot: **REVIEW**"
+      | summary -> Printf.sprintf ":robot: **REVIEW**\n\nMinor:\n%s" summary)
     | None ->
       log#error "review failed for PR #%d: no review output produced" number;
       (match findings with
@@ -324,6 +329,7 @@ module Make (AI : Api.Agent_runner) = struct
         ~unchanged_findings ~anchor_failed_findings ~review_costs:plugin_result.review_costs
         ~security_error:plugin_result.security_error ~config:job.config
     in
+    let general_failed = job.config.review_plugins.general.enabled && Option.is_none plugin_result.general_result in
     Lwt.return
       {
         body;
@@ -333,5 +339,6 @@ module Make (AI : Api.Agent_runner) = struct
         anchor_failed_findings;
         review_costs = plugin_result.review_costs;
         security_error = plugin_result.security_error;
+        general_failed;
       }
 end

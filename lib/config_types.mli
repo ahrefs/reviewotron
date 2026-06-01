@@ -27,6 +27,9 @@ type confidence =
 (** All supported confidence levels. *)
 val all_confidences : confidence list
 
+(** Numeric rank for confidence levels — higher means more confident. *)
+val confidence_rank : confidence -> int
+
 val confidence_to_string : confidence -> string
 val confidence_to_json : confidence -> Yojson.Basic.t
 val confidence_of_json : Yojson.Basic.t -> confidence
@@ -59,6 +62,7 @@ val default_general_plugin_config : general_plugin_config
 type security_plugin_config = {
   enabled : bool;
   vuln_classes : vuln_class list;
+  always_analyze_vuln_classes : vuln_class list;
   triage_model_tier : model_tier;
   analysis_model_tier : model_tier;
   validator_model_tier : model_tier;

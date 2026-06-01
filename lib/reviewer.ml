@@ -10,7 +10,25 @@ type finding_source = Review_engine.finding_source =
 
 let deduplicate_findings = Review_engine.deduplicate_findings
 
-module Make (SRC : Api.Review_source) (SNK : Api.Review_sink) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
+(** Where an in-progress / quiet-success reaction is attached. PR-triggered
+    reviews react on the pull request; REVIEW-comment-triggered reviews react on
+    the triggering comment. *)
+type reaction_target =
+  | Pull_request of int
+  | Issue_comment of int
+
+type progress_reaction = {
+  target : reaction_target;
+  reaction_id : int;
+}
+
+module Make
+    (SRC : Api.Review_source)
+    (SNK : Api.Review_sink)
+    (RX : Api.Reactions)
+    (AI : Api.Agent_runner)
+    (SL : Api.Slack) =
+struct
   module Source = Github_source.Make (SRC)
   module Sink = Github_sink.Make (SNK)
   module Engine = Review_engine.Make (AI)
@@ -25,26 +43,115 @@ module Make (SRC : Api.Review_source) (SNK : Api.Review_sink) (AI : Api.Agent_ru
   let finding_to_comment ~diff finding =
     Option.map Github_sink.review_comment_req_of_comment (Review_engine.finding_to_review_comment ~diff finding)
 
-  let run_prepared_pr_review ~ctx (prepared : Github_source.prepared_pr_review) =
+  (* {2 GitHub emoji reactions}
+
+     The review pipeline drops an "eyes" reaction when work starts and clears it
+     when work finishes.  When a review completes with nothing worth posting we
+     leave a "+1" instead of an empty PR review, so the author still gets a
+     signal that the bot ran.  All reaction failures are logged and swallowed —
+     a missing reaction must never abort or fail a review. *)
+
+  let create_reaction ~ctx ~repo_url target ~content =
+    match target with
+    | Pull_request number -> RX.create_issue_reaction ~ctx ~repo_url ~number ~content
+    | Issue_comment comment_id -> RX.create_issue_comment_reaction ~ctx ~repo_url ~comment_id ~content
+
+  let start_progress_reaction ~ctx ~repo_url = function
+    | None -> Lwt.return None
+    | Some target ->
+      let%lwt result = create_reaction ~ctx ~repo_url target ~content:"eyes" in
+      (match result with
+      | Ok reaction_id -> Lwt.return (Some { target; reaction_id })
+      | Error msg ->
+        log#warn "failed to add review progress reaction: %s" msg;
+        Lwt.return None)
+
+  let remove_progress_reaction ~ctx ~repo_url = function
+    | None -> Lwt.return_unit
+    | Some { target; reaction_id } ->
+      let%lwt result =
+        match target with
+        | Pull_request number -> RX.delete_issue_reaction ~ctx ~repo_url ~number ~reaction_id
+        | Issue_comment comment_id -> RX.delete_issue_comment_reaction ~ctx ~repo_url ~comment_id ~reaction_id
+      in
+      (match result with
+      | Ok () -> Lwt.return_unit
+      | Error msg ->
+        log#warn "failed to remove review progress reaction %d: %s" reaction_id msg;
+        Lwt.return_unit)
+
+  let add_quiet_success_reaction ~ctx ~repo_url = function
+    | None -> Lwt.return_unit
+    | Some { target; _ } ->
+      let%lwt result = create_reaction ~ctx ~repo_url target ~content:"+1" in
+      (match result with
+      | Ok _reaction_id -> Lwt.return_unit
+      | Error msg ->
+        log#warn "failed to add quiet-success reaction: %s" msg;
+        Lwt.return_unit)
+
+  let finish_progress_reaction ~ctx ~repo_url progress ~quiet_success =
+    let%lwt () = remove_progress_reaction ~ctx ~repo_url progress in
+    match quiet_success with
+    | true -> add_quiet_success_reaction ~ctx ~repo_url progress
+    | false -> Lwt.return_unit
+
+  (** A report is worth posting as a PR review when it surfaces any inline
+      comment, any out-of-diff finding section, a security-plugin error, or a
+      general-review failure that the author must be told about.  Otherwise the
+      review stays quiet — we acknowledge it with a reaction instead. *)
+  let report_has_surface (report : Review_engine.report) =
+    (match report.comments with
+      | [] -> false
+      | _ :: _ -> true)
+    || (match report.unchanged_findings with
+      | [] -> false
+      | _ :: _ -> true)
+    || (match report.anchor_failed_findings with
+      | [] -> false
+      | _ :: _ -> true)
+    || report.security_error
+    || report.general_failed
+
+  let run_prepared_pr_review ?reaction_target ~ctx (prepared : Github_source.prepared_pr_review) =
     let Github_source.{ number; job; filtered_diff } = prepared in
-    let%lwt report = Engine.run_pr_review ~ctx ~job ~number ~filtered_diff in
-    let%lwt () = Sink.publish_pr_review ~ctx ~job ~number report in
-    let state = Context.state ctx in
-    State.record_pr_review state ~repo_url:job.repo_key ~pr_number:number ~head_sha:job.head_sha
-      ~review_costs:report.review_costs;
-    State.save state;
-    Lwt.return_unit
+    let%lwt progress = start_progress_reaction ~ctx ~repo_url:job.repo_key reaction_target in
+    (* The review pipeline can raise (network errors, SDK schema drift, etc.).
+       Ensure the progress reaction is cleared even when the pipeline crashes —
+       otherwise the "eyes" reaction is orphaned and the author has no signal
+       that the bot gave up. *)
+    try%lwt
+      let%lwt report = Engine.run_pr_review ~ctx ~job ~number ~filtered_diff in
+      let%lwt () =
+        match report_has_surface report with
+        | false ->
+          let%lwt () = finish_progress_reaction ~ctx ~repo_url:job.repo_key progress ~quiet_success:true in
+          log#info "PR #%d (%s): review completed with no findings; not posting a PR review" number job.title;
+          Lwt.return_unit
+        | true ->
+          let%lwt () = finish_progress_reaction ~ctx ~repo_url:job.repo_key progress ~quiet_success:false in
+          Sink.publish_pr_review ~ctx ~job ~number report
+      in
+      let state = Context.state ctx in
+      State.record_pr_review state ~repo_url:job.repo_key ~pr_number:number ~head_sha:job.head_sha
+        ~review_costs:report.review_costs;
+      State.save state;
+      Lwt.return_unit
+    with exn ->
+      log#error "review pipeline for PR #%d raised: %s" number (Exn.str exn);
+      let%lwt () = remove_progress_reaction ~ctx ~repo_url:job.repo_key progress in
+      Lwt.fail exn
 
   let ignore_prepare_error (_ : Github_source.prepare_error) = Lwt.return_unit
 
-  let review_pr ~ctx ~config (pr_notif : Github_types.pr_notification) =
+  let review_pr ?reaction_target ~ctx ~config (pr_notif : Github_types.pr_notification) =
     match%lwt Source.prepare_pr_review ~ctx ~config pr_notif with
-    | Ok prepared -> run_prepared_pr_review ~ctx prepared
+    | Ok prepared -> run_prepared_pr_review ?reaction_target ~ctx prepared
     | Error error -> ignore_prepare_error error
 
-  let review_pr_from_comment ~ctx ~config (n : Github_types.issue_comment_notification) =
+  let review_pr_from_comment ?reaction_target ~ctx ~config (n : Github_types.issue_comment_notification) =
     match%lwt Source.prepare_pr_review_from_comment ~ctx ~config n with
-    | Ok prepared -> run_prepared_pr_review ~ctx prepared
+    | Ok prepared -> run_prepared_pr_review ?reaction_target ~ctx prepared
     | Error error -> ignore_prepare_error error
 
   let review_push ~ctx ~config (push : Github_types.commit_pushed_notification) =
@@ -125,7 +232,7 @@ module Make (SRC : Api.Review_source) (SNK : Api.Review_sink) (AI : Api.Agent_ru
     match event with
     | Github.Pull_request pr ->
       (match Source.pr_skip_reason ~ctx ~config pr with
-      | None -> review_pr ~ctx ~config pr
+      | None -> review_pr ~reaction_target:(Pull_request pr.number) ~ctx ~config pr
       | Some reason ->
         log#info "PR #%d skipped: %s" pr.number reason;
         Lwt.return_unit)
@@ -146,7 +253,7 @@ module Make (SRC : Api.Review_source) (SNK : Api.Review_sink) (AI : Api.Agent_ru
       match Source.comment_skip_reason ~ctx ~config n with
       | None ->
         log#info "REVIEW comment on PR #%d by %s: triggering review" n.issue.number n.sender.login;
-        review_pr_from_comment ~ctx ~config n
+        review_pr_from_comment ~reaction_target:(Issue_comment n.comment.id) ~ctx ~config n
       | Some reason ->
         log#info "REVIEW comment on PR #%d skipped: %s" n.issue.number reason;
         Lwt.return_unit)

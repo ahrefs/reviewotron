@@ -26,9 +26,28 @@ module type Review_sink = sig
     ctx:Context.t -> repo_url:string -> sha:string -> Github_types.commit_comment_req -> (unit, string) result Lwt.t
 end
 
+(** GitHub-specific emoji reactions on PRs and issue comments. Kept separate
+    from {!Review_sink} because reactions have no platform-neutral meaning —
+    only the GitHub publishing path uses them (quiet-review acknowledgement and
+    in-progress signalling). *)
+module type Reactions = sig
+  val create_issue_reaction :
+    ctx:Context.t -> repo_url:string -> number:int -> content:string -> (int, string) result Lwt.t
+
+  val create_issue_comment_reaction :
+    ctx:Context.t -> repo_url:string -> comment_id:int -> content:string -> (int, string) result Lwt.t
+
+  val delete_issue_reaction :
+    ctx:Context.t -> repo_url:string -> number:int -> reaction_id:int -> (unit, string) result Lwt.t
+
+  val delete_issue_comment_reaction :
+    ctx:Context.t -> repo_url:string -> comment_id:int -> reaction_id:int -> (unit, string) result Lwt.t
+end
+
 module type Github = sig
   include Review_source
   include Review_sink
+  include Reactions
 end
 
 module type Agent_runner = sig
