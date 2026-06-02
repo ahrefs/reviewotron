@@ -150,19 +150,39 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
         log#warn "failed to remove review progress reaction %d: %s" reaction_id msg;
         Lwt.return_unit)
 
-  let add_quiet_success_reaction ~ctx ~repo_url = function
+  (** Add a [+1] reaction directly to a [reaction_target] to signal a
+      successful review.  Used both to swap the in-flight "eyes" reaction
+      ({!finish_progress_reaction}) and when a review is a no-op (nothing to
+      review after filtering) and there is no progress reaction to swap.  A
+      no-op when there is no target. *)
+  let add_success_reaction ~ctx ~repo_url = function
     | None -> Lwt.return_unit
-    | Some { target; _ } ->
+    | Some target ->
       let%lwt result = create_reaction ~ctx ~repo_url target ~content:"+1" in
       (match result with
       | Ok _reaction_id -> Lwt.return_unit
       | Error msg ->
-        log#warn "failed to add quiet-success reaction: %s" msg;
+        log#warn "failed to add success reaction: %s" msg;
         Lwt.return_unit)
 
   let finish_progress_reaction ~ctx ~repo_url progress ~quiet_success =
     let%lwt () = remove_progress_reaction ~ctx ~repo_url progress in
-    if quiet_success then add_quiet_success_reaction ~ctx ~repo_url progress else Lwt.return_unit
+    match quiet_success with
+    | false -> Lwt.return_unit
+    | true -> add_success_reaction ~ctx ~repo_url (Option.map (fun { target; _ } -> target) progress)
+
+  (** Post an issue comment to the PR explaining why the review could not run.
+      Retries once on transient failure, mirroring the other post paths. *)
+  let post_review_failure ~ctx ~repo_url ~number failure =
+    let body = Review_failure.to_comment failure in
+    let%lwt result =
+      retry_once ~label:(Printf.sprintf "create_issue_comment PR #%d" number) (fun () ->
+        GH.create_issue_comment ~ctx ~repo_url ~number { body })
+    in
+    (match result with
+    | Ok () -> log#info "posted review-failure comment on PR #%d" number
+    | Error msg -> log#error "failed to post review-failure comment on PR #%d after retry: %s" number msg);
+    Lwt.return_unit
 
   (** Fetch config from the repo and cache it in context. *)
   let fetch_config ~ctx ~repo_url =
@@ -286,11 +306,17 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
   let prepare_diff ~config diff_text =
     let parsed_diff = Diff_parser.parse diff_text in
     let filtered_diff = Diff_parser.filter_paths parsed_diff ~ignored:config.Config_types.ignored_paths in
-    let total_lines = Diff_parser.total_lines filtered_diff in
     match filtered_diff with
     | [] -> Error `Empty
-    | _ when total_lines > config.max_diff_lines -> Error (`Too_large total_lines)
-    | _ -> Ok (filtered_diff, Diff_parser.to_string_annotated filtered_diff)
+    | _ when List.compare_length_with filtered_diff config.max_files > 0 ->
+      Error (`Too_many_files (List.length filtered_diff))
+    | _ ->
+      (* Counting lines folds over the whole diff; defer it past the cheaper
+         file-count check so an over-[max_files] diff isn't fully traversed. *)
+      let total_lines = Diff_parser.total_lines filtered_diff in
+      (match total_lines with
+      | n when n > config.max_diff_lines -> Error (`Too_large n)
+      | _ -> Ok (filtered_diff, Diff_parser.to_string_annotated filtered_diff))
 
   (** Decide whether a finding can be rendered as a multi-line comment.
 
@@ -553,16 +579,23 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
     match diff_result with
     | Error msg ->
       log#error "failed to fetch diff for PR #%d: %s" number msg;
-      Lwt.return_unit
+      post_review_failure ~ctx ~repo_url ~number (Review_failure.classify_fetch_error msg)
     | Ok diff_text ->
       let config = Context.get_config ctx ~repo_url in
       (match prepare_diff ~config diff_text with
       | Error `Empty ->
-        log#info "PR #%d skipped: all files filtered out" number;
-        Lwt.return_unit
+        (* Nothing to review after filtering — a successful no-op, not a
+           failure.  Signal "looked, all good" with a thumbs-up. *)
+        log#info "PR #%d: all files filtered out, nothing to review" number;
+        add_success_reaction ~ctx ~repo_url reaction_target
       | Error (`Too_large total_lines) ->
         log#info "PR #%d skipped: %d diff lines exceeds limit of %d" number total_lines config.max_diff_lines;
-        Lwt.return_unit
+        post_review_failure ~ctx ~repo_url ~number
+          (Review_failure.Too_many_lines { actual = total_lines; limit = config.max_diff_lines })
+      | Error (`Too_many_files file_count) ->
+        log#info "PR #%d skipped: %d files exceeds limit of %d" number file_count config.max_files;
+        post_review_failure ~ctx ~repo_url ~number
+          (Review_failure.Too_many_files { actual = file_count; limit = config.max_files })
       | Ok (filtered_diff, filtered_text) ->
         let head_sha = pr.head.sha in
         let%lwt progress = start_progress_reaction ~ctx ~repo_url reaction_target in
@@ -650,6 +683,10 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
     let repo_url = push.repository.url in
     log#info "reviewing push to %s in %s" push.ref_ push.repository.full_name;
     let%lwt diff_result = GH.get_compare_diff ~ctx ~repo_url ~base:push.before ~head:push.after in
+    (* Unlike the PR path, push failures are not surfaced to the user here:
+       a push has no PR/issue to comment on, only a branch.  We log and drop;
+       the existing Slack failure path (below) covers produced-but-failed
+       reviews. *)
     match diff_result with
     | Error msg ->
       log#error "failed to fetch compare diff for push %s...%s: %s" push.before push.after msg;
@@ -662,6 +699,9 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
         Lwt.return_unit
       | Error (`Too_large total_lines) ->
         log#info "push %s skipped: %d diff lines exceeds limit of %d" push.after total_lines config.max_diff_lines;
+        Lwt.return_unit
+      | Error (`Too_many_files file_count) ->
+        log#info "push %s skipped: %d files exceeds limit of %d" push.after file_count config.max_files;
         Lwt.return_unit
       | Ok (filtered_diff, filtered_text) ->
         let description =

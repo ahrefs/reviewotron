@@ -141,6 +141,12 @@ module Github : Api.Github = struct
     let%lwt result = github_post ~ctx ~repo_url ~path ~body () in
     Lwt.return (Result.map (fun (_body : string) -> ()) result)
 
+  let create_issue_comment ~ctx ~repo_url ~number comment =
+    let path = Printf.sprintf "/issues/%d/comments" number in
+    let body = Melange_json.to_string (Github_types.issue_comment_req_to_json comment) in
+    let%lwt result = github_post ~ctx ~repo_url ~path ~body () in
+    Lwt.return (Result.map (fun (_body : string) -> ()) result)
+
   let create_reaction ~ctx ~repo_url ~path ~content =
     let body = Melange_json.to_string (Github_types.reaction_req_to_json { content }) in
     let%lwt result = github_post ~ctx ~repo_url ~path ~body () in

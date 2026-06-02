@@ -41,6 +41,22 @@ let fail_next_commit_comment = ref false
 let set_fail_next_commit_comment () = fail_next_commit_comment := true
 let reset_fail_next_commit_comment () = fail_next_commit_comment := false
 
+(** When set, the next [create_issue_comment] call returns an error and then
+    resets the flag. Used to test retry-on-failure logic. *)
+let fail_next_issue_comment = ref false
+
+let set_fail_next_issue_comment () = fail_next_issue_comment := true
+let reset_fail_next_issue_comment () = fail_next_issue_comment := false
+
+(** When set, the next [get_pr_diff] call returns this value instead of reading
+    a mock file, then resets. Lets tests inject diff-fetch failures (e.g. the
+    GitHub 406 "too_large" response) and empty/oversized diffs. *)
+let next_pr_diff : (string, string) result option ref = ref None
+
+let set_next_pr_diff_error msg = next_pr_diff := Some (Error msg)
+let set_next_pr_diff diff = next_pr_diff := Some (Ok diff)
+let reset_next_pr_diff () = next_pr_diff := None
+
 let next_reaction_id = ref 1
 let reset_reactions () = next_reaction_id := 1
 
@@ -56,8 +72,13 @@ module Github : Api.Github = struct
       Lwt.return (Ok [])
 
   let get_pr_diff ~ctx:_ ~repo_url:_ ~number =
-    let path = Printf.sprintf "mock_api_responses/github/pr_%d.diff" number in
-    Lwt.return (read_mock_file path)
+    match !next_pr_diff with
+    | Some override ->
+      next_pr_diff := None;
+      Lwt.return override
+    | None ->
+      let path = Printf.sprintf "mock_api_responses/github/pr_%d.diff" number in
+      Lwt.return (read_mock_file path)
 
   let get_pull_request ~ctx:_ ~repo_url:_ ~number =
     let path = Printf.sprintf "mock_api_responses/github/pr_%d.json" number in
@@ -98,6 +119,19 @@ module Github : Api.Github = struct
     else begin
       let json = Melange_json.to_string (Github_types.commit_comment_req_to_json comment) in
       let entry = Printf.sprintf "[create_commit_comment] repo=%s sha=%s\n%s\n" repo_url sha json in
+      Buffer.add_string write_log entry;
+      log#info "%s" entry;
+      Lwt.return (Ok ())
+    end
+
+  let create_issue_comment ~ctx:_ ~repo_url ~number comment =
+    if !fail_next_issue_comment then begin
+      fail_next_issue_comment := false;
+      Lwt.return (Error "simulated GitHub API failure for create_issue_comment")
+    end
+    else begin
+      let json = Melange_json.to_string (Github_types.issue_comment_req_to_json comment) in
+      let entry = Printf.sprintf "[create_issue_comment] repo=%s number=%d\n%s\n" repo_url number json in
       Buffer.add_string write_log entry;
       log#info "%s" entry;
       Lwt.return (Ok ())

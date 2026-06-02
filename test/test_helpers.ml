@@ -37,6 +37,8 @@ let reset_test_state () =
   Api_local.clear_agent_response_map ();
   Api_local.reset_fail_next_pr_review ();
   Api_local.reset_fail_next_commit_comment ();
+  Api_local.reset_fail_next_issue_comment ();
+  Api_local.reset_next_pr_diff ();
   Api_local.reset_reactions ()
 
 (** Build a minimal repository JSON object. *)

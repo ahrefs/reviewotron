@@ -1701,7 +1701,7 @@ let test_pr_synchronize_review () =
   let write_log = Api_local.get_write_log () in
   (check bool) "review posted on synchronize" true (CCString.find ~sub:"[create_pr_review]" write_log >= 0)
 
-let test_pr_all_ignored_paths_skipped () =
+let test_pr_all_ignored_paths_thumbs_up () =
   Test_helpers.reset_test_state ();
   let config =
     Config_types.config_of_json
@@ -1713,7 +1713,11 @@ let test_pr_all_ignored_paths_skipped () =
   let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
   Lwt_main.run (R_test.process_event ctx ~event);
   let write_log = Api_local.get_write_log () in
-  (check string) "all ignored paths skipped" "" write_log
+  (* Nothing to review is a successful no-op: thumbs-up, no comment, no review. *)
+  (check bool) "thumbs-up reaction added" true
+    (contains_sub ~sub:"[create_issue_reaction] repo=https://github.com/org/monorepo number=99 content=+1" write_log);
+  (check bool) "no failure comment" false (contains_sub ~sub:"[create_issue_comment]" write_log);
+  (check bool) "no review attempted" false (contains_sub ~sub:"[create_pr_review]" write_log)
 
 let test_pr_empty_findings_review () =
   Test_helpers.reset_test_state ();
@@ -1736,7 +1740,7 @@ let test_pr_empty_findings_review () =
          ~head_sha:pr.pull_request.head.sha)
   | Github.Push _ | Github.Issue_comment _ | Github.Unknown _ -> fail "expected pull_request event"
 
-let test_pr_large_diff_skipped () =
+let test_pr_large_diff_posts_comment () =
   Test_helpers.reset_test_state ();
   (* Set max_diff_lines very low so the normal PR 42 diff exceeds it *)
   let config =
@@ -1747,7 +1751,9 @@ let test_pr_large_diff_skipped () =
   let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
   Lwt_main.run (R_test.process_event ctx ~event);
   let write_log = Api_local.get_write_log () in
-  (check string) "large PR skipped" "" write_log
+  (* Over the line limit: post a failure comment, do not attempt a review. *)
+  (check bool) "failure comment posted" true (contains_sub ~sub:"[create_issue_comment]" write_log);
+  (check bool) "no review attempted" false (contains_sub ~sub:"[create_pr_review]" write_log)
 
 (** {2 Push review tests} *)
 
@@ -2660,6 +2666,113 @@ let test_commit_comment_retry_on_failure () =
   (* The commit comment should still be posted after the retry *)
   (check bool) "commit comment posted after retry" true (CCString.find ~sub:"[create_commit_comment]" write_log >= 0)
 
+(** {2 Review failure notification tests}
+
+    When a PR review cannot run because of an external limit (GitHub refuses to
+    serve the diff) or an internal limit (diff exceeds [max_diff_lines] /
+    [max_files]), reviewotron posts an issue comment to the PR explaining why,
+    instead of silently logging and returning.  "All files filtered out" is
+    treated as a successful (empty) review: a [+1] reaction, no comment. *)
+
+(* Unit tests for the pure classification / formatting helpers. *)
+let test_review_failure_classify_too_large () =
+  let msg =
+    {|error while querying https://api.github.com/repos/org/monorepo/pulls/34877: http 406: {"message":"Sorry, the diff exceeded the maximum number of files (300). Consider using 'List pull requests files' API or locally cloning the repository instead.","code":"too_large"}|}
+  in
+  match Review_failure.classify_fetch_error msg with
+  | Diff_too_large_remote _ -> ()
+  | Fetch_failed _ | Too_many_lines _ | Too_many_files _ ->
+    Alcotest.fail "expected Diff_too_large_remote for a 406 too_large error"
+
+let test_review_failure_classify_generic () =
+  match Review_failure.classify_fetch_error "http 503: service unavailable" with
+  | Fetch_failed _ -> ()
+  | Diff_too_large_remote _ | Too_many_lines _ | Too_many_files _ ->
+    Alcotest.fail "expected Fetch_failed for a non-size error"
+
+let test_review_failure_comment_mentions_cause () =
+  let too_large = Review_failure.to_comment (Too_many_lines { actual = 5000; limit = 2000 }) in
+  (check bool) "line-limit comment names reviewotron" true (contains_sub ~sub:"reviewotron" too_large);
+  (check bool) "line-limit comment shows actual count" true (contains_sub ~sub:"5000" too_large);
+  (check bool) "line-limit comment shows limit" true (contains_sub ~sub:"2000" too_large);
+  let too_many = Review_failure.to_comment (Too_many_files { actual = 300; limit = 50 }) in
+  (check bool) "file-limit comment shows actual count" true (contains_sub ~sub:"300" too_many);
+  (check bool) "file-limit comment shows limit" true (contains_sub ~sub:"50" too_many);
+  let remote = Review_failure.to_comment (Diff_too_large_remote "http 406: too_large") in
+  (check bool) "remote-too-large comment is about size, not a generic failure" true
+    (contains_sub ~sub:"too large" (String.lowercase_ascii remote))
+
+(* Integration tests: drive process_event and assert on the write log. *)
+let test_pr_diff_fetch_too_large_posts_comment () =
+  Test_helpers.reset_test_state ();
+  Api_local.set_next_pr_diff_error
+    {|error while querying .../pulls/42: http 406: {"message":"Sorry, the diff exceeded the maximum number of files (300).","code":"too_large"}|};
+  let ctx = Test_helpers.make_test_context ~config:Test_helpers.auto_review_enabled_config () in
+  let payload = Test_helpers.make_pr_payload () in
+  let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let write_log = Api_local.get_write_log () in
+  (check bool) "issue comment posted on diff-too-large fetch failure" true
+    (contains_sub ~sub:"[create_issue_comment]" write_log);
+  (check bool) "comment targets the PR number" true (contains_sub ~sub:"number=42" write_log);
+  (check bool) "comment explains the diff is too large" true
+    (contains_sub ~sub:"too large" (String.lowercase_ascii write_log));
+  (check bool) "no review attempted" false (contains_sub ~sub:"[create_pr_review]" write_log)
+
+let test_pr_diff_fetch_generic_error_posts_comment () =
+  Test_helpers.reset_test_state ();
+  Api_local.set_next_pr_diff_error "http 503: service unavailable";
+  let ctx = Test_helpers.make_test_context ~config:Test_helpers.auto_review_enabled_config () in
+  let payload = Test_helpers.make_pr_payload () in
+  let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let write_log = Api_local.get_write_log () in
+  (check bool) "issue comment posted on generic fetch failure" true
+    (contains_sub ~sub:"[create_issue_comment]" write_log)
+
+let test_pr_too_many_lines_posts_comment () =
+  Test_helpers.reset_test_state ();
+  let config =
+    Config_types.config_of_json
+      (Melange_json.of_string {|{"auto_review_pr_open": true, "auto_review_pr_sync": true, "max_diff_lines": 1}|})
+  in
+  let ctx = Test_helpers.make_test_context ~config () in
+  let payload = Test_helpers.make_pr_payload () in
+  let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let write_log = Api_local.get_write_log () in
+  (check bool) "issue comment posted when diff exceeds line limit" true
+    (contains_sub ~sub:"[create_issue_comment]" write_log);
+  (check bool) "no review attempted" false (contains_sub ~sub:"[create_pr_review]" write_log)
+
+let test_pr_too_many_files_posts_comment () =
+  Test_helpers.reset_test_state ();
+  let config =
+    Config_types.config_of_json
+      (Melange_json.of_string {|{"auto_review_pr_open": true, "auto_review_pr_sync": true, "max_files": 1}|})
+  in
+  let ctx = Test_helpers.make_test_context ~config () in
+  let payload = Test_helpers.make_pr_payload () in
+  let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let write_log = Api_local.get_write_log () in
+  (check bool) "issue comment posted when diff exceeds file limit" true
+    (contains_sub ~sub:"[create_issue_comment]" write_log);
+  (check bool) "no review attempted" false (contains_sub ~sub:"[create_pr_review]" write_log)
+
+let test_pr_empty_diff_adds_thumbs_up_no_comment () =
+  Test_helpers.reset_test_state ();
+  Api_local.set_next_pr_diff "";
+  let ctx = Test_helpers.make_test_context ~config:Test_helpers.auto_review_enabled_config () in
+  let payload = Test_helpers.make_pr_payload () in
+  let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let write_log = Api_local.get_write_log () in
+  (check bool) "thumbs-up reaction added on empty diff" true
+    (contains_sub ~sub:"[create_issue_reaction] repo=https://github.com/org/monorepo number=42 content=+1" write_log);
+  (check bool) "no failure comment posted on empty diff" false (contains_sub ~sub:"[create_issue_comment]" write_log);
+  (check bool) "no review attempted on empty diff" false (contains_sub ~sub:"[create_pr_review]" write_log)
+
 (** {2 Debug dump tests} *)
 
 let test_write_debug_dump () =
@@ -3279,9 +3392,9 @@ let () =
       ( "pr_edge_cases",
         [
           test_case "PR synchronize triggers review" `Quick test_pr_synchronize_review;
-          test_case "PR with all ignored paths skipped" `Quick test_pr_all_ignored_paths_skipped;
+          test_case "PR with all ignored paths gets thumbs-up" `Quick test_pr_all_ignored_paths_thumbs_up;
           test_case "PR with empty findings posts summary" `Quick test_pr_empty_findings_review;
-          test_case "large PR over max_diff_lines skipped" `Quick test_pr_large_diff_skipped;
+          test_case "large PR over max_diff_lines posts comment" `Quick test_pr_large_diff_posts_comment;
         ] );
       ( "push_review",
         [
@@ -3379,6 +3492,17 @@ let () =
         [
           test_case "PR review retries on first failure" `Quick test_pr_review_retry_on_failure;
           test_case "commit comment retries on first failure" `Quick test_commit_comment_retry_on_failure;
+        ] );
+      ( "review_failure_notification",
+        [
+          test_case "classify: 406 too_large is remote-too-large" `Quick test_review_failure_classify_too_large;
+          test_case "classify: other errors are generic" `Quick test_review_failure_classify_generic;
+          test_case "comment text names cause and counts" `Quick test_review_failure_comment_mentions_cause;
+          test_case "PR diff too large (406) posts a comment" `Quick test_pr_diff_fetch_too_large_posts_comment;
+          test_case "PR diff fetch generic error posts a comment" `Quick test_pr_diff_fetch_generic_error_posts_comment;
+          test_case "PR over line limit posts a comment" `Quick test_pr_too_many_lines_posts_comment;
+          test_case "PR over file limit posts a comment" `Quick test_pr_too_many_files_posts_comment;
+          test_case "PR with empty diff gets thumbs-up, no comment" `Quick test_pr_empty_diff_adds_thumbs_up_no_comment;
         ] );
       "debug_dump", [ test_case "write debug dump creates file with expected content" `Quick test_write_debug_dump ];
       ( "budget_recovery",

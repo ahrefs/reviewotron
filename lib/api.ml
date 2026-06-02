@@ -23,6 +23,9 @@ module type Github = sig
   val create_commit_comment :
     ctx:Context.t -> repo_url:string -> sha:string -> Github_types.commit_comment_req -> (unit, string) result Lwt.t
 
+  val create_issue_comment :
+    ctx:Context.t -> repo_url:string -> number:int -> Github_types.issue_comment_req -> (unit, string) result Lwt.t
+
   val create_issue_reaction :
     ctx:Context.t -> repo_url:string -> number:int -> content:string -> (int, string) result Lwt.t
 
