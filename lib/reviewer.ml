@@ -111,11 +111,6 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
     | Review_posted
     | Review_quiet
 
-  (** Retry a GitHub API call on transient failures (network errors, 5xx, rate
-      limits) with exponential backoff, failing fast on permanent errors. See
-      {!Github_retry.with_retry}. *)
-  let with_retry ~label f = Github_retry.with_retry ~label f
-
   let create_reaction ~ctx ~repo_url target ~content =
     match target with
     | Pull_request number -> GH.create_issue_reaction ~ctx ~repo_url ~number ~content
@@ -528,13 +523,10 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
       let review_body = Printf.sprintf "%s\n\n**Reviewed commit:** `%s`" review_body short_sha in
       let review_req = Github_types.{ commit_id = Some head_sha; body = review_body; event = Comment; comments } in
       let%lwt () = finish_progress_reaction ~ctx ~repo_url progress ~quiet_success:false in
-      let%lwt post_result =
-        with_retry ~label:(Printf.sprintf "create_pr_review PR #%d" number) (fun () ->
-          GH.create_pr_review ~ctx ~repo_url ~number review_req)
-      in
+      let%lwt post_result = GH.create_pr_review ~ctx ~repo_url ~number review_req in
       (match post_result with
       | Ok () -> log#info "posted review for PR #%d (%s): %d inline comments" number pr_title (List.length comments)
-      | Error msg -> log#error "failed to post review for PR #%d after retry: %s" number msg);
+      | Error msg -> log#error "failed to post review for PR #%d: %s" number msg);
       record_reviewed ();
       Lwt.return Review_posted
 
@@ -544,9 +536,7 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
     let number = pr_notif.number in
     let pr = pr_notif.pull_request in
     log#info "reviewing PR #%d in %s" number pr_notif.repository.full_name;
-    let%lwt diff_result =
-      with_retry ~label:(Printf.sprintf "get_pr_diff PR #%d" number) (fun () -> GH.get_pr_diff ~ctx ~repo_url ~number)
-    in
+    let%lwt diff_result = GH.get_pr_diff ~ctx ~repo_url ~number in
     match diff_result with
     | Error msg ->
       log#error "failed to fetch diff for PR #%d: %s" number msg;
@@ -597,10 +587,7 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
       [review_pr] reads it. *)
   let review_pr_from_comment ~ctx (n : Github_types.issue_comment_notification) =
     let repo_url = n.repository.url in
-    let%lwt result =
-      with_retry ~label:(Printf.sprintf "get_pull_request PR #%d" n.issue.number) (fun () ->
-        GH.get_pull_request ~ctx ~repo_url ~number:n.issue.number)
-    in
+    let%lwt result = GH.get_pull_request ~ctx ~repo_url ~number:n.issue.number in
     match result with
     | Error msg ->
       log#error "failed to fetch PR #%d for REVIEW comment trigger: %s" n.issue.number msg;
@@ -632,13 +619,10 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
               line = Some finding.line;
             }
           in
-          let%lwt result =
-            with_retry ~label:(Printf.sprintf "create_commit_comment %s" sha) (fun () ->
-              GH.create_commit_comment ~ctx ~repo_url ~sha comment)
-          in
+          let%lwt result = GH.create_commit_comment ~ctx ~repo_url ~sha comment in
           (match result with
           | Ok () -> ()
-          | Error msg -> log#error "failed to post commit comment on %s after retry: %s" sha msg);
+          | Error msg -> log#error "failed to post commit comment on %s: %s" sha msg);
           Lwt.return_unit
         | Suggestion | Nitpick | Praise | Other _ ->
           (* Only post commit comments for critical/warning *)
@@ -649,10 +633,7 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
   let review_push ~ctx (push : Github_types.commit_pushed_notification) =
     let repo_url = push.repository.url in
     log#info "reviewing push to %s in %s" push.ref_ push.repository.full_name;
-    let%lwt diff_result =
-      with_retry ~label:(Printf.sprintf "get_compare_diff %s...%s" push.before push.after) (fun () ->
-        GH.get_compare_diff ~ctx ~repo_url ~base:push.before ~head:push.after)
-    in
+    let%lwt diff_result = GH.get_compare_diff ~ctx ~repo_url ~base:push.before ~head:push.after in
     match diff_result with
     | Error msg ->
       log#error "failed to fetch compare diff for push %s...%s: %s" push.before push.after msg;

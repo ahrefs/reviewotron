@@ -27,30 +27,6 @@ let agent_response_map : (string * string) list ref = ref []
 let set_agent_response_map entries = agent_response_map := entries
 let clear_agent_response_map () = agent_response_map := []
 
-(** When set to [true], the next [create_pr_review] call returns an error and
-    then resets the flag. Used to test retry-on-failure logic. *)
-let fail_next_pr_review = ref false
-
-let set_fail_next_pr_review () = fail_next_pr_review := true
-let reset_fail_next_pr_review () = fail_next_pr_review := false
-
-(** When set to [true], the next [create_commit_comment] call returns an error
-    and then resets the flag. Used to test retry-on-failure logic. *)
-let fail_next_commit_comment = ref false
-
-let set_fail_next_commit_comment () = fail_next_commit_comment := true
-let reset_fail_next_commit_comment () = fail_next_commit_comment := false
-
-(** Controls simulated failures for the next [get_pull_request] call. When
-    [`Transient], the call returns a retryable curl-shaped error then resets to
-    [`None]; when [`Permanent], a non-retryable error that should NOT be
-    retried. Used to test that retries fire on transient errors and fail fast on
-    permanent ones. *)
-let fail_next_pull_request : [ `None | `Transient | `Permanent ] ref = ref `None
-
-let set_fail_next_pull_request kind = fail_next_pull_request := kind
-let reset_fail_next_pull_request () = fail_next_pull_request := `None
-
 let next_reaction_id = ref 1
 let reset_reactions () = next_reaction_id := 1
 
@@ -70,21 +46,12 @@ module Github : Api.Github = struct
     Lwt.return (read_mock_file path)
 
   let get_pull_request ~ctx:_ ~repo_url:_ ~number =
-    match !fail_next_pull_request with
-    | `Transient ->
-      fail_next_pull_request := `None;
-      (* curl-shaped error so it classifies as retryable *)
-      Lwt.return (Error "(6) Could not resolve host: api.github.com")
-    | `Permanent ->
-      fail_next_pull_request := `None;
-      Lwt.return (Error "http 404: Not Found")
-    | `None ->
-      let path = Printf.sprintf "mock_api_responses/github/pr_%d.json" number in
-      (match read_mock_file path with
-      | Error msg -> Lwt.return (Error msg)
-      | Ok body ->
-      try Lwt.return (Ok (Github_types.pull_request_of_json (Melange_json.of_string body)))
-      with exn -> Lwt.return (Error (Printf.sprintf "failed to parse mock pull_request: %s" (Exn.str exn))))
+    let path = Printf.sprintf "mock_api_responses/github/pr_%d.json" number in
+    match read_mock_file path with
+    | Error msg -> Lwt.return (Error msg)
+    | Ok body ->
+    try Lwt.return (Ok (Github_types.pull_request_of_json (Melange_json.of_string body)))
+    with exn -> Lwt.return (Error (Printf.sprintf "failed to parse mock pull_request: %s" (Exn.str exn)))
 
   let get_compare_diff ~ctx:_ ~repo_url:_ ~base ~head =
     let path = Printf.sprintf "mock_api_responses/github/compare_%s_%s.diff" base head in
@@ -97,32 +64,18 @@ module Github : Api.Github = struct
     | Error _ -> Lwt.return (Ok None)
 
   let create_pr_review ~ctx:_ ~repo_url ~number review =
-    if !fail_next_pr_review then begin
-      fail_next_pr_review := false;
-      (* curl-shaped error so it classifies as retryable *)
-      Lwt.return (Error "(6) simulated transient failure for create_pr_review")
-    end
-    else begin
-      let json = Melange_json.to_string (Github_types.create_review_req_to_json review) in
-      let entry = Printf.sprintf "[create_pr_review] repo=%s number=%d\n%s\n" repo_url number json in
-      Buffer.add_string write_log entry;
-      log#info "%s" entry;
-      Lwt.return (Ok ())
-    end
+    let json = Melange_json.to_string (Github_types.create_review_req_to_json review) in
+    let entry = Printf.sprintf "[create_pr_review] repo=%s number=%d\n%s\n" repo_url number json in
+    Buffer.add_string write_log entry;
+    log#info "%s" entry;
+    Lwt.return (Ok ())
 
   let create_commit_comment ~ctx:_ ~repo_url ~sha comment =
-    if !fail_next_commit_comment then begin
-      fail_next_commit_comment := false;
-      (* curl-shaped error so it classifies as retryable *)
-      Lwt.return (Error "(6) simulated transient failure for create_commit_comment")
-    end
-    else begin
-      let json = Melange_json.to_string (Github_types.commit_comment_req_to_json comment) in
-      let entry = Printf.sprintf "[create_commit_comment] repo=%s sha=%s\n%s\n" repo_url sha json in
-      Buffer.add_string write_log entry;
-      log#info "%s" entry;
-      Lwt.return (Ok ())
-    end
+    let json = Melange_json.to_string (Github_types.commit_comment_req_to_json comment) in
+    let entry = Printf.sprintf "[create_commit_comment] repo=%s sha=%s\n%s\n" repo_url sha json in
+    Buffer.add_string write_log entry;
+    log#info "%s" entry;
+    Lwt.return (Ok ())
 
   let create_issue_reaction ~ctx:_ ~repo_url ~number ~content =
     let reaction_id = !next_reaction_id in
