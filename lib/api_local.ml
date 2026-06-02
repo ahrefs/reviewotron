@@ -41,6 +41,16 @@ let fail_next_commit_comment = ref false
 let set_fail_next_commit_comment () = fail_next_commit_comment := true
 let reset_fail_next_commit_comment () = fail_next_commit_comment := false
 
+(** Controls simulated failures for the next [get_pull_request] call. When
+    [`Transient], the call returns a retryable curl-shaped error then resets to
+    [`None]; when [`Permanent], a non-retryable error that should NOT be
+    retried. Used to test that retries fire on transient errors and fail fast on
+    permanent ones. *)
+let fail_next_pull_request : [ `None | `Transient | `Permanent ] ref = ref `None
+
+let set_fail_next_pull_request kind = fail_next_pull_request := kind
+let reset_fail_next_pull_request () = fail_next_pull_request := `None
+
 let next_reaction_id = ref 1
 let reset_reactions () = next_reaction_id := 1
 
@@ -60,12 +70,21 @@ module Github : Api.Github = struct
     Lwt.return (read_mock_file path)
 
   let get_pull_request ~ctx:_ ~repo_url:_ ~number =
-    let path = Printf.sprintf "mock_api_responses/github/pr_%d.json" number in
-    match read_mock_file path with
-    | Error msg -> Lwt.return (Error msg)
-    | Ok body ->
-    try Lwt.return (Ok (Github_types.pull_request_of_json (Melange_json.of_string body)))
-    with exn -> Lwt.return (Error (Printf.sprintf "failed to parse mock pull_request: %s" (Exn.str exn)))
+    match !fail_next_pull_request with
+    | `Transient ->
+      fail_next_pull_request := `None;
+      (* curl-shaped error so it classifies as retryable *)
+      Lwt.return (Error "(6) Could not resolve host: api.github.com")
+    | `Permanent ->
+      fail_next_pull_request := `None;
+      Lwt.return (Error "http 404: Not Found")
+    | `None ->
+      let path = Printf.sprintf "mock_api_responses/github/pr_%d.json" number in
+      (match read_mock_file path with
+      | Error msg -> Lwt.return (Error msg)
+      | Ok body ->
+      try Lwt.return (Ok (Github_types.pull_request_of_json (Melange_json.of_string body)))
+      with exn -> Lwt.return (Error (Printf.sprintf "failed to parse mock pull_request: %s" (Exn.str exn))))
 
   let get_compare_diff ~ctx:_ ~repo_url:_ ~base ~head =
     let path = Printf.sprintf "mock_api_responses/github/compare_%s_%s.diff" base head in
@@ -80,7 +99,8 @@ module Github : Api.Github = struct
   let create_pr_review ~ctx:_ ~repo_url ~number review =
     if !fail_next_pr_review then begin
       fail_next_pr_review := false;
-      Lwt.return (Error "simulated GitHub API failure for create_pr_review")
+      (* curl-shaped error so it classifies as retryable *)
+      Lwt.return (Error "(6) simulated transient failure for create_pr_review")
     end
     else begin
       let json = Melange_json.to_string (Github_types.create_review_req_to_json review) in
@@ -93,7 +113,8 @@ module Github : Api.Github = struct
   let create_commit_comment ~ctx:_ ~repo_url ~sha comment =
     if !fail_next_commit_comment then begin
       fail_next_commit_comment := false;
-      Lwt.return (Error "simulated GitHub API failure for create_commit_comment")
+      (* curl-shaped error so it classifies as retryable *)
+      Lwt.return (Error "(6) simulated transient failure for create_commit_comment")
     end
     else begin
       let json = Melange_json.to_string (Github_types.commit_comment_req_to_json comment) in

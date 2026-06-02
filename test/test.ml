@@ -2630,6 +2630,28 @@ let test_pr_no_security_notice_when_disabled () =
 
 (** {2 GitHub API retry tests} *)
 
+let test_retry_classification () =
+  let retryable msg = (check bool) (Printf.sprintf "retryable: %s" msg) true (Github_retry.is_retryable msg) in
+  let permanent msg = (check bool) (Printf.sprintf "permanent: %s" msg) false (Github_retry.is_retryable msg) in
+  (* curl transport errors (the failure that motivated this) *)
+  retryable "(6) Could not resolve host: api.github.com";
+  retryable "(7) Failed to connect";
+  retryable "(28) Timeout was reached";
+  (* server-side and rate-limit HTTP statuses, rendered as "http <code>: ..." *)
+  retryable "http 500: Internal Server Error";
+  retryable "http 502: Bad Gateway";
+  retryable "http 503: Service Unavailable";
+  retryable "http 429: too many requests";
+  (* client errors are permanent for the same request *)
+  permanent "http 404: Not Found";
+  permanent "http 401: Bad credentials";
+  permanent "http 403: Forbidden";
+  permanent "http 422: Unprocessable Entity";
+  (* post-fetch logic errors must never be retried *)
+  permanent "failed to parse pull_request response: ...";
+  permanent "cannot parse owner/repo from https://example.com/x";
+  permanent "no auth configured for repo https://github.com/o/r"
+
 let test_pr_review_retry_on_failure () =
   Test_helpers.reset_test_state ();
   (* Make the first create_pr_review call fail, then succeed on retry. *)
@@ -2659,6 +2681,33 @@ let test_commit_comment_retry_on_failure () =
   let write_log = Api_local.get_write_log () in
   (* The commit comment should still be posted after the retry *)
   (check bool) "commit comment posted after retry" true (CCString.find ~sub:"[create_commit_comment]" write_log >= 0)
+
+(* A REVIEW comment whose initial get_pull_request hits a transient network
+   error should recover via retry and still post the review — this is the
+   failure mode from the production incident. *)
+let retry_comment_config = Config_types.config_of_json (Melange_json.of_string {|{"auto_review_on_comment": true}|})
+
+let test_comment_review_retries_transient_fetch () =
+  Test_helpers.reset_test_state ();
+  Api_local.set_fail_next_pull_request `Transient;
+  let ctx = Test_helpers.make_test_context ~config:retry_comment_config () in
+  let payload = Test_helpers.make_issue_comment_payload () in
+  let event = Test_helpers.parse_event_exn ~event_type:"issue_comment" ~body:payload in
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let write_log = Api_local.get_write_log () in
+  (check bool) "review posted after transient fetch retry" true (CCString.find ~sub:"[create_pr_review]" write_log >= 0)
+
+(* A permanent error (404) on get_pull_request must fail fast: no retry, no
+   review posted. *)
+let test_comment_review_fails_fast_on_permanent () =
+  Test_helpers.reset_test_state ();
+  Api_local.set_fail_next_pull_request `Permanent;
+  let ctx = Test_helpers.make_test_context ~config:retry_comment_config () in
+  let payload = Test_helpers.make_issue_comment_payload () in
+  let event = Test_helpers.parse_event_exn ~event_type:"issue_comment" ~body:payload in
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let write_log = Api_local.get_write_log () in
+  (check bool) "no review posted on permanent error" true (CCString.find ~sub:"[create_pr_review]" write_log < 0)
 
 (** {2 Debug dump tests} *)
 
@@ -3377,8 +3426,11 @@ let () =
         ] );
       ( "github_api_retry",
         [
+          test_case "error classification" `Quick test_retry_classification;
           test_case "PR review retries on first failure" `Quick test_pr_review_retry_on_failure;
           test_case "commit comment retries on first failure" `Quick test_commit_comment_retry_on_failure;
+          test_case "comment review retries transient PR fetch" `Quick test_comment_review_retries_transient_fetch;
+          test_case "comment review fails fast on permanent error" `Quick test_comment_review_fails_fast_on_permanent;
         ] );
       "debug_dump", [ test_case "write debug dump creates file with expected content" `Quick test_write_debug_dump ];
       ( "budget_recovery",
