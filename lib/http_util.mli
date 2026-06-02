@@ -4,8 +4,7 @@
     parsing rendered strings. *)
 
 type error =
-  | Transport of Curl.curlCode
-      (** curl-level failure with no HTTP response: DNS, connect, timeout, TLS. *)
+  | Transport of Curl.curlCode  (** curl-level failure with no HTTP response: DNS, connect, timeout, TLS. *)
   | Status of int * string  (** a completed request with a non-2xx status code, carrying its body. *)
 
 (** Render an {!error} for logging — ["(<errno>) <strerror>"] or ["http <code>: <body>"]. *)
