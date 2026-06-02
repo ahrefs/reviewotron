@@ -577,9 +577,9 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
     log#info "reviewing PR #%d in %s" number pr_notif.repository.full_name;
     let%lwt diff_result = GH.get_pr_diff ~ctx ~repo_url ~number in
     match diff_result with
-    | Error msg ->
-      log#error "failed to fetch diff for PR #%d: %s" number msg;
-      post_review_failure ~ctx ~repo_url ~number (Review_failure.classify_fetch_error msg)
+    | Error fetch_error ->
+      log#error "failed to fetch diff for PR #%d: %s" number fetch_error.Http_util.message;
+      post_review_failure ~ctx ~repo_url ~number (Review_failure.classify_fetch_error fetch_error)
     | Ok diff_text ->
       let config = Context.get_config ctx ~repo_url in
       (match prepare_diff ~config diff_text with
@@ -688,8 +688,8 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
        the existing Slack failure path (below) covers produced-but-failed
        reviews. *)
     match diff_result with
-    | Error msg ->
-      log#error "failed to fetch compare diff for push %s...%s: %s" push.before push.after msg;
+    | Error fetch_error ->
+      log#error "failed to fetch compare diff for push %s...%s: %s" push.before push.after fetch_error.Http_util.message;
       Lwt.return_unit
     | Ok diff_text ->
       let config = Context.get_config ctx ~repo_url in

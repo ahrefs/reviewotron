@@ -52,13 +52,18 @@ let resolve_auth ~ctx ~repo_url =
     let%lwt result = Github_auth.auth_header auth in
     Lwt.return (Result.map (fun (k, v) -> Printf.sprintf "%s: %s" k v) result)
 
+(* A non-HTTP failure local to request setup (auth, URL parsing).  Wrapped in
+   the same [Http_util.error] shape as transport errors so [github_request]
+   has one error type; these never carry an HTTP status. *)
+let local_error message : Http_util.error = { status = None; message }
+
 let github_request ~ctx ~repo_url ~path ?(accept = "application/json") ?body meth =
   let%lwt auth = resolve_auth ~ctx ~repo_url in
   match auth with
-  | Error _ as e -> Lwt.return e
+  | Error msg -> Lwt.return (Error (local_error msg))
   | Ok auth_header ->
   match parse_repo repo_url with
-  | None -> Lwt.return (Error (Printf.sprintf "cannot parse owner/repo from %s" repo_url))
+  | None -> Lwt.return (Error (local_error (Printf.sprintf "cannot parse owner/repo from %s" repo_url)))
   | Some (owner, repo) ->
     let url = Printf.sprintf "https://api.github.com/repos/%s/%s%s" owner repo path in
     let headers = build_headers ~auth_header ~accept in
@@ -79,10 +84,10 @@ module Github : Api.Github = struct
     let path = Printf.sprintf "/contents/%s" config_filename in
     let%lwt result = github_get ~ctx ~repo_url ~path () in
     match result with
-    | Error msg when CCString.find ~sub:"404" msg >= 0 ->
+    | Error { status = Some 404; _ } ->
       log#info "no %s found in %s, using defaults" config_filename repo_url;
       Lwt.return (Ok (Context.default_config ()))
-    | Error msg -> Lwt.return (Error (Printf.sprintf "failed to fetch config from %s: %s" repo_url msg))
+    | Error e -> Lwt.return (Error (Printf.sprintf "failed to fetch config from %s: %s" repo_url e.message))
     | Ok body ->
     match Github_types.content_api_response_of_json (Melange_json.of_string body) with
     | exception exn -> Lwt.return (Error (Printf.sprintf "failed to parse content API response: %s" (Exn.str exn)))
@@ -101,7 +106,7 @@ module Github : Api.Github = struct
   let get_pr_files ~ctx ~repo_url ~number =
     let path = Printf.sprintf "/pulls/%d/files" number in
     let%lwt result = github_get ~ctx ~repo_url ~path () in
-    Lwt.return (Result.map parse_pr_files_json result)
+    Lwt.return (result |> Result.map_error Http_util.error_to_string |> Result.map parse_pr_files_json)
 
   let get_pr_diff ~ctx ~repo_url ~number =
     let path = Printf.sprintf "/pulls/%d" number in
@@ -111,7 +116,7 @@ module Github : Api.Github = struct
     let path = Printf.sprintf "/pulls/%d" number in
     let%lwt result = github_get ~ctx ~repo_url ~path () in
     match result with
-    | Error msg -> Lwt.return (Error msg)
+    | Error e -> Lwt.return (Error e.message)
     | Ok body ->
     try Lwt.return (Ok (Github_types.pull_request_of_json (Melange_json.of_string body)))
     with exn -> Lwt.return (Error (Printf.sprintf "failed to parse pull_request response: %s" (Exn.str exn)))
@@ -125,33 +130,33 @@ module Github : Api.Github = struct
     let%lwt result = github_get ~ctx ~repo_url ~path ~accept:"application/vnd.github.v3.raw" () in
     match result with
     | Ok body -> Lwt.return (Ok (Some body))
-    | Error msg ->
-      log#warn "get_file_content failed for %s (ref %s): %s" file_path ref_ msg;
+    | Error e ->
+      log#warn "get_file_content failed for %s (ref %s): %s" file_path ref_ e.message;
       Lwt.return (Ok None)
 
   let create_pr_review ~ctx ~repo_url ~number review =
     let path = Printf.sprintf "/pulls/%d/reviews" number in
     let body = Melange_json.to_string (Github_types.create_review_req_to_json review) in
     let%lwt result = github_post ~ctx ~repo_url ~path ~accept:"application/vnd.github+json" ~body () in
-    Lwt.return (Result.map (fun (_body : string) -> ()) result)
+    Lwt.return (result |> Result.map_error Http_util.error_to_string |> Result.map (fun (_body : string) -> ()))
 
   let create_commit_comment ~ctx ~repo_url ~sha comment =
     let path = Printf.sprintf "/commits/%s/comments" sha in
     let body = Melange_json.to_string (Github_types.commit_comment_req_to_json comment) in
     let%lwt result = github_post ~ctx ~repo_url ~path ~body () in
-    Lwt.return (Result.map (fun (_body : string) -> ()) result)
+    Lwt.return (result |> Result.map_error Http_util.error_to_string |> Result.map (fun (_body : string) -> ()))
 
   let create_issue_comment ~ctx ~repo_url ~number comment =
     let path = Printf.sprintf "/issues/%d/comments" number in
     let body = Melange_json.to_string (Github_types.issue_comment_req_to_json comment) in
     let%lwt result = github_post ~ctx ~repo_url ~path ~body () in
-    Lwt.return (Result.map (fun (_body : string) -> ()) result)
+    Lwt.return (result |> Result.map_error Http_util.error_to_string |> Result.map (fun (_body : string) -> ()))
 
   let create_reaction ~ctx ~repo_url ~path ~content =
     let body = Melange_json.to_string (Github_types.reaction_req_to_json { content }) in
     let%lwt result = github_post ~ctx ~repo_url ~path ~body () in
     match result with
-    | Error _ as e -> Lwt.return e
+    | Error e -> Lwt.return (Error e.message)
     | Ok body ->
     match Github_types.reaction_of_json (Melange_json.of_string body) with
     | reaction -> Lwt.return (Ok reaction.id)
@@ -168,12 +173,12 @@ module Github : Api.Github = struct
   let delete_issue_reaction ~ctx ~repo_url ~number ~reaction_id =
     let path = Printf.sprintf "/issues/%d/reactions/%d" number reaction_id in
     let%lwt result = github_delete ~ctx ~repo_url ~path ~accept:"application/vnd.github+json" () in
-    Lwt.return (Result.map (fun (_body : string) -> ()) result)
+    Lwt.return (result |> Result.map_error Http_util.error_to_string |> Result.map (fun (_body : string) -> ()))
 
   let delete_issue_comment_reaction ~ctx ~repo_url ~comment_id ~reaction_id =
     let path = Printf.sprintf "/issues/comments/%d/reactions/%d" comment_id reaction_id in
     let%lwt result = github_delete ~ctx ~repo_url ~path ~accept:"application/vnd.github+json" () in
-    Lwt.return (Result.map (fun (_body : string) -> ()) result)
+    Lwt.return (result |> Result.map_error Http_util.error_to_string |> Result.map (fun (_body : string) -> ()))
 end
 
 (** {2 Agent runner — wraps ocaml-ai-sdk for AI agent execution} *)
@@ -213,6 +218,6 @@ module Slack : Api.Slack = struct
              let err = Option.default "unknown" resp.error in
              log#error "Slack API error: %s" err
          with _exn -> log#warn "could not parse Slack response: %s" response_str)
-      | Error e -> log#error "Slack request failed: %s" e);
+      | Error e -> log#error "Slack request failed: %s" e.Http_util.message);
       Lwt.return_unit
 end

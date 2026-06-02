@@ -2676,19 +2676,31 @@ let test_commit_comment_retry_on_failure () =
 
 (* Unit tests for the pure classification / formatting helpers. *)
 let test_review_failure_classify_too_large () =
-  let msg =
-    {|error while querying https://api.github.com/repos/org/monorepo/pulls/34877: http 406: {"message":"Sorry, the diff exceeded the maximum number of files (300). Consider using 'List pull requests files' API or locally cloning the repository instead.","code":"too_large"}|}
+  (* GitHub answers the diff media type with HTTP 406 when the diff is too
+     large; classification keys on the status code, not the message text. *)
+  let error : Http_util.error =
+    { status = Some 406; message = "http 406: the diff exceeded the maximum number of files (300)" }
   in
-  match Review_failure.classify_fetch_error msg with
+  match Review_failure.classify_fetch_error error with
   | Diff_too_large_remote _ -> ()
   | Fetch_failed _ | Too_many_lines _ | Too_many_files _ ->
-    Alcotest.fail "expected Diff_too_large_remote for a 406 too_large error"
+    Alcotest.fail "expected Diff_too_large_remote for a 406 response"
 
 let test_review_failure_classify_generic () =
-  match Review_failure.classify_fetch_error "http 503: service unavailable" with
+  let error : Http_util.error = { status = Some 503; message = "http 503: service unavailable" } in
+  match Review_failure.classify_fetch_error error with
   | Fetch_failed _ -> ()
   | Diff_too_large_remote _ | Too_many_lines _ | Too_many_files _ ->
-    Alcotest.fail "expected Fetch_failed for a non-size error"
+    Alcotest.fail "expected Fetch_failed for a non-406 status"
+
+let test_review_failure_classify_transport_error () =
+  (* A curl/transport failure has no HTTP status — must not be mistaken for the
+     too-large case. *)
+  let error : Http_util.error = { status = None; message = "(7) Couldn't connect to server" } in
+  match Review_failure.classify_fetch_error error with
+  | Fetch_failed _ -> ()
+  | Diff_too_large_remote _ | Too_many_lines _ | Too_many_files _ ->
+    Alcotest.fail "expected Fetch_failed for a transport error with no status"
 
 let test_review_failure_comment_mentions_cause () =
   let too_large = Review_failure.to_comment (Too_many_lines { actual = 5000; limit = 2000 }) in
@@ -2705,8 +2717,8 @@ let test_review_failure_comment_mentions_cause () =
 (* Integration tests: drive process_event and assert on the write log. *)
 let test_pr_diff_fetch_too_large_posts_comment () =
   Test_helpers.reset_test_state ();
-  Api_local.set_next_pr_diff_error
-    {|error while querying .../pulls/42: http 406: {"message":"Sorry, the diff exceeded the maximum number of files (300).","code":"too_large"}|};
+  Api_local.set_next_pr_diff_error ~status:406
+    {|http 406: {"message":"Sorry, the diff exceeded the maximum number of files (300).","code":"too_large"}|};
   let ctx = Test_helpers.make_test_context ~config:Test_helpers.auto_review_enabled_config () in
   let payload = Test_helpers.make_pr_payload () in
   let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
@@ -3495,8 +3507,9 @@ let () =
         ] );
       ( "review_failure_notification",
         [
-          test_case "classify: 406 too_large is remote-too-large" `Quick test_review_failure_classify_too_large;
-          test_case "classify: other errors are generic" `Quick test_review_failure_classify_generic;
+          test_case "classify: 406 is remote-too-large" `Quick test_review_failure_classify_too_large;
+          test_case "classify: other status is generic" `Quick test_review_failure_classify_generic;
+          test_case "classify: transport error is generic" `Quick test_review_failure_classify_transport_error;
           test_case "comment text names cause and counts" `Quick test_review_failure_comment_mentions_cause;
           test_case "PR diff too large (406) posts a comment" `Quick test_pr_diff_fetch_too_large_posts_comment;
           test_case "PR diff fetch generic error posts a comment" `Quick test_pr_diff_fetch_generic_error_posts_comment;

@@ -10,16 +10,13 @@ type t =
       limit : int;
     }
 
-(** Markers GitHub uses when it refuses to serve an oversized diff (HTTP 406). *)
-module Remote_too_large = struct
-  let markers = [ "too_large"; "exceeded the maximum number of files" ]
-  let matches msg = List.exists (fun marker -> CCString.mem ~sub:marker msg) markers
-end
-
-let classify_fetch_error msg =
-  match Remote_too_large.matches msg with
-  | true -> Diff_too_large_remote msg
-  | false -> Fetch_failed msg
+let classify_fetch_error (error : Http_util.error) =
+  (* GitHub answers the diff media type with HTTP 406 when the diff is too
+     large to serve.  Branch on the structured status code rather than parsing
+     the error text. *)
+  match error.status with
+  | Some 406 -> Diff_too_large_remote error.message
+  | Some _ | None -> Fetch_failed error.message
 
 let prefix = ":robot: **reviewotron** couldn't review this PR."
 

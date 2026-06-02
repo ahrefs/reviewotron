@@ -19,9 +19,10 @@ type t =
       limit : int;
     }  (** The filtered diff touches more files than [Config_types.max_files]. *)
 
-(** Classify a raw diff-fetch error string into [Diff_too_large_remote] (when it
-    looks like GitHub's 406 / [too_large] response) or [Fetch_failed]. *)
-val classify_fetch_error : string -> t
+(** Classify a diff-fetch error into [Diff_too_large_remote] (GitHub answered the
+    diff media type with HTTP 406, meaning the diff is too large to serve) or
+    [Fetch_failed] (any other status or a transport error). *)
+val classify_fetch_error : Http_util.error -> t
 
 (** Render a Markdown issue-comment body explaining the failure to the PR author. *)
 val to_comment : t -> string

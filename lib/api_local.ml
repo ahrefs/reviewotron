@@ -51,9 +51,9 @@ let reset_fail_next_issue_comment () = fail_next_issue_comment := false
 (** When set, the next [get_pr_diff] call returns this value instead of reading
     a mock file, then resets. Lets tests inject diff-fetch failures (e.g. the
     GitHub 406 "too_large" response) and empty/oversized diffs. *)
-let next_pr_diff : (string, string) result option ref = ref None
+let next_pr_diff : (string, Http_util.error) result option ref = ref None
 
-let set_next_pr_diff_error msg = next_pr_diff := Some (Error msg)
+let set_next_pr_diff_error ?status message = next_pr_diff := Some (Error { Http_util.status; message })
 let set_next_pr_diff diff = next_pr_diff := Some (Ok diff)
 let reset_next_pr_diff () = next_pr_diff := None
 
@@ -71,6 +71,11 @@ module Github : Api.Github = struct
       log#error "%s" msg;
       Lwt.return (Ok [])
 
+  (* Mock files yield a plain string error; lift it into the typed HTTP error
+     the real implementation returns (no HTTP status for a missing fixture). *)
+  let mock_diff_result path =
+    read_mock_file path |> Result.map_error (fun message -> { Http_util.status = None; message })
+
   let get_pr_diff ~ctx:_ ~repo_url:_ ~number =
     match !next_pr_diff with
     | Some override ->
@@ -78,7 +83,7 @@ module Github : Api.Github = struct
       Lwt.return override
     | None ->
       let path = Printf.sprintf "mock_api_responses/github/pr_%d.diff" number in
-      Lwt.return (read_mock_file path)
+      Lwt.return (mock_diff_result path)
 
   let get_pull_request ~ctx:_ ~repo_url:_ ~number =
     let path = Printf.sprintf "mock_api_responses/github/pr_%d.json" number in
@@ -90,7 +95,7 @@ module Github : Api.Github = struct
 
   let get_compare_diff ~ctx:_ ~repo_url:_ ~base ~head =
     let path = Printf.sprintf "mock_api_responses/github/compare_%s_%s.diff" base head in
-    Lwt.return (read_mock_file path)
+    Lwt.return (mock_diff_result path)
 
   let get_file_content ~ctx:_ ~repo_url:_ ~path:file_path ~ref_ =
     let path = Printf.sprintf "mock_api_responses/github/content_%s_%s" ref_ file_path in

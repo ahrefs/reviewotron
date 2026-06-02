@@ -7,12 +7,13 @@ module type Github = sig
   val get_pr_files :
     ctx:Context.t -> repo_url:string -> number:int -> (Github_types.pull_request_file list, string) result Lwt.t
 
-  val get_pr_diff : ctx:Context.t -> repo_url:string -> number:int -> (string, string) result Lwt.t
+  val get_pr_diff : ctx:Context.t -> repo_url:string -> number:int -> (string, Http_util.error) result Lwt.t
 
   val get_pull_request :
     ctx:Context.t -> repo_url:string -> number:int -> (Github_types.pull_request, string) result Lwt.t
 
-  val get_compare_diff : ctx:Context.t -> repo_url:string -> base:string -> head:string -> (string, string) result Lwt.t
+  val get_compare_diff :
+    ctx:Context.t -> repo_url:string -> base:string -> head:string -> (string, Http_util.error) result Lwt.t
 
   val get_file_content :
     ctx:Context.t -> repo_url:string -> path:string -> ref_:string -> (string option, string) result Lwt.t
