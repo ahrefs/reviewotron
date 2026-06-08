@@ -2,13 +2,23 @@
 
 open Devkit
 
+type error =
+  | Transport of Curl.curlCode  (** curl-level failure: DNS, connect, timeout, TLS — no HTTP response *)
+  | Status of int * string  (** a completed request with a non-2xx status code and its body *)
+
+let error_to_string = function
+  | Transport code -> Printf.sprintf "(%d) %s" (Curl.errno code) (Curl.strerror code)
+  | Status (code, body) -> Printf.sprintf "http %d: %s" code body
+
 let http_request ?(verbose = true) ?headers ?body meth url =
   let setup h =
     Curl.set_followlocation h true;
     Curl.set_maxredirs h 1
   in
-  match%lwt Web.http_request_lwt ~setup ~ua:"reviewotron" ~verbose ?headers ?body meth url with
-  | `Ok s -> Lwt.return (Ok s)
-  | `Error e -> Lwt.return (Error e)
+  ignore (verbose : bool);
+  match%lwt Web.http_request_lwt' ~setup ~ua:"reviewotron" ?headers ?body meth url with
+  | `Ok (code, body) when code / 100 = 2 -> Lwt.return (Ok body)
+  | `Ok (code, body) -> Lwt.return (Error (Status (code, body)))
+  | `Error code -> Lwt.return (Error (Transport code))
 
-let query_error_msg url e = Printf.sprintf "error while querying %s: %s" url e
+let query_error_msg url e = Printf.sprintf "error while querying %s: %s" url (error_to_string e)

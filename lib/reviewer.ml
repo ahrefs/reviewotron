@@ -111,16 +111,6 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
     | Review_posted
     | Review_quiet
 
-  (** Retry an Lwt operation once after a 1-second delay on failure.
-      The operation is passed as a thunk to ensure the retry executes fresh. *)
-  let retry_once ~label f =
-    match%lwt f () with
-    | Ok () as ok -> Lwt.return ok
-    | Error msg ->
-      log#warn "%s failed (will retry once): %s" label msg;
-      let%lwt () = Lwt_unix.sleep 1.0 in
-      f ()
-
   let create_reaction ~ctx ~repo_url target ~content =
     match target with
     | Pull_request number -> GH.create_issue_reaction ~ctx ~repo_url ~number ~content
@@ -533,13 +523,10 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
       let review_body = Printf.sprintf "%s\n\n**Reviewed commit:** `%s`" review_body short_sha in
       let review_req = Github_types.{ commit_id = Some head_sha; body = review_body; event = Comment; comments } in
       let%lwt () = finish_progress_reaction ~ctx ~repo_url progress ~quiet_success:false in
-      let%lwt post_result =
-        retry_once ~label:(Printf.sprintf "create_pr_review PR #%d" number) (fun () ->
-          GH.create_pr_review ~ctx ~repo_url ~number review_req)
-      in
+      let%lwt post_result = GH.create_pr_review ~ctx ~repo_url ~number review_req in
       (match post_result with
       | Ok () -> log#info "posted review for PR #%d (%s): %d inline comments" number pr_title (List.length comments)
-      | Error msg -> log#error "failed to post review for PR #%d after retry: %s" number msg);
+      | Error msg -> log#error "failed to post review for PR #%d: %s" number msg);
       record_reviewed ();
       Lwt.return Review_posted
 
@@ -632,13 +619,10 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
               line = Some finding.line;
             }
           in
-          let%lwt result =
-            retry_once ~label:(Printf.sprintf "create_commit_comment %s" sha) (fun () ->
-              GH.create_commit_comment ~ctx ~repo_url ~sha comment)
-          in
+          let%lwt result = GH.create_commit_comment ~ctx ~repo_url ~sha comment in
           (match result with
           | Ok () -> ()
-          | Error msg -> log#error "failed to post commit comment on %s after retry: %s" sha msg);
+          | Error msg -> log#error "failed to post commit comment on %s: %s" sha msg);
           Lwt.return_unit
         | Suggestion | Nitpick | Praise | Other _ ->
           (* Only post commit comments for critical/warning *)

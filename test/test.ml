@@ -2628,37 +2628,69 @@ let test_pr_no_security_notice_when_disabled () =
   (check bool) "no security failure notice" true
     (CCString.find ~sub:"security review plugin encountered an error" write_log < 0)
 
-(** {2 GitHub API retry tests} *)
+(** {2 GitHub API retry tests}
 
-let test_pr_review_retry_on_failure () =
-  Test_helpers.reset_test_state ();
-  (* Make the first create_pr_review call fail, then succeed on retry. *)
-  Api_local.set_fail_next_pr_review ();
-  let ctx = Test_helpers.make_test_context ~config:Test_helpers.auto_review_enabled_config () in
-  let payload = read_file "mock_payloads/pr_opened.json" in
-  let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
-  Lwt_main.run (R_test.process_event ctx ~event);
-  let write_log = Api_local.get_write_log () in
-  (* The review should still be posted after the retry *)
-  (check bool) "review posted after retry" true (CCString.find ~sub:"[create_pr_review]" write_log >= 0);
-  (check bool) "has deterministic review body" true (contains_sub ~sub:":robot: **REVIEW**" write_log)
+    Classification and the backoff loop are unit-tested directly against the
+    typed {!Http_util.error}.  The retry itself lives in [Api_remote.github_request]
+    (at the real HTTP boundary, where the typed error is in hand), so it is not
+    reachable through the [Api_local] mock — hence no end-to-end fault-injection
+    tests here. *)
 
-let test_commit_comment_retry_on_failure () =
-  Test_helpers.reset_test_state ();
-  Api_local.set_agent_response_path "mock_api_responses/claude/push_review_response.json";
-  (* Make the first create_commit_comment call fail, then succeed on retry. *)
-  Api_local.set_fail_next_commit_comment ();
-  let config =
-    Config_types.config_of_json
-      (Melange_json.of_string {|{"review_pushes_to_develop": true, "slack_channel": "dev-reviews"}|})
+let test_retry_classification () =
+  let retryable label e = (check bool) (Printf.sprintf "retryable: %s" label) true (Github_retry.is_retryable e) in
+  let permanent label e = (check bool) (Printf.sprintf "permanent: %s" label) false (Github_retry.is_retryable e) in
+  (* transient curl transport errors (the failure that motivated this) *)
+  retryable "resolve host" (Http_util.Transport Curl.CURLE_COULDNT_RESOLVE_HOST);
+  retryable "connect" (Http_util.Transport Curl.CURLE_COULDNT_CONNECT);
+  retryable "timeout" (Http_util.Transport Curl.CURLE_OPERATION_TIMEOUTED);
+  retryable "recv" (Http_util.Transport Curl.CURLE_RECV_ERROR);
+  retryable "tls connect" (Http_util.Transport Curl.CURLE_SSL_CONNECT_ERROR);
+  (* deterministic curl errors must not be retried *)
+  permanent "malformed url" (Http_util.Transport Curl.CURLE_URL_MALFORMAT);
+  permanent "too many redirects" (Http_util.Transport Curl.CURLE_TOO_MANY_REDIRECTS);
+  (* server-side and rate-limit HTTP statuses *)
+  retryable "500" (Http_util.Status (500, "Internal Server Error"));
+  retryable "503" (Http_util.Status (503, "Service Unavailable"));
+  retryable "429" (Http_util.Status (429, "too many requests"));
+  (* client errors are permanent for the same request *)
+  permanent "404" (Http_util.Status (404, "Not Found"));
+  permanent "401" (Http_util.Status (401, "Bad credentials"));
+  permanent "422" (Http_util.Status (422, "Unprocessable Entity"))
+
+(* A retryable error that clears before attempts run out succeeds; the thunk is
+   called once per attempt. base_delay is tiny to keep the test fast. *)
+let test_with_retry_recovers () =
+  let calls = ref 0 in
+  let f () =
+    incr calls;
+    if !calls < 3 then Lwt.return (Error (Http_util.Transport Curl.CURLE_COULDNT_RESOLVE_HOST))
+    else Lwt.return (Ok "body")
   in
-  let ctx = Test_helpers.make_test_context ~config () in
-  let payload = read_file "mock_payloads/push_develop.json" in
-  let event = Test_helpers.parse_event_exn ~event_type:"push" ~body:payload in
-  Lwt_main.run (R_test.process_event ctx ~event);
-  let write_log = Api_local.get_write_log () in
-  (* The commit comment should still be posted after the retry *)
-  (check bool) "commit comment posted after retry" true (CCString.find ~sub:"[create_commit_comment]" write_log >= 0)
+  let result = Lwt_main.run (Github_retry.with_retry ~base_delay:0.001 ~label:"test" f) in
+  (check bool) "succeeds once the error clears" true (Result.is_ok result);
+  (check int) "thunk called once per attempt until success" 3 !calls
+
+(* A non-retryable error returns immediately without a second attempt. *)
+let test_with_retry_fails_fast () =
+  let calls = ref 0 in
+  let f () =
+    incr calls;
+    Lwt.return (Error (Http_util.Status (404, "Not Found")))
+  in
+  let result = Lwt_main.run (Github_retry.with_retry ~base_delay:0.001 ~label:"test" f) in
+  (check bool) "returns the error" true (Result.is_error result);
+  (check int) "no retry on permanent error" 1 !calls
+
+(* A persistently retryable error exhausts max_attempts and gives up. *)
+let test_with_retry_exhausts_attempts () =
+  let calls = ref 0 in
+  let f () =
+    incr calls;
+    Lwt.return (Error (Http_util.Transport Curl.CURLE_COULDNT_RESOLVE_HOST))
+  in
+  let result = Lwt_main.run (Github_retry.with_retry ~max_attempts:3 ~base_delay:0.001 ~label:"test" f) in
+  (check bool) "gives up with the error" true (Result.is_error result);
+  (check int) "tries exactly max_attempts times" 3 !calls
 
 (** {2 Debug dump tests} *)
 
@@ -3377,8 +3409,10 @@ let () =
         ] );
       ( "github_api_retry",
         [
-          test_case "PR review retries on first failure" `Quick test_pr_review_retry_on_failure;
-          test_case "commit comment retries on first failure" `Quick test_commit_comment_retry_on_failure;
+          test_case "error classification" `Quick test_retry_classification;
+          test_case "with_retry recovers on transient error" `Quick test_with_retry_recovers;
+          test_case "with_retry fails fast on permanent error" `Quick test_with_retry_fails_fast;
+          test_case "with_retry exhausts max attempts" `Quick test_with_retry_exhausts_attempts;
         ] );
       "debug_dump", [ test_case "write debug dump creates file with expected content" `Quick test_write_debug_dump ];
       ( "budget_recovery",

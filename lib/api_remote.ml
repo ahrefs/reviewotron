@@ -62,7 +62,9 @@ let github_request ~ctx ~repo_url ~path ?(accept = "application/json") ?body met
   | Some (owner, repo) ->
     let url = Printf.sprintf "https://api.github.com/repos/%s/%s%s" owner repo path in
     let headers = build_headers ~auth_header ~accept in
-    http_request ~headers ?body meth url |> Lwt.map (Result.map_error (Http_util.query_error_msg url))
+    let label = Printf.sprintf "%s %s" (Web.string_of_http_action meth) url in
+    Github_retry.with_retry ~label (fun () -> http_request ~headers ?body meth url)
+    |> Lwt.map (Result.map_error (Http_util.query_error_msg url))
 
 let github_get ~ctx ~repo_url ~path ?accept () = github_request ~ctx ~repo_url ~path ?accept `GET
 
@@ -207,6 +209,6 @@ module Slack : Api.Slack = struct
              let err = Option.default "unknown" resp.error in
              log#error "Slack API error: %s" err
          with _exn -> log#warn "could not parse Slack response: %s" response_str)
-      | Error e -> log#error "Slack request failed: %s" e);
+      | Error e -> log#error "Slack request failed: %s" (Http_util.error_to_string e));
       Lwt.return_unit
 end
