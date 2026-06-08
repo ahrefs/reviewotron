@@ -76,6 +76,13 @@ let github_post ~ctx ~repo_url ~path ?accept ~body () =
 
 let github_delete ~ctx ~repo_url ~path ?accept () = github_request ~ctx ~repo_url ~path ?accept `DELETE
 
+(* Flatten a typed-error github result to the string-error result the
+   [Api.Github] signature uses, mapping the response body with [f]. *)
+let flatten_result f result = result |> Result.map_error Http_util.error_to_string |> Result.map f
+
+(* Specialisation for the common write call that ignores the response body. *)
+let ignore_body_result result = flatten_result (fun (_body : string) -> ()) result
+
 (** {2 Github module implementation} *)
 
 module Github : Api.Github = struct
@@ -106,7 +113,7 @@ module Github : Api.Github = struct
   let get_pr_files ~ctx ~repo_url ~number =
     let path = Printf.sprintf "/pulls/%d/files" number in
     let%lwt result = github_get ~ctx ~repo_url ~path () in
-    Lwt.return (result |> Result.map_error Http_util.error_to_string |> Result.map parse_pr_files_json)
+    Lwt.return (flatten_result parse_pr_files_json result)
 
   let get_pr_diff ~ctx ~repo_url ~number =
     let path = Printf.sprintf "/pulls/%d" number in
@@ -138,19 +145,19 @@ module Github : Api.Github = struct
     let path = Printf.sprintf "/pulls/%d/reviews" number in
     let body = Melange_json.to_string (Github_types.create_review_req_to_json review) in
     let%lwt result = github_post ~ctx ~repo_url ~path ~accept:"application/vnd.github+json" ~body () in
-    Lwt.return (result |> Result.map_error Http_util.error_to_string |> Result.map (fun (_body : string) -> ()))
+    Lwt.return (ignore_body_result result)
 
   let create_commit_comment ~ctx ~repo_url ~sha comment =
     let path = Printf.sprintf "/commits/%s/comments" sha in
     let body = Melange_json.to_string (Github_types.commit_comment_req_to_json comment) in
     let%lwt result = github_post ~ctx ~repo_url ~path ~body () in
-    Lwt.return (result |> Result.map_error Http_util.error_to_string |> Result.map (fun (_body : string) -> ()))
+    Lwt.return (ignore_body_result result)
 
   let create_issue_comment ~ctx ~repo_url ~number comment =
     let path = Printf.sprintf "/issues/%d/comments" number in
     let body = Melange_json.to_string (Github_types.issue_comment_req_to_json comment) in
     let%lwt result = github_post ~ctx ~repo_url ~path ~body () in
-    Lwt.return (result |> Result.map_error Http_util.error_to_string |> Result.map (fun (_body : string) -> ()))
+    Lwt.return (ignore_body_result result)
 
   let create_reaction ~ctx ~repo_url ~path ~content =
     let body = Melange_json.to_string (Github_types.reaction_req_to_json { content }) in
@@ -173,12 +180,12 @@ module Github : Api.Github = struct
   let delete_issue_reaction ~ctx ~repo_url ~number ~reaction_id =
     let path = Printf.sprintf "/issues/%d/reactions/%d" number reaction_id in
     let%lwt result = github_delete ~ctx ~repo_url ~path ~accept:"application/vnd.github+json" () in
-    Lwt.return (result |> Result.map_error Http_util.error_to_string |> Result.map (fun (_body : string) -> ()))
+    Lwt.return (ignore_body_result result)
 
   let delete_issue_comment_reaction ~ctx ~repo_url ~comment_id ~reaction_id =
     let path = Printf.sprintf "/issues/comments/%d/reactions/%d" comment_id reaction_id in
     let%lwt result = github_delete ~ctx ~repo_url ~path ~accept:"application/vnd.github+json" () in
-    Lwt.return (result |> Result.map_error Http_util.error_to_string |> Result.map (fun (_body : string) -> ()))
+    Lwt.return (ignore_body_result result)
 end
 
 (** {2 Agent runner — wraps ocaml-ai-sdk for AI agent execution} *)

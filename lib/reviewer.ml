@@ -314,9 +314,8 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
       (* Counting lines folds over the whole diff; defer it past the cheaper
          file-count check so an over-[max_files] diff isn't fully traversed. *)
       let total_lines = Diff_parser.total_lines filtered_diff in
-      (match total_lines with
-      | n when n > config.max_diff_lines -> Error (`Too_large n)
-      | _ -> Ok (filtered_diff, Diff_parser.to_string_annotated filtered_diff))
+      if total_lines > config.max_diff_lines then Error (`Too_large total_lines)
+      else Ok (filtered_diff, Diff_parser.to_string_annotated filtered_diff)
 
   (** Decide whether a finding can be rendered as a multi-line comment.
 
