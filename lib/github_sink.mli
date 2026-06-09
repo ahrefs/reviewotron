@@ -6,7 +6,7 @@
 (** Convert a neutral inline comment to GitHub's PR review comment request. *)
 val review_comment_req_of_comment : Review_comment.t -> Github_types.review_comment_req
 
-module Make (_ : Api.Review_sink) : sig
+module Make (_ : Api.Github_review_sink) : sig
   (** Publish a PR-style report as a GitHub pull request review. Errors are
       logged and swallowed to preserve the historical reviewer behavior. *)
   val publish_pr_review : ctx:Context.t -> job:Review_job.t -> number:int -> Review_engine.report -> unit Lwt.t

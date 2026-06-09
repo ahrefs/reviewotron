@@ -23,8 +23,8 @@ type progress_reaction = {
 }
 
 module Make
-    (SRC : Api.Review_source)
-    (SNK : Api.Review_sink)
+    (SRC : Api.Github_review_source)
+    (SNK : Api.Github_review_sink)
     (RX : Api.Reactions)
     (AI : Api.Agent_runner)
     (SL : Api.Slack) =
@@ -114,14 +114,14 @@ struct
     || report.general_failed
 
   let run_prepared_pr_review ?reaction_target ~ctx (prepared : Github_source.prepared_pr_review) =
-    let Github_source.{ number; job; filtered_diff } = prepared in
+    let Github_source.{ number; job } = prepared in
     let%lwt progress = start_progress_reaction ~ctx ~repo_url:job.repo_key reaction_target in
     (* The review pipeline can raise (network errors, SDK schema drift, etc.).
        Ensure the progress reaction is cleared even when the pipeline crashes —
        otherwise the "eyes" reaction is orphaned and the author has no signal
        that the bot gave up. *)
     try%lwt
-      let%lwt report = Engine.run_pr_review ~ctx ~job ~number ~filtered_diff in
+      let%lwt report = Engine.run_review ~ctx ~job in
       let%lwt () =
         match report_has_surface report with
         | false ->
@@ -158,13 +158,13 @@ struct
     match%lwt Source.prepare_push_review ~ctx ~config push with
     | Error error -> ignore_prepare_error error
     | Ok prepared ->
-      let Github_source.{ job; filtered_diff; push } = prepared in
+      let Github_source.{ job; push } = prepared in
       let debug_dir =
         let slug = Security_memory.repo_slug job.repo_key in
         let sha_prefix = String.sub job.head_sha 0 (min 8 (String.length job.head_sha)) in
         Printf.sprintf "debug/%s/%s" slug sha_prefix
       in
-      let%lwt plugin_result = Engine.run_plugins ~ctx ~job ~number:0 ~diff:filtered_diff ~debug_dir in
+      let%lwt plugin_result = Engine.run_plugins ~ctx ~job ~debug_dir in
       let Review_engine.{ general_result; findings; review_costs; security_error } = plugin_result in
       Cost_tracking.log_review_costs review_costs;
       let%lwt () = Sink.post_push_comments ~ctx ~repo_url:job.repo_key ~sha:job.head_sha findings in

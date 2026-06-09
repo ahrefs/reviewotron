@@ -1,4 +1,4 @@
-(** Triage agent — fast security scan of PR diffs.
+(** Triage agent — fast security scan of change diffs.
 
     Builds the agent configuration and user input for the triage stage
     of the security review pipeline.  The triage agent identifies
@@ -6,7 +6,7 @@
     analysis agents. *)
 
 let system_prompt =
-  {|You are a security triage agent. Your job is to quickly scan a pull request diff and identify regions that may contain security-relevant changes.
+  {|You are a security triage agent. Your job is to quickly scan a change diff and identify regions that may contain security-relevant changes.
 
 ## Your Task
 

@@ -4,12 +4,12 @@ module Make (AI : Api.Agent_runner) = struct
   let already_reviewed_message ~repo_key ~change_key =
     Printf.sprintf "change %s in %s was already reviewed" change_key repo_key
 
-  let run_prepared_report ~ctx Local_source.{ job; filtered_diff } =
+  let run_prepared_report ~ctx (job : Review_job.t) =
     let state = Context.state ctx in
     match State.is_change_reviewed state ~repo_key:job.repo_key ~change_key:job.change_key with
     | true -> Lwt.return (Error (already_reviewed_message ~repo_key:job.repo_key ~change_key:job.change_key))
     | false ->
-      let%lwt report = Engine.run_pr_review ~ctx ~job ~number:0 ~filtered_diff in
+      let%lwt report = Engine.run_review ~ctx ~job in
       State.record_change_review state ~repo_key:job.repo_key ~change_key:job.change_key
         ~review_costs:report.review_costs;
       State.save state;

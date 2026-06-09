@@ -1,7 +1,7 @@
-(** Module type signatures for the functor-based API architecture.
+(** Module type signatures for external integrations.
     Real implementations live in {!Api_remote}, mock implementations in {!Api_local}. *)
 
-module type Review_source = sig
+module type Github_review_source = sig
   val get_config : ctx:Context.t -> repo_url:string -> (Config_types.config, string) result Lwt.t
 
   val get_pr_files :
@@ -18,7 +18,7 @@ module type Review_source = sig
     ctx:Context.t -> repo_url:string -> path:string -> ref_:string -> (string option, string) result Lwt.t
 end
 
-module type Review_sink = sig
+module type Github_review_sink = sig
   val create_pr_review :
     ctx:Context.t -> repo_url:string -> number:int -> Github_types.create_review_req -> (unit, string) result Lwt.t
 
@@ -27,7 +27,7 @@ module type Review_sink = sig
 end
 
 (** GitHub-specific emoji reactions on PRs and issue comments. Kept separate
-    from {!Review_sink} because reactions have no platform-neutral meaning —
+    from {!Github_review_sink} because reactions have no platform-neutral meaning —
     only the GitHub publishing path uses them (quiet-review acknowledgement and
     in-progress signalling). *)
 module type Reactions = sig
@@ -45,8 +45,8 @@ module type Reactions = sig
 end
 
 module type Github = sig
-  include Review_source
-  include Review_sink
+  include Github_review_source
+  include Github_review_sink
   include Reactions
 end
 

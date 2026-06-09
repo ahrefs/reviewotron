@@ -8,11 +8,6 @@ type prepare_error =
   | Empty
   | Too_large of int
 
-type prepared_review = {
-  job : Review_job.t;
-  filtered_diff : Diff_parser.file_diff list;
-}
-
 (** Human-readable error text for CLI and tests. *)
 val string_of_prepare_error : prepare_error -> string
 
@@ -29,7 +24,7 @@ val prepare_review :
   diff_path:string ->
   config:Config_types.config ->
   unit ->
-  (prepared_review, prepare_error) result Lwt.t
+  (Review_job.t, prepare_error) result Lwt.t
 
 (** Build a local review job from raw unified diff text. *)
 val prepare_review_from_text :
@@ -41,4 +36,4 @@ val prepare_review_from_text :
   diff_text:string ->
   config:Config_types.config ->
   unit ->
-  (prepared_review, prepare_error) result Lwt.t
+  (Review_job.t, prepare_error) result Lwt.t

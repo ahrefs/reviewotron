@@ -16,8 +16,8 @@ type finding_source = Review_engine.finding_source =
 val deduplicate_findings : (finding_source * Review_types.finding) list -> Review_types.finding list
 
 module Make
-    (_ : Api.Review_source)
-    (_ : Api.Review_sink)
+    (_ : Api.Github_review_source)
+    (_ : Api.Github_review_sink)
     (_ : Api.Reactions)
     (_ : Api.Agent_runner)
     (_ : Api.Slack) : sig

@@ -5,11 +5,6 @@ type prepare_error =
   | Empty
   | Too_large of int
 
-type prepared_review = {
-  job : Review_job.t;
-  filtered_diff : Diff_parser.file_diff list;
-}
-
 let string_of_prepare_error = function
   | Read_failed msg -> msg
   | Empty -> "all files were filtered out"
@@ -91,6 +86,11 @@ let prepare_review_from_text ~root ~repo_key ?change_key ~title ~description ~di
   | Error error -> Lwt.return (Error error)
   | Ok (filtered_diff, filtered_text) ->
     let digest = digest_change_key diff_text in
+    let change_label =
+      match change_key with
+      | Some key -> Printf.sprintf "local change %s" key
+      | None -> Printf.sprintf "local diff %s" (Review_job.short_display_id digest)
+    in
     let change_key = CCOption.get_or ~default:(Printf.sprintf "diff/%s" digest) change_key in
     let fetch_file = fetch_file_from_root ~root in
     let job =
@@ -98,10 +98,12 @@ let prepare_review_from_text ~root ~repo_key ?change_key ~title ~description ~di
         {
           repo_key;
           change_key;
+          change_label;
           title;
           description;
           head_sha = digest;
           diff_text = filtered_text;
+          filtered_diff;
           config;
           file_contents = [];
           fetch_file;
@@ -109,7 +111,7 @@ let prepare_review_from_text ~root ~repo_key ?change_key ~title ~description ~di
           source_kind = Local;
         }
     in
-    Lwt.return (Ok { job; filtered_diff })
+    Lwt.return (Ok job)
 
 let prepare_review ~root ~repo_key ?change_key ~title ~description ~diff_path ~config () =
   match%lwt read_file diff_path with

@@ -10,16 +10,14 @@ type prepare_error =
 type prepared_pr_review = {
   number : int;
   job : Review_job.t;
-  filtered_diff : Diff_parser.file_diff list;
 }
 
 type prepared_push_review = {
   job : Review_job.t;
-  filtered_diff : Diff_parser.file_diff list;
   push : Github_types.commit_pushed_notification;
 }
 
-module Make (SRC : Api.Review_source) = struct
+module Make (SRC : Api.Github_review_source) = struct
   let fetch_config ~ctx ~repo_url =
     match%lwt SRC.get_config ~ctx ~repo_url with
     | Ok config ->
@@ -154,10 +152,12 @@ module Make (SRC : Api.Review_source) = struct
           {
             repo_key = repo_url;
             change_key = Printf.sprintf "pr/%d/%s" number head_sha;
+            change_label = Printf.sprintf "PR #%d" number;
             title = pr.title;
             description;
             head_sha;
             diff_text = filtered_text;
+            filtered_diff;
             config;
             file_contents;
             fetch_file;
@@ -165,7 +165,7 @@ module Make (SRC : Api.Review_source) = struct
             source_kind = Github;
           }
       in
-      Lwt.return (Ok { number; job; filtered_diff })
+      Lwt.return (Ok { number; job })
 
   let prepare_pr_review_from_comment ~ctx ~(config : Config_types.config) (n : Github_types.issue_comment_notification)
       =
@@ -220,10 +220,12 @@ module Make (SRC : Api.Review_source) = struct
           {
             repo_key = repo_url;
             change_key = push.after;
+            change_label = Printf.sprintf "push %s" (Review_job.short_display_id push.after);
             title;
             description;
             head_sha = push.after;
             diff_text = filtered_text;
+            filtered_diff;
             config;
             file_contents = [];
             fetch_file;
@@ -231,5 +233,5 @@ module Make (SRC : Api.Review_source) = struct
             source_kind = Github;
           }
       in
-      Lwt.return (Ok { job; filtered_diff; push })
+      Lwt.return (Ok { job; push })
 end

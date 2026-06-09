@@ -1,7 +1,6 @@
 type review_metadata = {
-  pr_number : int;
-  pr_title : string;
-  pr_description : string;
+  change_title : string;
+  change_description : string;
   file_contents : (string * string) list;
   fetch_file : Review_job.fetch_file;
 }

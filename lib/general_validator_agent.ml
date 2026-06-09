@@ -44,7 +44,7 @@ You are filtering for noise and groundedness, not re-deriving the technical anal
 - "Could be cleaner" or "extract a helper" refactors.
 - Missing tests without a named broken branch/input.
 - Error handling for states excluded by the function's contract.
-- Behavior that existed before the PR and was not made worse by the diff.
+- Behavior that existed before this change and was not made worse by the diff.
 - Comments that require "might", "could", "possibly", or "seems" to be honest.
 - Duplicate comments for the same root cause.
 

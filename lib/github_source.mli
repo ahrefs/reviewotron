@@ -12,16 +12,14 @@ type prepare_error =
 type prepared_pr_review = {
   number : int;
   job : Review_job.t;
-  filtered_diff : Diff_parser.file_diff list;
 }
 
 type prepared_push_review = {
   job : Review_job.t;
-  filtered_diff : Diff_parser.file_diff list;
   push : Github_types.commit_pushed_notification;
 }
 
-module Make (_ : Api.Review_source) : sig
+module Make (_ : Api.Github_review_source) : sig
   (** Fetch config if missing, or refresh it when a push modifies the config
       file. Returns the config captured for this event. *)
   val refresh_repo_config : Context.t -> Github.event -> (Config_types.config, string) result Lwt.t

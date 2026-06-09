@@ -54,7 +54,7 @@ type plugin_result = {
   security_error : bool;
 }
 
-(** Platform-neutral PR-style review report. *)
+(** Platform-neutral review report. *)
 type report = {
   body : string;
   comments : Review_comment.t list;
@@ -71,16 +71,9 @@ type report = {
 
 module Make (_ : Api.Agent_runner) : sig
   (** Run all enabled review plugins and collect findings and costs. *)
-  val run_plugins :
-    ctx:Context.t ->
-    job:Review_job.t ->
-    number:int ->
-    diff:Diff_parser.file_diff list ->
-    debug_dir:string ->
-    plugin_result Lwt.t
+  val run_plugins : ctx:Context.t -> job:Review_job.t -> debug_dir:string -> plugin_result Lwt.t
 
-  (** Run the core PR review mechanics and return a neutral report. The caller
+  (** Run the core review mechanics and return a neutral report. The caller
       remains responsible for publishing and state updates. *)
-  val run_pr_review :
-    ctx:Context.t -> job:Review_job.t -> number:int -> filtered_diff:Diff_parser.file_diff list -> report Lwt.t
+  val run_review : ctx:Context.t -> job:Review_job.t -> report Lwt.t
 end

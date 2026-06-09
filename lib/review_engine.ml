@@ -182,13 +182,13 @@ let render_section ~title ~lead = function
     let bullets = String.concat "\n" (List.map to_bullet fs) in
     Printf.sprintf "\n\n%s\n%s\n%s" title lead bullets
 
-let review_body ~number ~general_result ~findings ~unchanged_findings ~anchor_failed_findings ~review_costs
+let review_body ~change_label ~general_result ~findings ~unchanged_findings ~anchor_failed_findings ~review_costs
   ~security_error ~(config : Config_types.config) =
   let unchanged_section =
     render_section ~title:"### Findings on unchanged code (please investigate)"
       ~lead:
-        "These security-relevant findings reference files that were not changed in this PR. Investigate whether they \
-         should be addressed in this PR or opened as a separate issue:"
+        "These security-relevant findings reference files that were not changed here. Investigate whether they should \
+         be addressed in this change or opened as a separate issue:"
       unchanged_findings
   in
   let anchor_failed_section =
@@ -205,7 +205,7 @@ let review_body ~number ~general_result ~findings ~unchanged_findings ~anchor_fa
       | "" -> ":robot: **REVIEW**"
       | summary -> Printf.sprintf ":robot: **REVIEW**\n\nMinor:\n%s" summary)
     | None ->
-      log#error "review failed for PR #%d: no review output produced" number;
+      log#error "review failed for %s: no review output produced" change_label;
       (match findings with
       | _ :: _ ->
         "\xE2\x9A\xA0\xEF\xB8\x8F **Review partially failed** \xE2\x80\x94 the general code review agent encountered \
@@ -222,20 +222,20 @@ module Make (AI : Api.Agent_runner) = struct
   module General_plugin = General_review_plugin.Make (AI)
   module Security_plugin = Security_review_plugin.Make (AI)
 
-  let metadata_of_job ~number (job : Review_job.t) =
+  let metadata_of_job (job : Review_job.t) =
     Review_plugin.
       {
-        pr_number = number;
-        pr_title = job.title;
-        pr_description = job.description;
+        change_title = job.title;
+        change_description = job.description;
         file_contents = job.file_contents;
         fetch_file = job.fetch_file;
       }
 
-  let run_plugins ~ctx ~job ~number ~diff ~debug_dir =
+  let run_plugins ~ctx ~job ~debug_dir =
     let repo_url = job.Review_job.repo_key in
     let config = job.config in
-    let metadata = metadata_of_job ~number job in
+    let diff = job.filtered_diff in
+    let metadata = metadata_of_job job in
     let plugins_config = config.Config_types.review_plugins in
     let general_promise =
       if plugins_config.general.enabled then begin
@@ -293,7 +293,7 @@ module Make (AI : Api.Agent_runner) = struct
     in
     Lwt.return { general_result; findings; review_costs; security_error }
 
-  let route_findings ~number ~filtered_diff findings =
+  let route_findings ~change_label ~filtered_diff findings =
     List.fold_left
       (fun (comments, unchanged, anchor_failed) (finding : Review_types.finding) ->
         match route_finding ~diff:filtered_diff finding with
@@ -302,32 +302,35 @@ module Make (AI : Api.Agent_runner) = struct
           (match surfaces_in_unchanged_section finding with
           | true -> comments, finding :: unchanged, anchor_failed
           | false ->
-            log#info "PR #%d: dropping low-severity finding on unchanged file %s:%d (%s)" number finding.path
+            log#info "%s: dropping low-severity finding on unchanged file %s:%d (%s)" change_label finding.path
               finding.line
               (Review_types.severity_to_string finding.severity);
             comments, unchanged, anchor_failed)
         | Anchor_failed ->
-          log#warn "PR #%d: finding on changed file %s:%d could not be anchored — surfacing for investigation" number
+          log#warn "%s: finding on changed file %s:%d could not be anchored — surfacing for investigation" change_label
             finding.path finding.line;
           comments, unchanged, finding :: anchor_failed)
       ([], [], []) findings
 
-  let run_pr_review ~ctx ~(job : Review_job.t) ~number ~filtered_diff =
+  let run_review ~ctx ~(job : Review_job.t) =
     let debug_dir =
       let slug = Security_memory.repo_slug job.repo_key in
       let sha_prefix = String.sub job.head_sha 0 (min 8 (String.length job.head_sha)) in
       Printf.sprintf "debug/%s/%s" slug sha_prefix
     in
-    let%lwt plugin_result = run_plugins ~ctx ~job ~number ~diff:filtered_diff ~debug_dir in
+    let filtered_diff = job.filtered_diff in
+    let%lwt plugin_result = run_plugins ~ctx ~job ~debug_dir in
     Cost_tracking.log_review_costs plugin_result.review_costs;
-    let comments_rev, unchanged_rev, anchor_failed_rev = route_findings ~number ~filtered_diff plugin_result.findings in
+    let comments_rev, unchanged_rev, anchor_failed_rev =
+      route_findings ~change_label:job.change_label ~filtered_diff plugin_result.findings
+    in
     let comments = List.rev comments_rev in
     let unchanged_findings = List.rev unchanged_rev in
     let anchor_failed_findings = List.rev anchor_failed_rev in
     let body =
-      review_body ~number ~general_result:plugin_result.general_result ~findings:plugin_result.findings
-        ~unchanged_findings ~anchor_failed_findings ~review_costs:plugin_result.review_costs
-        ~security_error:plugin_result.security_error ~config:job.config
+      review_body ~change_label:job.change_label ~general_result:plugin_result.general_result
+        ~findings:plugin_result.findings ~unchanged_findings ~anchor_failed_findings
+        ~review_costs:plugin_result.review_costs ~security_error:plugin_result.security_error ~config:job.config
     in
     let general_failed = job.config.review_plugins.general.enabled && Option.is_none plugin_result.general_result in
     Lwt.return

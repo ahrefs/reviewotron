@@ -17,7 +17,7 @@ let review_comment_req_of_comment (comment : Review_comment.t) : Github_types.re
     body = comment.body;
   }
 
-module Make (SNK : Api.Review_sink) = struct
+module Make (SNK : Api.Github_review_sink) = struct
   let retry_once ~label f =
     match%lwt f () with
     | Ok () as ok -> Lwt.return ok

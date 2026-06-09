@@ -279,15 +279,15 @@ let test_system_prompt_override () =
 
 let test_build_user_message () =
   let diff = "diff --git a/foo.ml b/foo.ml\n+let x = 1" in
-  let msg = Review_prompt.build_user_message ~diff ~pr_title:"Test PR" ~pr_description:"A test" () in
-  (check bool) "has title" true (CCString.find ~sub:"## Pull Request: Test PR" msg >= 0);
+  let msg = Review_prompt.build_user_message ~diff ~change_title:"Test change" ~change_description:"A test" () in
+  (check bool) "has title" true (CCString.find ~sub:"## Change: Test change" msg >= 0);
   (check bool) "has diff" true (CCString.find ~sub:"## Diff" msg >= 0);
   (check bool) "has diff content" true (CCString.find ~sub:"let x = 1" msg >= 0)
 
 let test_build_user_message_no_description () =
   let diff = "diff --git a/foo.ml b/foo.ml\n+let x = 1" in
-  let msg = Review_prompt.build_user_message ~diff ~pr_title:"Test PR" () in
-  (check bool) "has title" true (CCString.find ~sub:"## Pull Request: Test PR" msg >= 0);
+  let msg = Review_prompt.build_user_message ~diff ~change_title:"Test change" () in
+  (check bool) "has title" true (CCString.find ~sub:"## Change: Test change" msg >= 0);
   (check bool) "has diff" true (CCString.find ~sub:"## Diff" msg >= 0)
 
 let test_review_schema_valid () =
@@ -388,7 +388,7 @@ let test_anthropic_structured_output_schemas_compatible () =
 let test_prompt_token_estimation () =
   let system = Review_prompt.system_prompt ~security_covered_elsewhere:false () in
   let diff = "diff --git a/foo.ml b/foo.ml\n+let x = 1" in
-  let user = Review_prompt.build_user_message ~diff ~pr_title:"Test" () in
+  let user = Review_prompt.build_user_message ~diff ~change_title:"Test" () in
   let estimate = Review_prompt.estimate_prompt_tokens ~system ~user in
   let char_count = String.length system + String.length user in
   (* Estimate should be roughly chars/4, within 2x *)
@@ -2111,13 +2111,14 @@ let test_local_source_prepare_review_builds_job () =
     in
     match result with
     | Error error -> fail (Local_source.string_of_prepare_error error)
-    | Ok Local_source.{ job; filtered_diff } ->
+    | Ok job ->
       (check string) "repo key" "local/repo" job.repo_key;
       (check string) "change key" "change-1" job.change_key;
+      (check string) "change label" "local change change-1" job.change_label;
       (check string) "title" "Local change" job.title;
       assert_local_trigger job.trigger;
       assert_local_source_kind job.source_kind;
-      (check bool) "filtered diff populated" true (List.compare_length_with filtered_diff 0 > 0);
+      (check bool) "filtered diff populated" true (List.compare_length_with job.filtered_diff 0 > 0);
       let fetch_result = Lwt_main.run (job.fetch_file ~path:"src/main.ml") in
       (match fetch_result with
       | Ok (Some contents) -> (check bool) "local file content" true (CCString.find ~sub:"print_endline" contents >= 0)
@@ -2134,7 +2135,7 @@ let test_local_source_rejects_unsafe_fetch_path () =
     in
     match result with
     | Error error -> fail (Local_source.string_of_prepare_error error)
-    | Ok Local_source.{ job; filtered_diff = _ } ->
+    | Ok job ->
       let fetch_result = Lwt_main.run (job.fetch_file ~path:"../secret.txt") in
       (match fetch_result with
       | Error msg ->
@@ -2162,7 +2163,7 @@ let test_local_source_rejects_symlink_escape () =
         in
         match result with
         | Error error -> fail (Local_source.string_of_prepare_error error)
-        | Ok Local_source.{ job; filtered_diff = _ } ->
+        | Ok job ->
           let fetch_result = Lwt_main.run (job.fetch_file ~path:"link.txt") in
           (match fetch_result with
           | Error msg -> (check bool) "symlink escape rejected" true (CCString.find ~sub:"outside root" msg >= 0)
@@ -2179,7 +2180,7 @@ let test_local_source_reports_fetch_read_errors () =
     in
     match result with
     | Error error -> fail (Local_source.string_of_prepare_error error)
-    | Ok Local_source.{ job; filtered_diff = _ } ->
+    | Ok job ->
       let fetch_result = Lwt_main.run (job.fetch_file ~path:"src") in
       (match fetch_result with
       | Error msg -> (check bool) "read error reported" true (CCString.find ~sub:"failed to read" msg >= 0)
@@ -3435,9 +3436,8 @@ module General_plugin_test = General_review_plugin.Make (General_plugin_agent_ru
 
 let general_plugin_metadata : Review_plugin.review_metadata =
   {
-    pr_number = 42;
-    pr_title = "Test PR";
-    pr_description = "";
+    change_title = "Test change";
+    change_description = "";
     file_contents = [];
     fetch_file = (fun ~path:_ -> Lwt.return (Ok None));
   }

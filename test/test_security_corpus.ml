@@ -64,7 +64,7 @@ let run_triage ~ctx ~diff_text ~file_paths : Security_types.triage_output =
 let run_pipeline ~ctx ~diff_text ~diff =
   let fetch_file ~path:_ = Lwt.return (Ok None) in
   let metadata : Review_plugin.review_metadata =
-    { pr_number = 0; pr_title = "corpus test"; pr_description = ""; file_contents = []; fetch_file }
+    { change_title = "corpus test"; change_description = ""; file_contents = []; fetch_file }
   in
   let config = Context.get_config ctx ~repo_key:corpus_repo_url in
   let findings, _costs =

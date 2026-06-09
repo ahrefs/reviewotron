@@ -117,8 +117,8 @@ module Make (AI : Api.Agent_runner) = struct
   (** A candidate's sink is what the analysis agent picked as "the dangerous
       operation."  For some vulnerability classes — notably authz — the agent
       tends to point [sink] at the enforcement/decision point (e.g. a role
-      check) rather than at the defect site where the PR actually introduces
-      the flaw.  When that enforcement point lives in unchanged code, the
+      check) rather than at the defect site where the reviewed change actually
+      introduces the flaw.  When that enforcement point lives in unchanged code, the
       finding can't be rendered as an inline comment even though the flow
       chain almost always traces through a line that was changed.
 
@@ -130,7 +130,7 @@ module Make (AI : Api.Agent_runner) = struct
       The ordering means: prefer the sink when it's already in the diff,
       otherwise prefer a flow step, otherwise the source.  Flow is ordered
       source→sink by construction, so taking the first diff-resident step
-      gives us the earliest point on the path that this PR touches. *)
+      gives us the earliest point on the path that this change touches. *)
   let pick_inline_anchor ~diff (f : Security_types.candidate_finding) =
     let sink_site = `Sink, f.sink.path, f.sink.line in
     let flow_sites = List.map (fun (s : Security_types.flow_step) -> `Flow, s.path, s.line) f.flow in
@@ -183,7 +183,7 @@ module Make (AI : Api.Agent_runner) = struct
 
       Only called for findings with a [Confirmed] verdict.  Severity is
       derived from the inner candidate's confidence level.  [evidence_notes]
-      from the validator is not surfaced in the PR comment — it is available
+      from the validator is not surfaced in the review comment — it is available
       in logs for prompt tuning.
 
       Inline anchor is picked from the evidence chain via [pick_inline_anchor]
@@ -469,7 +469,7 @@ module Make (AI : Api.Agent_runner) = struct
        and [skip_reason = Some "..."] (bail).  When it has nothing to say but
        still feels obliged to populate the field, it emits the empty string —
        and we used to treat that as a real skip, silencing the entire security
-       pipeline for the PR (observed in production).  An empty or
+       pipeline for the reviewed change (observed in production).  An empty or
        whitespace-only reason carries no information, so
        fall through to analysis and let the signal list drive the decision. *)
       let effective_skip_reason =

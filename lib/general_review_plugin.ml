@@ -124,8 +124,8 @@ module Make (AI : Api.Agent_runner) = struct
   let run_review ~ctx ~repo_url ~(config : Config_types.config) ~diff_text ~metadata ?debug_dir () =
     let security_covered_elsewhere = config.review_plugins.security.enabled in
     let system = Review_prompt.system_prompt ?override:config.system_prompt_override ~security_covered_elsewhere () in
-    let Review_plugin.{ pr_title; pr_description; file_contents; _ } = metadata in
-    let input = Review_prompt.build_user_message ~diff:diff_text ~pr_title ~pr_description ~file_contents () in
+    let Review_plugin.{ change_title; change_description; file_contents; _ } = metadata in
+    let input = Review_prompt.build_user_message ~diff:diff_text ~change_title ~change_description ~file_contents () in
     let agent_config = build_agent_config ~system_prompt:system in
     let%lwt result = AI.run ~ctx ~repo_url ~model_id:config.model ?debug_dir ~config:agent_config ~input () in
     match result with

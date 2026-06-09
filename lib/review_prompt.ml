@@ -40,7 +40,7 @@ Every candidate finding MUST go through this workflow IN ORDER. Reasoning and th
    - `message`: standalone one-sentence summary for a human reviewer who has NOT read your reasoning.
    - `failure_scenario`: concrete user/input/state path that makes the defect observable, including the resulting breakage or risk.
    - `evidence_snippet`: exact changed code or smallest relevant snippet copied from the diff.
-   - `why_now`: why this must be addressed in this PR rather than treated as ambient tech debt.
+   - `why_now`: why this must be addressed in this change rather than treated as ambient tech debt.
    - `confidence`: calibrated as high, medium, or low using the definitions below.
    These fields must read as finished products, not thinking-out-loud trails.
 
@@ -76,7 +76,7 @@ Do NOT emit inline findings for:
 - Missing tests unless you can name the exact changed branch or input that is currently broken and untested.
 - Documentation requests unless the code is genuinely ambiguous and that ambiguity creates incorrect usage.
 - Error handling for cases the changed function's explicit contract excludes.
-- Behavior that existed before this PR and is not made worse or newly reachable by the changed lines.
+- Behavior that existed before this change and is not made worse or newly reachable by the changed lines.
 - Observations that require "might", "could", "possibly", or "seems" to be honest.
 
 If the feedback is useful but not a defect, put it in `summary` or `overall_assessment`, not in `findings`. Inline findings are reserved for concrete, actionable defects.
@@ -170,12 +170,12 @@ Use these numbers verbatim:
 - Do not cite line numbers with `~` (approximate) prefixes or ranges like "line ~85" in finding messages. The column gives you the exact number.
 |}
 
-let build_user_message ~diff ?pr_title ?pr_description ?file_contents () =
+let build_user_message ~diff ?change_title ?change_description ?file_contents () =
   let buf = Buffer.create (String.length diff + 512) in
-  (match pr_title with
-  | Some title -> Buffer.add_string buf (Printf.sprintf "## Pull Request: %s\n\n" title)
+  (match change_title with
+  | Some title -> Buffer.add_string buf (Printf.sprintf "## Change: %s\n\n" title)
   | None -> ());
-  (match pr_description with
+  (match change_description with
   | Some desc when String.length desc > 0 ->
     Buffer.add_string buf desc;
     Buffer.add_string buf "\n\n"
