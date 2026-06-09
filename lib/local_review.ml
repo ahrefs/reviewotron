@@ -1,8 +1,10 @@
+let already_reviewed_message ~repo_key ~change_key =
+  Printf.sprintf "change %s in %s was already reviewed" change_key repo_key
+
+let is_already_reviewed_message message = CCString.suffix ~suf:" was already reviewed" message
+
 module Make (AI : Api.Agent_runner) = struct
   module Engine = Review_engine.Make (AI)
-
-  let already_reviewed_message ~repo_key ~change_key =
-    Printf.sprintf "change %s in %s was already reviewed" change_key repo_key
 
   let run_prepared_report ~ctx (job : Review_job.t) =
     let state = Context.state ctx in

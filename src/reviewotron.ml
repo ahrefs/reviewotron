@@ -97,6 +97,11 @@ let render_review_output output report =
 let run_local_review f =
   try Lwt_main.run (f ()) with exn -> Error (Printf.sprintf "local review failed: %s" (Exn.str exn))
 
+let log_local_review_error msg =
+  match Local_review.is_already_reviewed_message msg with
+  | true -> log#info "%s" msg
+  | false -> log#error "%s" msg
+
 let read_text_file path =
   match Std.input_file ~bin:true path with
   | contents -> Ok contents
@@ -164,7 +169,7 @@ let review_diff_action secrets_path config_filename state_path logfile loglevel 
             Review.review_diff_text_report ~ctx ~root ~repo_key ?change_key ~title ~description ~diff_text ~config ())
       in
       (match result with
-      | Error msg -> log#error "%s" msg
+      | Error msg -> log_local_review_error msg
       | Ok report -> Printf.printf "%s\n" (render_review_output output report)))
 
 (* flags *)

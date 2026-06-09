@@ -3,6 +3,10 @@
     This module proves the review core can run without GitHub acquisition or
     GitHub publication. *)
 
+(** [true] when a local review error string represents normal duplicate-skip
+    behavior rather than a failed review. *)
+val is_already_reviewed_message : string -> bool
+
 module Make (_ : Api.Agent_runner) : sig
   (** Review a local unified diff, record the generic [change_key] in state,
       and return markdown output. Returns [Error _] if the change was already

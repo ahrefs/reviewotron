@@ -2051,6 +2051,12 @@ let git_key args = String.concat "\n" args
 let test_local_git_default_repo_key () =
   (check string) "repo key" "local:/tmp/reviewotron" (Local_git.default_repo_key ~root:"/tmp/reviewotron")
 
+let test_local_review_duplicate_message_detection () =
+  let duplicate = "change local-change in local/repo was already reviewed" in
+  let failure = "local review failed: boom" in
+  (check bool) "duplicate skip detected" true (Local_review.is_already_reviewed_message duplicate);
+  (check bool) "generic failure not duplicate skip" false (Local_review.is_already_reviewed_message failure)
+
 let test_local_git_run_git_reports_spawn_errors () =
   let old_path = Sys.getenv_opt "PATH" in
   let empty_path = Filename.temp_dir "reviewotron_empty_path_" "_test" in
@@ -3926,6 +3932,7 @@ let () =
       ( "local_review",
         [
           test_case "git default repo key" `Quick test_local_git_default_repo_key;
+          test_case "duplicate message detection" `Quick test_local_review_duplicate_message_detection;
           test_case "git spawn errors return Error" `Quick test_local_git_run_git_reports_spawn_errors;
           test_case "git infer base uses explicit base" `Quick test_local_git_infer_base_uses_explicit_base;
           test_case "git infer base uses origin HEAD" `Quick test_local_git_infer_base_uses_origin_head;
