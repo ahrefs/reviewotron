@@ -462,7 +462,7 @@ Local reviews load `.reviewotron.json` from `--root` before applying path filter
 | `--base` | inferred from Git | Base ref for generated diffs; tries `origin/HEAD`, `origin/main`, `origin/master`, then the upstream remote |
 | `--root` | Git worktree root, then cwd | Repository root for local file-content lookups |
 | `--repo-key` | `local:<root>` | Stable repository key for config, memory paths, and state |
-| `--change-key` | digest of diff | Stable change key recorded in state |
+| `--change-key` | digest of filtered diff | Stable change key recorded in state |
 | `--title` | inferred from base or diff file | Title passed to review agents |
 | `--description-file` | (none) | Optional file used as the review description |
 | `--config-filename` | `.reviewotron.json` | Config file loaded from `--root`, or absolute config path |

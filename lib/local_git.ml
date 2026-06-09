@@ -23,44 +23,48 @@ let read_all ic =
   in
   loop ()
 
+let git_command ~cwd args = Printf.sprintf "git -C %s %s" cwd (String.concat " " args)
+
 let run_git ~cwd args =
   let process_args = Array.of_list ("git" :: "-C" :: cwd :: args) in
-  let stdout_r, stdout_w = Unix.pipe () in
-  let dev_null =
-    match Unix.openfile "/dev/null" [ Unix.O_RDWR ] 0 with
-    | dev_null -> dev_null
-    | exception exn ->
-      close_fd_noerr stdout_r;
-      close_fd_noerr stdout_w;
-      raise exn
-  in
-  let pid =
-    try Unix.create_process "git" process_args dev_null stdout_w dev_null
-    with exn ->
-      close_fd_noerr stdout_r;
-      close_fd_noerr stdout_w;
-      close_fd_noerr dev_null;
-      raise exn
-  in
-  close_fd_noerr stdout_w;
-  close_fd_noerr dev_null;
-  let ic = Unix.in_channel_of_descr stdout_r in
-  let status = ref None in
-  let output =
-    Fun.protect
-      ~finally:(fun () ->
-        close_in_noerr ic;
-        status := waitpid_noerr pid)
-      (fun () -> read_all ic)
-  in
-  match !status with
-  | None -> Error (Printf.sprintf "git %s waitpid failed" (String.concat " " args))
-  | Some status ->
-  match status with
-  | Unix.WEXITED 0 -> Ok (String.trim output)
-  | Unix.WEXITED code -> Error (Printf.sprintf "git %s exited with %d" (String.concat " " args) code)
-  | Unix.WSIGNALED signal -> Error (Printf.sprintf "git %s killed by signal %d" (String.concat " " args) signal)
-  | Unix.WSTOPPED signal -> Error (Printf.sprintf "git %s stopped by signal %d" (String.concat " " args) signal)
+  try
+    let stdout_r, stdout_w = Unix.pipe () in
+    let dev_null =
+      match Unix.openfile "/dev/null" [ Unix.O_RDWR ] 0 with
+      | dev_null -> dev_null
+      | exception exn ->
+        close_fd_noerr stdout_r;
+        close_fd_noerr stdout_w;
+        raise exn
+    in
+    let pid =
+      try Unix.create_process "git" process_args dev_null stdout_w dev_null
+      with exn ->
+        close_fd_noerr stdout_r;
+        close_fd_noerr stdout_w;
+        close_fd_noerr dev_null;
+        raise exn
+    in
+    close_fd_noerr stdout_w;
+    close_fd_noerr dev_null;
+    let ic = Unix.in_channel_of_descr stdout_r in
+    let status = ref None in
+    let output =
+      Fun.protect
+        ~finally:(fun () ->
+          close_in_noerr ic;
+          status := waitpid_noerr pid)
+        (fun () -> read_all ic)
+    in
+    match !status with
+    | None -> Error (Printf.sprintf "git %s waitpid failed" (String.concat " " args))
+    | Some status ->
+    match status with
+    | Unix.WEXITED 0 -> Ok (String.trim output)
+    | Unix.WEXITED code -> Error (Printf.sprintf "git %s exited with %d" (String.concat " " args) code)
+    | Unix.WSIGNALED signal -> Error (Printf.sprintf "git %s killed by signal %d" (String.concat " " args) signal)
+    | Unix.WSTOPPED signal -> Error (Printf.sprintf "git %s stopped by signal %d" (String.concat " " args) signal)
+  with exn -> Error (Printf.sprintf "%s failed: %s" (git_command ~cwd args) (Printexc.to_string exn))
 
 let absolute_path path =
   match Filename.is_relative path with

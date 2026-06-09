@@ -85,7 +85,7 @@ let prepare_review_from_text ~root ~repo_key ?change_key ~title ~description ~di
   match prepare_diff ~config diff_text with
   | Error error -> Lwt.return (Error error)
   | Ok (filtered_diff, filtered_text) ->
-    let digest = digest_change_key diff_text in
+    let digest = digest_change_key filtered_text in
     let change_label =
       match change_key with
       | Some key -> Printf.sprintf "local change %s" key

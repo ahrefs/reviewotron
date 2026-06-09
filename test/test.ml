@@ -443,6 +443,16 @@ let test_dedup_near_line_collapse_same_category () =
   (check bool) "far-apart finding kept" true (List.exists (finding_by_message "c") out);
   (check bool) "weaker near-line dropped" false (List.exists (finding_by_message "a") out)
 
+let test_dedup_near_line_rechecks_promoted_best () =
+  let a = mk_finding ~path:"a.ml" ~line:8 ~severity:Warning ~message:"a" () in
+  let b = mk_finding ~path:"a.ml" ~line:10 ~severity:Critical ~message:"b" () in
+  let c = mk_finding ~path:"a.ml" ~line:13 ~severity:Warning ~message:"c" () in
+  let out =
+    Reviewer.deduplicate_findings [ Reviewer.From_general, a; Reviewer.From_general, b; Reviewer.From_general, c ]
+  in
+  (check int) "single finding after promoted best collapse" 1 (List.length out);
+  (check bool) "promoted critical survives" true (List.exists (finding_by_message "b") out)
+
 let test_dedup_near_line_different_category_both_kept () =
   let a = mk_finding ~path:"a.ml" ~line:8 ~category:Review_types.Security ~message:"a" () in
   let b = mk_finding ~path:"a.ml" ~line:10 ~category:Review_types.Performance ~message:"b" () in
@@ -2041,6 +2051,21 @@ let git_key args = String.concat "\n" args
 let test_local_git_default_repo_key () =
   (check string) "repo key" "local:/tmp/reviewotron" (Local_git.default_repo_key ~root:"/tmp/reviewotron")
 
+let test_local_git_run_git_reports_spawn_errors () =
+  let old_path = Sys.getenv_opt "PATH" in
+  let empty_path = Filename.temp_dir "reviewotron_empty_path_" "_test" in
+  Fun.protect
+    ~finally:(fun () ->
+      (match old_path with
+      | Some path -> Unix.putenv "PATH" path
+      | None -> Unix.putenv "PATH" "");
+      try Unix.rmdir empty_path with Unix.Unix_error _ -> ())
+    (fun () ->
+      Unix.putenv "PATH" empty_path;
+      match Local_git.run_git ~cwd:"/" [ "--version" ] with
+      | Ok output -> fail (Printf.sprintf "expected git spawn failure, got: %s" output)
+      | Error msg -> (check bool) "reports missing executable" true (contains_sub ~sub:"git -C / --version failed" msg))
+
 let test_local_git_infer_base_uses_explicit_base () =
   let run_git =
     fake_git
@@ -2186,6 +2211,39 @@ let test_local_source_reports_fetch_read_errors () =
       | Error msg -> (check bool) "read error reported" true (CCString.find ~sub:"failed to read" msg >= 0)
       | Ok (Some _) -> fail "directory fetch should not return content"
       | Ok None -> fail "directory fetch should report a read error"))
+
+let two_file_diff =
+  {|
+diff --git a/src/a.ml b/src/a.ml
+index 1111111..2222222 100644
+--- a/src/a.ml
++++ b/src/a.ml
+@@ -1 +1 @@
+-let a = 1
++let a = 2
+diff --git a/src/b.ml b/src/b.ml
+index 3333333..4444444 100644
+--- a/src/b.ml
++++ b/src/b.ml
+@@ -1 +1 @@
+-let b = 1
++let b = 2
+|}
+
+let test_local_source_default_change_key_uses_filtered_diff () =
+  let config_without_b = Config_types.config_of_json (Melange_json.of_string {|{"ignored_paths": ["src/b.ml"]}|}) in
+  let config_without_a = Config_types.config_of_json (Melange_json.of_string {|{"ignored_paths": ["src/a.ml"]}|}) in
+  let prepare config =
+    Lwt_main.run
+      (Local_source.prepare_review_from_text ~root:"." ~repo_key:"local/repo" ~title:"Local change" ~description:""
+         ~diff_text:two_file_diff ~config ())
+  in
+  match prepare config_without_b, prepare config_without_a with
+  | Ok without_b, Ok without_a ->
+    (check bool) "default change key changes with filters" true
+      (not (String.equal without_b.change_key without_a.change_key));
+    (check bool) "head sha changes with filters" true (not (String.equal without_b.head_sha without_a.head_sha))
+  | Error error, _ | _, Error error -> fail (Local_source.string_of_prepare_error error)
 
 let test_local_review_diff_returns_markdown () =
   Test_helpers.reset_test_state ();
@@ -3678,6 +3736,7 @@ let () =
           test_case "same line same source higher severity wins" `Quick
             test_dedup_same_line_same_source_higher_severity_wins;
           test_case "near line collapse same category" `Quick test_dedup_near_line_collapse_same_category;
+          test_case "near line rechecks promoted best" `Quick test_dedup_near_line_rechecks_promoted_best;
           test_case "near line different category both kept" `Quick test_dedup_near_line_different_category_both_kept;
           test_case "security findings not near-line collapsed" `Quick test_dedup_security_not_near_line_collapsed;
           test_case "sorts by path then line" `Quick test_dedup_sorts_by_path_then_line;
@@ -3867,6 +3926,7 @@ let () =
       ( "local_review",
         [
           test_case "git default repo key" `Quick test_local_git_default_repo_key;
+          test_case "git spawn errors return Error" `Quick test_local_git_run_git_reports_spawn_errors;
           test_case "git infer base uses explicit base" `Quick test_local_git_infer_base_uses_explicit_base;
           test_case "git infer base uses origin HEAD" `Quick test_local_git_infer_base_uses_origin_head;
           test_case "git diff uses merge-base" `Quick test_local_git_diff_against_base_uses_merge_base;
@@ -3874,6 +3934,8 @@ let () =
           test_case "source rejects unsafe fetch path" `Quick test_local_source_rejects_unsafe_fetch_path;
           test_case "source rejects symlink escape" `Quick test_local_source_rejects_symlink_escape;
           test_case "source reports fetch read errors" `Quick test_local_source_reports_fetch_read_errors;
+          test_case "source default change key uses filtered diff" `Quick
+            test_local_source_default_change_key_uses_filtered_diff;
           test_case "review diff returns markdown" `Quick test_local_review_diff_returns_markdown;
           test_case "review generated diff text returns markdown" `Quick test_local_review_diff_text_returns_markdown;
           test_case "review plugins use supplied config" `Quick test_local_review_uses_supplied_config_for_plugins;

@@ -2,7 +2,8 @@
 
 type run_git = cwd:string -> string list -> (string, string) result
 
-(** Run [git -C cwd ...] and return trimmed stdout. *)
+(** Run [git -C cwd ...] and return trimmed stdout, or [Error _] when the
+    process cannot be started or exits unsuccessfully. *)
 val run_git : run_git
 
 (** Return an absolute, real path where possible. *)

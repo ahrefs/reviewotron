@@ -14,6 +14,14 @@ let severity_rank = function
   | Praise -> 1
   | Other _ -> 0
 
+let same_source a b =
+  match a, b with
+  | From_general, From_general | From_security, From_security -> true
+  | From_general, From_security | From_security, From_general -> false
+
+let same_category a b =
+  String.equal (Review_types.finding_category_to_string a) (Review_types.finding_category_to_string b)
+
 let pick_for_same_line (sa, fa) (sb, fb) =
   match sa, sb with
   | From_security, From_general -> sa, fa
@@ -45,23 +53,27 @@ let collapse_near_lines sourced_findings =
   Hashtbl.iter
     (fun _path bucket ->
       let sorted = List.sort (fun (_, a) (_, b) -> Int.compare a.Review_types.line b.Review_types.line) bucket in
+      let collides (src, f) (src', f') =
+        same_source src' src
+        && same_category f'.Review_types.category f.Review_types.category
+        && abs (f'.Review_types.line - f.line) <= near_line_window
+      in
+      let pick_more_severe (bsrc, bf) (csrc, cf) =
+        if severity_rank cf.Review_types.severity > severity_rank bf.Review_types.severity then csrc, cf else bsrc, bf
+      in
+      let rec collect_near_lines best rest =
+        let colliding, others = List.partition (collides best) rest in
+        match colliding with
+        | [] -> best, others
+        | _ :: _ ->
+          let best = List.fold_left pick_more_severe best colliding in
+          collect_near_lines best others
+      in
       let rec sweep acc = function
         | [] -> acc
-        | (src, f) :: rest when src = From_security -> sweep ((src, f) :: acc) rest
-        | (src, f) :: rest ->
-          let collides (src', f') =
-            src' = src
-            && f'.Review_types.category = f.Review_types.category
-            && abs (f'.Review_types.line - f.line) <= near_line_window
-          in
-          let colliding, others = List.partition collides rest in
-          let best =
-            List.fold_left
-              (fun (bsrc, bf) (csrc, cf) ->
-                if severity_rank cf.Review_types.severity > severity_rank bf.Review_types.severity then csrc, cf
-                else bsrc, bf)
-              (src, f) colliding
-          in
+        | ((From_security, _) as finding) :: rest -> sweep (finding :: acc) rest
+        | finding :: rest ->
+          let best, others = collect_near_lines finding rest in
           sweep (best :: acc) others
       in
       let kept = sweep [] sorted in
