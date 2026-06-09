@@ -18,26 +18,15 @@ let review_comment_req_of_comment (comment : Review_comment.t) : Github_types.re
   }
 
 module Make (SNK : Api.Github_review_sink) = struct
-  let retry_once ~label f =
-    match%lwt f () with
-    | Ok () as ok -> Lwt.return ok
-    | Error msg ->
-      log#warn "%s failed (will retry once): %s" label msg;
-      let%lwt () = Lwt_unix.sleep 1.0 in
-      f ()
-
   let publish_pr_review ~ctx ~(job : Review_job.t) ~number (report : Review_engine.report) =
     let comments = List.map review_comment_req_of_comment report.comments in
     let short_sha = if String.length job.head_sha >= 7 then String.sub job.head_sha 0 7 else job.head_sha in
     let body = Printf.sprintf "%s\n\n**Reviewed commit:** `%s`" report.body short_sha in
     let review_req = Github_types.{ commit_id = Some job.head_sha; body; event = Comment; comments } in
-    let%lwt post_result =
-      retry_once ~label:(Printf.sprintf "create_pr_review PR #%d" number) (fun () ->
-        SNK.create_pr_review ~ctx ~repo_url:job.repo_key ~number review_req)
-    in
+    let%lwt post_result = SNK.create_pr_review ~ctx ~repo_url:job.repo_key ~number review_req in
     (match post_result with
     | Ok () -> log#info "posted review for PR #%d (%s): %d inline comments" number job.title (List.length comments)
-    | Error msg -> log#error "failed to post review for PR #%d after retry: %s" number msg);
+    | Error msg -> log#error "failed to post review for PR #%d: %s" number msg);
     Lwt.return_unit
 
   let post_push_comments ~ctx ~repo_url ~sha findings =
@@ -53,13 +42,10 @@ module Make (SNK : Api.Github_review_sink) = struct
               line = Some finding.line;
             }
           in
-          let%lwt result =
-            retry_once ~label:(Printf.sprintf "create_commit_comment %s" sha) (fun () ->
-              SNK.create_commit_comment ~ctx ~repo_url ~sha comment)
-          in
+          let%lwt result = SNK.create_commit_comment ~ctx ~repo_url ~sha comment in
           (match result with
           | Ok () -> ()
-          | Error msg -> log#error "failed to post commit comment on %s after retry: %s" sha msg);
+          | Error msg -> log#error "failed to post commit comment on %s: %s" sha msg);
           Lwt.return_unit
         | Suggestion | Nitpick | Praise | Other _ -> Lwt.return_unit)
       findings

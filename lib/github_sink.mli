@@ -1,7 +1,7 @@
 (** GitHub sink adapter.
 
     Converts neutral review output into GitHub API payloads and performs the
-    GitHub write operations with the existing retry behavior. *)
+    GitHub write operations through the supplied sink implementation. *)
 
 (** Convert a neutral inline comment to GitHub's PR review comment request. *)
 val review_comment_req_of_comment : Review_comment.t -> Github_types.review_comment_req
