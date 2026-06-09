@@ -64,7 +64,7 @@ let exchange_installation_token (app : Config_types.app_installation_cfg) =
     let%lwt result = Http_util.http_request ~headers ~body:(`Raw ("application/json", "")) `POST url in
     (match result with
     | Error e ->
-      let msg = Printf.sprintf "error exchanging installation token: %s" e.Http_util.message in
+      let msg = Printf.sprintf "error exchanging installation token: %s" (Http_util.error_to_string e) in
       log#error "%s" msg;
       Lwt.return (Error msg)
     | Ok body ->

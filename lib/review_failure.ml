@@ -14,9 +14,9 @@ let classify_fetch_error (error : Http_util.error) =
   (* GitHub answers the diff media type with HTTP 406 when the diff is too
      large to serve.  Branch on the structured status code rather than parsing
      the error text. *)
-  match error.status with
-  | Some 406 -> Diff_too_large_remote error.message
-  | Some _ | None -> Fetch_failed error.message
+  match error with
+  | Http_util.Status (406, _) -> Diff_too_large_remote (Http_util.error_to_string error)
+  | Http_util.Status _ | Http_util.Transport _ | Http_util.Local _ -> Fetch_failed (Http_util.error_to_string error)
 
 let prefix = ":robot: **reviewotron** couldn't review this PR."
 

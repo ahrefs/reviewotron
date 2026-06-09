@@ -52,10 +52,8 @@ let resolve_auth ~ctx ~repo_url =
     let%lwt result = Github_auth.auth_header auth in
     Lwt.return (Result.map (fun (k, v) -> Printf.sprintf "%s: %s" k v) result)
 
-(* A non-HTTP failure local to request setup (auth, URL parsing).  Wrapped in
-   the same [Http_util.error] shape as transport errors so [github_request]
-   has one error type; these never carry an HTTP status. *)
-let local_error message : Http_util.error = { status = None; message }
+(* A non-HTTP failure local to request setup (auth, URL parsing). *)
+let local_error message : Http_util.error = Http_util.Local message
 
 let github_request ~ctx ~repo_url ~path ?(accept = "application/json") ?body meth =
   let%lwt auth = resolve_auth ~ctx ~repo_url in
@@ -67,7 +65,9 @@ let github_request ~ctx ~repo_url ~path ?(accept = "application/json") ?body met
   | Some (owner, repo) ->
     let url = Printf.sprintf "https://api.github.com/repos/%s/%s%s" owner repo path in
     let headers = build_headers ~auth_header ~accept in
-    http_request ~headers ?body meth url |> Lwt.map (Result.map_error (Http_util.query_error_msg url))
+    let label = Printf.sprintf "%s %s" (Web.string_of_http_action meth) url in
+    Github_retry.with_retry ~label (fun () -> http_request ~headers ?body meth url)
+    |> Lwt.map (Result.map_error (Http_util.query_error_msg url))
 
 let github_get ~ctx ~repo_url ~path ?accept () = github_request ~ctx ~repo_url ~path ?accept `GET
 
@@ -91,10 +91,11 @@ module Github : Api.Github = struct
     let path = Printf.sprintf "/contents/%s" config_filename in
     let%lwt result = github_get ~ctx ~repo_url ~path () in
     match result with
-    | Error { status = Some 404; _ } ->
+    | Error (Http_util.Status (404, _)) ->
       log#info "no %s found in %s, using defaults" config_filename repo_url;
       Lwt.return (Ok (Context.default_config ()))
-    | Error e -> Lwt.return (Error (Printf.sprintf "failed to fetch config from %s: %s" repo_url e.message))
+    | Error e ->
+      Lwt.return (Error (Printf.sprintf "failed to fetch config from %s: %s" repo_url (Http_util.error_to_string e)))
     | Ok body ->
     match Github_types.content_api_response_of_json (Melange_json.of_string body) with
     | exception exn -> Lwt.return (Error (Printf.sprintf "failed to parse content API response: %s" (Exn.str exn)))
@@ -123,7 +124,7 @@ module Github : Api.Github = struct
     let path = Printf.sprintf "/pulls/%d" number in
     let%lwt result = github_get ~ctx ~repo_url ~path () in
     match result with
-    | Error e -> Lwt.return (Error e.message)
+    | Error e -> Lwt.return (Error (Http_util.error_to_string e))
     | Ok body ->
     try Lwt.return (Ok (Github_types.pull_request_of_json (Melange_json.of_string body)))
     with exn -> Lwt.return (Error (Printf.sprintf "failed to parse pull_request response: %s" (Exn.str exn)))
@@ -138,7 +139,7 @@ module Github : Api.Github = struct
     match result with
     | Ok body -> Lwt.return (Ok (Some body))
     | Error e ->
-      log#warn "get_file_content failed for %s (ref %s): %s" file_path ref_ e.message;
+      log#warn "get_file_content failed for %s (ref %s): %s" file_path ref_ (Http_util.error_to_string e);
       Lwt.return (Ok None)
 
   let create_pr_review ~ctx ~repo_url ~number review =
@@ -163,7 +164,7 @@ module Github : Api.Github = struct
     let body = Melange_json.to_string (Github_types.reaction_req_to_json { content }) in
     let%lwt result = github_post ~ctx ~repo_url ~path ~body () in
     match result with
-    | Error e -> Lwt.return (Error e.message)
+    | Error e -> Lwt.return (Error (Http_util.error_to_string e))
     | Ok body ->
     match Github_types.reaction_of_json (Melange_json.of_string body) with
     | reaction -> Lwt.return (Ok reaction.id)
@@ -225,6 +226,6 @@ module Slack : Api.Slack = struct
              let err = Option.default "unknown" resp.error in
              log#error "Slack API error: %s" err
          with _exn -> log#warn "could not parse Slack response: %s" response_str)
-      | Error e -> log#error "Slack request failed: %s" e.Http_util.message);
+      | Error e -> log#error "Slack request failed: %s" (Http_util.error_to_string e));
       Lwt.return_unit
 end

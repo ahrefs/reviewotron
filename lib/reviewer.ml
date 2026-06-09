@@ -111,16 +111,6 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
     | Review_posted
     | Review_quiet
 
-  (** Retry an Lwt operation once after a 1-second delay on failure.
-      The operation is passed as a thunk to ensure the retry executes fresh. *)
-  let retry_once ~label f =
-    match%lwt f () with
-    | Ok () as ok -> Lwt.return ok
-    | Error msg ->
-      log#warn "%s failed (will retry once): %s" label msg;
-      let%lwt () = Lwt_unix.sleep 1.0 in
-      f ()
-
   let create_reaction ~ctx ~repo_url target ~content =
     match target with
     | Pull_request number -> GH.create_issue_reaction ~ctx ~repo_url ~number ~content
@@ -176,17 +166,13 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
     State.record_pr_review state ~repo_url ~pr_number:number ~head_sha ~review_costs;
     State.save state
 
-  (** Post an issue comment to the PR explaining why the review could not run.
-      Retries once on transient failure, mirroring the other post paths. *)
+  (** Post an issue comment to the PR explaining why the review could not run. *)
   let post_review_failure ~ctx ~repo_url ~number failure =
     let body = Review_failure.to_comment failure in
-    let%lwt result =
-      retry_once ~label:(Printf.sprintf "create_issue_comment PR #%d" number) (fun () ->
-        GH.create_issue_comment ~ctx ~repo_url ~number { body })
-    in
+    let%lwt result = GH.create_issue_comment ~ctx ~repo_url ~number { body } in
     (match result with
     | Ok () -> log#info "posted review-failure comment on PR #%d" number
-    | Error msg -> log#error "failed to post review-failure comment on PR #%d after retry: %s" number msg);
+    | Error msg -> log#error "failed to post review-failure comment on PR #%d: %s" number msg);
     Lwt.return_unit
 
   (** Fetch config from the repo and cache it in context. *)
@@ -559,13 +545,10 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
       let review_body = Printf.sprintf "%s\n\n**Reviewed commit:** `%s`" review_body short_sha in
       let review_req = Github_types.{ commit_id = Some head_sha; body = review_body; event = Comment; comments } in
       let%lwt () = finish_progress_reaction ~ctx ~repo_url progress ~quiet_success:false in
-      let%lwt post_result =
-        retry_once ~label:(Printf.sprintf "create_pr_review PR #%d" number) (fun () ->
-          GH.create_pr_review ~ctx ~repo_url ~number review_req)
-      in
+      let%lwt post_result = GH.create_pr_review ~ctx ~repo_url ~number review_req in
       (match post_result with
       | Ok () -> log#info "posted review for PR #%d (%s): %d inline comments" number pr_title (List.length comments)
-      | Error msg -> log#error "failed to post review for PR #%d after retry: %s" number msg);
+      | Error msg -> log#error "failed to post review for PR #%d: %s" number msg);
       record_reviewed ();
       Lwt.return Review_posted
 
@@ -579,7 +562,7 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
     let%lwt diff_result = GH.get_pr_diff ~ctx ~repo_url ~number in
     match diff_result with
     | Error fetch_error ->
-      log#error "failed to fetch diff for PR #%d: %s" number fetch_error.Http_util.message;
+      log#error "failed to fetch diff for PR #%d: %s" number (Http_util.error_to_string fetch_error);
       let failure = Review_failure.classify_fetch_error fetch_error in
       let%lwt () = post_review_failure ~ctx ~repo_url ~number failure in
       (match failure with
@@ -682,13 +665,10 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
               line = Some finding.line;
             }
           in
-          let%lwt result =
-            retry_once ~label:(Printf.sprintf "create_commit_comment %s" sha) (fun () ->
-              GH.create_commit_comment ~ctx ~repo_url ~sha comment)
-          in
+          let%lwt result = GH.create_commit_comment ~ctx ~repo_url ~sha comment in
           (match result with
           | Ok () -> ()
-          | Error msg -> log#error "failed to post commit comment on %s after retry: %s" sha msg);
+          | Error msg -> log#error "failed to post commit comment on %s: %s" sha msg);
           Lwt.return_unit
         | Suggestion | Nitpick | Praise | Other _ ->
           (* Only post commit comments for critical/warning *)
@@ -706,7 +686,8 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
        reviews. *)
     match diff_result with
     | Error fetch_error ->
-      log#error "failed to fetch compare diff for push %s...%s: %s" push.before push.after fetch_error.Http_util.message;
+      log#error "failed to fetch compare diff for push %s...%s: %s" push.before push.after
+        (Http_util.error_to_string fetch_error);
       Lwt.return_unit
     | Ok diff_text ->
       let config = Context.get_config ctx ~repo_url in
