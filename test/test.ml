@@ -2715,6 +2715,12 @@ let test_review_failure_comment_mentions_cause () =
     (contains_sub ~sub:"too large" (String.lowercase_ascii remote))
 
 (* Integration tests: drive process_event and assert on the write log. *)
+let check_same_pr_webhook_deduped ~ctx ~event =
+  Api_local.clear_write_log ();
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let write_log = Api_local.get_write_log () in
+  (check string) "same PR webhook deduped" "" write_log
+
 let test_pr_diff_fetch_too_large_posts_comment () =
   Test_helpers.reset_test_state ();
   Api_local.set_next_pr_diff_error ~status:406
@@ -2729,7 +2735,8 @@ let test_pr_diff_fetch_too_large_posts_comment () =
   (check bool) "comment targets the PR number" true (contains_sub ~sub:"number=42" write_log);
   (check bool) "comment explains the diff is too large" true
     (contains_sub ~sub:"too large" (String.lowercase_ascii write_log));
-  (check bool) "no review attempted" false (contains_sub ~sub:"[create_pr_review]" write_log)
+  (check bool) "no review attempted" false (contains_sub ~sub:"[create_pr_review]" write_log);
+  check_same_pr_webhook_deduped ~ctx ~event
 
 let test_pr_diff_fetch_generic_error_posts_comment () =
   Test_helpers.reset_test_state ();
@@ -2755,7 +2762,8 @@ let test_pr_too_many_lines_posts_comment () =
   let write_log = Api_local.get_write_log () in
   (check bool) "issue comment posted when diff exceeds line limit" true
     (contains_sub ~sub:"[create_issue_comment]" write_log);
-  (check bool) "no review attempted" false (contains_sub ~sub:"[create_pr_review]" write_log)
+  (check bool) "no review attempted" false (contains_sub ~sub:"[create_pr_review]" write_log);
+  check_same_pr_webhook_deduped ~ctx ~event
 
 let test_pr_too_many_files_posts_comment () =
   Test_helpers.reset_test_state ();
@@ -2770,7 +2778,8 @@ let test_pr_too_many_files_posts_comment () =
   let write_log = Api_local.get_write_log () in
   (check bool) "issue comment posted when diff exceeds file limit" true
     (contains_sub ~sub:"[create_issue_comment]" write_log);
-  (check bool) "no review attempted" false (contains_sub ~sub:"[create_pr_review]" write_log)
+  (check bool) "no review attempted" false (contains_sub ~sub:"[create_pr_review]" write_log);
+  check_same_pr_webhook_deduped ~ctx ~event
 
 let test_pr_empty_diff_adds_thumbs_up_no_comment () =
   Test_helpers.reset_test_state ();
@@ -2783,7 +2792,8 @@ let test_pr_empty_diff_adds_thumbs_up_no_comment () =
   (check bool) "thumbs-up reaction added on empty diff" true
     (contains_sub ~sub:"[create_issue_reaction] repo=https://github.com/org/monorepo number=42 content=+1" write_log);
   (check bool) "no failure comment posted on empty diff" false (contains_sub ~sub:"[create_issue_comment]" write_log);
-  (check bool) "no review attempted on empty diff" false (contains_sub ~sub:"[create_pr_review]" write_log)
+  (check bool) "no review attempted on empty diff" false (contains_sub ~sub:"[create_pr_review]" write_log);
+  check_same_pr_webhook_deduped ~ctx ~event
 
 (** {2 Debug dump tests} *)
 

@@ -171,6 +171,11 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
     | false -> Lwt.return_unit
     | true -> add_success_reaction ~ctx ~repo_url (Option.map (fun { target; _ } -> target) progress)
 
+  let record_pr_reviewed ~ctx ~repo_url ~number ~head_sha ~review_costs =
+    let state = Context.state ctx in
+    State.record_pr_review state ~repo_url ~pr_number:number ~head_sha ~review_costs;
+    State.save state
+
   (** Post an issue comment to the PR explaining why the review could not run.
       Retries once on transient failure, mirroring the other post paths. *)
   let post_review_failure ~ctx ~repo_url ~number failure =
@@ -521,11 +526,7 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
            mis-anchoring — please report:"
         anchor_failed_findings
     in
-    let state = Context.state ctx in
-    let record_reviewed () =
-      State.record_pr_review state ~repo_url ~pr_number:number ~head_sha ~review_costs;
-      State.save state
-    in
+    let record_reviewed () = record_pr_reviewed ~ctx ~repo_url ~number ~head_sha ~review_costs in
     match review_has_surface || general_failed || security_error with
     | false ->
       let%lwt () = finish_progress_reaction ~ctx ~repo_url progress ~quiet_success:true in
@@ -573,12 +574,20 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
     let repo_url = pr_notif.repository.url in
     let number = pr_notif.number in
     let pr = pr_notif.pull_request in
+    let head_sha = pr.head.sha in
     log#info "reviewing PR #%d in %s" number pr_notif.repository.full_name;
     let%lwt diff_result = GH.get_pr_diff ~ctx ~repo_url ~number in
     match diff_result with
     | Error fetch_error ->
       log#error "failed to fetch diff for PR #%d: %s" number fetch_error.Http_util.message;
-      post_review_failure ~ctx ~repo_url ~number (Review_failure.classify_fetch_error fetch_error)
+      let failure = Review_failure.classify_fetch_error fetch_error in
+      let%lwt () = post_review_failure ~ctx ~repo_url ~number failure in
+      (match failure with
+      | Diff_too_large_remote _ ->
+        record_pr_reviewed ~ctx ~repo_url ~number ~head_sha ~review_costs:[];
+        Lwt.return_unit
+      | Fetch_failed _ -> Lwt.return_unit
+      | Too_many_lines _ | Too_many_files _ -> Lwt.return_unit)
     | Ok diff_text ->
       let config = Context.get_config ctx ~repo_url in
       (match prepare_diff ~config diff_text with
@@ -586,17 +595,26 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
         (* Nothing to review after filtering — a successful no-op, not a
            failure.  Signal "looked, all good" with a thumbs-up. *)
         log#info "PR #%d: all files filtered out, nothing to review" number;
-        add_success_reaction ~ctx ~repo_url reaction_target
+        let%lwt () = add_success_reaction ~ctx ~repo_url reaction_target in
+        record_pr_reviewed ~ctx ~repo_url ~number ~head_sha ~review_costs:[];
+        Lwt.return_unit
       | Error (`Too_large total_lines) ->
         log#info "PR #%d skipped: %d diff lines exceeds limit of %d" number total_lines config.max_diff_lines;
-        post_review_failure ~ctx ~repo_url ~number
-          (Review_failure.Too_many_lines { actual = total_lines; limit = config.max_diff_lines })
+        let%lwt () =
+          post_review_failure ~ctx ~repo_url ~number
+            (Review_failure.Too_many_lines { actual = total_lines; limit = config.max_diff_lines })
+        in
+        record_pr_reviewed ~ctx ~repo_url ~number ~head_sha ~review_costs:[];
+        Lwt.return_unit
       | Error (`Too_many_files file_count) ->
         log#info "PR #%d skipped: %d files exceeds limit of %d" number file_count config.max_files;
-        post_review_failure ~ctx ~repo_url ~number
-          (Review_failure.Too_many_files { actual = file_count; limit = config.max_files })
+        let%lwt () =
+          post_review_failure ~ctx ~repo_url ~number
+            (Review_failure.Too_many_files { actual = file_count; limit = config.max_files })
+        in
+        record_pr_reviewed ~ctx ~repo_url ~number ~head_sha ~review_costs:[];
+        Lwt.return_unit
       | Ok (filtered_diff, filtered_text) ->
-        let head_sha = pr.head.sha in
         let%lwt progress = start_progress_reaction ~ctx ~repo_url reaction_target in
         (* The review pipeline can raise (network errors, SDK schema drift,
            etc.).  Ensure the progress reaction is cleared even when the
