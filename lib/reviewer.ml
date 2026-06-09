@@ -170,10 +170,13 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
   let post_review_failure ~ctx ~repo_url ~number failure =
     let body = Review_failure.to_comment failure in
     let%lwt result = GH.create_issue_comment ~ctx ~repo_url ~number { body } in
-    (match result with
-    | Ok () -> log#info "posted review-failure comment on PR #%d" number
-    | Error msg -> log#error "failed to post review-failure comment on PR #%d: %s" number msg);
-    Lwt.return_unit
+    match result with
+    | Ok () ->
+      log#info "posted review-failure comment on PR #%d" number;
+      Lwt.return (Ok ())
+    | Error msg ->
+      log#error "failed to post review-failure comment on PR #%d: %s" number msg;
+      Lwt.return (Error msg)
 
   (** Fetch config from the repo and cache it in context. *)
   let fetch_config ~ctx ~repo_url =
@@ -564,13 +567,14 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
     | Error fetch_error ->
       log#error "failed to fetch diff for PR #%d: %s" number (Http_util.error_to_string fetch_error);
       let failure = Review_failure.classify_fetch_error fetch_error in
-      let%lwt () = post_review_failure ~ctx ~repo_url ~number failure in
+      let%lwt post_result = post_review_failure ~ctx ~repo_url ~number failure in
       (match failure with
       | Diff_too_large_remote _ ->
-        record_pr_reviewed ~ctx ~repo_url ~number ~head_sha ~review_costs:[];
+        (match post_result with
+        | Ok () -> record_pr_reviewed ~ctx ~repo_url ~number ~head_sha ~review_costs:[]
+        | Error _ -> ());
         Lwt.return_unit
-      | Fetch_failed _ -> Lwt.return_unit
-      | Too_many_lines _ | Too_many_files _ -> Lwt.return_unit)
+      | Fetch_failed _ | Too_many_lines _ | Too_many_files _ -> Lwt.return_unit)
     | Ok diff_text ->
       let config = Context.get_config ctx ~repo_url in
       (match prepare_diff ~config diff_text with
@@ -583,19 +587,23 @@ module Make (GH : Api.Github) (AI : Api.Agent_runner) (SL : Api.Slack) = struct
         Lwt.return_unit
       | Error (`Too_large total_lines) ->
         log#info "PR #%d skipped: %d diff lines exceeds limit of %d" number total_lines config.max_diff_lines;
-        let%lwt () =
+        let%lwt post_result =
           post_review_failure ~ctx ~repo_url ~number
             (Review_failure.Too_many_lines { actual = total_lines; limit = config.max_diff_lines })
         in
-        record_pr_reviewed ~ctx ~repo_url ~number ~head_sha ~review_costs:[];
+        (match post_result with
+        | Ok () -> record_pr_reviewed ~ctx ~repo_url ~number ~head_sha ~review_costs:[]
+        | Error _ -> ());
         Lwt.return_unit
       | Error (`Too_many_files file_count) ->
         log#info "PR #%d skipped: %d files exceeds limit of %d" number file_count config.max_files;
-        let%lwt () =
+        let%lwt post_result =
           post_review_failure ~ctx ~repo_url ~number
             (Review_failure.Too_many_files { actual = file_count; limit = config.max_files })
         in
-        record_pr_reviewed ~ctx ~repo_url ~number ~head_sha ~review_costs:[];
+        (match post_result with
+        | Ok () -> record_pr_reviewed ~ctx ~repo_url ~number ~head_sha ~review_costs:[]
+        | Error _ -> ());
         Lwt.return_unit
       | Ok (filtered_diff, filtered_text) ->
         let%lwt progress = start_progress_reaction ~ctx ~repo_url reaction_target in

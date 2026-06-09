@@ -2751,6 +2751,14 @@ let check_same_pr_webhook_deduped ~ctx ~event =
   let write_log = Api_local.get_write_log () in
   (check string) "same PR webhook deduped" "" write_log
 
+let check_pr_reviewed_state ~ctx ~event expected =
+  match event with
+  | Github.Pull_request pr ->
+    (check bool) "PR reviewed state" expected
+      (State.is_pr_reviewed (Context.state ctx) ~repo_url:pr.repository.url ~pr_number:pr.number
+         ~head_sha:pr.pull_request.head.sha)
+  | Github.Push _ | Github.Issue_comment _ | Github.Unknown _ -> fail "expected pull_request event"
+
 let test_pr_diff_fetch_too_large_posts_comment () =
   Test_helpers.reset_test_state ();
   Api_local.set_next_pr_diff_error ~status:406
@@ -2767,6 +2775,26 @@ let test_pr_diff_fetch_too_large_posts_comment () =
     (contains_sub ~sub:"too large" (String.lowercase_ascii write_log));
   (check bool) "no review attempted" false (contains_sub ~sub:"[create_pr_review]" write_log);
   check_same_pr_webhook_deduped ~ctx ~event
+
+let test_pr_diff_fetch_too_large_comment_failure_retries () =
+  Test_helpers.reset_test_state ();
+  Api_local.set_next_pr_diff_error ~status:406
+    {|http 406: {"message":"Sorry, the diff exceeded the maximum number of files (300).","code":"too_large"}|};
+  Api_local.set_next_issue_comment_error "missing Issues write permission";
+  let ctx = Test_helpers.make_test_context ~config:Test_helpers.auto_review_enabled_config () in
+  let payload = Test_helpers.make_pr_payload () in
+  let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let write_log = Api_local.get_write_log () in
+  (check bool) "failed issue comment not logged as posted" false (contains_sub ~sub:"[create_issue_comment]" write_log);
+  check_pr_reviewed_state ~ctx ~event false;
+  Api_local.clear_write_log ();
+  Api_local.set_next_pr_diff_error ~status:406
+    {|http 406: {"message":"Sorry, the diff exceeded the maximum number of files (300).","code":"too_large"}|};
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let retry_log = Api_local.get_write_log () in
+  (check bool) "same PR webhook retries failure comment" true (contains_sub ~sub:"[create_issue_comment]" retry_log);
+  check_pr_reviewed_state ~ctx ~event true
 
 let test_pr_diff_fetch_generic_error_posts_comment () =
   Test_helpers.reset_test_state ();
@@ -2794,6 +2822,26 @@ let test_pr_too_many_lines_posts_comment () =
     (contains_sub ~sub:"[create_issue_comment]" write_log);
   (check bool) "no review attempted" false (contains_sub ~sub:"[create_pr_review]" write_log);
   check_same_pr_webhook_deduped ~ctx ~event
+
+let test_pr_too_many_lines_comment_failure_retries () =
+  Test_helpers.reset_test_state ();
+  let config =
+    Config_types.config_of_json
+      (Melange_json.of_string {|{"auto_review_pr_open": true, "auto_review_pr_sync": true, "max_diff_lines": 1}|})
+  in
+  Api_local.set_next_issue_comment_error "missing Issues write permission";
+  let ctx = Test_helpers.make_test_context ~config () in
+  let payload = Test_helpers.make_pr_payload () in
+  let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let write_log = Api_local.get_write_log () in
+  (check bool) "failed issue comment not logged as posted" false (contains_sub ~sub:"[create_issue_comment]" write_log);
+  check_pr_reviewed_state ~ctx ~event false;
+  Api_local.clear_write_log ();
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let retry_log = Api_local.get_write_log () in
+  (check bool) "same PR webhook retries limit comment" true (contains_sub ~sub:"[create_issue_comment]" retry_log);
+  check_pr_reviewed_state ~ctx ~event true
 
 let test_pr_too_many_files_posts_comment () =
   Test_helpers.reset_test_state ();
@@ -3554,8 +3602,12 @@ let () =
           test_case "classify: transport error is generic" `Quick test_review_failure_classify_transport_error;
           test_case "comment text names cause and counts" `Quick test_review_failure_comment_mentions_cause;
           test_case "PR diff too large (406) posts a comment" `Quick test_pr_diff_fetch_too_large_posts_comment;
+          test_case "PR diff too large retries when comment post fails" `Quick
+            test_pr_diff_fetch_too_large_comment_failure_retries;
           test_case "PR diff fetch generic error posts a comment" `Quick test_pr_diff_fetch_generic_error_posts_comment;
           test_case "PR over line limit posts a comment" `Quick test_pr_too_many_lines_posts_comment;
+          test_case "PR over line limit retries when comment post fails" `Quick
+            test_pr_too_many_lines_comment_failure_retries;
           test_case "PR over file limit posts a comment" `Quick test_pr_too_many_files_posts_comment;
           test_case "PR with empty diff gets thumbs-up, no comment" `Quick test_pr_empty_diff_adds_thumbs_up_no_comment;
         ] );
