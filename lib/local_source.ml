@@ -1,5 +1,7 @@
 open Devkit
 
+let log = Log.from "local_source"
+
 type prepare_error =
   | Read_failed of string
   | Empty
@@ -72,8 +74,15 @@ let fetch_file_from_root ~root ~path =
   | Ok None -> Lwt.return (Ok None)
   | Ok (Some full_path) ->
   match%lwt read_file full_path with
-  | Ok contents -> Lwt.return (Ok (Some contents))
   | Error msg -> Lwt.return (Error msg)
+  | Ok contents ->
+  (* Drop binary/oversized blobs before they reach the agent prompt, the same
+       guard the GitHub source applies. A dropped file reads as "unavailable". *)
+  match Review_job.is_embeddable contents with
+  | true -> Lwt.return (Ok (Some contents))
+  | false ->
+    log#warn "skipping %s: not embeddable (binary or too large)" path;
+    Lwt.return (Ok None)
 
 let digest_change_key diff_text = Digest.(to_hex (string diff_text))
 

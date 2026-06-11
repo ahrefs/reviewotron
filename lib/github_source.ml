@@ -92,27 +92,6 @@ module Make (SRC : Api.Github_review_source) = struct
     | () when is_ignored_author -> Some (Printf.sprintf "ignored author %s" n.sender.login)
     | () -> None
 
-  let max_file_bytes = 256 * 1024
-
-  (* Well-formed UTF-8 with no NUL bytes. A NUL byte is git's own signal that a
-     blob is binary, and the stdlib decoder flags any malformed sequence —
-     including the unpaired surrogates the JSON encoder rejects. *)
-  let is_text content =
-    let len = String.length content in
-    let rec scan i =
-      match i >= len with
-      | true -> true
-      | false ->
-      match content.[i] with
-      | '\000' -> false
-      | _ ->
-        let d = String.get_utf_8_uchar content i in
-        (match Uchar.utf_decode_is_valid d with
-        | false -> false
-        | true -> scan (i + Uchar.utf_decode_length d))
-    in
-    scan 0
-
   (* Fetch a file and keep it only if it is safe to feed to the model. Binary or
      oversized blobs (e.g. generated schemas) are dropped: embedding them in the
      prompt would fail JSON serialization or bloat the request. A dropped file
@@ -122,7 +101,7 @@ module Make (SRC : Api.Github_review_source) = struct
     match%lwt SRC.get_file_content ~ctx ~repo_url ~path ~ref_ with
     | (Ok None | Error _) as result -> Lwt.return result
     | Ok (Some content) ->
-    match String.length content <= max_file_bytes && is_text content with
+    match Review_job.is_embeddable content with
     | true -> Lwt.return (Ok (Some content))
     | false ->
       log#warn "skipping %s: not embeddable (binary or too large)" path;

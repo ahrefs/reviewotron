@@ -20,6 +20,14 @@ type source_kind =
     fetch from the PR head SHA; for pushes it should fetch from the after SHA. *)
 type fetch_file = path:string -> (string option, string) result Lwt.t
 
+(** [is_embeddable content] is [true] when [content] is safe to put in a model
+    prompt: well-formed UTF-8 (no NUL byte or malformed sequence, including the
+    unpaired surrogates the JSON request encoder rejects) and within a byte cap.
+    Source adapters use it to drop binary or oversized blobs before they reach
+    the agent, where they would otherwise fail JSON serialization or bloat the
+    request. *)
+val is_embeddable : string -> bool
+
 (** Shorten an identifier for logs and labels. *)
 val short_display_id : string -> string
 
