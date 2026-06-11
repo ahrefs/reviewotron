@@ -1,7 +1,7 @@
-(** Module type signatures for the functor-based API architecture.
+(** Module type signatures for external integrations.
     Real implementations live in {!Api_remote}, mock implementations in {!Api_local}. *)
 
-module type Github = sig
+module type Github_review_source = sig
   val get_config : ctx:Context.t -> repo_url:string -> (Config_types.config, string) result Lwt.t
 
   val get_pr_files :
@@ -17,7 +17,9 @@ module type Github = sig
 
   val get_file_content :
     ctx:Context.t -> repo_url:string -> path:string -> ref_:string -> (string option, string) result Lwt.t
+end
 
+module type Github_review_sink = sig
   val create_pr_review :
     ctx:Context.t -> repo_url:string -> number:int -> Github_types.create_review_req -> (unit, string) result Lwt.t
 
@@ -26,7 +28,13 @@ module type Github = sig
 
   val create_issue_comment :
     ctx:Context.t -> repo_url:string -> number:int -> Github_types.issue_comment_req -> (unit, string) result Lwt.t
+end
 
+(** GitHub-specific emoji reactions on PRs and issue comments. Kept separate
+    from {!Github_review_sink} because reactions have no platform-neutral meaning —
+    only the GitHub publishing path uses them (quiet-review acknowledgement and
+    in-progress signalling). *)
+module type Reactions = sig
   val create_issue_reaction :
     ctx:Context.t -> repo_url:string -> number:int -> content:string -> (int, string) result Lwt.t
 
@@ -38,6 +46,12 @@ module type Github = sig
 
   val delete_issue_comment_reaction :
     ctx:Context.t -> repo_url:string -> comment_id:int -> reaction_id:int -> (unit, string) result Lwt.t
+end
+
+module type Github = sig
+  include Github_review_source
+  include Github_review_sink
+  include Reactions
 end
 
 module type Agent_runner = sig

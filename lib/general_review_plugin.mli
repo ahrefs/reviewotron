@@ -30,6 +30,7 @@ module Make (_ : Api.Agent_runner) : sig
   val run_review :
     ctx:Context.t ->
     repo_url:string ->
+    config:Config_types.config ->
     diff_text:string ->
     metadata:Review_plugin.review_metadata ->
     ?debug_dir:string ->

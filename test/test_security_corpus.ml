@@ -18,7 +18,7 @@ open Alcotest
     (real Claude) agent runner.  The local GitHub implementation returns
     [Ok None] for any [get_file_content] call that lacks a mock fixture,
     which is acceptable because all corpus diffs are self-contained. *)
-module SP = Security_review_plugin.Make (Api_local.Github) (Api_remote.Agent_runner)
+module SP = Security_review_plugin.Make (Api_remote.Agent_runner)
 
 (** Skip this test if [ANTHROPIC_API_KEY] is not set; otherwise return the key. *)
 let require_api_key () =
@@ -34,7 +34,7 @@ let corpus_repo_url = "https://github.com/test/security-corpus"
 let make_corpus_context ~api_key =
   let secrets : Config_types.secrets = { repos = []; anthropic_api_key = api_key; slack_access_token = None } in
   let ctx = Context.make ~secrets () in
-  Context.set_repo_config ctx ~repo_url:corpus_repo_url (Context.default_config ());
+  Context.set_config ctx ~repo_key:corpus_repo_url (Context.default_config ());
   ctx
 
 (** Read a corpus diff file and parse it. Returns [(diff_text, file_diffs)]. *)
@@ -62,12 +62,13 @@ let run_triage ~ctx ~diff_text ~file_paths : Security_types.triage_output =
 
 (** Run the full security pipeline on a diff and return the findings. *)
 let run_pipeline ~ctx ~diff_text ~diff =
+  let fetch_file ~path:_ = Lwt.return (Ok None) in
   let metadata : Review_plugin.review_metadata =
-    { pr_number = 0; pr_title = "corpus test"; pr_description = ""; file_contents = [] }
+    { change_title = "corpus test"; change_description = ""; file_contents = []; fetch_file }
   in
+  let config = Context.get_config ctx ~repo_key:corpus_repo_url in
   let findings, _costs =
-    Lwt_main.run
-      (SP.run ~ctx ~repo_url:corpus_repo_url ~diff ~diff_text ~metadata ~debug_dir:"debug/corpus" ~head_sha:"HEAD")
+    Lwt_main.run (SP.run ~ctx ~repo_url:corpus_repo_url ~config ~diff ~diff_text ~metadata ~debug_dir:"debug/corpus")
   in
   findings
 

@@ -114,7 +114,7 @@ The `path` field on every finding, source, sink, and flow step MUST be the exact
 - use a caller or consumer file as the sink location (the sink lives where the dangerous operation is written, not where it is invoked),
 - invent paths that you did not see in a diff header or tool response.
 
-If a vulnerability's sink is in unchanged code that this PR's changes reach into, set `sink.path` and `sink.line` to the unchanged file's exact path and line — the reviewer routes such findings into a dedicated section of the main review body. This is preferred over mis-attributing to a changed file.
+If a vulnerability's sink is in unchanged code that this change reaches into, set `sink.path` and `sink.line` to the unchanged file's exact path and line — the reviewer routes such findings into a dedicated section of the main review body. This is preferred over mis-attributing to a changed file.
 
 The `sanitization` field must be one of the strings `"adequate"`, `"inadequate"`, `"missing"`, or `"unknown"`. When it is `"inadequate"` or `"unknown"`, explain the reason in the finding's `description` field — do not attach it to the `sanitization` value itself.
 

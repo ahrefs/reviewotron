@@ -156,7 +156,7 @@ type finding = {
   why_now : string;
      [@json.default ""]
      [@jsonschema.description
-       "Why this must be addressed in this PR rather than treated as ambient tech debt. Tie it to the changed line."]
+       "Why this must be addressed in this change rather than treated as ambient tech debt. Tie it to the changed line."]
   confidence : confidence;
      [@json.default Medium] [@jsonschema.description "Calibrated confidence for this finding: high, medium, or low."]
   suggested_fix : string option;

@@ -46,7 +46,7 @@ val of_agent_result : agent_name:string -> files_fetched:int -> Agent_runner.age
 (** Aggregate a list of per-agent costs into a per-plugin summary. *)
 val aggregate : plugin:string -> agent_cost list -> review_cost
 
-(** Format an optional PR footer showing review cost.
+(** Format an optional review footer showing review cost.
     Returns a markdown string like ["Review cost: 3 agents, ~$0.42"]. *)
 val format_footer : review_cost list -> string
 

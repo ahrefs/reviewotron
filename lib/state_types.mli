@@ -1,4 +1,4 @@
-(** State persistence types: tracks which PRs and pushes have been reviewed. *)
+(** State persistence types: tracks reviewed changes. *)
 
 type review_record = {
   pr_number : int;
@@ -14,9 +14,17 @@ type push_review_record = {
 }
 [@@deriving json]
 
+type change_review_record = {
+  change_key : string;
+  reviewed_at : string;
+  review_costs : Cost_tracking.review_cost list;
+}
+[@@deriving json]
+
 type repo_state = {
   pr_reviews : review_record list;
   push_reviews : push_review_record list;
+  change_reviews : change_review_record list;
 }
 [@@deriving json]
 

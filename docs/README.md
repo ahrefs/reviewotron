@@ -145,6 +145,10 @@ Create a `secrets.json` file (see `secrets.json.example`):
 
 *Either `gh_token` or `auth` must be set per repo. Using `gh_token` is the simpler option.
 
+For local-only `review-diff` usage, `repos` may be an empty list as long as the
+secrets file still provides `anthropic_api_key`. The webhook server still
+requires at least one configured repo by default.
+
 #### GitHub App Installation Auth
 
 Instead of a personal access token, you can authenticate as a GitHub App installation:
@@ -197,7 +201,7 @@ curl http://localhost:1338/ping
 
 ## Configuration
 
-Each repo can have a `.reviewotron.json` file in its root. This is fetched from the repo via the GitHub Contents API on each event. If the file doesn't exist, defaults are used.
+Each repo can have a `.reviewotron.json` file in its root. For GitHub webhooks, this is fetched from the repo via the GitHub Contents API on each event. For local `review-diff`, the same file is loaded from the local review root. If the file doesn't exist, defaults are used.
 
 ### Full Configuration Reference
 
@@ -386,8 +390,9 @@ The `--state` flag enables persistent state tracking. The state file (JSON) reco
 
 - **PR reviews**: repo URL, PR number, head SHA, timestamp, review costs
 - **Push reviews**: repo URL, after SHA
+- **Generic change reviews**: repo key, change key, timestamp, review costs
 
-This prevents duplicate reviews — if the same PR at the same commit SHA is already recorded, the review is skipped. State is trimmed to the 500 most recent records per repo.
+For GitHub webhooks, this prevents duplicate reviews — if the same PR at the same commit SHA is already recorded, the review is skipped. Local diff reviews record their `repo_key` and `change_key` in the same state file, but currently do not skip duplicates. State is trimmed to the 500 most recent records per repo key.
 
 Without `--state`, state is in-memory only and lost on restart. This means reviews may be duplicated after a server restart.
 
@@ -440,6 +445,48 @@ Parses and displays a GitHub webhook payload without starting the server or perf
 | `--event-type` | Yes | GitHub event type (`pull_request` or `push`) |
 | `--payload` | Yes | Path to JSON payload file |
 | `--secrets` | No | Path to secrets file (defaults to `secrets.json`; must exist for initialization) |
+
+### `reviewotron review-diff` — Review a Local Unified Diff
+
+```
+reviewotron review-diff [OPTIONS]
+```
+
+Runs the same core review engine against a local unified diff and prints the final review to stdout. Logs go to stderr unless `--logfile` is set. When `--diff` is omitted, Reviewotron generates a Git diff from the merge-base of `HEAD` and the inferred base ref, including working-tree changes. This path does not fetch or publish through GitHub; local file-content expansion uses `--root`.
+
+Local reviews load `.reviewotron.json` from `--root` before applying path filters and size limits. Use `--config-filename` to point at a different filename or absolute config path.
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--diff` | Git diff against inferred base | Path to a unified diff file |
+| `--base` | inferred from Git | Base ref for generated diffs; tries `origin/HEAD`, `origin/main`, `origin/master`, then the upstream remote |
+| `--root` | Git worktree root, then cwd | Repository root for local file-content lookups |
+| `--repo-key` | `local:<root>` | Stable repository key for config, memory paths, and state |
+| `--change-key` | digest of filtered diff | Stable change key recorded in state |
+| `--title` | inferred from base or diff file | Title passed to review agents |
+| `--description-file` | (none) | Optional file used as the review description |
+| `--config-filename` | `.reviewotron.json` | Config file loaded from `--root`, or absolute config path |
+| `--output` | `markdown` | Output format: `markdown` or `json` |
+| `--secrets` | `./secrets.json` | Path to secrets file for the Anthropic API key |
+| `--state` | (none — in-memory) | Optional state file updated after a successful review |
+
+JSON output is an object with a review-level summary and a machine-readable findings list:
+
+```json
+{
+  "summary": "The review found one startup compatibility issue in session metadata handling.",
+  "findings": [
+    {
+      "file": "backend/safer-claude-code/safer_claude_code.ml",
+      "line": 492,
+      "level": "warning",
+      "category": "bug",
+      "summary": "Legacy session-id file from old scc crashes startup because ensure_dir refuses to treat a regular file as a directory",
+      "failure_scenario": "Any user who ran a previous scc has a regular file at <scc_metadata>/sessions/<wt_basename> holding their last session UUID. After upgrading, the first scc -f or scc run-on calls prepare_session_id_mount, which calls ensure_dir(Filename.dirname host_path) — i.e. ensure_dir on the legacy file path. ensure_dir sees S_REG and fails. scc aborts on startup until the user manually removes the legacy file."
+    }
+  ]
+}
+```
 
 ### Endpoints
 
