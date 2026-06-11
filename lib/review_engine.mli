@@ -50,6 +50,10 @@ val security_error_notice : string
 (** Raw plugin execution result, before sink-specific publishing. *)
 type plugin_result = {
   general_result : Review_types.review_output option;
+  general_error : string option;
+    (** The reason the general plugin failed, when [general_result] is [None]
+          because it errored (rather than being disabled). Surfaced in the
+          failure notice so the author sees the cause, not just "it failed". *)
   findings : Review_types.finding list;
   review_costs : Cost_tracking.review_cost list;
   security_error : bool;

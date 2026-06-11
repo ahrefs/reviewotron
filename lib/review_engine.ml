@@ -167,6 +167,7 @@ let security_error_notice =
 
 type plugin_result = {
   general_result : Review_types.review_output option;
+  general_error : string option;
   findings : Review_types.finding list;
   review_costs : Cost_tracking.review_cost list;
   security_error : bool;
@@ -200,8 +201,16 @@ let render_section ~title ~lead = function
     let bullets = String.concat "\n" (List.map to_bullet fs) in
     Printf.sprintf "\n\n%s\n%s\n%s" title lead bullets
 
-let review_body ~change_label ~general_result ~findings ~unchanged_findings ~anchor_failed_findings ~review_costs
-  ~security_error ~(config : Config_types.config) =
+(* Append the raw plugin error in a collapsed [<details>] block, matching the
+   style of {!Review_failure} comments. Lets the author see the actual cause
+   (e.g. a provider 400) without it dominating the notice. *)
+let with_failure_details ~reason body =
+  match reason with
+  | None -> body
+  | Some reason -> Printf.sprintf "%s\n\n<details><summary>Details</summary>\n\n```\n%s\n```\n\n</details>" body reason
+
+let review_body ~change_label ~general_result ~general_error ~findings ~unchanged_findings ~anchor_failed_findings
+  ~review_costs ~security_error ~(config : Config_types.config) =
   let unchanged_section =
     render_section ~title:"### Findings on unchanged code (please investigate)"
       ~lead:
@@ -224,13 +233,16 @@ let review_body ~change_label ~general_result ~findings ~unchanged_findings ~anc
       | summary -> Printf.sprintf ":robot: **REVIEW**\n\nMinor:\n%s" summary)
     | None ->
       log#error "review failed for %s: no review output produced" change_label;
-      (match findings with
-      | _ :: _ ->
-        "\xE2\x9A\xA0\xEF\xB8\x8F **Review partially failed** \xE2\x80\x94 the general code review agent encountered \
-         an error. Security findings (if any) are shown below. You may want to re-trigger the review."
-      | [] ->
-        "\xE2\x9A\xA0\xEF\xB8\x8F **Review failed** \xE2\x80\x94 the code review encountered an error and could not \
-         produce results. Please re-trigger the review. If this persists, check the service logs.")
+      let notice =
+        match findings with
+        | _ :: _ ->
+          "\xE2\x9A\xA0\xEF\xB8\x8F **Review partially failed** \xE2\x80\x94 the general code review agent encountered \
+           an error. Security findings (if any) are shown below. You may want to re-trigger the review."
+        | [] ->
+          "\xE2\x9A\xA0\xEF\xB8\x8F **Review failed** \xE2\x80\x94 the code review encountered an error and could not \
+           produce results. Please re-trigger the review. If this persists, check the service logs."
+      in
+      with_failure_details ~reason:general_error notice
   in
   let body = body ^ unchanged_section ^ anchor_failed_section in
   let body = if security_error then body ^ security_error_notice else body in
@@ -261,12 +273,12 @@ module Make (AI : Api.Agent_runner) = struct
           General_plugin.run_review ~ctx ~repo_url ~config ~diff_text:job.diff_text ~metadata ~debug_dir ()
         in
         match result with
-        | Ok review -> Lwt.return (Some review, costs)
+        | Ok review -> Lwt.return (Some review, None, costs)
         | Error msg ->
           log#error "general review plugin failed: %s" msg;
-          Lwt.return (None, costs)
+          Lwt.return (None, Some msg, costs)
       end
-      else Lwt.return (None, [])
+      else Lwt.return (None, None, [])
     in
     let security_promise =
       if plugins_config.security.enabled then
@@ -281,7 +293,7 @@ module Make (AI : Api.Agent_runner) = struct
             Lwt.return ([], [], true))
       else Lwt.return ([], [], false)
     in
-    let%lwt (general_result, general_costs), (security_findings, security_costs, security_exn) =
+    let%lwt (general_result, general_error, general_costs), (security_findings, security_costs, security_exn) =
       Lwt.both general_promise security_promise
     in
     let security_error =
@@ -309,7 +321,7 @@ module Make (AI : Api.Agent_runner) = struct
         | [] -> false
         | _ :: _ -> true)
     in
-    Lwt.return { general_result; findings; review_costs; security_error }
+    Lwt.return { general_result; general_error; findings; review_costs; security_error }
 
   let route_findings ~change_label ~filtered_diff findings =
     List.fold_left
@@ -347,8 +359,9 @@ module Make (AI : Api.Agent_runner) = struct
     let anchor_failed_findings = List.rev anchor_failed_rev in
     let body =
       review_body ~change_label:job.change_label ~general_result:plugin_result.general_result
-        ~findings:plugin_result.findings ~unchanged_findings ~anchor_failed_findings
-        ~review_costs:plugin_result.review_costs ~security_error:plugin_result.security_error ~config:job.config
+        ~general_error:plugin_result.general_error ~findings:plugin_result.findings ~unchanged_findings
+        ~anchor_failed_findings ~review_costs:plugin_result.review_costs ~security_error:plugin_result.security_error
+        ~config:job.config
     in
     let general_failed = job.config.review_plugins.general.enabled && Option.is_none plugin_result.general_result in
     Lwt.return

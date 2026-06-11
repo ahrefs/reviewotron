@@ -218,7 +218,7 @@ struct
         Printf.sprintf "debug/%s/%s" slug sha_prefix
       in
       let%lwt plugin_result = Engine.run_plugins ~ctx ~job ~debug_dir in
-      let Review_engine.{ general_result; findings; review_costs; security_error } = plugin_result in
+      let Review_engine.{ general_result; general_error; findings; review_costs; security_error } = plugin_result in
       Cost_tracking.log_review_costs review_costs;
       let%lwt () = Sink.post_push_comments ~ctx ~repo_url:job.repo_key ~sha:job.head_sha findings in
       let security_note = String.trim Review_engine.security_error_notice in
@@ -243,6 +243,11 @@ struct
             | [] ->
               "\xE2\x9A\xA0\xEF\xB8\x8F Review failed \xE2\x80\x94 the code review encountered an error and could not \
                produce results. Check the service logs."
+          in
+          let failure_text =
+            match general_error with
+            | None -> failure_text
+            | Some reason -> Printf.sprintf "%s\n```\n%s\n```" failure_text reason
           in
           let failure_text = if security_error then failure_text ^ " " ^ security_note else failure_text in
           let att =

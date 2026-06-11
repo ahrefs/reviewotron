@@ -3083,7 +3083,9 @@ let test_pr_general_failure_no_findings () =
   (check bool) "review posted despite failure" true (CCString.find ~sub:"[create_pr_review]" write_log >= 0);
   (check bool) "has failure notice" true (CCString.find ~sub:"Review failed" write_log >= 0);
   (check bool) "has re-trigger message" true (CCString.find ~sub:"re-trigger the review" write_log >= 0);
-  (check bool) "has service logs hint" true (CCString.find ~sub:"check the service logs" write_log >= 0)
+  (check bool) "has service logs hint" true (CCString.find ~sub:"check the service logs" write_log >= 0);
+  (check bool) "surfaces failure cause in details" true
+    (CCString.find ~sub:"<details><summary>Details</summary>" write_log >= 0)
 
 let test_pr_general_failure_with_security_findings () =
   Test_helpers.reset_test_state ();

@@ -92,6 +92,42 @@ module Make (SRC : Api.Github_review_source) = struct
     | () when is_ignored_author -> Some (Printf.sprintf "ignored author %s" n.sender.login)
     | () -> None
 
+  let max_file_bytes = 256 * 1024
+
+  (* Well-formed UTF-8 with no NUL bytes. A NUL byte is git's own signal that a
+     blob is binary, and the stdlib decoder flags any malformed sequence —
+     including the unpaired surrogates the JSON encoder rejects. *)
+  let is_text content =
+    let len = String.length content in
+    let rec scan i =
+      match i >= len with
+      | true -> true
+      | false ->
+      match content.[i] with
+      | '\000' -> false
+      | _ ->
+        let d = String.get_utf_8_uchar content i in
+        (match Uchar.utf_decode_is_valid d with
+        | false -> false
+        | true -> scan (i + Uchar.utf_decode_length d))
+    in
+    scan 0
+
+  (* Fetch a file and keep it only if it is safe to feed to the model. Binary or
+     oversized blobs (e.g. generated schemas) are dropped: embedding them in the
+     prompt would fail JSON serialization or bloat the request. A dropped file
+     becomes [Ok None], which both callers already treat as "unavailable", so
+     the review proceeds on the diff and the remaining text files. *)
+  let fetch_text_file ~ctx ~repo_url ~ref_ ~path =
+    match%lwt SRC.get_file_content ~ctx ~repo_url ~path ~ref_ with
+    | (Ok None | Error _) as result -> Lwt.return result
+    | Ok (Some content) ->
+    match String.length content <= max_file_bytes && is_text content with
+    | true -> Lwt.return (Ok (Some content))
+    | false ->
+      log#warn "skipping %s: not embeddable (binary or too large)" path;
+      Lwt.return (Ok None)
+
   let fetch_key_files ~ctx ~repo_url ~diff ~ref_ =
     let paths =
       diff
@@ -106,7 +142,7 @@ module Make (SRC : Api.Github_review_source) = struct
     let paths = CCList.take 5 paths in
     Lwt_list.filter_map_p
       (fun path ->
-        let%lwt result = SRC.get_file_content ~ctx ~repo_url ~path ~ref_ in
+        let%lwt result = fetch_text_file ~ctx ~repo_url ~path ~ref_ in
         match result with
         | Ok (Some content) -> Lwt.return (Some (path, content))
         | Ok None -> Lwt.return None
@@ -115,7 +151,7 @@ module Make (SRC : Api.Github_review_source) = struct
           Lwt.return None)
       paths
 
-  let fetch_file_at_ref ~ctx ~repo_url ~ref_ ~path = SRC.get_file_content ~ctx ~repo_url ~path ~ref_
+  let fetch_file_at_ref ~ctx ~repo_url ~ref_ ~path = fetch_text_file ~ctx ~repo_url ~ref_ ~path
 
   let prepare_diff ~config diff_text =
     match Review_engine.prepare_diff ~config diff_text with
