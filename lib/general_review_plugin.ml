@@ -121,12 +121,11 @@ module Make (AI : Api.Agent_runner) = struct
           log#error "%s" msg;
           Lwt.return (Error msg, [ cost ])))
 
-  let run_review ~ctx ~repo_url ~diff_text ~metadata ?debug_dir () =
-    let config = Context.get_config ctx ~repo_url in
+  let run_review ~ctx ~repo_url ~(config : Config_types.config) ~diff_text ~metadata ?debug_dir () =
     let security_covered_elsewhere = config.review_plugins.security.enabled in
     let system = Review_prompt.system_prompt ?override:config.system_prompt_override ~security_covered_elsewhere () in
-    let Review_plugin.{ pr_title; pr_description; file_contents; _ } = metadata in
-    let input = Review_prompt.build_user_message ~diff:diff_text ~pr_title ~pr_description ~file_contents () in
+    let Review_plugin.{ change_title; change_description; file_contents; _ } = metadata in
+    let input = Review_prompt.build_user_message ~diff:diff_text ~change_title ~change_description ~file_contents () in
     let agent_config = build_agent_config ~system_prompt:system in
     let%lwt result = AI.run ~ctx ~repo_url ~model_id:config.model ?debug_dir ~config:agent_config ~input () in
     match result with
@@ -162,8 +161,8 @@ module Make (AI : Api.Agent_runner) = struct
           log#info "general validator: %d/%d candidates confirmed" (List.length confirmed) (List.length candidates);
           Lwt.return (Ok { review with findings = confirmed }, cost :: validator_costs)))
 
-  let run ~ctx ~repo_url ~diff:_ ~diff_text ~metadata =
-    let%lwt result, costs = run_review ~ctx ~repo_url ~diff_text ~metadata () in
+  let run ~ctx ~repo_url ~config ~diff:_ ~diff_text ~metadata =
+    let%lwt result, costs = run_review ~ctx ~repo_url ~config ~diff_text ~metadata () in
     match result with
     | Ok review -> Lwt.return (review.findings, costs)
     | Error msg ->

@@ -60,7 +60,7 @@ You have access to `get_file_content` to spot-check evidence claims. Use it to:
 - Look for framework-level sanitization the analysis agent may have missed
 - Resolve "Unknown" sanitization status by examining the full code path
 
-**Important**: `get_file_content` fetches files from the repository's default branch. It may return empty or not-found for files that exist only in the PR branch (new files, renamed files) or for files in the diff that haven't been merged yet. **The diff provided to you IS the primary source of truth.** If a finding references a file and line that are visible in the diff, the diff content is sufficient evidence — do not reject a finding solely because `get_file_content` could not fetch the file. Only use the tool for files NOT visible in the diff (e.g., to check an imported module's implementation or verify framework-level sanitization).
+**Important**: `get_file_content` fetches files from the source adapter's review revision. It may return empty or not-found for files that exist only in the diff source, were renamed, or are otherwise unavailable from that revision. **The diff provided to you IS the primary source of truth.** If a finding references a file and line that are visible in the diff, the diff content is sufficient evidence — do not reject a finding solely because `get_file_content` could not fetch the file. Only use the tool for files NOT visible in the diff (e.g., to check an imported module's implementation or verify framework-level sanitization).
 
 ### Fetched File Format
 

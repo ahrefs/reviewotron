@@ -7,6 +7,10 @@ let read_json path = Melange_json.of_string (read_file path)
 
 let contains_sub ~sub s = CCString.find ~sub s >= 0
 
+let write_file path contents =
+  let oc = open_out_bin path in
+  Fun.protect ~finally:(fun () -> close_out_noerr oc) (fun () -> output_string oc contents)
+
 (* Default-off auto-review flags mean every test that wants the review pipeline
    to actually run must opt in explicitly. The shared security config fixtures
    below opt into PR-open and PR-sync because the security e2e suite always
@@ -164,6 +168,50 @@ let test_config_review_plugins_explicit () =
   (check int) "always_analyze count" 1 (List.length config.review_plugins.security.always_analyze_vuln_classes);
   (check int) "memory_max_tokens" 10000 config.review_plugins.security.memory_max_tokens
 
+let test_context_create_requires_repos_by_default () =
+  let tmp_path = Filename.temp_file "reviewotron_secrets_" ".json" in
+  Fun.protect
+    ~finally:(fun () -> Sys.remove tmp_path)
+    (fun () ->
+      write_file tmp_path {|{"repos": [], "anthropic_api_key": "sk-test"}|};
+      match Context.create ~secrets_filepath:tmp_path () with
+      | Ok _ -> fail "expected empty repos to be rejected by default"
+      | Error msg -> (check bool) "mentions repos" true (CCString.find ~sub:"at least one repo" msg >= 0))
+
+let test_context_create_allows_repo_less_when_explicit () =
+  let tmp_path = Filename.temp_file "reviewotron_secrets_" ".json" in
+  Fun.protect
+    ~finally:(fun () -> Sys.remove tmp_path)
+    (fun () ->
+      write_file tmp_path {|{"repos": [], "anthropic_api_key": "sk-test"}|};
+      match Context.create ~secrets_filepath:tmp_path ~require_repos:false () with
+      | Error msg -> fail msg
+      | Ok ctx ->
+        let secrets = Context.secrets ctx in
+        (check int) "no repos" 0 (List.length secrets.repos);
+        (check string) "api key" "sk-test" secrets.anthropic_api_key)
+
+let test_context_load_config_file () =
+  let tmp_path = Filename.temp_file "reviewotron_config_" ".json" in
+  Fun.protect
+    ~finally:(fun () -> Sys.remove tmp_path)
+    (fun () ->
+      write_file tmp_path {|{"max_diff_lines": 5000, "show_review_cost": true}|};
+      match Context.load_config_file ~filepath:tmp_path with
+      | Error msg -> fail msg
+      | Ok config ->
+        (check int) "max diff lines" 5000 config.max_diff_lines;
+        (check bool) "show review cost" true config.show_review_cost)
+
+let test_context_load_local_config_uses_defaults_when_missing () =
+  let tmp_dir = Filename.temp_dir "reviewotron_config_" "_test" in
+  Fun.protect
+    ~finally:(fun () -> Sys.rmdir tmp_dir)
+    (fun () ->
+      match Context.load_local_config ~root:tmp_dir ~config_filename:Context.default_config_filename with
+      | Error msg -> fail msg
+      | Ok config -> (check int) "default max diff lines" 2000 config.max_diff_lines)
+
 let test_vuln_class_roundtrip () =
   List.iter
     (fun vc ->
@@ -231,15 +279,15 @@ let test_system_prompt_override () =
 
 let test_build_user_message () =
   let diff = "diff --git a/foo.ml b/foo.ml\n+let x = 1" in
-  let msg = Review_prompt.build_user_message ~diff ~pr_title:"Test PR" ~pr_description:"A test" () in
-  (check bool) "has title" true (CCString.find ~sub:"## Pull Request: Test PR" msg >= 0);
+  let msg = Review_prompt.build_user_message ~diff ~change_title:"Test change" ~change_description:"A test" () in
+  (check bool) "has title" true (CCString.find ~sub:"## Change: Test change" msg >= 0);
   (check bool) "has diff" true (CCString.find ~sub:"## Diff" msg >= 0);
   (check bool) "has diff content" true (CCString.find ~sub:"let x = 1" msg >= 0)
 
 let test_build_user_message_no_description () =
   let diff = "diff --git a/foo.ml b/foo.ml\n+let x = 1" in
-  let msg = Review_prompt.build_user_message ~diff ~pr_title:"Test PR" () in
-  (check bool) "has title" true (CCString.find ~sub:"## Pull Request: Test PR" msg >= 0);
+  let msg = Review_prompt.build_user_message ~diff ~change_title:"Test change" () in
+  (check bool) "has title" true (CCString.find ~sub:"## Change: Test change" msg >= 0);
   (check bool) "has diff" true (CCString.find ~sub:"## Diff" msg >= 0)
 
 let test_review_schema_valid () =
@@ -250,6 +298,7 @@ let test_review_schema_valid () =
   (check bool) "has required" true (CCString.find ~sub:{|"required"|} json_str >= 0);
   (check bool) "has summary" true (CCString.find ~sub:{|"summary"|} json_str >= 0);
   (check bool) "has findings" true (CCString.find ~sub:{|"findings"|} json_str >= 0);
+  (check bool) "has failure scenario" true (CCString.find ~sub:{|"failure_scenario"|} json_str >= 0);
   (check bool) "has field descriptions" true (CCString.find ~sub:{|"description"|} json_str >= 0)
 
 (** The system prompt must explicitly establish the workflow that separates
@@ -261,7 +310,8 @@ let test_system_prompt_workflow_section () =
   (check bool) "prompt instructs to reason first" true (CCString.find ~sub:"REASON" prompt >= 0);
   (check bool) "prompt instructs to decide a verdict" true (CCString.find ~sub:"VERDICT" prompt >= 0);
   (check bool) "prompt instructs to articulate the comment last" true (CCString.find ~sub:"ARTICULATE" prompt >= 0);
-  (check bool) "prompt includes a signal/noise check" true (CCString.find ~sub:"SIGNAL CHECK" prompt >= 0)
+  (check bool) "prompt includes a signal/noise check" true (CCString.find ~sub:"SIGNAL CHECK" prompt >= 0);
+  (check bool) "prompt asks for failure scenarios" true (CCString.find ~sub:"failure_scenario" prompt >= 0)
 
 (** Specific hedging phrases that indicate the model resolved its own concern
     mid-message must be called out as banned in the message field. *)
@@ -338,7 +388,7 @@ let test_anthropic_structured_output_schemas_compatible () =
 let test_prompt_token_estimation () =
   let system = Review_prompt.system_prompt ~security_covered_elsewhere:false () in
   let diff = "diff --git a/foo.ml b/foo.ml\n+let x = 1" in
-  let user = Review_prompt.build_user_message ~diff ~pr_title:"Test" () in
+  let user = Review_prompt.build_user_message ~diff ~change_title:"Test" () in
   let estimate = Review_prompt.estimate_prompt_tokens ~system ~user in
   let char_count = String.length system + String.length user in
   (* Estimate should be roughly chars/4, within 2x *)
@@ -349,7 +399,8 @@ let test_prompt_token_estimation () =
 (** {2 Dedup tests} *)
 
 let mk_finding ~path ~line ?(end_line = None) ?(severity = Review_types.Warning) ?(category = Review_types.Security)
-  ?(message = "msg") ?(suggested_fix = None) () : Review_types.finding =
+  ?(message = "msg") ?(failure_scenario = "scenario") ?(evidence_snippet = "snippet") ?(why_now = "changed in this PR")
+  ?(confidence = Review_types.Medium) ?(suggested_fix = None) () : Review_types.finding =
   {
     path;
     line;
@@ -357,10 +408,10 @@ let mk_finding ~path ~line ?(end_line = None) ?(severity = Review_types.Warning)
     severity;
     category;
     message;
-    failure_scenario = "scenario";
-    evidence_snippet = "snippet";
-    why_now = "changed in this PR";
-    confidence = Review_types.Medium;
+    failure_scenario;
+    evidence_snippet;
+    why_now;
+    confidence;
     suggested_fix;
   }
 
@@ -391,6 +442,16 @@ let test_dedup_near_line_collapse_same_category () =
   (check bool) "critical survives collapse" true (List.exists (finding_by_message "b") out);
   (check bool) "far-apart finding kept" true (List.exists (finding_by_message "c") out);
   (check bool) "weaker near-line dropped" false (List.exists (finding_by_message "a") out)
+
+let test_dedup_near_line_rechecks_promoted_best () =
+  let a = mk_finding ~path:"a.ml" ~line:8 ~severity:Warning ~message:"a" () in
+  let b = mk_finding ~path:"a.ml" ~line:10 ~severity:Critical ~message:"b" () in
+  let c = mk_finding ~path:"a.ml" ~line:13 ~severity:Warning ~message:"c" () in
+  let out =
+    Reviewer.deduplicate_findings [ Reviewer.From_general, a; Reviewer.From_general, b; Reviewer.From_general, c ]
+  in
+  (check int) "single finding after promoted best collapse" 1 (List.length out);
+  (check bool) "promoted critical survives" true (List.exists (finding_by_message "b") out)
 
 let test_dedup_near_line_different_category_both_kept () =
   let a = mk_finding ~path:"a.ml" ~line:8 ~category:Review_types.Security ~message:"a" () in
@@ -461,7 +522,8 @@ let test_single_hunk_contains_straddles_hunks () =
 
 (** Instantiate the reviewer against the in-memory api harness so we can call
     [finding_to_comment] without standing up a real GitHub client. *)
-module R_anchor_test = Reviewer.Make (Api_local.Github) (Api_local.Agent_runner) (Api_local.Slack)
+module R_anchor_test =
+  Reviewer.Make (Api_local.Github) (Api_local.Github) (Api_local.Github) (Api_local.Agent_runner) (Api_local.Slack)
 
 let test_finding_to_comment_multiline_valid () =
   let finding = mk_finding ~path:"src/main.ml" ~line:10 ~end_line:(Some 14) () in
@@ -591,7 +653,7 @@ let test_annotate_file_content_empty () =
     anchor must snap onto the earliest in-diff evidence step, and the sink
     must be surfaced in the comment body. *)
 
-module Sec_test = Security_review_plugin.Make (Api_local.Github) (Api_local.Agent_runner)
+module Sec_test = Security_review_plugin.Make (Api_local.Agent_runner)
 
 (** Same two-hunk diff we use for the multi-line tests: file [src/main.ml]
     with hunks at [10..14] and [40..43]. *)
@@ -841,6 +903,7 @@ let test_review_output_roundtrip () =
   (check int) "findings count" 1 (List.length parsed.findings);
   let f = List.hd parsed.findings in
   (check string) "finding path" "src/main.ml" f.path;
+  (check string) "failure scenario" "Bad input raises and escapes the caller." f.failure_scenario;
   (check int) "finding line" 42 f.line
 
 let test_mock_claude_response () =
@@ -1470,7 +1533,8 @@ let test_analysis_agent_vuln_class_section_all_classes () =
 
 (** {2 End-to-end reviewer tests} *)
 
-module R_test = Reviewer.Make (Api_local.Github) (Api_local.Agent_runner) (Api_local.Slack)
+module R_test =
+  Reviewer.Make (Api_local.Github) (Api_local.Github) (Api_local.Github) (Api_local.Agent_runner) (Api_local.Slack)
 
 let test_pr_review_e2e () =
   Test_helpers.reset_test_state ();
@@ -1869,6 +1933,483 @@ let test_ignored_author_push_skipped () =
   let write_log = Api_local.get_write_log () in
   (check string) "ignored author push skipped" "" write_log
 
+(** {2 Local diff review tests} *)
+
+module Capturing_agent_runner = struct
+  let model_ids : string option list ref = ref []
+
+  let reset () = model_ids := []
+  let get_model_ids () = List.rev !model_ids
+
+  (* Confirm every surviving general-review candidate so the validator stage is
+     a pass-through. The general plugin only validates findings that clear
+     [filter_candidates], so we re-derive that set from the review fixture and
+     emit one confirmation per candidate, keyed by zero-based candidate id. *)
+  let validator_output_for_review_fixture () =
+    let review =
+      Review_types.review_output_of_json
+        (Melange_json.of_string (read_file "mock_api_responses/claude/review_response.json"))
+    in
+    let security_covered_elsewhere = false in
+    let candidates =
+      List.filter
+        (fun (f : Review_types.finding) ->
+          (not
+             (security_covered_elsewhere
+             && Review_types.(
+                  match f.category with
+                  | Security -> true
+                  | _ -> false)))
+          && (match f.severity, f.category with
+            | (Review_types.Praise | Nitpick), _ | _, (Review_types.Style | Naming | Documentation) -> false
+            | _ -> true)
+          && Config_types.confidence_rank f.confidence >= Config_types.confidence_rank Medium
+          && String.length (String.trim f.failure_scenario) > 0
+          && String.length (String.trim f.evidence_snippet) > 0
+          && String.length (String.trim f.why_now) > 0)
+        review.findings
+    in
+    let results =
+      List.mapi
+        (fun i (finding : Review_types.finding) ->
+          Review_types.{ candidate_id = i; finding; verdict = Confirmed; evidence_notes = "confirmed by capture stub" })
+        candidates
+    in
+    Review_types.validator_output_to_json { results }
+
+  let run ~ctx:_ ~repo_url:_ ?model_id ?tools ?debug_dir ~config ~input:_ () =
+    let tools_count =
+      match tools with
+      | None -> 0
+      | Some tools -> List.length tools
+    in
+    ignore (tools_count : int);
+    ignore (debug_dir : string option);
+    model_ids := model_id :: !model_ids;
+    let output =
+      match config.Agent_runner.name with
+      | "general_validator" -> validator_output_for_review_fixture ()
+      | _ -> Melange_json.of_string (read_file "mock_api_responses/claude/review_response.json")
+    in
+    let usage : Ai_provider.Usage.t = { input_tokens = 0; output_tokens = 0; total_tokens = None } in
+    Lwt.return
+      (Ok
+         Agent_runner.
+           {
+             output;
+             usage;
+             cache_read_input_tokens = 0;
+             cache_creation_input_tokens = 0;
+             steps_count = 1;
+             model_id = config.name;
+           })
+end
+
+module Local_review_test = Local_review.Make (Api_local.Agent_runner)
+module Local_review_capture = Local_review.Make (Capturing_agent_runner)
+
+module Config_mutating_source = struct
+  let replacement_config : Config_types.config option ref = ref None
+
+  let set_replacement_config config = replacement_config := Some config
+  let clear_replacement_config () = replacement_config := None
+
+  let replace_config ctx repo_url =
+    match !replacement_config with
+    | None -> ()
+    | Some config -> Context.set_config ctx ~repo_key:repo_url config
+
+  let get_config = Api_local.Github.get_config
+  let get_pr_files = Api_local.Github.get_pr_files
+
+  let get_pr_diff ~ctx ~repo_url ~number =
+    replace_config ctx repo_url;
+    Api_local.Github.get_pr_diff ~ctx ~repo_url ~number
+
+  let get_pull_request = Api_local.Github.get_pull_request
+
+  let get_compare_diff ~ctx ~repo_url ~base ~head =
+    replace_config ctx repo_url;
+    Api_local.Github.get_compare_diff ~ctx ~repo_url ~base ~head
+
+  let get_file_content = Api_local.Github.get_file_content
+end
+
+module Reviewer_config_capture =
+  Reviewer.Make (Config_mutating_source) (Api_local.Github) (Api_local.Github) (Capturing_agent_runner)
+    (Api_local.Slack)
+
+let fake_git mapping ~cwd:_ args =
+  let key = String.concat "\n" args in
+  match List.find_opt (fun (candidate, _) -> String.equal candidate key) mapping with
+  | Some (_, `Ok output) -> Ok output
+  | Some (_, `Error msg) -> Error msg
+  | None -> Error (Printf.sprintf "unexpected git args: %s" (String.concat " " args))
+
+let git_key args = String.concat "\n" args
+
+let test_local_git_default_repo_key () =
+  (check string) "repo key" "local:/tmp/reviewotron" (Local_git.default_repo_key ~root:"/tmp/reviewotron")
+
+let test_local_review_duplicate_message_detection () =
+  let duplicate = "change local-change in local/repo was already reviewed" in
+  let failure = "local review failed: boom" in
+  (check bool) "duplicate skip detected" true (Local_review.is_already_reviewed_message duplicate);
+  (check bool) "generic failure not duplicate skip" false (Local_review.is_already_reviewed_message failure)
+
+let test_local_git_run_git_reports_spawn_errors () =
+  let old_path = Sys.getenv_opt "PATH" in
+  let empty_path = Filename.temp_dir "reviewotron_empty_path_" "_test" in
+  Fun.protect
+    ~finally:(fun () ->
+      (match old_path with
+      | Some path -> Unix.putenv "PATH" path
+      | None -> Unix.putenv "PATH" "");
+      try Unix.rmdir empty_path with Unix.Unix_error _ -> ())
+    (fun () ->
+      Unix.putenv "PATH" empty_path;
+      match Local_git.run_git ~cwd:"/" [ "--version" ] with
+      | Ok output -> fail (Printf.sprintf "expected git spawn failure, got: %s" output)
+      | Error msg -> (check bool) "reports missing executable" true (contains_sub ~sub:"git -C / --version failed" msg))
+
+let test_local_git_infer_base_uses_explicit_base () =
+  let run_git =
+    fake_git
+      [
+        git_key [ "rev-parse"; "--verify"; "--quiet"; "upstream/main^{commit}" ], `Ok "upstream/main";
+        git_key [ "merge-base"; "HEAD"; "upstream/main" ], `Ok "abc123";
+      ]
+  in
+  match Local_git.infer_base_with ~run_git ~root:"/repo" ~explicit:(Some "upstream/main") with
+  | Ok base -> (check string) "base" "upstream/main" base
+  | Error msg -> fail msg
+
+let test_local_git_infer_base_uses_origin_head () =
+  let run_git =
+    fake_git
+      [
+        git_key [ "symbolic-ref"; "--quiet"; "--short"; "refs/remotes/origin/HEAD" ], `Ok "origin/trunk";
+        git_key [ "rev-parse"; "--abbrev-ref"; "--symbolic-full-name"; "@{upstream}" ], `Error "no upstream";
+        git_key [ "rev-parse"; "--verify"; "--quiet"; "origin/trunk^{commit}" ], `Ok "origin/trunk";
+        git_key [ "merge-base"; "HEAD"; "origin/trunk" ], `Ok "abc123";
+      ]
+  in
+  match Local_git.infer_base_with ~run_git ~root:"/repo" ~explicit:None with
+  | Ok base -> (check string) "base" "origin/trunk" base
+  | Error msg -> fail msg
+
+let test_local_git_diff_against_base_uses_merge_base () =
+  let diff_text = "diff --git a/a.ml b/a.ml\n" in
+  let run_git =
+    fake_git
+      [ git_key [ "merge-base"; "HEAD"; "origin/main" ], `Ok "abc123"; git_key [ "diff"; "abc123" ], `Ok diff_text ]
+  in
+  match Local_git.diff_against_base_with ~run_git ~root:"/repo" ~base:"origin/main" with
+  | Ok diff -> (check string) "diff" diff_text diff
+  | Error msg -> fail msg
+
+let with_local_root f =
+  let tmp_dir = Filename.temp_dir "reviewotron_local_" "_test" in
+  let src_dir = Filename.concat tmp_dir "src" in
+  let main_path = Filename.concat src_dir "main.ml" in
+  Fun.protect
+    ~finally:(fun () ->
+      (try Sys.remove main_path with Sys_error _ -> ());
+      (try Unix.rmdir src_dir with Unix.Unix_error _ -> ());
+      try Unix.rmdir tmp_dir with Unix.Unix_error _ -> ())
+    (fun () ->
+      Unix.mkdir src_dir 0o755;
+      write_file main_path "let main () =\n  print_endline \"local\"\n";
+      f tmp_dir)
+
+let assert_local_trigger (trigger : Review_job.trigger) =
+  match trigger with
+  | Local -> ()
+  | Pull_request | Push | Manual | Other _ -> fail "expected local trigger"
+
+let assert_local_source_kind (source_kind : Review_job.source_kind) =
+  match source_kind with
+  | Local -> ()
+  | Github | Other _ -> fail "expected local source kind"
+
+let test_local_source_prepare_review_builds_job () =
+  with_local_root (fun root ->
+    let config = Context.default_config () in
+    let result =
+      Lwt_main.run
+        (Local_source.prepare_review ~root ~repo_key:"local/repo" ~change_key:"change-1" ~title:"Local change"
+           ~description:"Local description" ~diff_path:"mock_api_responses/github/pr_42.diff" ~config ())
+    in
+    match result with
+    | Error error -> fail (Local_source.string_of_prepare_error error)
+    | Ok job ->
+      (check string) "repo key" "local/repo" job.repo_key;
+      (check string) "change key" "change-1" job.change_key;
+      (check string) "change label" "local change change-1" job.change_label;
+      (check string) "title" "Local change" job.title;
+      assert_local_trigger job.trigger;
+      assert_local_source_kind job.source_kind;
+      (check bool) "filtered diff populated" true (List.compare_length_with job.filtered_diff 0 > 0);
+      let fetch_result = Lwt_main.run (job.fetch_file ~path:"src/main.ml") in
+      (match fetch_result with
+      | Ok (Some contents) -> (check bool) "local file content" true (CCString.find ~sub:"print_endline" contents >= 0)
+      | Ok None -> fail "expected local file content"
+      | Error msg -> fail msg))
+
+let test_local_source_rejects_unsafe_fetch_path () =
+  with_local_root (fun root ->
+    let config = Context.default_config () in
+    let result =
+      Lwt_main.run
+        (Local_source.prepare_review ~root ~repo_key:"local/repo" ~title:"Local change" ~description:""
+           ~diff_path:"mock_api_responses/github/pr_42.diff" ~config ())
+    in
+    match result with
+    | Error error -> fail (Local_source.string_of_prepare_error error)
+    | Ok job ->
+      let fetch_result = Lwt_main.run (job.fetch_file ~path:"../secret.txt") in
+      (match fetch_result with
+      | Error msg ->
+        (check bool) "unsafe path rejected" true (CCString.find ~sub:"unsafe local path" msg >= 0);
+        (check bool) "unsafe path reason" true (CCString.find ~sub:"parent-directory" msg >= 0)
+      | Ok (Some _) -> fail "unsafe path should not return content"
+      | Ok None -> fail "unsafe path should return an error"))
+
+let test_local_source_rejects_symlink_escape () =
+  with_local_root (fun root ->
+    let outside_path = Filename.temp_file "reviewotron_secret_" ".txt" in
+    let link_path = Filename.concat root "link.txt" in
+    Fun.protect
+      ~finally:(fun () ->
+        (try Sys.remove link_path with Sys_error _ -> ());
+        try Sys.remove outside_path with Sys_error _ -> ())
+      (fun () ->
+        write_file outside_path "secret\n";
+        Unix.symlink outside_path link_path;
+        let config = Context.default_config () in
+        let result =
+          Lwt_main.run
+            (Local_source.prepare_review ~root ~repo_key:"local/repo" ~title:"Local change" ~description:""
+               ~diff_path:"mock_api_responses/github/pr_42.diff" ~config ())
+        in
+        match result with
+        | Error error -> fail (Local_source.string_of_prepare_error error)
+        | Ok job ->
+          let fetch_result = Lwt_main.run (job.fetch_file ~path:"link.txt") in
+          (match fetch_result with
+          | Error msg -> (check bool) "symlink escape rejected" true (CCString.find ~sub:"outside root" msg >= 0)
+          | Ok (Some _) -> fail "symlink escape should not return content"
+          | Ok None -> fail "symlink escape should return an error")))
+
+let test_local_source_reports_fetch_read_errors () =
+  with_local_root (fun root ->
+    let config = Context.default_config () in
+    let result =
+      Lwt_main.run
+        (Local_source.prepare_review ~root ~repo_key:"local/repo" ~title:"Local change" ~description:""
+           ~diff_path:"mock_api_responses/github/pr_42.diff" ~config ())
+    in
+    match result with
+    | Error error -> fail (Local_source.string_of_prepare_error error)
+    | Ok job ->
+      let fetch_result = Lwt_main.run (job.fetch_file ~path:"src") in
+      (match fetch_result with
+      | Error msg -> (check bool) "read error reported" true (CCString.find ~sub:"failed to read" msg >= 0)
+      | Ok (Some _) -> fail "directory fetch should not return content"
+      | Ok None -> fail "directory fetch should report a read error"))
+
+let two_file_diff =
+  {|
+diff --git a/src/a.ml b/src/a.ml
+index 1111111..2222222 100644
+--- a/src/a.ml
++++ b/src/a.ml
+@@ -1 +1 @@
+-let a = 1
++let a = 2
+diff --git a/src/b.ml b/src/b.ml
+index 3333333..4444444 100644
+--- a/src/b.ml
++++ b/src/b.ml
+@@ -1 +1 @@
+-let b = 1
++let b = 2
+|}
+
+let test_local_source_default_change_key_uses_filtered_diff () =
+  let config_without_b = Config_types.config_of_json (Melange_json.of_string {|{"ignored_paths": ["src/b.ml"]}|}) in
+  let config_without_a = Config_types.config_of_json (Melange_json.of_string {|{"ignored_paths": ["src/a.ml"]}|}) in
+  let prepare config =
+    Lwt_main.run
+      (Local_source.prepare_review_from_text ~root:"." ~repo_key:"local/repo" ~title:"Local change" ~description:""
+         ~diff_text:two_file_diff ~config ())
+  in
+  match prepare config_without_b, prepare config_without_a with
+  | Ok without_b, Ok without_a ->
+    (check bool) "default change key changes with filters" true
+      (not (String.equal without_b.change_key without_a.change_key));
+    (check bool) "head sha changes with filters" true (not (String.equal without_b.head_sha without_a.head_sha))
+  | Error error, _ | _, Error error -> fail (Local_source.string_of_prepare_error error)
+
+let test_local_review_diff_returns_markdown () =
+  Test_helpers.reset_test_state ();
+  let state = State.create () in
+  let ctx = Test_helpers.make_test_context ~state () in
+  let config = Context.default_config () in
+  let result =
+    Lwt_main.run
+      (Local_review_test.review_diff ~ctx ~root:"." ~repo_key:"local/repo" ~change_key:"local-change"
+         ~title:"Local change" ~description:"Local description" ~diff_path:"mock_api_responses/github/pr_42.diff"
+         ~config ())
+  in
+  match result with
+  | Error msg -> fail msg
+  | Ok markdown ->
+    (check bool) "has summary" true (CCString.find ~sub:"The changes look generally good" markdown >= 0);
+    (check bool) "has inline comments section" true (CCString.find ~sub:"### Inline comments" markdown >= 0);
+    (check bool) "has local inline location" true (CCString.find ~sub:"src/main.ml:14" markdown >= 0);
+    (check bool) "records generic change review" true
+      (State.is_change_reviewed state ~repo_key:"local/repo" ~change_key:"local-change")
+
+let test_local_review_diff_text_returns_markdown () =
+  Test_helpers.reset_test_state ();
+  let ctx = Test_helpers.make_test_context () in
+  let config = Context.default_config () in
+  let diff_text = read_file "mock_api_responses/github/pr_42.diff" in
+  let result =
+    Lwt_main.run
+      (Local_review_test.review_diff_text ~ctx ~root:"." ~repo_key:"local/repo" ~title:"Generated local diff"
+         ~description:"Local description" ~diff_text ~config ())
+  in
+  match result with
+  | Error msg -> fail msg
+  | Ok markdown ->
+    (check bool) "has summary" true (CCString.find ~sub:"The changes look generally good" markdown >= 0);
+    (check bool) "has inline comments section" true (CCString.find ~sub:"### Inline comments" markdown >= 0)
+
+let test_local_review_uses_supplied_config_for_plugins () =
+  Test_helpers.reset_test_state ();
+  Capturing_agent_runner.reset ();
+  let repo_key = "local/repo" in
+  let ctx = Test_helpers.make_test_context () in
+  let context_config = Config_types.config_of_json (Melange_json.of_string {|{"model": "context-model"}|}) in
+  let supplied_config = Config_types.config_of_json (Melange_json.of_string {|{"model": "supplied-model"}|}) in
+  Context.set_config ctx ~repo_key context_config;
+  let diff_text = read_file "mock_api_responses/github/pr_42.diff" in
+  let result =
+    Lwt_main.run
+      (Local_review_capture.review_diff_text ~ctx ~root:"." ~repo_key ~title:"Generated local diff"
+         ~description:"Local description" ~diff_text ~config:supplied_config ())
+  in
+  match result with
+  | Error msg -> fail msg
+  | Ok _markdown ->
+  (* The general plugin makes two agent calls: the review (with the supplied
+     model id) and the validator (no model id). Only the review carries the
+     model under test. *)
+  match List.filter_map Fun.id (Capturing_agent_runner.get_model_ids ()) with
+  | [ model_id ] -> check string "plugin model" "supplied-model" model_id
+  | [] -> fail "expected one model-carrying plugin agent call"
+  | _ :: _ -> fail "expected exactly one model-carrying plugin agent call"
+
+let test_local_review_skips_duplicate_change () =
+  Test_helpers.reset_test_state ();
+  Capturing_agent_runner.reset ();
+  let state = State.create () in
+  let ctx = Test_helpers.make_test_context ~state () in
+  let config = Context.default_config () in
+  let diff_text = read_file "mock_api_responses/github/pr_42.diff" in
+  let review () =
+    Lwt_main.run
+      (Local_review_capture.review_diff_text ~ctx ~root:"." ~repo_key:"local/repo" ~change_key:"local-change"
+         ~title:"Generated local diff" ~description:"Local description" ~diff_text ~config ())
+  in
+  (match review () with
+  | Error msg -> fail msg
+  | Ok _markdown -> ());
+  let second = review () in
+  (match second with
+  | Error msg -> (check bool) "duplicate skipped" true (CCString.find ~sub:"already reviewed" msg >= 0)
+  | Ok _markdown -> fail "duplicate local review should be skipped");
+  (* Count only model-carrying (general_review) calls: the duplicate second
+     review must not run, so exactly one review agent call is expected. *)
+  (check int) "agent calls" 1 (List.length (List.filter_map Fun.id (Capturing_agent_runner.get_model_ids ())))
+
+let test_github_review_uses_captured_config_for_plugins () =
+  Test_helpers.reset_test_state ();
+  Capturing_agent_runner.reset ();
+  Config_mutating_source.clear_replacement_config ();
+  let captured_config =
+    Config_types.config_of_json
+      (Melange_json.of_string {|{"auto_review_pr_open": true, "auto_review_pr_sync": true, "model": "captured-model"}|})
+  in
+  let replacement_config =
+    Config_types.config_of_json
+      (Melange_json.of_string
+         {|{"auto_review_pr_open": true, "auto_review_pr_sync": true, "model": "replacement-model"}|})
+  in
+  let ctx = Test_helpers.make_test_context ~config:captured_config () in
+  let payload = read_file "mock_payloads/pr_opened.json" in
+  let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
+  Config_mutating_source.set_replacement_config replacement_config;
+  Fun.protect ~finally:Config_mutating_source.clear_replacement_config (fun () ->
+    Lwt_main.run (Reviewer_config_capture.process_event ctx ~event));
+  match List.filter_map Fun.id (Capturing_agent_runner.get_model_ids ()) with
+  | [ model_id ] -> check string "plugin model" "captured-model" model_id
+  | [] -> fail "expected one model-carrying plugin agent call"
+  | _ :: _ -> fail "expected exactly one model-carrying plugin agent call"
+
+let json_string_field fields key =
+  match List.assoc_opt key fields with
+  | Some (`String value) -> value
+  | Some _ -> fail (Printf.sprintf "expected string JSON field %s" key)
+  | None -> fail (Printf.sprintf "missing JSON field %s" key)
+
+let json_int_field fields key =
+  match List.assoc_opt key fields with
+  | Some (`Int value) -> value
+  | Some _ -> fail (Printf.sprintf "expected int JSON field %s" key)
+  | None -> fail (Printf.sprintf "missing JSON field %s" key)
+
+let test_local_sink_render_json () =
+  let summary =
+    "Legacy session-id file from old scc crashes startup because ensure_dir refuses to treat a regular file as a \
+     directory"
+  in
+  let failure_scenario =
+    "Any user who ran a previous scc has a regular file at <scc_metadata>/sessions/<wt_basename> holding their last \
+     session UUID. After upgrading, scc calls ensure_dir on the legacy file path, sees S_REG, and aborts on startup."
+  in
+  let finding =
+    mk_finding ~path:"backend/safer-claude-code/safer_claude_code.ml" ~line:492 ~message:summary ~failure_scenario ()
+  in
+  let report : Review_engine.report =
+    {
+      body = "";
+      comments = [];
+      findings = [ finding ];
+      unchanged_findings = [];
+      anchor_failed_findings = [];
+      review_costs = [];
+      security_error = false;
+      general_failed = false;
+    }
+  in
+  match Yojson.Basic.from_string (Local_sink.render_json report) with
+  | `Assoc fields ->
+    (check string) "review summary" "" (json_string_field fields "summary");
+    (match List.assoc_opt "findings" fields with
+    | Some (`List [ `Assoc fields ]) ->
+      (check string) "file" "backend/safer-claude-code/safer_claude_code.ml" (json_string_field fields "file");
+      (check int) "line" 492 (json_int_field fields "line");
+      (check string) "level" "warning" (json_string_field fields "level");
+      (check string) "category" "security" (json_string_field fields "category");
+      (check string) "summary" summary (json_string_field fields "summary");
+      (check string) "failure_scenario" failure_scenario (json_string_field fields "failure_scenario")
+    | Some _ -> fail "expected findings to contain one review finding"
+    | None -> fail "missing JSON field findings")
+  | _ -> fail "expected a JSON review object"
+
 (** {2 State persistence tests} *)
 
 let test_state_save_load_roundtrip () =
@@ -1894,6 +2435,47 @@ let test_state_empty_load () =
   Sys.remove tmp_path;
   let loaded = State.load ~filepath:tmp_path in
   (check bool) "no pr reviewed" false (State.is_pr_reviewed loaded ~repo_url:"x" ~pr_number:1 ~head_sha:"abc")
+
+let test_state_change_review_roundtrip () =
+  let tmp_path = Filename.temp_file "reviewotron_change_state_" ".json" in
+  Fun.protect
+    ~finally:(fun () -> Sys.remove tmp_path)
+    (fun () ->
+      let state = State.create ~filepath:tmp_path () in
+      State.record_change_review state ~repo_key:"local/repo" ~change_key:"diff/abc" ~review_costs:[];
+      State.save state;
+      let loaded = State.load ~filepath:tmp_path in
+      (check bool) "change review found" true
+        (State.is_change_reviewed loaded ~repo_key:"local/repo" ~change_key:"diff/abc");
+      (check bool) "different change not found" false
+        (State.is_change_reviewed loaded ~repo_key:"local/repo" ~change_key:"diff/def"))
+
+let test_state_loads_legacy_repo_state_without_change_reviews () =
+  let tmp_path = Filename.temp_file "reviewotron_legacy_state_" ".json" in
+  Fun.protect
+    ~finally:(fun () -> Sys.remove tmp_path)
+    (fun () ->
+      write_file tmp_path
+        {|{
+  "repos": {
+    "https://github.com/test/repo": {
+      "pr_reviews": [
+        {
+          "pr_number": 1,
+          "head_sha": "abc123",
+          "reviewed_at": "Mon, 01 Jan 2024 00:00:00 GMT",
+          "review_costs": []
+        }
+      ],
+      "push_reviews": []
+    }
+  }
+}|};
+      let loaded = State.load ~filepath:tmp_path in
+      (check bool) "legacy PR review found" true
+        (State.is_pr_reviewed loaded ~repo_url:"https://github.com/test/repo" ~pr_number:1 ~head_sha:"abc123");
+      (check bool) "legacy state has no generic change review" false
+        (State.is_change_reviewed loaded ~repo_key:"https://github.com/test/repo" ~change_key:"diff/abc"))
 
 (** {2 Cost tracking tests} *)
 
@@ -2949,7 +3531,12 @@ end
 module General_plugin_test = General_review_plugin.Make (General_plugin_agent_runner)
 
 let general_plugin_metadata : Review_plugin.review_metadata =
-  { pr_number = 42; pr_title = "Test PR"; pr_description = ""; file_contents = [] }
+  {
+    change_title = "Test change";
+    change_description = "";
+    file_contents = [];
+    fetch_file = (fun ~path:_ -> Lwt.return (Ok None));
+  }
 
 let process_finding_message =
   "The `process` function can raise exceptions but the result is used without error handling."
@@ -2982,8 +3569,8 @@ let run_general_plugin_with_outputs outputs =
   General_plugin_agent_runner.set_outputs outputs;
   let ctx = Test_helpers.make_test_context ~config:Test_helpers.auto_review_enabled_config () in
   Lwt_main.run
-    (General_plugin_test.run_review ~ctx ~repo_url:"https://github.com/org/repo" ~diff_text:"diff"
-       ~metadata:general_plugin_metadata ())
+    (General_plugin_test.run_review ~ctx ~repo_url:"https://github.com/org/repo"
+       ~config:Test_helpers.auto_review_enabled_config ~diff_text:"diff" ~metadata:general_plugin_metadata ())
 
 let test_general_review_filters_low_value_and_validates () =
   let result, costs =
@@ -3124,6 +3711,12 @@ let () =
           test_case "config ignores removed fields" `Quick test_config_ignores_removed_fields;
           test_case "review_plugins defaults" `Quick test_config_review_plugins_defaults;
           test_case "review_plugins explicit" `Quick test_config_review_plugins_explicit;
+          test_case "context create requires repos by default" `Quick test_context_create_requires_repos_by_default;
+          test_case "context create allows repo-less when explicit" `Quick
+            test_context_create_allows_repo_less_when_explicit;
+          test_case "context load config file" `Quick test_context_load_config_file;
+          test_case "context load local config defaults when missing" `Quick
+            test_context_load_local_config_uses_defaults_when_missing;
           test_case "vuln_class roundtrip" `Quick test_vuln_class_roundtrip;
           test_case "security_plugin_config roundtrip" `Quick test_security_plugin_config_roundtrip;
         ] );
@@ -3149,6 +3742,7 @@ let () =
           test_case "same line same source higher severity wins" `Quick
             test_dedup_same_line_same_source_higher_severity_wins;
           test_case "near line collapse same category" `Quick test_dedup_near_line_collapse_same_category;
+          test_case "near line rechecks promoted best" `Quick test_dedup_near_line_rechecks_promoted_best;
           test_case "near line different category both kept" `Quick test_dedup_near_line_different_category_both_kept;
           test_case "security findings not near-line collapsed" `Quick test_dedup_security_not_near_line_collapsed;
           test_case "sorts by path then line" `Quick test_dedup_sorts_by_path_then_line;
@@ -3335,10 +3929,34 @@ let () =
           test_case "ignored author PR skipped" `Quick test_ignored_author_pr_skipped;
           test_case "ignored author push skipped" `Quick test_ignored_author_push_skipped;
         ] );
+      ( "local_review",
+        [
+          test_case "git default repo key" `Quick test_local_git_default_repo_key;
+          test_case "duplicate message detection" `Quick test_local_review_duplicate_message_detection;
+          test_case "git spawn errors return Error" `Quick test_local_git_run_git_reports_spawn_errors;
+          test_case "git infer base uses explicit base" `Quick test_local_git_infer_base_uses_explicit_base;
+          test_case "git infer base uses origin HEAD" `Quick test_local_git_infer_base_uses_origin_head;
+          test_case "git diff uses merge-base" `Quick test_local_git_diff_against_base_uses_merge_base;
+          test_case "source builds local job" `Quick test_local_source_prepare_review_builds_job;
+          test_case "source rejects unsafe fetch path" `Quick test_local_source_rejects_unsafe_fetch_path;
+          test_case "source rejects symlink escape" `Quick test_local_source_rejects_symlink_escape;
+          test_case "source reports fetch read errors" `Quick test_local_source_reports_fetch_read_errors;
+          test_case "source default change key uses filtered diff" `Quick
+            test_local_source_default_change_key_uses_filtered_diff;
+          test_case "review diff returns markdown" `Quick test_local_review_diff_returns_markdown;
+          test_case "review generated diff text returns markdown" `Quick test_local_review_diff_text_returns_markdown;
+          test_case "review plugins use supplied config" `Quick test_local_review_uses_supplied_config_for_plugins;
+          test_case "duplicate local change skipped" `Quick test_local_review_skips_duplicate_change;
+          test_case "github plugins use captured config" `Quick test_github_review_uses_captured_config_for_plugins;
+          test_case "local sink renders json" `Quick test_local_sink_render_json;
+        ] );
       ( "state_persistence",
         [
           test_case "save/load roundtrip" `Quick test_state_save_load_roundtrip;
           test_case "load from non-existent file" `Quick test_state_empty_load;
+          test_case "generic change review roundtrip" `Quick test_state_change_review_roundtrip;
+          test_case "legacy repo state without change_reviews loads" `Quick
+            test_state_loads_legacy_repo_state_without_change_reviews;
         ] );
       ( "cost_tracking",
         [

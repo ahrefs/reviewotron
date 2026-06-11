@@ -25,14 +25,16 @@ let load ~filepath =
   in
   { data; filepath = Some filepath }
 
-let find_repo_state state ~repo_url =
-  match List.assoc_opt repo_url state.State_types.repos with
-  | Some rs -> rs
-  | None -> { State_types.pr_reviews = []; push_reviews = [] }
+let empty_repo_state : State_types.repo_state = { pr_reviews = []; push_reviews = []; change_reviews = [] }
 
-let set_repo_state state ~repo_url repo_state =
-  let repos = List.filter (fun (url, _) -> not (String.equal url repo_url)) state.State_types.repos in
-  { State_types.repos = (repo_url, repo_state) :: repos }
+let find_repo_state state ~repo_key =
+  match List.assoc_opt repo_key state.State_types.repos with
+  | Some rs -> rs
+  | None -> empty_repo_state
+
+let set_repo_state state ~repo_key repo_state =
+  let repos = List.filter (fun (key, _) -> not (String.equal key repo_key)) state.State_types.repos in
+  { State_types.repos = (repo_key, repo_state) :: repos }
 
 (** Trim a list to at most [n] elements (keeping the most recent, i.e., front of list). *)
 let trim_list n lst =
@@ -41,30 +43,42 @@ let trim_list n lst =
   | false -> lst
 
 let is_pr_reviewed t ~repo_url ~pr_number ~head_sha =
-  let rs = find_repo_state t.data ~repo_url in
+  let rs = find_repo_state t.data ~repo_key:repo_url in
   List.exists
     (fun (r : State_types.review_record) -> Int.equal r.pr_number pr_number && String.equal r.head_sha head_sha)
     rs.pr_reviews
 
 let record_pr_review t ~repo_url ~pr_number ~head_sha ~review_costs =
-  let rs = find_repo_state t.data ~repo_url in
+  let rs = find_repo_state t.data ~repo_key:repo_url in
   let now = Time.gmt_string (Unix.gettimeofday ()) in
   let record : State_types.review_record = { pr_number; head_sha; reviewed_at = now; review_costs } in
   let pr_reviews = trim_list max_records_per_repo (record :: rs.pr_reviews) in
   let rs = { rs with State_types.pr_reviews } in
-  t.data <- set_repo_state t.data ~repo_url rs
+  t.data <- set_repo_state t.data ~repo_key:repo_url rs
 
 let is_push_reviewed t ~repo_url ~after_sha =
-  let rs = find_repo_state t.data ~repo_url in
+  let rs = find_repo_state t.data ~repo_key:repo_url in
   List.exists (fun (r : State_types.push_review_record) -> String.equal r.after_sha after_sha) rs.push_reviews
 
 let record_push_review t ~repo_url ~after_sha =
-  let rs = find_repo_state t.data ~repo_url in
+  let rs = find_repo_state t.data ~repo_key:repo_url in
   let now = Time.gmt_string (Unix.gettimeofday ()) in
   let record : State_types.push_review_record = { after_sha; reviewed_at = now } in
   let push_reviews = trim_list max_records_per_repo (record :: rs.push_reviews) in
   let rs = { rs with State_types.push_reviews } in
-  t.data <- set_repo_state t.data ~repo_url rs
+  t.data <- set_repo_state t.data ~repo_key:repo_url rs
+
+let is_change_reviewed t ~repo_key ~change_key =
+  let rs = find_repo_state t.data ~repo_key in
+  List.exists (fun (r : State_types.change_review_record) -> String.equal r.change_key change_key) rs.change_reviews
+
+let record_change_review t ~repo_key ~change_key ~review_costs =
+  let rs = find_repo_state t.data ~repo_key in
+  let now = Time.gmt_string (Unix.gettimeofday ()) in
+  let record : State_types.change_review_record = { change_key; reviewed_at = now; review_costs } in
+  let change_reviews = trim_list max_records_per_repo (record :: rs.change_reviews) in
+  let rs = { rs with State_types.change_reviews } in
+  t.data <- set_repo_state t.data ~repo_key rs
 
 let save t =
   match t.filepath with

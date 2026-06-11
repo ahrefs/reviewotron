@@ -4,7 +4,8 @@ open Reviewotron_lib
 let log = Log.from "request_handler"
 
 (** Instantiate the reviewer with real implementations *)
-module R = Reviewer.Make (Api_remote.Github) (Api_remote.Agent_runner) (Api_remote.Slack)
+module R =
+  Reviewer.Make (Api_remote.Github) (Api_remote.Github) (Api_remote.Github) (Api_remote.Agent_runner) (Api_remote.Slack)
 
 let extract_repo_url body =
   match Github_types.webhook_envelope_of_json (Melange_json.of_string body) with

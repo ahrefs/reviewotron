@@ -1,4 +1,4 @@
-(** Triage agent — fast security scan of PR diffs.
+(** Triage agent — fast security scan of change diffs.
 
     Builds the agent configuration and user input for the triage stage
     of the security review pipeline.  The triage agent identifies
@@ -22,7 +22,7 @@ val config : model_tier:Agent_runner.model_tier -> Agent_runner.agent_config
     hints), and optional repository security memory into a structured prompt.
 
     @param diff_text Raw unified diff text.
-    @param file_paths List of changed file paths in the PR.
+    @param file_paths List of changed file paths in the reviewed change.
     @param security_memory Optional repo security memory contents. *)
 val build_input : diff_text:string -> file_paths:string list -> ?security_memory:string -> unit -> string
 
