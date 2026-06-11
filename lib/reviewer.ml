@@ -218,13 +218,44 @@ struct
         Printf.sprintf "debug/%s/%s" slug sha_prefix
       in
       let%lwt plugin_result = Engine.run_plugins ~ctx ~job ~debug_dir in
-      let Review_engine.{ general_result; findings; review_costs; security_error } = plugin_result in
+      let Review_engine.{ general_output; findings; review_costs; security_error } = plugin_result in
       Cost_tracking.log_review_costs review_costs;
       let%lwt () = Sink.post_push_comments ~ctx ~repo_url:job.repo_key ~sha:job.head_sha findings in
       let security_note = String.trim Review_engine.security_error_notice in
+      let failure_attachment reason =
+        log#error "review failed for push %s: no review output produced" push.after;
+        let text = Printf.sprintf ":warning: *Code Review Failed* for push to `develop` by %s" push.pusher.name in
+        let failure_text =
+          match findings with
+          | _ :: _ ->
+            "\xE2\x9A\xA0\xEF\xB8\x8F Review partially failed \xE2\x80\x94 the general code review agent encountered \
+             an error. Security findings were posted as commit comments."
+          | [] ->
+            "\xE2\x9A\xA0\xEF\xB8\x8F Review failed \xE2\x80\x94 the code review encountered an error and could not \
+             produce results. Check the service logs."
+        in
+        let failure_text =
+          match reason with
+          | None -> failure_text
+          | Some reason -> Printf.sprintf "%s\n```\n%s\n```" failure_text reason
+        in
+        let failure_text = if security_error then failure_text ^ " " ^ security_note else failure_text in
+        let att =
+          Slack_types.
+            {
+              color = "#dc3545";
+              title = Printf.sprintf "Push by %s \xE2\x80\x94 %d commits" push.pusher.name (List.length push.commits);
+              title_link = push.compare;
+              text = failure_text;
+              fields = [];
+              footer = Some "reviewotron";
+            }
+        in
+        text, att
+      in
       let slack_text, attachment =
-        match general_result with
-        | Some review ->
+        match general_output with
+        | Some (Ok review) ->
           let text = Printf.sprintf ":robot_face: *Code Review* for push to `develop` by %s" push.pusher.name in
           let att =
             Review_format.format_slack_attachment ~compare_url:push.compare ~pusher_name:push.pusher.name
@@ -232,31 +263,8 @@ struct
           in
           let att = if security_error then Slack_types.{ att with text = att.text ^ "\n" ^ security_note } else att in
           text, att
-        | None ->
-          log#error "review failed for push %s: no review output produced" push.after;
-          let text = Printf.sprintf ":warning: *Code Review Failed* for push to `develop` by %s" push.pusher.name in
-          let failure_text =
-            match findings with
-            | _ :: _ ->
-              "\xE2\x9A\xA0\xEF\xB8\x8F Review partially failed \xE2\x80\x94 the general code review agent encountered \
-               an error. Security findings were posted as commit comments."
-            | [] ->
-              "\xE2\x9A\xA0\xEF\xB8\x8F Review failed \xE2\x80\x94 the code review encountered an error and could not \
-               produce results. Check the service logs."
-          in
-          let failure_text = if security_error then failure_text ^ " " ^ security_note else failure_text in
-          let att =
-            Slack_types.
-              {
-                color = "#dc3545";
-                title = Printf.sprintf "Push by %s \xE2\x80\x94 %d commits" push.pusher.name (List.length push.commits);
-                title_link = push.compare;
-                text = failure_text;
-                fields = [];
-                footer = Some "reviewotron";
-              }
-          in
-          text, att
+        | Some (Error reason) -> failure_attachment (Some reason)
+        | None -> failure_attachment None
       in
       let%lwt () =
         match job.config.slack_channel with

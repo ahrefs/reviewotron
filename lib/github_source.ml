@@ -92,6 +92,21 @@ module Make (SRC : Api.Github_review_source) = struct
     | () when is_ignored_author -> Some (Printf.sprintf "ignored author %s" n.sender.login)
     | () -> None
 
+  (* Fetch a file and keep it only if it is safe to feed to the model. Binary or
+     oversized blobs (e.g. generated schemas) are dropped: embedding them in the
+     prompt would fail JSON serialization or bloat the request. A dropped file
+     becomes [Ok None], which both callers already treat as "unavailable", so
+     the review proceeds on the diff and the remaining text files. *)
+  let fetch_text_file ~ctx ~repo_url ~ref_ ~path =
+    match%lwt SRC.get_file_content ~ctx ~repo_url ~path ~ref_ with
+    | (Ok None | Error _) as result -> Lwt.return result
+    | Ok (Some content) ->
+    match Review_job.is_embeddable content with
+    | true -> Lwt.return (Ok (Some content))
+    | false ->
+      log#warn "skipping %s: not embeddable (binary or too large)" path;
+      Lwt.return (Ok None)
+
   let fetch_key_files ~ctx ~repo_url ~diff ~ref_ =
     let paths =
       diff
@@ -106,7 +121,7 @@ module Make (SRC : Api.Github_review_source) = struct
     let paths = CCList.take 5 paths in
     Lwt_list.filter_map_p
       (fun path ->
-        let%lwt result = SRC.get_file_content ~ctx ~repo_url ~path ~ref_ in
+        let%lwt result = fetch_text_file ~ctx ~repo_url ~path ~ref_ in
         match result with
         | Ok (Some content) -> Lwt.return (Some (path, content))
         | Ok None -> Lwt.return None
@@ -115,7 +130,7 @@ module Make (SRC : Api.Github_review_source) = struct
           Lwt.return None)
       paths
 
-  let fetch_file_at_ref ~ctx ~repo_url ~ref_ ~path = SRC.get_file_content ~ctx ~repo_url ~path ~ref_
+  let fetch_file_at_ref ~ctx ~repo_url ~ref_ ~path = fetch_text_file ~ctx ~repo_url ~ref_ ~path
 
   let prepare_diff ~config diff_text =
     match Review_engine.prepare_diff ~config diff_text with
