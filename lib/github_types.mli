@@ -224,6 +224,9 @@ type commit_comment_req = {
 }
 [@@deriving json]
 
+(** Request body for an issue (PR) comment: [POST /issues/{number}/comments]. *)
+type issue_comment_req = { body : string } [@@deriving json]
+
 (** {2 Reactions} *)
 
 type reaction_req = { content : string } [@@deriving json]

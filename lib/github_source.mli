@@ -5,9 +5,13 @@
     ignored authors, duplicate checks, and config refresh. *)
 
 type prepare_error =
-  | Fetch_failed of string
-  | Empty
-  | Too_large of int
+  | Fetch_failed of Http_util.error
+    (** The diff could not be fetched from GitHub.  Carries the typed HTTP error
+        so the caller can distinguish a too-large diff (HTTP 406) from a
+        transient failure and surface the right explanation. *)
+  | Empty  (** Nothing to review after filtering — a successful no-op, not a failure. *)
+  | Too_large of int  (** The filtered diff exceeds [Config_types.max_diff_lines]. *)
+  | Too_many_files of int  (** The filtered diff touches more files than [Config_types.max_files]. *)
 
 type prepared_pr_review = {
   number : int;

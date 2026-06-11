@@ -22,6 +22,7 @@ val deduplicate_findings : (finding_source * Review_types.finding) list -> Revie
 type prepare_diff_error =
   [ `Empty
   | `Too_large of int
+  | `Too_many_files of int
   ]
 
 (** Parse a raw diff, filter ignored paths, and annotate the remaining diff for

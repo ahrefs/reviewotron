@@ -22,6 +22,7 @@ let is_retryable = function
   | Http_util.Transport code -> is_retryable_curl_code code
   | Http_util.Status (429, _) -> true
   | Http_util.Status (code, _) -> code >= 500 && code <= 599
+  | Http_util.Local _ -> false
 
 (** [with_retry ~label f] runs the thunk [f], retrying on transient failures
     (per {!is_retryable}) with exponential backoff. [f] re-runs from scratch

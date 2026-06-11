@@ -4,11 +4,13 @@ type prepare_error =
   | Read_failed of string
   | Empty
   | Too_large of int
+  | Too_many_files of int
 
 let string_of_prepare_error = function
   | Read_failed msg -> msg
   | Empty -> "all files were filtered out"
   | Too_large total_lines -> Printf.sprintf "diff has %d lines, which exceeds the configured limit" total_lines
+  | Too_many_files file_count -> Printf.sprintf "diff touches %d files, which exceeds the configured limit" file_count
 
 let read_file path =
   Lwt.catch
@@ -80,6 +82,7 @@ let prepare_diff ~config diff_text =
   | Ok prepared -> Ok prepared
   | Error `Empty -> Error Empty
   | Error (`Too_large total_lines) -> Error (Too_large total_lines)
+  | Error (`Too_many_files file_count) -> Error (Too_many_files file_count)
 
 let prepare_review_from_text ~root ~repo_key ?change_key ~title ~description ~diff_text ~config () =
   match prepare_diff ~config diff_text with

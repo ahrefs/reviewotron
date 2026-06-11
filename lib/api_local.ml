@@ -27,6 +27,26 @@ let agent_response_map : (string * string) list ref = ref []
 let set_agent_response_map entries = agent_response_map := entries
 let clear_agent_response_map () = agent_response_map := []
 
+(** When set, the next [get_pr_diff] call returns this value instead of reading
+    a mock file, then resets. Lets tests inject diff-fetch failures (e.g. the
+    GitHub 406 "too_large" response) and empty/oversized diffs. *)
+let next_pr_diff : (string, Http_util.error) result option ref = ref None
+
+let set_next_pr_diff_error ?status message =
+  let error =
+    match status with
+    | Some status -> Http_util.Status (status, message)
+    | None -> Http_util.Local message
+  in
+  next_pr_diff := Some (Error error)
+
+let set_next_pr_diff diff = next_pr_diff := Some (Ok diff)
+let reset_next_pr_diff () = next_pr_diff := None
+
+let next_issue_comment_result : (unit, string) result option ref = ref None
+let set_next_issue_comment_error message = next_issue_comment_result := Some (Error message)
+let reset_next_issue_comment_result () = next_issue_comment_result := None
+
 let next_reaction_id = ref 1
 let reset_reactions () = next_reaction_id := 1
 
@@ -41,9 +61,18 @@ module Github : Api.Github = struct
       log#error "%s" msg;
       Lwt.return (Ok [])
 
+  (* Mock files yield a plain string error; lift it into the typed HTTP error
+     the real implementation returns (no HTTP status for a missing fixture). *)
+  let mock_diff_result path = read_mock_file path |> Result.map_error (fun message -> Http_util.Local message)
+
   let get_pr_diff ~ctx:_ ~repo_url:_ ~number =
-    let path = Printf.sprintf "mock_api_responses/github/pr_%d.diff" number in
-    Lwt.return (read_mock_file path)
+    match !next_pr_diff with
+    | Some override ->
+      next_pr_diff := None;
+      Lwt.return override
+    | None ->
+      let path = Printf.sprintf "mock_api_responses/github/pr_%d.diff" number in
+      Lwt.return (mock_diff_result path)
 
   let get_pull_request ~ctx:_ ~repo_url:_ ~number =
     let path = Printf.sprintf "mock_api_responses/github/pr_%d.json" number in
@@ -55,7 +84,7 @@ module Github : Api.Github = struct
 
   let get_compare_diff ~ctx:_ ~repo_url:_ ~base ~head =
     let path = Printf.sprintf "mock_api_responses/github/compare_%s_%s.diff" base head in
-    Lwt.return (read_mock_file path)
+    Lwt.return (mock_diff_result path)
 
   let get_file_content ~ctx:_ ~repo_url:_ ~path:file_path ~ref_ =
     let path = Printf.sprintf "mock_api_responses/github/content_%s_%s" ref_ file_path in
@@ -76,6 +105,18 @@ module Github : Api.Github = struct
     Buffer.add_string write_log entry;
     log#info "%s" entry;
     Lwt.return (Ok ())
+
+  let create_issue_comment ~ctx:_ ~repo_url ~number comment =
+    match !next_issue_comment_result with
+    | Some result ->
+      next_issue_comment_result := None;
+      Lwt.return result
+    | None ->
+      let json = Melange_json.to_string (Github_types.issue_comment_req_to_json comment) in
+      let entry = Printf.sprintf "[create_issue_comment] repo=%s number=%d\n%s\n" repo_url number json in
+      Buffer.add_string write_log entry;
+      log#info "%s" entry;
+      Lwt.return (Ok ())
 
   let create_issue_reaction ~ctx:_ ~repo_url ~number ~content =
     let reaction_id = !next_reaction_id in

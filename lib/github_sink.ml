@@ -29,6 +29,20 @@ module Make (SNK : Api.Github_review_sink) = struct
     | Error msg -> log#error "failed to post review for PR #%d: %s" number msg);
     Lwt.return_unit
 
+  (** Post an issue comment explaining why a review could not be produced.
+      Returns the post result so the caller can decide whether to record the PR
+      as reviewed (only a successfully delivered notice should suppress retries). *)
+  let publish_failure_comment ~ctx ~repo_url ~number failure =
+    let body = Review_failure.to_comment failure in
+    let%lwt result = SNK.create_issue_comment ~ctx ~repo_url ~number { body } in
+    match result with
+    | Ok () ->
+      log#info "posted review-failure comment on PR #%d" number;
+      Lwt.return (Ok ())
+    | Error msg ->
+      log#error "failed to post review-failure comment on PR #%d: %s" number msg;
+      Lwt.return (Error msg)
+
   let post_push_comments ~ctx ~repo_url ~sha findings =
     Lwt_list.iter_s
       (fun (finding : Review_types.finding) ->

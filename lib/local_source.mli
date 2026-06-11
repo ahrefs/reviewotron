@@ -7,6 +7,7 @@ type prepare_error =
   | Read_failed of string
   | Empty
   | Too_large of int
+  | Too_many_files of int
 
 (** Human-readable error text for CLI and tests. *)
 val string_of_prepare_error : prepare_error -> string

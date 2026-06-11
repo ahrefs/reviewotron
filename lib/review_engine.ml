@@ -94,16 +94,22 @@ let deduplicate_findings sourced_findings =
 type prepare_diff_error =
   [ `Empty
   | `Too_large of int
+  | `Too_many_files of int
   ]
 
 let prepare_diff ~config diff_text =
   let parsed_diff = Diff_parser.parse diff_text in
   let filtered_diff = Diff_parser.filter_paths parsed_diff ~ignored:config.Config_types.ignored_paths in
-  let total_lines = Diff_parser.total_lines filtered_diff in
   match filtered_diff with
   | [] -> Error `Empty
-  | _ when total_lines > config.max_diff_lines -> Error (`Too_large total_lines)
-  | _ -> Ok (filtered_diff, Diff_parser.to_string_annotated filtered_diff)
+  | _ when List.compare_length_with filtered_diff config.max_files > 0 ->
+    Error (`Too_many_files (List.length filtered_diff))
+  | _ ->
+    (* Counting lines folds over the whole diff; defer it past the cheaper
+       file-count check so an over-[max_files] diff isn't fully traversed. *)
+    let total_lines = Diff_parser.total_lines filtered_diff in
+    if total_lines > config.max_diff_lines then Error (`Too_large total_lines)
+    else Ok (filtered_diff, Diff_parser.to_string_annotated filtered_diff)
 
 let valid_multiline_range fd (finding : Review_types.finding) ~resolved_line =
   match finding.end_line with

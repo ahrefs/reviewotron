@@ -3,9 +3,10 @@ open Devkit
 let log = Log.from "github_source"
 
 type prepare_error =
-  | Fetch_failed of string
+  | Fetch_failed of Http_util.error
   | Empty
   | Too_large of int
+  | Too_many_files of int
 
 type prepared_pr_review = {
   number : int;
@@ -121,6 +122,7 @@ module Make (SRC : Api.Github_review_source) = struct
     | Ok prepared -> Ok prepared
     | Error `Empty -> Error Empty
     | Error (`Too_large total_lines) -> Error (Too_large total_lines)
+    | Error (`Too_many_files file_count) -> Error (Too_many_files file_count)
 
   let prepare_pr_review_with_trigger ?(trigger = Review_job.Pull_request) ~ctx ~(config : Config_types.config)
     (pr_notif : Github_types.pr_notification) =
@@ -130,18 +132,21 @@ module Make (SRC : Api.Github_review_source) = struct
     log#info "reviewing PR #%d in %s" number pr_notif.repository.full_name;
     let%lwt diff_result = SRC.get_pr_diff ~ctx ~repo_url ~number in
     match diff_result with
-    | Error msg ->
-      log#error "failed to fetch diff for PR #%d: %s" number msg;
-      Lwt.return (Error (Fetch_failed msg))
+    | Error fetch_error ->
+      log#error "failed to fetch diff for PR #%d: %s" number (Http_util.error_to_string fetch_error);
+      Lwt.return (Error (Fetch_failed fetch_error))
     | Ok diff_text ->
     match prepare_diff ~config diff_text with
     | Error Empty ->
-      log#info "PR #%d skipped: all files filtered out" number;
+      log#info "PR #%d: all files filtered out, nothing to review" number;
       Lwt.return (Error Empty)
     | Error (Too_large total_lines) ->
       log#info "PR #%d skipped: %d diff lines exceeds limit of %d" number total_lines config.max_diff_lines;
       Lwt.return (Error (Too_large total_lines))
-    | Error (Fetch_failed msg) -> Lwt.return (Error (Fetch_failed msg))
+    | Error (Too_many_files file_count) ->
+      log#info "PR #%d skipped: %d files exceeds limit of %d" number file_count config.max_files;
+      Lwt.return (Error (Too_many_files file_count))
+    | Error (Fetch_failed _ as e) -> Lwt.return (Error e)
     | Ok (filtered_diff, filtered_text) ->
       let head_sha = pr.head.sha in
       let%lwt file_contents = fetch_key_files ~ctx ~repo_url ~diff:filtered_diff ~ref_:head_sha in
@@ -174,7 +179,10 @@ module Make (SRC : Api.Github_review_source) = struct
     match result with
     | Error msg ->
       log#error "failed to fetch PR #%d for REVIEW comment trigger: %s" n.issue.number msg;
-      Lwt.return (Error (Fetch_failed msg))
+      (* [get_pull_request] surfaces a plain string error with no HTTP status to
+         classify, so this is a generic (retryable) fetch failure, never the
+         too-large case. *)
+      Lwt.return (Error (Fetch_failed (Http_util.Local msg)))
     | Ok pr ->
       let synthesised : Github_types.pr_notification =
         {
@@ -195,9 +203,10 @@ module Make (SRC : Api.Github_review_source) = struct
     log#info "reviewing push to %s in %s" push.ref_ push.repository.full_name;
     let%lwt diff_result = SRC.get_compare_diff ~ctx ~repo_url ~base:push.before ~head:push.after in
     match diff_result with
-    | Error msg ->
-      log#error "failed to fetch compare diff for push %s...%s: %s" push.before push.after msg;
-      Lwt.return (Error (Fetch_failed msg))
+    | Error fetch_error ->
+      log#error "failed to fetch compare diff for push %s...%s: %s" push.before push.after
+        (Http_util.error_to_string fetch_error);
+      Lwt.return (Error (Fetch_failed fetch_error))
     | Ok diff_text ->
     match prepare_diff ~config diff_text with
     | Error Empty ->
@@ -206,7 +215,10 @@ module Make (SRC : Api.Github_review_source) = struct
     | Error (Too_large total_lines) ->
       log#info "push %s skipped: %d diff lines exceeds limit of %d" push.after total_lines config.max_diff_lines;
       Lwt.return (Error (Too_large total_lines))
-    | Error (Fetch_failed msg) -> Lwt.return (Error (Fetch_failed msg))
+    | Error (Too_many_files file_count) ->
+      log#info "push %s skipped: %d files exceeds limit of %d" push.after file_count config.max_files;
+      Lwt.return (Error (Too_many_files file_count))
+    | Error (Fetch_failed _ as e) -> Lwt.return (Error e)
     | Ok (filtered_diff, filtered_text) ->
       let description =
         push.commits
