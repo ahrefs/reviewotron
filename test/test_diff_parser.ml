@@ -437,6 +437,52 @@ let test_annotated_roundtrip_through_parse () =
   (check bool) "annotated differs from plain" true (not (String.equal annotated (Diff_parser.to_string diffs)));
   (check bool) "annotated contains ' | ' separator" true (CCString.find ~sub:" | " annotated >= 0)
 
+(** {2 Local_path ingestion tests} *)
+
+let write_file path content =
+  let oc = open_out_bin path in
+  Fun.protect ~finally:(fun () -> close_out oc) (fun () -> output_string oc content)
+
+(* Build a small tree with content that must be reviewed plus three kinds of
+   things the walk must skip: a dependency directory, a hidden file, and a
+   binary blob. Returns the tree root. *)
+let make_tree () =
+  let base = Filename.temp_file "revtron_lp" "" in
+  Sys.remove base;
+  Sys.mkdir base 0o755;
+  write_file (Filename.concat base "a.ml") "let a = 1\nlet b = 2\n";
+  Sys.mkdir (Filename.concat base "src") 0o755;
+  write_file (Filename.concat base "src/b.ml") "let c = 3\n";
+  Sys.mkdir (Filename.concat base "node_modules") 0o755;
+  write_file (Filename.concat base "node_modules/dep.js") "console.log(1)\n";
+  write_file (Filename.concat base ".secret") "TOKEN=abc\n";
+  write_file (Filename.concat base "blob.bin") "\000\001\002\003";
+  base
+
+let diff_paths diff_text =
+  Diff_parser.parse diff_text |> List.map (fun (fd : Diff_parser.file_diff) -> fd.path) |> List.sort String.compare
+
+let test_ingest_directory () =
+  let base = make_tree () in
+  match Local_path.ingest base with
+  | Error msg -> fail (Printf.sprintf "ingest failed: %s" msg)
+  | Ok t ->
+    (check int) "file count excludes junk/hidden/binary" 2 t.Local_path.file_count;
+    (check (list string)) "reviewed paths" [ "a.ml"; "src/b.ml" ] (diff_paths t.Local_path.diff_text);
+    List.iter
+      (fun (fd : Diff_parser.file_diff) -> (check file_status_testable) "added" Added fd.status)
+      (Diff_parser.parse t.Local_path.diff_text)
+
+let test_ingest_single_file () =
+  let base = make_tree () in
+  match Local_path.ingest (Filename.concat base "a.ml") with
+  | Error msg -> fail (Printf.sprintf "ingest failed: %s" msg)
+  | Ok t ->
+    (check int) "single file" 1 t.Local_path.file_count;
+    let fd = hd_exn "diffs" (Diff_parser.parse t.Local_path.diff_text) in
+    (check string) "path is basename" "a.ml" fd.path;
+    (check file_status_testable) "added" Added fd.status
+
 (** {2 Test runner} *)
 
 let () =
@@ -479,5 +525,10 @@ let () =
           test_case "multi hunk continues new-file numbering" `Quick test_annotated_multi_hunk_continues_numbering;
           test_case "new file numbers from 1" `Quick test_annotated_new_file_numbers_from_one;
           test_case "annotated differs from plain and has separator" `Quick test_annotated_roundtrip_through_parse;
+        ] );
+      ( "local_path",
+        [
+          test_case "ingest directory skips junk/hidden/binary" `Quick test_ingest_directory;
+          test_case "ingest single file uses basename" `Quick test_ingest_single_file;
         ] );
     ]

@@ -105,6 +105,12 @@ type config = {
 }
 [@@deriving json]
 
+(** Pretty-printed JSON Schema for the review configuration, with per-field
+    descriptions and enum domains. Printed by the [config-help] command so an
+    agent can discover which knobs exist and what they accept before choosing
+    custom values to pass via [--config]. *)
+val config_help_json : unit -> string
+
 type app_installation_cfg = {
   installation_id : string;
   client_id : string;

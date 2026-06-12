@@ -6,6 +6,28 @@ type finding_source =
   | From_general
   | From_security
 
+(** A findings-producing review plugin registered with the engine.
+
+    The general plugin is handled separately because its summary becomes the
+    review body; every other plugin only emits findings, and they are uniform.
+    Adding a findings plugin is: implement its run function (a [Review_plugin.S]
+    plus [~debug_dir]), give it a config slice, and add one entry to the
+    [findings_plugins] list inside {!Make}. *)
+type findings_plugin = {
+  fp_name : string;  (** Plugin name; used for cost attribution and logs. *)
+  fp_source : finding_source;  (** How dedup treats this plugin's findings on a line collision. *)
+  fp_enabled : Config_types.config -> bool;  (** Whether the plugin runs, read from config. *)
+  fp_run :
+    ctx:Context.t ->
+    repo_url:string ->
+    config:Config_types.config ->
+    diff:Diff_parser.file_diff list ->
+    diff_text:string ->
+    metadata:Review_plugin.review_metadata ->
+    debug_dir:string ->
+    (Review_types.finding list * Cost_tracking.agent_cost list) Lwt.t;
+}
+
 let severity_rank = function
   | Review_types.Critical -> 5
   | Warning -> 4
@@ -257,6 +279,17 @@ module Make (AI : Api.Agent_runner) = struct
   module General_plugin = General_review_plugin.Make (AI)
   module Security_plugin = Security_review_plugin.Make (AI)
 
+  (* The registry of findings plugins. Add an entry to register a new plugin. *)
+  let findings_plugins =
+    [
+      {
+        fp_name = Security_plugin.name;
+        fp_source = From_security;
+        fp_enabled = (fun (c : Config_types.config) -> c.review_plugins.security.enabled);
+        fp_run = Security_plugin.run;
+      };
+    ]
+
   let metadata_of_job (job : Review_job.t) =
     Review_plugin.
       {
@@ -284,45 +317,52 @@ module Make (AI : Api.Agent_runner) = struct
       end
       else Lwt.return (None, [])
     in
-    let security_promise =
-      if plugins_config.security.enabled then
+    let run_findings_plugin (plugin : findings_plugin) =
+      match plugin.fp_enabled config with
+      | false -> Lwt.return (plugin, [], [], false)
+      | true ->
         Lwt.catch
           (fun () ->
             let%lwt findings, costs =
-              Security_plugin.run ~ctx ~repo_url ~config ~diff ~diff_text:job.diff_text ~metadata ~debug_dir
+              plugin.fp_run ~ctx ~repo_url ~config ~diff ~diff_text:job.diff_text ~metadata ~debug_dir
             in
-            Lwt.return (findings, costs, false))
+            Lwt.return (plugin, findings, costs, false))
           (fun exn ->
-            log#error "security review plugin raised: %s" (Exn.str exn);
-            Lwt.return ([], [], true))
-      else Lwt.return ([], [], false)
+            log#error "%s review plugin raised: %s" plugin.fp_name (Exn.str exn);
+            Lwt.return (plugin, [], [], true))
     in
-    let%lwt (general_output, general_costs), (security_findings, security_costs, security_exn) =
-      Lwt.both general_promise security_promise
+    let%lwt (general_output, general_costs), findings_results =
+      Lwt.both general_promise (Lwt.all (List.map run_findings_plugin findings_plugins))
     in
+    (* A findings plugin "errored" if it raised, or if it was enabled yet
+       produced no cost record (its agents never ran). The security plugin is
+       currently the only findings plugin, so this matches the prior
+       [security_error] semantics and drives the same failure notice. *)
     let security_error =
-      security_exn
-      || plugins_config.security.enabled
-         &&
-         match security_costs with
-         | [] -> true
-         | _ :: _ -> false
+      List.exists
+        (fun (plugin, _findings, costs, errored) -> errored || (plugin.fp_enabled config && costs = []))
+        findings_results
     in
-    if security_error then log#warn "security review plugin encountered an error; results may be incomplete";
+    if security_error then log#warn "a findings plugin encountered an error; results may be incomplete";
     let general_findings =
       match general_output with
       | Some (Ok (r : Review_types.review_output)) -> r.findings
       | Some (Error _) | None -> []
     in
-    let sourced =
-      List.map (fun f -> From_general, f) general_findings @ List.map (fun f -> From_security, f) security_findings
+    let plugin_findings =
+      List.concat_map
+        (fun (plugin, findings, _costs, _errored) -> List.map (fun f -> plugin.fp_source, f) findings)
+        findings_results
     in
+    let sourced = List.map (fun f -> From_general, f) general_findings @ plugin_findings in
     let findings = deduplicate_findings sourced in
+    let plugin_costs =
+      List.map
+        (fun (plugin, _findings, costs, _errored) -> Cost_tracking.aggregate ~plugin:plugin.fp_name costs)
+        findings_results
+    in
     let review_costs =
-      [
-        Cost_tracking.aggregate ~plugin:"general" general_costs;
-        Cost_tracking.aggregate ~plugin:"security" security_costs;
-      ]
+      Cost_tracking.aggregate ~plugin:"general" general_costs :: plugin_costs
       |> List.filter (fun (rc : Cost_tracking.review_cost) ->
         match rc.agents with
         | [] -> false

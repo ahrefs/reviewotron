@@ -14,8 +14,18 @@ val default_config_filename : string
 (** Return a config with all defaults (equivalent to parsing ["{}"]). *)
 val default_config : unit -> Config_types.config
 
+(** Parse a config from a JSON string. Missing fields fall back to defaults, so
+    a partial object such as [{"max_diff_lines": 8000}] is valid. Used to accept
+    inline configuration on the command line without a config file. *)
+val parse_config : string -> (Config_types.config, string) result
+
 (** Load a repository config file from disk. *)
 val load_config_file : filepath:string -> (Config_types.config, string) result
+
+(** Load and parse a secrets file without requiring any repos to be present.
+    Suitable for local, GitHub-free usage where only an Anthropic API key is
+    needed. *)
+val load_secrets_file : filepath:string -> (Config_types.secrets, string) result
 
 (** Load [config_filename] from [root], returning defaults when the file is not
     present. Absolute [config_filename] values are used as-is. *)

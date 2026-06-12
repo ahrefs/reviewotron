@@ -7,6 +7,7 @@ Reviewotron includes a **multi-agent security analysis pipeline** that detects i
 ## Table of Contents
 
 - [How It Works](#how-it-works)
+- [Agent Helper Mode](#agent-helper-mode)
 - [Setup](#setup)
 - [Configuration](#configuration)
 - [Security Review Pipeline](#security-review-pipeline)
@@ -92,6 +93,99 @@ Events are processed asynchronously — the webhook returns `200 accepted` immed
 | `auto_review_on_comment` | Review when someone posts a `REVIEW` comment on a PR |
 
 Manual `REVIEW` comments bypass the dedup that protects the automatic flow from re-reviewing the same head SHA — by design, since the manual trigger means the user wants a fresh review.
+
+---
+
+## Agent Helper Mode
+
+Reviewotron ships as a single self-contained binary that another agent can call
+to review code on demand — for example, an app-building agent reviewing the
+project it just generated before publishing, then re-running after each change.
+Nothing has to be deployed alongside the binary: the API key comes from the
+environment and the review configuration is passed inline.
+
+### Key points
+
+- **No files required.** The Anthropic API key is read from `--anthropic-api-key`,
+  else the `ANTHROPIC_API_KEY` environment variable, else a `--secrets` file if
+  you choose to provide one (in that order). A `secrets.json` is *not* read
+  unless you pass `--secrets` explicitly.
+- **Configurable on the fly.** Pass configuration inline with `--config '<json>'`
+  (the same schema as `.reviewotron.json`; omitted fields fall back to defaults).
+  Precedence: `--config` > a config file under `--root`/`PATH` > built-in defaults.
+- **Self-describing config.** `reviewotron config-help` prints the config JSON
+  Schema (field names, types, enum domains, descriptions) so an agent can
+  discover the available knobs before deciding what to pass via `--config`.
+- **Security on by default.** In local mode the multi-agent security pipeline
+  runs by default (it is off by default for webhooks). Disable it with
+  `--no-security`. The general code review also runs by default.
+- **Three ingestion modes**, all printing the same review JSON:
+
+  | Mode | Command | What it reviews |
+  |------|---------|-----------------|
+  | Single file | `review-path FILE` | One file, as newly-added code |
+  | Folder (Git or not) | `review-path DIR` | Every file under a directory, as newly-added code |
+  | Diff / delta | `review-diff --diff -` | A unified diff on stdin (or `--diff FILE`, or a generated Git working-tree diff) |
+
+### Output contract
+
+With `--output json`:
+
+- **Success** → stdout is `{ "summary": "...", "findings": [ ... ] }`, exit code `0`.
+- **Failure** (bad path, missing key, invalid config, review error) → stdout is
+  `{ "error": "<message>" }`, non-zero exit code.
+
+A caller can branch on the exit code and parse one JSON object either way. Logs
+go to stderr; only the JSON object is written to stdout.
+
+### Examples
+
+Review a finished app folder (raise the size limits for whole-project reviews):
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+reviewotron review-path ./my-app \
+  --config '{"max_files": 500, "max_diff_lines": 50000}' \
+  --output json
+```
+
+Review a single file:
+
+```bash
+reviewotron review-path ./my-app/src/payments.ts --output json
+```
+
+Review an incremental change passed as a diff:
+
+```bash
+git -C ./my-app diff | reviewotron review-diff --diff - --root ./my-app --output json
+```
+
+Discover the config knobs, then run without the security pipeline:
+
+```bash
+reviewotron config-help                                   # JSON Schema of the config
+reviewotron review-path ./my-app --no-security --output json
+```
+
+### Notes
+
+- The security pipeline runs by default in local mode; turn it off with
+  `--no-security`. The flag owns the on/off decision, while `--config` still
+  controls the security details (`vuln_classes`, model tiers, thresholds).
+  Security analysis adds extra model calls (triage + per-class analysis +
+  validation), so expect higher cost and latency than a general-only review.
+- `review-path` treats every file as newly added, so the whole file is in scope
+  (not only changed lines). Directory walks skip hidden entries (`.git`, `.env`,
+  …), build/dependency directories (`node_modules`, `_build`, `dist`, `build`,
+  `target`, `vendor`, `venv`, `__pycache__`, `coverage`), symlinks, and
+  binary/oversized files.
+- Whole-folder reviews easily exceed the default `max_files` (50) and
+  `max_diff_lines` (2000); raise them via `--config` (e.g.
+  `'{"max_files": 500, "max_diff_lines": 50000}'`), otherwise the run returns an
+  error explaining which limit was hit.
+- Each invocation runs independently. Omit `--state` (the default) so repeated
+  runs always produce a fresh review instead of skipping as a duplicate.
 
 ---
 
@@ -452,9 +546,9 @@ Parses and displays a GitHub webhook payload without starting the server or perf
 reviewotron review-diff [OPTIONS]
 ```
 
-Runs the same core review engine against a local unified diff and prints the final review to stdout. Logs go to stderr unless `--logfile` is set. When `--diff` is omitted, Reviewotron generates a Git diff from the merge-base of `HEAD` and the inferred base ref, including working-tree changes. This path does not fetch or publish through GitHub; local file-content expansion uses `--root`.
+Runs the same core review engine against a local unified diff and prints the final review to stdout. Logs go to stderr unless `--logfile` is set. The diff can be a file (`--diff FILE`), stdin (`--diff -`), or — when `--diff` is omitted — a Git diff generated from the merge-base of `HEAD` and the inferred base ref, including working-tree changes. This path does not fetch or publish through GitHub; local file-content expansion uses `--root`.
 
-Local reviews load `.reviewotron.json` from `--root` before applying path filters and size limits. Use `--config-filename` to point at a different filename or absolute config path.
+The Anthropic API key is resolved from `--anthropic-api-key`, then the `ANTHROPIC_API_KEY` environment variable, then a `--secrets` file if one is given — no secrets file is required. Configuration is resolved from `--config` (inline JSON), then `.reviewotron.json` under `--root`, then defaults. See [Agent Helper Mode](#agent-helper-mode).
 
 | Option | Default | Description |
 |--------|---------|-------------|
@@ -466,8 +560,11 @@ Local reviews load `.reviewotron.json` from `--root` before applying path filter
 | `--title` | inferred from base or diff file | Title passed to review agents |
 | `--description-file` | (none) | Optional file used as the review description |
 | `--config-filename` | `.reviewotron.json` | Config file loaded from `--root`, or absolute config path |
+| `--config` | (none) | Inline config JSON; overrides any config file |
+| `--anthropic-api-key` | (none) | Anthropic API key; overrides `$ANTHROPIC_API_KEY` and any secrets file |
+| `--no-security` | (off) | Disable the security pipeline (on by default in local mode) |
 | `--output` | `markdown` | Output format: `markdown` or `json` |
-| `--secrets` | `./secrets.json` | Path to secrets file for the Anthropic API key |
+| `--secrets` | (none) | Optional secrets file; the API key is taken from `--anthropic-api-key`, then `$ANTHROPIC_API_KEY`, then this file |
 | `--state` | (none — in-memory) | Optional state file updated after a successful review |
 
 JSON output is an object with a review-level summary and a machine-readable findings list:
@@ -487,6 +584,50 @@ JSON output is an object with a review-level summary and a machine-readable find
   ]
 }
 ```
+
+### `reviewotron review-path` — Review a File or Directory
+
+```
+reviewotron review-path PATH [OPTIONS]
+```
+
+Reviews a single file or an entire directory by treating every file as newly
+added, reusing the same engine, output formats, and JSON contract as
+`review-diff`. This is how to review code that has no Git history — a single
+file, a freshly generated project, or a non-Git working tree.
+
+For a file, the file's parent directory becomes the review root (so context
+lookups resolve siblings). For a directory, `PATH` is walked recursively in
+sorted order; hidden entries, build/dependency directories, symlinks, and
+binary/oversized files are skipped (see [Agent Helper Mode](#agent-helper-mode)).
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `PATH` | (required) | File or directory to review |
+| `--config` | (none) | Inline config JSON; overrides any config file |
+| `--anthropic-api-key` | (none) | Anthropic API key; overrides `$ANTHROPIC_API_KEY` and any secrets file |
+| `--no-security` | (off) | Disable the security pipeline (on by default in local mode) |
+| `--output` | `markdown` | Output format: `markdown` or `json` |
+| `--repo-key` | `local:<root>` | Stable repository key for config, memory, and state |
+| `--change-key` | digest of the synthesized diff | Stable change key recorded in state |
+| `--title` | inferred from the path | Title passed to the review agents |
+| `--config-filename` | `.reviewotron.json` | Config filename loaded from the root, or absolute config path |
+| `--state` | (none — in-memory) | Optional state file updated after a successful review |
+
+Whole-folder reviews commonly exceed the default `max_files` / `max_diff_lines`
+limits; raise them with `--config` (see [Agent Helper Mode](#agent-helper-mode)).
+
+### `reviewotron config-help` — Print the Config Schema
+
+```
+reviewotron config-help
+```
+
+Prints the review configuration as a JSON Schema — every field with its type,
+enum domain (for `vuln_classes`, model tiers, confidence), and a one-line
+description. An agent can read this to discover which knobs exist and what they
+accept, then pass chosen values via `--config`. Takes no options and makes no
+network calls.
 
 ### Endpoints
 
@@ -670,6 +811,25 @@ test/
 ```
 
 The codebase uses OCaml functors for testability - `Reviewer.Make` takes `Github`, `Agent_runner`, and `Slack` module implementations, so tests can inject mock versions (`Api_local`) without any HTTP calls.
+
+### Adding a Review Plugin
+
+The general plugin is special — its summary becomes the review body. Every other
+plugin only emits findings, and they share one shape. To add a findings plugin:
+
+1. Write a `Make (AI : Api.Agent_runner)` functor with `name` and a `run` that
+   takes `~ctx ~repo_url ~config ~diff ~diff_text ~metadata ~debug_dir` and
+   returns `(Review_types.finding list * Cost_tracking.agent_cost list) Lwt.t`
+   (the `security_review_plugin.ml` shape).
+2. Add a config slice — a field on `review_plugins_config` in `config_types.ml`
+   (with `[@@deriving json, jsonschema]` so it shows up in `config-help`).
+3. Add one entry to the `findings_plugins` list in `review_engine.ml`
+   (`fp_name`, `fp_source`, `fp_enabled`, `fp_run`).
+
+The engine runs all enabled findings plugins in parallel, tags each plugin's
+findings with its `fp_source` for deduplication, and aggregates costs under
+`fp_name`. (Dedup currently privileges `From_security` on line collisions; new
+plugins use `From_general` unless they warrant the same treatment.)
 
 ### Mock Agent Tests
 

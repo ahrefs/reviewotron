@@ -12,6 +12,11 @@ let default_config_filename = ".reviewotron.json"
 
 let default_config () : Config_types.config = Config_types.config_of_json (Melange_json.of_string "{}")
 
+let parse_config json_str =
+  match Config_types.config_of_json (Melange_json.of_string json_str) with
+  | config -> Ok config
+  | exception exn -> Error (Printf.sprintf "failed to parse config JSON: %s" (Exn.str exn))
+
 let load_config_file ~filepath =
   match Config_types.config_of_json (Melange_json.of_string (Std.input_file ~bin:true filepath)) with
   | exception exn ->
@@ -40,6 +45,8 @@ let load_secrets ~require_repos ~secrets_filepath =
   | [] when require_repos -> Error (Printf.sprintf "at least one repo must be specified in %s" secrets_filepath)
   | [] -> Ok secrets
   | _ :: _ -> Ok secrets
+
+let load_secrets_file ~filepath = load_secrets ~require_repos:false ~secrets_filepath:filepath
 
 let create ~secrets_filepath ?config_filename ?state_filepath ?(require_repos = true) () =
   match load_secrets ~require_repos ~secrets_filepath with

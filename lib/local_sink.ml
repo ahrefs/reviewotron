@@ -33,3 +33,7 @@ let include_finding_in_json (finding : Review_types.finding) =
 let render_json (report : Review_engine.report) =
   let findings = report.findings |> List.filter include_finding_in_json |> List.map finding_to_json in
   Yojson.Basic.pretty_to_string (`Assoc [ "summary", `String (String.trim report.body); "findings", `List findings ])
+
+(** Render a failure as the machine-readable JSON envelope callers expect when
+    they requested JSON output: [{ "error": "<message>" }]. *)
+let render_error message = Yojson.Basic.pretty_to_string (`Assoc [ "error", `String message ])
