@@ -8,8 +8,10 @@ type t =
   | Anthropic  (** Direct api.anthropic.com. Backwards-compatible path. *)
   | Openrouter  (** openrouter.ai, pinned to the Anthropic upstream. *)
 
-val all : t list
-val to_string : t -> string
+(** A key is usable only if it is non-blank: trims surrounding whitespace and
+    maps the empty string to [None]. The single definition of "blank key" shared
+    by {!resolve} and the CLI key-precedence chains. *)
+val nonempty : string -> string option
 
 (** Credential-driven selection, ignoring blank keys:
     - [openrouter_api_key] present -> [Openrouter]
@@ -51,3 +53,10 @@ type usage = {
 }
 
 val usage_metadata : t -> Ai_provider.Provider_options.t option -> usage
+
+(** Combine two optional USD costs. [None] is "no figure reported": [None]/[None]
+    stays [None], a lone figure passes through, and two figures sum. Used to total
+    the per-step OpenRouter costs and to fold in upstream BYOK cost, so both leave
+    the result [None] when nothing was reported (and {!Cost_tracking} then falls
+    back to the pricing table). *)
+val sum_cost : float option -> float option -> float option

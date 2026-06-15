@@ -78,17 +78,6 @@ let extract_cache_tokens (response_body : Yojson.Basic.t) =
     | _ -> 0, 0)
   | _ -> 0, 0
 
-(* Combine two optional reported costs: [None] means "no figure reported", and
-   two reported figures sum.  Used to total the per-step OpenRouter costs while
-   leaving the result [None] when no step reported anything (so the caller falls
-   back to the pricing-table estimate). *)
-let add_reported_cost a b =
-  match a, b with
-  | None, None -> None
-  | Some c, None -> Some c
-  | None, Some c -> Some c
-  | Some x, Some y -> Some (x +. y)
-
 (** Read [(cache_read, cache_write, reported_cost_usd)] for a completed
     generation, picking the source the provider actually populates:
     - [Anthropic] reports cache counts in the raw response body's [usage] block,
@@ -106,7 +95,7 @@ let usage_of_result ~provider (result : Ai_core.Generate_text_result.t) =
     List.fold_left
       (fun (r, w, cost) (step : Ai_core.Generate_text_result.step) ->
         let u = Llm_provider.usage_metadata Openrouter step.provider_metadata in
-        r + u.cache_read, w + u.cache_write, add_reported_cost cost u.cost)
+        r + u.cache_read, w + u.cache_write, Llm_provider.sum_cost cost u.cost)
       (0, 0, None) result.steps
 
 let default_model_id =
@@ -309,7 +298,7 @@ let run_agent ~provider ~model ?tools ?(max_retries = 2) ?debug_dir ~config ~inp
         cache_creation_input_tokens = cache_creation_input_tokens + extra_cache_write;
         steps_count = steps_count + extra_steps;
         model_id;
-        reported_cost_usd = add_reported_cost reported_cost_usd extra_cost;
+        reported_cost_usd = Llm_provider.sum_cost reported_cost_usd extra_cost;
       }
     in
     match result.output with

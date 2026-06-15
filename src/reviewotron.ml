@@ -151,10 +151,10 @@ let resolve_repo_key ~root = function
   | Some repo_key -> repo_key
   | None -> Local_git.default_repo_key ~root
 
-let nonempty s =
-  match String.trim s with
-  | "" -> None
-  | _ -> Some s
+(* Single definition of "blank key" lives in [Llm_provider]; alias it here so
+   the CLI key-precedence chains and [Llm_provider.resolve] agree on what counts
+   as a usable key. *)
+let nonempty = Llm_provider.nonempty
 
 let env_api_key () = Stdlib.Option.bind (Sys.getenv_opt "ANTHROPIC_API_KEY") nonempty
 let env_openrouter_key () = Stdlib.Option.bind (Sys.getenv_opt "OPENROUTER_API_KEY") nonempty
@@ -204,7 +204,7 @@ let build_local_context ~secrets_path ~api_key_flag ~openrouter_api_key_flag ~co
     Error
       "no LLM API key found; set OPENROUTER_API_KEY (preferred) or ANTHROPIC_API_KEY, pass --openrouter-api-key or \
        --anthropic-api-key, or provide --secrets with an openrouter_api_key or anthropic_api_key field"
-  | (Some _ | None), (Some _ | None) ->
+  | _ ->
     let repos =
       match file_secrets with
       | Some s -> s.repos

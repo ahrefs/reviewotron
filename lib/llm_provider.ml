@@ -2,18 +2,22 @@ type t =
   | Anthropic
   | Openrouter
 
-let all = [ Anthropic; Openrouter ]
-
-let to_string = function
-  | Anthropic -> "anthropic"
-  | Openrouter -> "openrouter"
-
 let nonempty s =
   match String.trim s with
   | "" -> None
   | s -> Some s
 
 let normalize_key key = Stdlib.Option.bind key nonempty
+
+(* Combine two optional USD costs: [None] means "no figure reported", a lone
+   figure passes through, and two figures sum.  Shared by the per-step OpenRouter
+   totalling in {!Agent_runner} and the [cost]/[upstream_inference_cost]
+   combination below, so both treat "no figure" identically. *)
+let sum_cost a b =
+  match a, b with
+  | None, None -> None
+  | Some c, None | None, Some c -> Some c
+  | Some x, Some y -> Some (x +. y)
 
 let resolve (secrets : Config_types.secrets) =
   match normalize_key secrets.openrouter_api_key, normalize_key secrets.anthropic_api_key with
@@ -159,11 +163,5 @@ let usage_metadata provider meta =
   match Ai_provider.Provider_options.find Ai_provider_openrouter.Convert_usage.Openrouter_usage m with
   | None -> empty_usage
   | Some u ->
-    let cost =
-      match u.cost, u.upstream_inference_cost with
-      | None, None -> None
-      | Some c, None -> Some c
-      | None, Some c -> Some c
-      | Some c, Some upstream -> Some (c +. upstream)
-    in
+    let cost = sum_cost u.cost u.upstream_inference_cost in
     { cache_read = u.cache_read_tokens; cache_write = u.cache_write_tokens; cost }
