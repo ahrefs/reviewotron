@@ -157,6 +157,7 @@ let nonempty s =
   | _ -> Some s
 
 let env_api_key () = Stdlib.Option.bind (Sys.getenv_opt "ANTHROPIC_API_KEY") nonempty
+let env_openrouter_key () = Stdlib.Option.bind (Sys.getenv_opt "OPENROUTER_API_KEY") nonempty
 
 (* A secrets file is optional for local review: it only matters when the agent
    wants the API key (and any Slack/repo settings) to come from disk instead of
@@ -172,31 +173,45 @@ let load_optional_secrets = function
   | Some _ | None -> None
 
 (* Build a context for local review without requiring any file on disk.
-   API key precedence: --anthropic-api-key, then ANTHROPIC_API_KEY, then a
-   secrets file. Repos and Slack token are taken from the secrets file when one
-   is present, and are otherwise empty (local review needs neither). *)
-let build_local_context ~secrets_path ~api_key_flag ~config_filename ~state_path =
+   Each key is resolved independently — Anthropic from --anthropic-api-key, then
+   ANTHROPIC_API_KEY, then a secrets file; OpenRouter from --openrouter-api-key,
+   then OPENROUTER_API_KEY, then a secrets file. Provider selection is then
+   credential-driven (see {!Llm_provider.resolve}). Repos and Slack token are
+   taken from the secrets file when one is present, and are otherwise empty
+   (local review needs neither). We fail only when BOTH keys are absent. *)
+let build_local_context ~secrets_path ~api_key_flag ~openrouter_api_key_flag ~config_filename ~state_path =
   let file_secrets = load_optional_secrets secrets_path in
-  let key_candidates =
-    [
-      Stdlib.Option.bind api_key_flag nonempty;
-      env_api_key ();
-      Stdlib.Option.bind file_secrets (fun (s : Config_types.secrets) -> nonempty s.anthropic_api_key);
-    ]
+  let anthropic_api_key =
+    List.find_map Fun.id
+      [
+        Stdlib.Option.bind api_key_flag nonempty;
+        env_api_key ();
+        Stdlib.Option.bind file_secrets (fun (s : Config_types.secrets) ->
+          Stdlib.Option.bind s.anthropic_api_key nonempty);
+      ]
   in
-  match List.find_map Fun.id key_candidates with
-  | None ->
+  let openrouter_api_key =
+    List.find_map Fun.id
+      [
+        Stdlib.Option.bind openrouter_api_key_flag nonempty;
+        env_openrouter_key ();
+        Stdlib.Option.bind file_secrets (fun (s : Config_types.secrets) ->
+          Stdlib.Option.bind s.openrouter_api_key nonempty);
+      ]
+  in
+  match anthropic_api_key, openrouter_api_key with
+  | None, None ->
     Error
-      "no Anthropic API key found; set ANTHROPIC_API_KEY, pass --anthropic-api-key, or provide --secrets with an \
-       anthropic_api_key field"
-  | Some anthropic_api_key ->
+      "no LLM API key found; set OPENROUTER_API_KEY (preferred) or ANTHROPIC_API_KEY, pass --openrouter-api-key or \
+       --anthropic-api-key, or provide --secrets with an openrouter_api_key or anthropic_api_key field"
+  | (Some _ | None), (Some _ | None) ->
     let repos =
       match file_secrets with
       | Some s -> s.repos
       | None -> []
     in
     let slack_access_token = Stdlib.Option.bind file_secrets (fun (s : Config_types.secrets) -> s.slack_access_token) in
-    let secrets : Config_types.secrets = { repos; anthropic_api_key; slack_access_token } in
+    let secrets : Config_types.secrets = { repos; anthropic_api_key; openrouter_api_key; slack_access_token } in
     let state =
       match state_path with
       | Some path -> State.load ~filepath:path
@@ -230,13 +245,13 @@ let resolve_diff_source ~root ~base = function
   | Error msg -> Error msg
   | Ok diff_text -> Ok (`Text diff_text, Local_git.title_for_base base)
 
-let review_diff_action secrets_path api_key_flag config_filename state_path logfile loglevel root repo_key change_key
-  title base description_file diff_arg inline_config no_security output =
+let review_diff_action secrets_path api_key_flag openrouter_api_key_flag config_filename state_path logfile loglevel
+  root repo_key change_key title base description_file diff_arg inline_config no_security output =
   setup_logging logfile loglevel;
   Mirage_crypto_rng_unix.use_default ();
   let ( let* ) = Result.bind in
   let result =
-    let* ctx = build_local_context ~secrets_path ~api_key_flag ~config_filename ~state_path in
+    let* ctx = build_local_context ~secrets_path ~api_key_flag ~openrouter_api_key_flag ~config_filename ~state_path in
     let root = resolve_local_root root in
     let repo_key = resolve_repo_key ~root repo_key in
     let* config = resolve_local_config ~ctx ~root ~inline_config in
@@ -255,13 +270,13 @@ let review_diff_action secrets_path api_key_flag config_filename state_path logf
   in
   emit_local_result ~output result
 
-let review_path_action secrets_path api_key_flag config_filename state_path logfile loglevel repo_key change_key title
-  inline_config no_security output path =
+let review_path_action secrets_path api_key_flag openrouter_api_key_flag config_filename state_path logfile loglevel
+  repo_key change_key title inline_config no_security output path =
   setup_logging logfile loglevel;
   Mirage_crypto_rng_unix.use_default ();
   let ( let* ) = Result.bind in
   let result =
-    let* ctx = build_local_context ~secrets_path ~api_key_flag ~config_filename ~state_path in
+    let* ctx = build_local_context ~secrets_path ~api_key_flag ~openrouter_api_key_flag ~config_filename ~state_path in
     let* ingest = Local_path.ingest path in
     let root = ingest.Local_path.root in
     let repo_key = resolve_repo_key ~root repo_key in
@@ -294,14 +309,21 @@ let secrets =
 
 let local_secrets =
   let doc =
-    "Optional path to a secrets.json file. When omitted or absent, the Anthropic API key is taken from \
-     --anthropic-api-key or the ANTHROPIC_API_KEY environment variable."
+    "Optional path to a secrets.json file. When omitted or absent, the API key is taken from --openrouter-api-key / \
+     --anthropic-api-key or the OPENROUTER_API_KEY / ANTHROPIC_API_KEY environment variables."
   in
   Arg.(value & opt (some string) None & info [ "secrets" ] ~docv:"SECRETS" ~doc)
 
 let anthropic_api_key =
   let doc = "Anthropic API key. Overrides the ANTHROPIC_API_KEY environment variable and any secrets file." in
   Arg.(value & opt (some string) None & info [ "anthropic-api-key" ] ~docv:"KEY" ~doc)
+
+let openrouter_api_key =
+  let doc =
+    "OpenRouter API key (preferred when set). Overrides the OPENROUTER_API_KEY environment variable and any secrets \
+     file."
+  in
+  Arg.(value & opt (some string) None & info [ "openrouter-api-key" ] ~docv:"KEY" ~doc)
 
 let config_filename =
   let doc = "Config filename to look for in repos (default: .reviewotron.json)." in
@@ -406,6 +428,7 @@ let review_diff_cmd =
       const review_diff_action
       $ local_secrets
       $ anthropic_api_key
+      $ openrouter_api_key
       $ config_filename
       $ state_path
       $ logfile
@@ -431,6 +454,7 @@ let review_path_cmd =
       const review_path_action
       $ local_secrets
       $ anthropic_api_key
+      $ openrouter_api_key
       $ config_filename
       $ state_path
       $ logfile

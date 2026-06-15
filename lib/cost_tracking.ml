@@ -63,7 +63,15 @@ let pricing_table =
     };
   ]
 
+let pricing_model_id model_id =
+  let openrouter_prefix = "anthropic/" in
+  match String.starts_with ~prefix:openrouter_prefix model_id with
+  | true ->
+    String.sub model_id (String.length openrouter_prefix) (String.length model_id - String.length openrouter_prefix)
+  | false -> model_id
+
 let find_pricing ~model_id =
+  let model_id = pricing_model_id model_id in
   List.find_opt (fun p -> String.starts_with ~prefix:p.model_id_prefix model_id) pricing_table
 
 let estimate_cost ~model_id ~input_tokens ~output_tokens ~cache_read_input_tokens ~cache_creation_input_tokens =
@@ -86,7 +94,13 @@ let of_agent_result ~agent_name ~files_fetched (result : Agent_runner.agent_resu
   let cache_creation_input_tokens = result.cache_creation_input_tokens in
   let model = result.model_id in
   let estimated_cost_usd =
-    estimate_cost ~model_id:model ~input_tokens ~output_tokens ~cache_read_input_tokens ~cache_creation_input_tokens
+    (* Prefer the provider's actual billed cost (OpenRouter reports it per run);
+       otherwise estimate from the pricing table — which stays correct on the
+       Anthropic path, where model IDs remain bare. *)
+    match result.reported_cost_usd with
+    | Some c -> c
+    | None ->
+      estimate_cost ~model_id:model ~input_tokens ~output_tokens ~cache_read_input_tokens ~cache_creation_input_tokens
   in
   {
     agent_name;

@@ -194,10 +194,14 @@ end
 module Agent_runner : Api.Agent_runner = struct
   let run ~ctx ~repo_url ?model_id ?tools ?debug_dir ~config ~input () =
     let secrets = Context.secrets ctx in
-    let model_id = Option.default (Agent_runner.default_model_id config.Agent_runner.model_tier) model_id in
     ignore (repo_url : string);
-    let model = Ai_provider_anthropic.language_model ~api_key:secrets.anthropic_api_key ~model:model_id () in
-    Agent_runner.run_agent ~model ?tools ?debug_dir ~config ~input ()
+    match Llm_provider.resolve secrets with
+    | Error msg -> Lwt.return_error msg
+    | Ok provider ->
+      let base_model_id = Option.default (Agent_runner.default_model_id config.Agent_runner.model_tier) model_id in
+      let model_id = Llm_provider.normalize_model_id provider base_model_id in
+      let model = Llm_provider.language_model provider ~secrets ~model_id in
+      Agent_runner.run_agent ~provider ~model ?tools ?debug_dir ~config ~input ()
 end
 
 (** {2 Slack API} *)

@@ -4,6 +4,7 @@
   ocaml-ai-sdk.ai_core
   ocaml-ai-sdk.ai_provider
   ocaml-ai-sdk.ai_provider_anthropic
+  ocaml-ai-sdk.ai_provider_openrouter
   base64
   containers
   curl

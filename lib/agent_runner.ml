@@ -23,15 +23,10 @@ let anthropic_min_thinking_budget = 1024
    misconfiguration cannot crash the agent loop. *)
 let clamp_thinking_budget n = max anthropic_min_thinking_budget n
 
-let build_provider_options (config : agent_config) : Ai_provider.Provider_options.t =
+let build_provider_options ~provider (config : agent_config) : Ai_provider.Provider_options.t =
   match config.thinking_budget with
   | None -> Ai_provider.Provider_options.empty
-  | Some n ->
-    let thinking : Ai_provider_anthropic.Thinking.t =
-      { enabled = true; budget_tokens = Ai_provider_anthropic.Thinking.budget_exn (clamp_thinking_budget n) }
-    in
-    let opts = { Ai_provider_anthropic.Anthropic_options.default with thinking = Some thinking } in
-    Ai_provider_anthropic.Anthropic_options.to_provider_options opts
+  | Some n -> Llm_provider.thinking_options provider ~budget_tokens:(clamp_thinking_budget n)
 
 (* Anthropic prompt caching is opt-in: without an explicit [cache_control]
    marker on a content block, no caching happens and every step re-bills the
@@ -49,9 +44,7 @@ let build_provider_options (config : agent_config) : Ai_provider.Provider_option
    so the system prompt cannot carry its own breakpoint.  When we bump the
    SDK, revisit this: if the top-level "automatic caching" shortcut or a
    block-form system field has landed, prefer that and drop this helper. *)
-let cached_input_provider_options : Ai_provider.Provider_options.t =
-  Ai_provider_anthropic.Cache_control_options.with_cache_control
-    ~cache_control:Ai_provider_anthropic.Cache_control.ephemeral Ai_provider.Provider_options.empty
+let cached_input_provider_options provider = Llm_provider.cached_input_options provider
 
 type agent_result = {
   output : Yojson.Basic.t;
@@ -60,6 +53,7 @@ type agent_result = {
   cache_creation_input_tokens : int;
   steps_count : int;
   model_id : string;
+  reported_cost_usd : float option;
 }
 
 (** Extract cache token counts from the raw Anthropic response body.
@@ -83,6 +77,37 @@ let extract_cache_tokens (response_body : Yojson.Basic.t) =
       cache_read, cache_creation
     | _ -> 0, 0)
   | _ -> 0, 0
+
+(* Combine two optional reported costs: [None] means "no figure reported", and
+   two reported figures sum.  Used to total the per-step OpenRouter costs while
+   leaving the result [None] when no step reported anything (so the caller falls
+   back to the pricing-table estimate). *)
+let add_reported_cost a b =
+  match a, b with
+  | None, None -> None
+  | Some c, None -> Some c
+  | None, Some c -> Some c
+  | Some x, Some y -> Some (x +. y)
+
+(** Read [(cache_read, cache_write, reported_cost_usd)] for a completed
+    generation, picking the source the provider actually populates:
+    - [Anthropic] reports cache counts in the raw response body's [usage] block,
+      parsed by {!extract_cache_tokens}; it reports no USD cost, so the cost is
+      [None] and {!Cost_tracking} estimates from the pricing table.
+    - [Openrouter] reports them per-step in [provider_metadata]; sum the cache
+      counts and the billed USD cost across all steps via
+      {!Llm_provider.usage_metadata}. *)
+let usage_of_result ~provider (result : Ai_core.Generate_text_result.t) =
+  match provider with
+  | Llm_provider.Anthropic ->
+    let cache_read, cache_write = extract_cache_tokens result.response.body in
+    cache_read, cache_write, None
+  | Llm_provider.Openrouter ->
+    List.fold_left
+      (fun (r, w, cost) (step : Ai_core.Generate_text_result.step) ->
+        let u = Llm_provider.usage_metadata Openrouter step.provider_metadata in
+        r + u.cache_read, w + u.cache_write, add_reported_cost cost u.cost)
+      (0, 0, None) result.steps
 
 let default_model_id =
   let open Ai_provider_anthropic.Model_catalog in
@@ -197,7 +222,7 @@ let finalization_instruction =
     Returns [Some finalized_result] on success with combined usage/steps,
     [None] when the recovery itself fails (the caller then errors out as
     before). *)
-let finalize_after_budget_exhaustion ~model ~config ~provider_options ~input ~output_spec ~max_retries
+let finalize_after_budget_exhaustion ~provider ~model ~config ~provider_options ~input ~output_spec ~max_retries
   ~(first : Ai_core.Generate_text_result.t) =
   (* Reuse the same cache breakpoint on the input block we put there in
      [run_agent]: same prefix → same cache key, so this single-shot
@@ -206,7 +231,8 @@ let finalize_after_budget_exhaustion ~model ~config ~provider_options ~input ~ou
      The trailing [finalization_instruction] is uncached on purpose — it's
      only sent once, so caching it would be pure overhead. *)
   let base_messages =
-    Ai_provider.Prompt.User { content = [ Text { text = input; provider_options = cached_input_provider_options } ] }
+    Ai_provider.Prompt.User
+      { content = [ Text { text = input; provider_options = cached_input_provider_options provider } ] }
     :: messages_of_steps first.steps
   in
   let follow_up =
@@ -239,14 +265,14 @@ let finalize_after_budget_exhaustion ~model ~config ~provider_options ~input ~ou
     log#warn "agent %s: finalization provider error: %s" config.name (Ai_provider.Provider_error.to_string err);
     Lwt.return None
 
-let run_agent ~model ?tools ?(max_retries = 2) ?debug_dir ~config ~input () =
+let run_agent ~provider ~model ?tools ?(max_retries = 2) ?debug_dir ~config ~input () =
   let fail msg =
     log#error "%s" msg;
     Lwt.return_error msg
   in
   let output_spec = Ai_core.Output.object_ ~name:(config.name ^ "_output") ~schema:config.output_schema () in
   let model_id = Ai_provider.Language_model.model_id model in
-  let provider_options = build_provider_options config in
+  let provider_options = build_provider_options ~provider config in
   let thinking_budget_str =
     match config.thinking_budget with
     | None -> "off"
@@ -262,7 +288,8 @@ let run_agent ~model ?tools ?(max_retries = 2) ?debug_dir ~config ~input () =
      cache breakpoint on the floor. *)
   let initial_messages =
     [
-      Ai_provider.Prompt.User { content = [ Text { text = input; provider_options = cached_input_provider_options } ] };
+      Ai_provider.Prompt.User
+        { content = [ Text { text = input; provider_options = cached_input_provider_options provider } ] };
     ]
   in
   try%lwt
@@ -271,10 +298,10 @@ let run_agent ~model ?tools ?(max_retries = 2) ?debug_dir ~config ~input () =
         ~output:output_spec ~max_steps:config.max_steps ~max_retries ~provider_options ()
     in
     let steps_count = List.length result.steps in
-    let cache_read_input_tokens, cache_creation_input_tokens = extract_cache_tokens result.response.body in
+    let cache_read_input_tokens, cache_creation_input_tokens, reported_cost_usd = usage_of_result ~provider result in
     log#info "agent %s: finished (%d steps, %d input tokens, %d output tokens)" config.name steps_count
       result.usage.input_tokens result.usage.output_tokens;
-    let make_result ~output ~usage ~extra_cache_read ~extra_cache_write ~extra_steps =
+    let make_result ~output ~usage ~extra_cache_read ~extra_cache_write ~extra_cost ~extra_steps =
       {
         output;
         usage;
@@ -282,11 +309,14 @@ let run_agent ~model ?tools ?(max_retries = 2) ?debug_dir ~config ~input () =
         cache_creation_input_tokens = cache_creation_input_tokens + extra_cache_write;
         steps_count = steps_count + extra_steps;
         model_id;
+        reported_cost_usd = add_reported_cost reported_cost_usd extra_cost;
       }
     in
     match result.output with
     | Some output ->
-      Lwt.return_ok (make_result ~output ~usage:result.usage ~extra_cache_read:0 ~extra_cache_write:0 ~extra_steps:0)
+      Lwt.return_ok
+        (make_result ~output ~usage:result.usage ~extra_cache_read:0 ~extra_cache_write:0 ~extra_cost:None
+           ~extra_steps:0)
     | None ->
       let tool_calls_exhaustion =
         match result.finish_reason with
@@ -310,17 +340,18 @@ let run_agent ~model ?tools ?(max_retries = 2) ?debug_dir ~config ~input () =
         Lwt.return_error msg
       | true ->
         let%lwt recovered =
-          finalize_after_budget_exhaustion ~model ~config ~provider_options ~input ~output_spec ~max_retries
+          finalize_after_budget_exhaustion ~provider ~model ~config ~provider_options ~input ~output_spec ~max_retries
             ~first:result
         in
         (match recovered with
         | Some second ->
           let usage = Ai_core.Generate_text_result.add_usage result.usage second.usage in
-          let extra_cache_read, extra_cache_write = extract_cache_tokens second.response.body in
+          let extra_cache_read, extra_cache_write, extra_cost = usage_of_result ~provider second in
           (match second.output with
           | Some output ->
             Lwt.return_ok
-              (make_result ~output ~usage ~extra_cache_read ~extra_cache_write ~extra_steps:(List.length second.steps))
+              (make_result ~output ~usage ~extra_cache_read ~extra_cache_write ~extra_cost
+                 ~extra_steps:(List.length second.steps))
           | None ->
             (* Impossible: finalize returns Some only when second.output is Some. *)
             let msg = Printf.sprintf "agent %s: finalization returned empty output" config.name in

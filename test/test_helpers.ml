@@ -21,7 +21,8 @@ let make_test_context ?state ?(config = Config_types.config_of_json (Melange_jso
   let secrets : Config_types.secrets =
     {
       repos = [ { url = test_repo_url; auth = Some (GH_token "test-token"); gh_hook_secret = None } ];
-      anthropic_api_key = "sk-test";
+      anthropic_api_key = Some "sk-test";
+      openrouter_api_key = None;
       slack_access_token = None;
     }
   in

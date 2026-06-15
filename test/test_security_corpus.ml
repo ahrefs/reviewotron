@@ -32,7 +32,9 @@ let corpus_repo_url = "https://github.com/test/security-corpus"
     key; all other settings are left at defaults.  Pre-populates the repo
     config cache so the plugin does not need to fetch from GitHub. *)
 let make_corpus_context ~api_key =
-  let secrets : Config_types.secrets = { repos = []; anthropic_api_key = api_key; slack_access_token = None } in
+  let secrets : Config_types.secrets =
+    { repos = []; anthropic_api_key = Some api_key; openrouter_api_key = None; slack_access_token = None }
+  in
   let ctx = Context.make ~secrets () in
   Context.set_config ctx ~repo_key:corpus_repo_url (Context.default_config ());
   ctx
