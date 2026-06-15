@@ -2668,7 +2668,12 @@ let test_of_agent_result () =
   (check int) "turns" 3 cost.turns;
   (check int) "files_fetched" 2 cost.files_fetched;
   (* 2000 * 3/1M + 500 * 15/1M = 0.006 + 0.0075 = 0.0135 *)
-  (check (float 1e-6)) "estimated_cost_usd" 0.0135 cost.estimated_cost_usd
+  (check (float 1e-6)) "estimated_cost_usd" 0.0135 cost.estimated_cost_usd;
+  let reported =
+    Cost_tracking.of_agent_result ~agent_name:"test_agent" ~files_fetched:2
+      { result with reported_cost_usd = Some 0.42 }
+  in
+  (check (float 1e-6)) "reported cost wins" 0.42 reported.estimated_cost_usd
 
 let test_aggregate () =
   let rc = Cost_tracking.aggregate ~plugin:"security" [ triage_agent_cost; analysis_agent_cost ] in
