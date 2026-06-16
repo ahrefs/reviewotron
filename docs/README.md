@@ -466,7 +466,7 @@ Push reviews (to `develop`) optionally send a Slack notification. This requires:
 The message includes:
 - Pusher name and commit count
 - Link to the compare view on GitHub
-- Review summary text
+- Deterministic review status text
 - Finding counts (critical, warnings, suggestions)
 - Color-coded: red if any critical findings, green otherwise
 
@@ -682,7 +682,6 @@ Only pushes to `refs/heads/develop` are reviewed. Other branches, including `mai
 
 ### File Content Fetching
 
-- The general review plugin fetches up to **5 key files** for additional context (added or modified files only)
 - Security analysis agents can fetch any file via `get_file_content`, bounded by the agent's `max_steps` limit
 - All file fetches use the PR head SHA as the git ref, so agents see the PR branch state (not the default branch)
 
@@ -788,7 +787,7 @@ lib/
   memory_curator_agent.ml Memory update curator agent
 
   security_types.ml       All security pipeline types
-  security_tools.ml       get_file_content tool for agents
+  security_tools.ml       shared get_file_content tool for security agents
   security_memory.ml      Memory file + queue I/O
 
   review_types.ml         Finding, severity, review output types
@@ -814,8 +813,12 @@ The codebase uses OCaml functors for testability - `Reviewer.Make` takes `Github
 
 ### Adding a Review Plugin
 
-The general plugin is special — its summary becomes the review body. Every other
-plugin only emits findings, and they share one shape. To add a findings plugin:
+The general plugin is special because it keeps the legacy review-output shape
+and validates its own candidate findings before they are surfaced. Its
+free-form summary is not posted as review feedback; PR review bodies are built
+from confirmed findings, failure notices, unchanged-code investigation
+sections, and optional cost details. Every other plugin only emits findings,
+and they share one shape. To add a findings plugin:
 
 1. Write a `Make (AI : Api.Agent_runner)` functor with `name` and a `run` that
    takes `~ctx ~repo_url ~config ~diff ~diff_text ~metadata ~debug_dir` and

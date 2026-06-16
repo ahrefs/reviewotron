@@ -20,5 +20,5 @@ val format_slack_attachment :
   compare_url:string ->
   pusher_name:string ->
   num_commits:int ->
-  review:Review_types.review_output ->
+  findings:Review_types.finding list ->
   Slack_types.slack_attachment

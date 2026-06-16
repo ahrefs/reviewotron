@@ -8,11 +8,11 @@ type finding_source =
 
 (** A findings-producing review plugin registered with the engine.
 
-    The general plugin is handled separately because its summary becomes the
-    review body; every other plugin only emits findings, and they are uniform.
-    Adding a findings plugin is: implement its run function (a [Review_plugin.S]
-    plus [~debug_dir]), give it a config slice, and add one entry to the
-    [findings_plugins] list inside {!Make}. *)
+    The general plugin is handled separately because it owns the legacy
+    review-output shape and validation pass; every other plugin only emits
+    findings, and they are uniform. Adding a findings plugin is: implement its
+    run function (a [Review_plugin.S] plus [~debug_dir]), give it a config
+    slice, and add one entry to the [findings_plugins] list inside {!Make}. *)
 type findings_plugin = {
   fp_name : string;  (** Plugin name; used for cost attribution and logs. *)
   fp_source : finding_source;  (** How dedup treats this plugin's findings on a line collision. *)
@@ -264,10 +264,7 @@ let review_body ~change_label ~general_output ~findings ~unchanged_findings ~anc
   in
   let body =
     match general_output with
-    | Some (Ok review) ->
-      (match String.trim review.Review_types.summary with
-      | "" -> ":robot: **REVIEW**"
-      | summary -> Printf.sprintf ":robot: **REVIEW**\n\nMinor:\n%s" summary)
+    | Some (Ok _) -> ":robot: **REVIEW**"
     | Some (Error reason) -> failure_notice (Some reason)
     | None -> failure_notice None
   in

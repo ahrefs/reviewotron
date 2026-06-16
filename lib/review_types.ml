@@ -211,9 +211,9 @@ type validator_output = {
 type review_output = {
   summary : string;
      [@jsonschema.description
-       "Markdown bullet list of non-finding observations worth flagging that did not become inline findings. Empty \
-        string if there are none. Do not mention inline findings at all — not their count, not a preview, not a \
-        pointer. Do not include a headline, lead-in, or framing sentence."]
+       "Diagnostic markdown bullet list of material, verified non-finding observations. This text is not posted as \
+        review feedback; prefer an empty string. Do not include confirmations that code is correct, praise, \
+        speculative migration/schema requests, or references to inline findings."]
   findings : finding list; [@jsonschema.description "List of inline findings to post on changed files and lines"]
   overall_assessment : string; [@json.default ""] [@jsonschema.description "Brief overall quality assessment"]
 }

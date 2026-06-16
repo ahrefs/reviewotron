@@ -326,13 +326,26 @@ let test_system_prompt_security_enabled () =
   (check bool) "tells agent to skip security topics in any category" true
     (CCString.find ~sub:"Do NOT emit findings on any of those topics" prompt >= 0);
   (check bool) "names the specific topics that are out of scope" true
-    (CCString.find ~sub:"command injection" prompt >= 0)
+    (CCString.find ~sub:"command injection" prompt >= 0);
+  (check bool) "still allows non-security business invariants" true
+    (CCString.find ~sub:"non-security correctness and business-logic invariants" prompt >= 0)
+
+let test_general_validator_prompt_balances_speculation_and_schema_signal () =
+  let prompt = General_validator_agent.system_prompt in
+  (check bool) "rejects future filtering claims" true (CCString.find ~sub:"future validation/filtering step" prompt >= 0);
+  (check bool) "rejects future flag toggles" true (CCString.find ~sub:"feature flag being toggled later" prompt >= 0);
+  (check bool) "keeps schema default signal" true
+    (CCString.find ~sub:"Schema-default and generated-wrapper findings are valid" prompt >= 0);
+  (check bool) "does not rubber-stamp internally consistent claims" true
+    (CCString.find ~sub:"Do not accept a candidate merely because it is internally consistent" prompt >= 0)
 
 let test_system_prompt_dedup_guidelines () =
   let prompt = Review_prompt.system_prompt ~security_covered_elsewhere:true () in
   (check bool) "mentions same root cause" true (CCString.find ~sub:"same root cause" prompt >= 0);
-  (check bool) "mentions summary for refactor suggestions" true
+  (check bool) "drops refactor-only suggestions" true
     (CCString.find ~sub:"recommended alternative implementation" prompt >= 0);
+  (check bool) "keeps clean reviews quiet" true
+    (CCString.find ~sub:"return an empty `findings` list and an empty `summary`" prompt >= 0);
   (check bool) "mentions documentation nits" true (CCString.find ~sub:"documentation nits" prompt >= 0)
 
 let test_system_prompt_override () =
@@ -1617,7 +1630,8 @@ let test_pr_review_e2e () =
   (check bool) "correct repo" true (contains_sub ~sub:"repo=https://github.com/org/monorepo" write_log);
   (check bool) "correct PR number" true (contains_sub ~sub:"number=42" write_log);
   (check bool) "deterministic review body" true (contains_sub ~sub:":robot: **REVIEW**" write_log);
-  (check bool) "publishes agent summary" true (contains_sub ~sub:"The changes look generally good" write_log);
+  (check bool) "does not publish unvalidated agent summary" false
+    (contains_sub ~sub:"The changes look generally good" write_log);
   (check bool) "has comments" true (contains_sub ~sub:"error-handling" write_log)
 
 let test_pr_skipped_when_draft () =
@@ -1905,7 +1919,18 @@ let test_push_review_e2e () =
   (check bool) "slack message sent" true (CCString.find ~sub:"[slack]" write_log >= 0);
   (check bool) "slack mentions develop" true (CCString.find ~sub:"develop" write_log >= 0);
   let slack_msgs = Api_local.get_slack_messages () in
-  (check int) "one slack message" 1 (List.length slack_msgs)
+  (check int) "one slack message" 1 (List.length slack_msgs);
+  match slack_msgs with
+  | [] -> fail "expected at least one Slack message"
+  | (_channel, _text, attachments) :: _ ->
+  match attachments with
+  | None -> fail "expected Slack attachments"
+  | Some [] -> fail "expected at least one attachment"
+  | Some (att :: _) ->
+    (check bool) "slack uses deterministic summary" true
+      (CCString.find ~sub:"Review completed with inline findings" att.Slack_types.text >= 0);
+    (check bool) "slack omits unvalidated agent summary" false
+      (CCString.find ~sub:"The push adds new API endpoints" att.Slack_types.text >= 0)
 
 let test_push_skipped_non_develop () =
   Test_helpers.reset_test_state ();
@@ -2337,7 +2362,9 @@ let test_local_review_diff_returns_markdown () =
   match result with
   | Error msg -> fail msg
   | Ok markdown ->
-    (check bool) "has summary" true (CCString.find ~sub:"The changes look generally good" markdown >= 0);
+    (check bool) "has review header" true (CCString.find ~sub:":robot: **REVIEW**" markdown >= 0);
+    (check bool) "does not include unvalidated agent summary" false
+      (CCString.find ~sub:"The changes look generally good" markdown >= 0);
     (check bool) "has inline comments section" true (CCString.find ~sub:"### Inline comments" markdown >= 0);
     (check bool) "has local inline location" true (CCString.find ~sub:"src/main.ml:14" markdown >= 0);
     (check bool) "records generic change review" true
@@ -2356,7 +2383,9 @@ let test_local_review_diff_text_returns_markdown () =
   match result with
   | Error msg -> fail msg
   | Ok markdown ->
-    (check bool) "has summary" true (CCString.find ~sub:"The changes look generally good" markdown >= 0);
+    (check bool) "has review header" true (CCString.find ~sub:":robot: **REVIEW**" markdown >= 0);
+    (check bool) "does not include unvalidated agent summary" false
+      (CCString.find ~sub:"The changes look generally good" markdown >= 0);
     (check bool) "has inline comments section" true (CCString.find ~sub:"### Inline comments" markdown >= 0)
 
 let test_local_review_uses_supplied_config_for_plugins () =
@@ -3757,19 +3786,22 @@ let test_provider_options_carries_thinking_when_set () =
     (check bool) "thinking enabled" true t.enabled;
     (check int) "thinking budget matches" 4096 (Ai_provider_anthropic.Thinking.to_int t.budget_tokens)
 
-(** The general review agent must opt into Anthropic extended thinking.
-    This is what gives the model a real reasoning channel instead of leaking
-    reasoning into the posted [message]. *)
-let test_general_review_agent_config_enables_thinking () =
+(** The general review agent uses a modest step budget and normal model
+    reasoning. *)
+let test_general_review_agent_config_is_modest () =
   let cfg = General_review_plugin.build_agent_config ~system_prompt:"unused" in
   match cfg.thinking_budget with
-  | None -> fail "expected general_review agent to enable thinking_budget"
-  | Some n ->
-    (check bool) "general_review thinking budget >= 4096" true (n >= 4096);
-    (check string) "agent name preserved" "general_review" cfg.name
+  | Some _ -> fail "expected general_review agent to leave thinking_budget disabled"
+  | None ->
+    (check string) "agent name preserved" "general_review" cfg.name;
+    (check int) "general_review max steps" 5 cfg.max_steps;
+    (check bool) "max steps remains modest" true (cfg.max_steps >= 4 && cfg.max_steps <= 6)
 
 module General_plugin_agent_runner = struct
   let outputs : (string * Yojson.Basic.t) list ref = ref []
+
+  let reset () = outputs := []
+
   let set_outputs entries = outputs := entries
 
   let run ~ctx:_ ~repo_url:_ ?model_id:_ ?tools:_ ?debug_dir:_ ~config ~input:_ () =
@@ -3827,13 +3859,32 @@ let review_output_with_findings findings =
 
 let validator_output_with_results results = Review_types.validator_output_to_json { results }
 
-let run_general_plugin_with_outputs outputs =
+let run_general_plugin_with_outputs ?(config = Test_helpers.auto_review_enabled_config) ?(diff_text = "diff")
+  ?(metadata = general_plugin_metadata) outputs =
   Test_helpers.reset_test_state ();
+  General_plugin_agent_runner.reset ();
   General_plugin_agent_runner.set_outputs outputs;
-  let ctx = Test_helpers.make_test_context ~config:Test_helpers.auto_review_enabled_config () in
+  let ctx = Test_helpers.make_test_context ~config () in
   Lwt_main.run
-    (General_plugin_test.run_review ~ctx ~repo_url:"https://github.com/org/repo"
-       ~config:Test_helpers.auto_review_enabled_config ~diff_text:"diff" ~metadata:general_plugin_metadata ())
+    (General_plugin_test.run_review ~ctx ~repo_url:"https://github.com/org/repo" ~config ~diff_text ~metadata ())
+
+let test_general_review_security_candidates_still_filtered_when_security_enabled () =
+  let security_config =
+    Config_types.config_of_json (Melange_json.of_string {|{"review_plugins": {"security": {"enabled": true}}}|})
+  in
+  let security_finding =
+    mk_finding ~path:"src/main.ml" ~line:14 ~severity:Review_types.Warning ~category:Review_types.Security
+      ~message:"User input reaches an unsafe sink." ()
+  in
+  let result, costs =
+    run_general_plugin_with_outputs ~config:security_config
+      [ "general_review", review_output_with_findings [ security_finding ] ]
+  in
+  (match result with
+  | Error msg -> fail msg
+  | Ok review -> (check int) "security finding dropped before validator" 0 (List.length review.findings));
+  (check bool) "validator not called" false
+    (List.exists (fun (c : Cost_tracking.agent_cost) -> String.equal c.agent_name "general_validator") costs)
 
 let test_general_review_filters_low_value_and_validates () =
   let result, costs =
@@ -3992,6 +4043,8 @@ let () =
         [
           test_case "system prompt with security disabled" `Quick test_system_prompt_security_disabled;
           test_case "system prompt with security enabled" `Quick test_system_prompt_security_enabled;
+          test_case "general validator rejects speculation while keeping schema signal" `Quick
+            test_general_validator_prompt_balances_speculation_and_schema_signal;
           test_case "system prompt has dedup guidelines" `Quick test_system_prompt_dedup_guidelines;
           test_case "system prompt override" `Quick test_system_prompt_override;
           test_case "build user message" `Quick test_build_user_message;
@@ -4138,6 +4191,8 @@ let () =
         ] );
       ( "general_review_plugin",
         [
+          test_case "security candidates filtered when security enabled" `Quick
+            test_general_review_security_candidates_still_filtered_when_security_enabled;
           test_case "filters low-value candidates and validates" `Quick
             test_general_review_filters_low_value_and_validates;
           test_case "validator rejection drops finding" `Quick test_general_review_validator_rejection_drops_finding;
@@ -4174,7 +4229,7 @@ let () =
         [
           test_case "PR synchronize triggers review" `Quick test_pr_synchronize_review;
           test_case "PR with all ignored paths gets thumbs-up" `Quick test_pr_all_ignored_paths_thumbs_up;
-          test_case "PR with empty findings posts summary" `Quick test_pr_empty_findings_review;
+          test_case "PR with empty findings stays quiet" `Quick test_pr_empty_findings_review;
           test_case "large PR over max_diff_lines posts comment" `Quick test_pr_large_diff_posts_comment;
         ] );
       ( "push_review",
@@ -4335,8 +4390,7 @@ let () =
           test_case "provider_options carries thinking config when set" `Quick
             test_provider_options_carries_thinking_when_set;
           test_case "provider_options clamps budget to 1024 minimum" `Quick test_provider_options_clamps_below_minimum;
-          test_case "general review agent_config enables thinking" `Quick
-            test_general_review_agent_config_enables_thinking;
+          test_case "general review agent_config is modest" `Quick test_general_review_agent_config_is_modest;
         ] );
       ( "prompt_caching",
         [

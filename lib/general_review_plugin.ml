@@ -2,9 +2,7 @@ open Devkit
 
 let log = Log.from "general_review_plugin"
 
-(* Sized for a single-shot multi-finding review; tune here without touching
-   call sites. *)
-let general_review_thinking_budget = 4096
+let general_review_max_steps = 5
 
 let build_agent_config ~system_prompt : Agent_runner.agent_config =
   {
@@ -12,8 +10,8 @@ let build_agent_config ~system_prompt : Agent_runner.agent_config =
     system_prompt;
     model_tier = Standard;
     output_schema = Review_types.review_output_jsonschema;
-    max_steps = 1;
-    thinking_budget = Some general_review_thinking_budget;
+    max_steps = general_review_max_steps;
+    thinking_budget = None;
   }
 
 let low_value_inline (f : Review_types.finding) =
@@ -124,7 +122,7 @@ module Make (AI : Api.Agent_runner) = struct
   let run_review ~ctx ~repo_url ~(config : Config_types.config) ~diff_text ~metadata ?debug_dir () =
     let security_covered_elsewhere = config.review_plugins.security.enabled in
     let system = Review_prompt.system_prompt ?override:config.system_prompt_override ~security_covered_elsewhere () in
-    let Review_plugin.{ change_title; change_description; file_contents; _ } = metadata in
+    let Review_plugin.{ change_title; change_description; file_contents; fetch_file = _ } = metadata in
     let input = Review_prompt.build_user_message ~diff:diff_text ~change_title ~change_description ~file_contents () in
     let agent_config = build_agent_config ~system_prompt:system in
     let%lwt result = AI.run ~ctx ~repo_url ~model_id:config.model ?debug_dir ~config:agent_config ~input () in

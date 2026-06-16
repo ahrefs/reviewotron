@@ -29,8 +29,13 @@ let count_by_severity findings =
       | Nitpick | Praise | Other _ -> c, w, s)
     (0, 0, 0) findings
 
-let format_slack_attachment ~compare_url ~pusher_name ~num_commits ~(review : Review_types.review_output) =
-  let critical, warnings, suggestions = count_by_severity review.findings in
+let slack_summary_text ~critical ~warnings ~suggestions =
+  match critical, warnings, suggestions with
+  | 0, 0, 0 -> "Review completed with no inline findings."
+  | _, _, _ -> "Review completed with inline findings; see commit comments for details."
+
+let format_slack_attachment ~compare_url ~pusher_name ~num_commits ~findings =
+  let critical, warnings, suggestions = count_by_severity findings in
   let findings_str = Printf.sprintf "%d critical, %d warnings, %d suggestions" critical warnings suggestions in
   let color = if critical > 0 then "#dc3545" else "#36a64f" in
   Slack_types.
@@ -38,7 +43,7 @@ let format_slack_attachment ~compare_url ~pusher_name ~num_commits ~(review : Re
       color;
       title = Printf.sprintf "Push by %s \u{2014} %d commits" pusher_name num_commits;
       title_link = compare_url;
-      text = review.summary;
+      text = slack_summary_text ~critical ~warnings ~suggestions;
       fields = [ { title = "Findings"; value = findings_str; short = true } ];
       footer = Some "reviewotron";
     }

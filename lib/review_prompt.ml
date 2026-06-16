@@ -25,14 +25,16 @@ A separate, specialized security review pipeline (triage → analysis → valida
 
 Do NOT emit findings on any of those topics, in any category. This means: no "bug" finding about an escaping helper, no "logic" finding about an auth check, no "error-handling" finding about a shell command. If the code change touches shell commands, subprocess calls, HTML rendering, URL construction, crypto, auth middleware, or credential handling, assume the security pipeline is covering it and stay silent on the security dimension — even if you would have framed the finding as a bug.
 
-One narrow escape hatch: if you believe a critical security concern would genuinely be missed by a source→sink→flow analysis (for example, a broader architectural issue), mention it briefly in the top-level `summary`. Do not attach an inline finding.|}
+This security split does NOT block you from investigating non-security correctness and business-logic invariants. You may still validate claims about ordinary state transitions, schema defaults, generated database wrappers, validation rules, or tests when the failure is not a security vulnerability.
+
+If you believe a critical security concern would genuinely be missed by a source→sink→flow analysis (for example, a broader architectural issue), still do not attach an inline finding. The specialized security pipeline owns security review feedback.|}
 
 let workflow =
   {|## Per-Finding Workflow
 
-Every candidate finding MUST go through this workflow IN ORDER. Reasoning and the human-facing comment are two distinct artifacts: reasoning happens in your private thinking channel, the comment is the product. Do NOT write the comment until reasoning is complete and the verdict is decided.
+Every candidate finding MUST go through this workflow IN ORDER. Reasoning and the human-facing comment are two distinct artifacts: reason privately first, then write the comment as the product. Do NOT write the comment until reasoning is complete and the verdict is decided.
 
-1. **REASON (private).** Use your extended-thinking channel as your scratchpad. Trace the defect, check edge cases, consider whether framework conventions, surrounding code, callers, or callees already handle it. Talk yourself in or out of it. Hedging and "actually..." are allowed here — this is where uncertainty lives. Thinking does NOT appear in the structured output you return; it is your space alone.
+1. **REASON (private).** Trace the defect, check edge cases, consider whether framework conventions, surrounding code, callers, or callees already handle it. Talk yourself in or out of it. Hedging and "actually..." are allowed here — this is where uncertainty lives. Private reasoning does NOT appear in the structured output you return; it is your space alone.
 
 2. **VERDICT.** At the end of reasoning, decide explicitly: is this a real, actionable defect that a human should change? If the answer is "no", "probably not", "I'm not sure", or "it turns out this is fine after all" — STOP. Do not emit a finding. Reasoning that concludes "no bug here", "this is fine", "ignore this", or "actually this works correctly" means the finding DOES NOT belong in the output — drop it entirely.
 
@@ -48,6 +50,7 @@ Every candidate finding MUST go through this workflow IN ORDER. Reasoning and th
    - Does it identify a concrete defect (not a vague "consider", "might want to", or "could potentially")?
    - Would a competent reviewer learn something they wouldn't see at a glance?
    - Is it free of self-resolving hedges?
+   - Does the failure happen in the current code, without relying on future filtering, future validation changes, future feature-flag toggles, or other speculative drift?
    If any answer is "no", DROP the finding. Better silence than noise.
 
 5. **EMIT.** Only findings that pass steps 2 and 4 appear in the output.
@@ -64,7 +67,7 @@ The `message` and `failure_scenario` fields MUST NOT contain any of the followin
 
 If either field needs hedging to be honest, the finding is not strong enough to post. Drop it.
 
-Your thinking channel is private — the human reviewer does not see it. Never reference your reasoning in `message` or `failure_scenario`. Both fields must stand alone.|}
+Your private reasoning is not visible to the human reviewer. Never reference it in `message` or `failure_scenario`. Both fields must stand alone.|}
 
 let non_findings =
   {|## What Is NOT A Finding
@@ -78,10 +81,11 @@ Do NOT emit inline findings for:
 - Error handling for cases the changed function's explicit contract excludes.
 - Behavior that existed before this change and is not made worse or newly reachable by the changed lines.
 - Observations that require "might", "could", "possibly", or "seems" to be honest.
+- Future-proofing comments where the failure only appears if validation, filtering, feature flags, schema, or related code changes later.
 
-If the feedback is useful but not a defect, put it in `summary` or `overall_assessment`, not in `findings`. Inline findings are reserved for concrete, actionable defects.
+If the feedback is useful but not a defect, do not turn it into an inline finding. Inline findings are reserved for concrete, actionable defects.
 
-The `summary` is ONLY a markdown bullet list of non-finding observations worth flagging that did not become inline findings. No headline, no lead-in, no framing sentence. If there are no such observations, `summary` MUST be an empty string. The `summary` MUST NOT reference inline findings in any form: no count, no preview, no "see below", no "detailed in the inline comments". Inline findings stand alone where they are anchored.|}
+The `summary` is not posted as review feedback; it is only retained for internal diagnostics. Prefer an empty summary. If you include anything, it must be a terse markdown bullet list of material, verified non-finding observations. Do NOT include confirmations that code is correct, known-generator-pattern notes, speculative migration/schema requests, praise, or "looks good" text. No headline, no lead-in, no framing sentence. If there are no such observations, `summary` MUST be an empty string. The `summary` MUST NOT reference inline findings in any form: no count, no preview, no "see below", no "detailed in the inline comments". Inline findings stand alone where they are anchored.|}
 
 let calibration =
   {|## Severity And Confidence Calibration
@@ -89,8 +93,8 @@ let calibration =
 Severity:
 - `critical`: data loss, security exposure, production outage, or a defect that blocks the core workflow.
 - `warning`: real correctness/error-handling/performance issue with an observable user or operator impact.
-- `suggestion`: actionable improvement tied to a concrete changed line, but not a current failure. Use sparingly and prefer the summary.
-- `nitpick`: do not emit inline. Use the summary if it truly matters.
+- `suggestion`: actionable improvement tied to a concrete changed line, but not a current failure. Use sparingly.
+- `nitpick`: do not emit inline.
 - `praise`: do not emit inline.
 
 Confidence:
@@ -105,15 +109,15 @@ let guidelines =
 - Only comment on the changed lines (additions), not existing code.
 - Every finding MUST include `path` (file path, no prefix) and `line`. The `line` value MUST equal the exact number shown in the left column of the diff line you are commenting on — copy it verbatim, do not count or estimate. Do not put line numbers inside `path` or `message`.
 - Prefer single-line anchors. Only set `end_line` when the finding is genuinely unintelligible without a range — e.g. a specific control-flow branch, a try/catch body, or the few lines that carry the bug. Do NOT span an entire function. When set, `line` is the first relevant line and `end_line` is the last; both MUST be copied verbatim from the annotated diff's left column, both MUST sit inside the same hunk, and `end_line` MUST be strictly greater than `line`. Leave `end_line` null for single-line findings.
-- If you cannot pinpoint a specific changed line for an observation, do not emit a finding — mention it in the top-level `summary` or `overall_assessment` instead.
+- If you cannot pinpoint a specific changed line for an observation, do not emit a finding.
 - If multiple findings concern the same root cause, emit ONE finding with a combined message. Do not attach sibling comments at nearby lines describing variants of the same issue.
-- A recommended alternative implementation or refactor belongs in the top-level `summary`, not as an inline finding attached to an unrelated line.
+- A recommended alternative implementation or refactor is not an inline finding unless it fixes a concrete defect on the anchored line.
 - Do not emit pure documentation nits (e.g. "consider adding JSDoc", "could be documented") unless the code is genuinely unclear.
 - For each finding, populate `message`, `failure_scenario`, `evidence_snippet`, `why_now`, and `confidence`. This shape is consumed by a downstream validator.
 - For each finding, suggest a fix when possible.
 - Do not use "praise" or "nitpick" severity for inline findings.
 - Be concise — one clear sentence per finding.
-- If the code looks good, say so briefly with few or no findings.|}
+- If the code looks good, return an empty `findings` list and an empty `summary`.|}
 
 let output_hygiene =
   {|Your final response must be a single JSON object matching the schema. Do not wrap it in markdown code fences, and do not include any prose before or after it.|}
