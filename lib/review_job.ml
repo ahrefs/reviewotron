@@ -39,6 +39,7 @@ let is_embeddable content = String.length content <= max_embeddable_bytes && is_
 
 type t = {
   repo_key : string;
+  reviewed_root : string option;
   change_key : string;
   change_label : string;
   title : string;

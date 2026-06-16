@@ -171,6 +171,7 @@ module Make (SRC : Api.Github_review_source) = struct
         Review_job.
           {
             repo_key = repo_url;
+            reviewed_root = None;
             change_key = Printf.sprintf "pr/%d/%s" number head_sha;
             change_label = Printf.sprintf "PR #%d" number;
             title = pr.title;
@@ -246,6 +247,7 @@ module Make (SRC : Api.Github_review_source) = struct
         Review_job.
           {
             repo_key = repo_url;
+            reviewed_root = None;
             change_key = push.after;
             change_label = Printf.sprintf "push %s" (Review_job.short_display_id push.after);
             title;
