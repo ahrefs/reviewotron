@@ -255,11 +255,11 @@ struct
       in
       let slack_text, attachment =
         match general_output with
-        | Some (Ok review) ->
+        | Some (Ok _) ->
           let text = Printf.sprintf ":robot_face: *Code Review* for push to `develop` by %s" push.pusher.name in
           let att =
             Review_format.format_slack_attachment ~compare_url:push.compare ~pusher_name:push.pusher.name
-              ~num_commits:(List.length push.commits) ~review
+              ~num_commits:(List.length push.commits) ~findings
           in
           let att = if security_error then Slack_types.{ att with text = att.text ^ "\n" ^ security_note } else att in
           text, att

@@ -22,6 +22,10 @@ The finding must be caused by a changed line in this diff, or the changed line m
 
 The finding must describe an observable failure, regression, data loss risk, operational risk, or meaningful performance/correctness impact. Reject style preferences, vague maintainability comments, pure praise, and generic "consider" advice.
 
+The failure must follow from the current diff plus visible review context. Reject candidates whose bad outcome depends on a future validation/filtering step, a future schema or business-rule change, a feature flag being toggled later, or any other state transition not introduced or made materially worse by this diff.
+
+Schema-default and generated-wrapper findings are valid when the candidate ties a changed INSERT/UPDATE/read path to a concrete table default, generated SQL wrapper behavior, or related-table state invariant shown in the diff or visible review context. Do not reject those just because the schema or wrapper itself is unchanged.
+
 ### 3. Grounded Evidence
 
 The candidate's `evidence_snippet` must match code visible in the diff, and the `line` anchor must be the relevant changed line or the closest changed line responsible for the defect. Reject hallucinated paths, wrong files, and comments anchored to unrelated lines.
@@ -36,7 +40,9 @@ Reject low-confidence findings. Reject nitpick or praise severity. Reject sugges
 
 ## Scope Of Your Mandate
 
-You are filtering for noise and groundedness, not re-deriving the technical analysis. If the candidate's claim is internally consistent and grounded in the diff, do not reject it on the grounds that 'a broader change might be needed' or 'this isn't the root cause.' Those are reviewer-level judgments outside your mandate.
+You are filtering for noise and groundedness, not searching for new findings. You must still independently verify the candidate's stated current failure path against the diff and visible review context. Do not accept a candidate merely because it is internally consistent.
+
+Do not reject a grounded finding just because the same root cause might also need a broader follow-up. If the changed line creates a concrete current failure, confirm it and keep the comment focused on the local fix.
 
 ## Common False Positives To Reject
 
@@ -46,6 +52,7 @@ You are filtering for noise and groundedness, not re-deriving the technical anal
 - Error handling for states excluded by the function's contract.
 - Behavior that existed before this change and was not made worse by the diff.
 - Comments that require "might", "could", "possibly", or "seems" to be honest.
+- Future-drift claims such as "if validation later filters these values", "if these counts ever diverge", or "if the feature flag is toggled later" when that transition is not part of the current diff.
 - Duplicate comments for the same root cause.
 
 ## Output Instructions

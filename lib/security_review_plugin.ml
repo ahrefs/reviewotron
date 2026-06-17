@@ -45,6 +45,16 @@ let should_analyze ~security_config (signal : Security_types.triage_signal) =
 module Make (AI : Api.Agent_runner) = struct
   let name = "security"
 
+  let fetch_file_with_attribution ~agent_name ~(fetch_file : Review_job.fetch_file) path =
+    log#info "get_file_content requested by %s: %s" agent_name path;
+    let%lwt result = fetch_file ~path in
+    (match result with
+    | Ok (Some content) ->
+      log#info "get_file_content result for %s: %s (%d bytes)" agent_name path (String.length content)
+    | Ok None -> log#info "get_file_content result for %s: %s unavailable" agent_name path
+    | Error msg -> log#warn "get_file_content result for %s: %s failed: %s" agent_name path msg);
+    Lwt.return result
+
   (** Run the triage agent and parse its structured output.
       Returns the parsed output (if successful) and any agent costs incurred. *)
   let run_triage ~ctx ~repo_url ~security_config ~diff_text ~file_paths ?security_memory ?debug_dir () =
@@ -89,7 +99,9 @@ module Make (AI : Api.Agent_runner) = struct
     let model_tier = agent_model_tier security_config.Config_types.analysis_model_tier in
     let agent_config = Analysis_agent.config ~vuln_class ~model_tier ~language_hints in
     let input = Analysis_agent.build_input ~diff_text ~triage_signals ~file_paths () in
-    let tools = Analysis_agent.tools ~fetch_file:(fun path -> fetch_file ~path) in
+    let tools =
+      Analysis_agent.tools ~fetch_file:(fetch_file_with_attribution ~agent_name:agent_config.name ~fetch_file)
+    in
     let%lwt result = AI.run ~ctx ~repo_url ~tools ?debug_dir ~config:agent_config ~input () in
     match result with
     | Error msg ->
@@ -226,7 +238,9 @@ module Make (AI : Api.Agent_runner) = struct
     let model_tier = agent_model_tier security_config.Config_types.validator_model_tier in
     let agent_config = Validator_agent.config ~model_tier in
     let input = Validator_agent.build_input ~diff_text ~candidate_findings () in
-    let tools = Validator_agent.tools ~fetch_file:(fun path -> fetch_file ~path) in
+    let tools =
+      Validator_agent.tools ~fetch_file:(fetch_file_with_attribution ~agent_name:agent_config.name ~fetch_file)
+    in
     let%lwt result = AI.run ~ctx ~repo_url ~tools ?debug_dir ~config:agent_config ~input () in
     match result with
     | Error msg ->
