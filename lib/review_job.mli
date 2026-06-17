@@ -38,7 +38,10 @@ val short_display_id : string -> string
     annotated diff passed to agents, produced by
     {!Diff_parser.to_string_annotated}. *)
 type t = {
-  repo_key : string;
+  repo_key : string;  (** Stable repository identity for config, state, memory, and logs. *)
+  reviewed_root : string option;
+    (** Local filesystem root when the review came from a local path or diff.
+          GitHub reviews leave this absent. *)
   change_key : string;
   change_label : string;
   title : string;

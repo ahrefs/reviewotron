@@ -61,6 +61,10 @@ type plugin_result = {
 
 (** Platform-neutral review report. *)
 type report = {
+  schema_version : int;
+  review_status : string;
+  reviewed_root : string option;
+  change_key : string option;
   body : string;
   comments : Review_comment.t list;
   findings : Review_types.finding list;

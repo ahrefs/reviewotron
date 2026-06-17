@@ -30,10 +30,27 @@ let include_finding_in_json (finding : Review_types.finding) =
   | Praise -> false
   | Critical | Warning | Suggestion | Nitpick | Other _ -> true
 
+let cons_opt_json name to_json opt fields =
+  match opt with
+  | Some value -> (name, to_json value) :: fields
+  | None -> fields
+
 let render_json (report : Review_engine.report) =
   let findings = report.findings |> List.filter include_finding_in_json |> List.map finding_to_json in
-  Yojson.Basic.pretty_to_string (`Assoc [ "summary", `String (String.trim report.body); "findings", `List findings ])
+  let fields =
+    [
+      "schema_version", `Int report.schema_version;
+      "review_status", `String report.review_status;
+      "summary", `String (String.trim report.body);
+      "findings", `List findings;
+    ]
+  in
+  let fields = cons_opt_json "reviewed_root" (fun value -> `String value) report.reviewed_root fields in
+  let fields = cons_opt_json "change_key" (fun value -> `String value) report.change_key fields in
+  Yojson.Basic.pretty_to_string (`Assoc fields)
 
 (** Render a failure as the machine-readable JSON envelope callers expect when
     they requested JSON output: [{ "error": "<message>" }]. *)
-let render_error message = Yojson.Basic.pretty_to_string (`Assoc [ "error", `String message ])
+let render_error message =
+  Yojson.Basic.pretty_to_string
+    (`Assoc [ "schema_version", `Int 1; "review_status", `String "error"; "error", `String message ])

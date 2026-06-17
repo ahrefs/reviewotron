@@ -131,12 +131,47 @@ environment and the review configuration is passed inline.
 
 With `--output json`:
 
-- **Success** → stdout is `{ "summary": "...", "findings": [ ... ] }`, exit code `0`.
-- **Failure** (bad path, missing key, invalid config, review error) → stdout is
-  `{ "error": "<message>" }`, non-zero exit code.
+- **Success** → stdout includes `{ "summary": "...", "findings": [ ... ] }`, exit code `0`.
+  The JSON also includes metadata fields: `schema_version`, `review_status`,
+  `reviewed_root`, and `change_key`.
+- **Failure** (bad path, missing key, invalid config, review error) → stdout includes
+  `{ "error": "<message>" }`, non-zero exit code. The JSON error envelope also
+  includes `schema_version` and `review_status`.
 
 A caller can branch on the exit code and parse one JSON object either way. Logs
 go to stderr; only the JSON object is written to stdout.
+
+### Pi Package
+
+Reviewotron also includes a Pi integration package in `packages/pi`. It keeps
+the OCaml CLI as the review core and shells out to `reviewotron review-diff`,
+`reviewotron review-path`, or `reviewotron config-help`.
+
+Install locally:
+
+```bash
+pi install ./packages/pi
+```
+
+Or run temporarily:
+
+```bash
+pi -e ./packages/pi
+```
+
+The package registers:
+
+- `reviewotron_review` tool for agent-callable current-diff, stdin-diff, file,
+  and directory reviews.
+- `/reviewotron` for a quick current-diff review with `--no-security`.
+- `/reviewotron-full [path]` for a full path review with raised limits and
+  security enabled.
+- `/reviewotron-config` for a summary of `reviewotron config-help`.
+
+For full reviews, the Pi adapter queries `reviewotron config-help` before
+constructing inline config. The returned JSON Schema is treated as the source of
+truth for supported config fields and cached per binary path/version for the Pi
+session. Set `REVIEWOTRON_BIN` if the binary is not on `PATH`.
 
 ### Examples
 

@@ -2486,6 +2486,10 @@ let test_local_sink_render_json () =
   in
   let report : Review_engine.report =
     {
+      schema_version = 1;
+      review_status = "completed";
+      reviewed_root = Some "/tmp/reviewotron-test";
+      change_key = Some "change-123";
       body = "";
       comments = [];
       findings = [ finding ];
@@ -2498,6 +2502,10 @@ let test_local_sink_render_json () =
   in
   match Yojson.Basic.from_string (Local_sink.render_json report) with
   | `Assoc fields ->
+    (check int) "schema version" 1 (json_int_field fields "schema_version");
+    (check string) "review status" "completed" (json_string_field fields "review_status");
+    (check string) "reviewed root" "/tmp/reviewotron-test" (json_string_field fields "reviewed_root");
+    (check string) "change key" "change-123" (json_string_field fields "change_key");
     (check string) "review summary" "" (json_string_field fields "summary");
     (match List.assoc_opt "findings" fields with
     | Some (`List [ `Assoc fields ]) ->
@@ -2510,6 +2518,14 @@ let test_local_sink_render_json () =
     | Some _ -> fail "expected findings to contain one review finding"
     | None -> fail "missing JSON field findings")
   | _ -> fail "expected a JSON review object"
+
+let test_local_sink_render_error_json () =
+  match Yojson.Basic.from_string (Local_sink.render_error "missing API key") with
+  | `Assoc fields ->
+    (check int) "schema version" 1 (json_int_field fields "schema_version");
+    (check string) "review status" "error" (json_string_field fields "review_status");
+    (check string) "error" "missing API key" (json_string_field fields "error")
+  | _ -> fail "expected a JSON error object"
 
 (** {2 State persistence tests} *)
 
@@ -4272,6 +4288,7 @@ let () =
           test_case "duplicate local change skipped" `Quick test_local_review_skips_duplicate_change;
           test_case "github plugins use captured config" `Quick test_github_review_uses_captured_config_for_plugins;
           test_case "local sink renders json" `Quick test_local_sink_render_json;
+          test_case "local sink renders error json" `Quick test_local_sink_render_error_json;
         ] );
       ( "state_persistence",
         [

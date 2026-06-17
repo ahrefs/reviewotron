@@ -109,6 +109,7 @@ let prepare_review_from_text ~root ~repo_key ?change_key ~title ~description ~di
       Review_job.
         {
           repo_key;
+          reviewed_root = Some root;
           change_key;
           change_label;
           title;

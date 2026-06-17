@@ -198,6 +198,10 @@ type plugin_result = {
 }
 
 type report = {
+  schema_version : int;
+  review_status : string;
+  reviewed_root : string option;
+  change_key : string option;
   body : string;
   comments : Review_comment.t list;
   findings : Review_types.finding list;
@@ -386,6 +390,11 @@ module Make (AI : Api.Agent_runner) = struct
           comments, unchanged, finding :: anchor_failed)
       ([], [], []) findings
 
+  let review_status ~security_error ~general_failed =
+    match general_failed || security_error with
+    | true -> "partial"
+    | false -> "completed"
+
   let run_review ~ctx ~(job : Review_job.t) =
     let debug_dir =
       let slug = Security_memory.repo_slug job.repo_key in
@@ -413,6 +422,10 @@ module Make (AI : Api.Agent_runner) = struct
     in
     Lwt.return
       {
+        schema_version = 1;
+        review_status = review_status ~security_error:plugin_result.security_error ~general_failed;
+        reviewed_root = job.reviewed_root;
+        change_key = Some job.change_key;
         body;
         comments;
         findings = plugin_result.findings;
