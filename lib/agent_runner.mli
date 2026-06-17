@@ -37,6 +37,10 @@ type agent_result = {
   cache_creation_input_tokens : int;
   steps_count : int;
   model_id : string;
+  reported_cost_usd : float option;
+    (** The provider's actual billed USD cost for the run, when it reports one
+          (OpenRouter). [None] on the Anthropic path, where {!Cost_tracking}
+          estimates from its pricing table instead. *)
 }
 
 (** Default model ID for a tier.
@@ -63,16 +67,17 @@ val write_debug_dump :
   string option
 
 (** Translate an agent's provider-specific knobs into a [Provider_options.t]
-    payload for [Ai_core.Generate_text.generate_text].  Exposed so the
-    plumbing is unit-testable without dispatching a live agent run. *)
-val build_provider_options : agent_config -> Ai_provider.Provider_options.t
+    payload for [Ai_core.Generate_text.generate_text].  The [provider] selects
+    which backend's option encoding is emitted.  Exposed so the plumbing is
+    unit-testable without dispatching a live agent run. *)
+val build_provider_options : provider:Llm_provider.t -> agent_config -> Ai_provider.Provider_options.t
 
-(** [Provider_options.t] carrying an Anthropic ephemeral [cache_control]
+(** [Provider_options.t] carrying the [provider]'s ephemeral [cache_control]
     breakpoint.  Attached to the long, stable user-input text block so that
     every turn after the first within an agent run cache-hits on the
-    [tools + system + input] prefix (per Anthropic's prefix caching rules).
+    [tools + system + input] prefix (per the provider's prefix caching rules).
     Exposed for unit testing. *)
-val cached_input_provider_options : Ai_provider.Provider_options.t
+val cached_input_provider_options : Llm_provider.t -> Ai_provider.Provider_options.t
 
 (** Run an agent with the given configuration and input prompt.
 
@@ -80,6 +85,10 @@ val cached_input_provider_options : Ai_provider.Provider_options.t
     the tool loop up to [config.max_steps], and returns parsed output
     with token usage.
 
+    @param provider
+      Which LLM backend the call routes through; selects the provider-specific
+      option encoding and usage parsing.  [model] must have been built for this
+      same provider (see {!Llm_provider.language_model}).
     @param model Language model instance (create via provider, e.g.
       [Ai_provider_anthropic.language_model ~model:"claude-sonnet-4-6" ()])
     @param tools Named tool definitions for context expansion
@@ -88,6 +97,7 @@ val cached_input_provider_options : Ai_provider.Provider_options.t
     @param config Agent configuration (prompt, schema, limits)
     @param input User message content *)
 val run_agent :
+  provider:Llm_provider.t ->
   model:Ai_provider.Language_model.t ->
   ?tools:(string * Ai_core.Core_tool.t) list ->
   ?max_retries:int ->

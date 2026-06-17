@@ -117,7 +117,7 @@ let test_config_defaults () =
   }|}
   in
   let secrets = Config_types.secrets_of_json (Melange_json.of_string json) in
-  (check string) "api key" "sk-test" secrets.anthropic_api_key;
+  (check (option string)) "api key" (Some "sk-test") secrets.anthropic_api_key;
   (check int) "repo count" 1 (List.length secrets.repos)
 
 let test_config_ignores_removed_fields () =
@@ -129,8 +129,73 @@ let test_config_ignores_removed_fields () =
   }|}
   in
   let secrets = Config_types.secrets_of_json (Melange_json.of_string json) in
-  (check string) "api key" "sk-test" secrets.anthropic_api_key;
+  (check (option string)) "api key" (Some "sk-test") secrets.anthropic_api_key;
   (check int) "repo count" 1 (List.length secrets.repos)
+
+let test_parse_secrets_openrouter_only () =
+  let json = {|{"repos": [], "openrouter_api_key": "sk-or-test"}|} in
+  let secrets = Config_types.secrets_of_json (Melange_json.of_string json) in
+  (check (option string)) "anthropic key absent" None secrets.anthropic_api_key;
+  (check (option string)) "openrouter key present" (Some "sk-or-test") secrets.openrouter_api_key
+
+let test_llm_provider_resolve () =
+  let mk ?anthropic ?openrouter () : Config_types.secrets =
+    { repos = []; anthropic_api_key = anthropic; openrouter_api_key = openrouter; slack_access_token = None }
+  in
+  (match Llm_provider.resolve (mk ~openrouter:"k" ~anthropic:"a" ()) with
+  | Ok Llm_provider.Openrouter -> ()
+  | Ok Llm_provider.Anthropic | Error _ -> fail "openrouter preferred when both present");
+  (match Llm_provider.resolve (mk ~openrouter:"  " ~anthropic:"a" ()) with
+  | Ok Llm_provider.Anthropic -> ()
+  | Ok Llm_provider.Openrouter | Error _ -> fail "blank openrouter key should fall back to anthropic");
+  (match Llm_provider.resolve (mk ~anthropic:"a" ()) with
+  | Ok Llm_provider.Anthropic -> ()
+  | Ok Llm_provider.Openrouter | Error _ -> fail "anthropic when only it present");
+  match Llm_provider.resolve (mk ()) with
+  | Error _ -> ()
+  | Ok (Llm_provider.Anthropic | Llm_provider.Openrouter) -> fail "no key should error"
+
+let test_llm_provider_normalize () =
+  (check string) "anthropic unchanged" "claude-sonnet-4-6"
+    (Llm_provider.normalize_model_id Llm_provider.Anthropic "claude-sonnet-4-6");
+  (check string) "openrouter canonical sonnet" "anthropic/claude-sonnet-4.6"
+    (Llm_provider.normalize_model_id Llm_provider.Openrouter "claude-sonnet-4-6");
+  (check string) "openrouter canonical haiku" "anthropic/claude-haiku-4.5"
+    (Llm_provider.normalize_model_id Llm_provider.Openrouter "claude-haiku-4-5-20251001");
+  (check string) "openrouter idempotent" "anthropic/claude-opus-4.6"
+    (Llm_provider.normalize_model_id Llm_provider.Openrouter "anthropic/claude-opus-4.6");
+  (check string) "openrouter canonicalizes old prefixed id" "anthropic/claude-opus-4.6"
+    (Llm_provider.normalize_model_id Llm_provider.Openrouter "anthropic/claude-opus-4-6")
+
+let test_model_ids_no_regression () =
+  let expect tier ~anthropic_id ~openrouter_id =
+    (check string) "anthropic tier id" anthropic_id (Agent_runner.default_model_id tier);
+    (check string) "openrouter tier id" openrouter_id
+      (Llm_provider.normalize_model_id Llm_provider.Openrouter (Agent_runner.default_model_id tier))
+  in
+  expect Agent_runner.Fast ~anthropic_id:"claude-haiku-4-5-20251001" ~openrouter_id:"anthropic/claude-haiku-4.5";
+  expect Agent_runner.Standard ~anthropic_id:"claude-sonnet-4-6" ~openrouter_id:"anthropic/claude-sonnet-4.6";
+  expect Agent_runner.Strong ~anthropic_id:"claude-opus-4-6" ~openrouter_id:"anthropic/claude-opus-4.6";
+  (* config.model default flows through the same normalization *)
+  (check string) "config.model default on OR" "anthropic/claude-sonnet-4.6"
+    (Llm_provider.normalize_model_id Llm_provider.Openrouter "claude-sonnet-4-6")
+
+let test_llm_provider_usage_metadata_combines_openrouter_costs () =
+  let metadata =
+    Ai_provider.Provider_options.set Ai_provider_openrouter.Convert_usage.Openrouter_usage
+      {
+        Ai_provider_openrouter.Convert_usage.cache_read_tokens = 7;
+        cache_write_tokens = 11;
+        reasoning_tokens = 13;
+        cost = Some 0.02;
+        upstream_inference_cost = Some 0.5;
+      }
+      Ai_provider.Provider_options.empty
+  in
+  let usage = Llm_provider.usage_metadata Llm_provider.Openrouter (Some metadata) in
+  (check int) "cache read" 7 usage.cache_read;
+  (check int) "cache write" 11 usage.cache_write;
+  (check (option (float 1e-9))) "total reported cost" (Some 0.52) usage.cost
 
 let test_config_review_plugins_defaults () =
   let config = Config_types.config_of_json (Melange_json.of_string {|{}|}) in
@@ -189,7 +254,7 @@ let test_context_create_allows_repo_less_when_explicit () =
       | Ok ctx ->
         let secrets = Context.secrets ctx in
         (check int) "no repos" 0 (List.length secrets.repos);
-        (check string) "api key" "sk-test" secrets.anthropic_api_key)
+        (check (option string)) "api key" (Some "sk-test") secrets.anthropic_api_key)
 
 let test_context_load_config_file () =
   let tmp_path = Filename.temp_file "reviewotron_config_" ".json" in
@@ -2008,6 +2073,7 @@ module Capturing_agent_runner = struct
              cache_creation_input_tokens = 0;
              steps_count = 1;
              model_id = config.name;
+             reported_cost_usd = None;
            })
 end
 
@@ -2537,6 +2603,13 @@ let test_estimate_cost_sonnet () =
   in
   (check (float 1e-6)) "sonnet 1M in + 1M out" 18.0 cost
 
+let test_estimate_cost_openrouter_sonnet () =
+  let cost =
+    Cost_tracking.estimate_cost ~model_id:"anthropic/claude-sonnet-4.6" ~input_tokens:1_000_000 ~output_tokens:1_000_000
+      ~cache_read_input_tokens:0 ~cache_creation_input_tokens:0
+  in
+  (check (float 1e-6)) "openrouter sonnet fallback estimate" 18.0 cost
+
 let test_estimate_cost_haiku () =
   (* Haiku: $1/M input, $5/M output *)
   let cost =
@@ -2582,6 +2655,7 @@ let test_of_agent_result () =
       cache_creation_input_tokens = 0;
       steps_count = 3;
       model_id = "claude-sonnet-4-6-20260414";
+      reported_cost_usd = None;
     }
   in
   let cost = Cost_tracking.of_agent_result ~agent_name:"test_agent" ~files_fetched:2 result in
@@ -2594,7 +2668,12 @@ let test_of_agent_result () =
   (check int) "turns" 3 cost.turns;
   (check int) "files_fetched" 2 cost.files_fetched;
   (* 2000 * 3/1M + 500 * 15/1M = 0.006 + 0.0075 = 0.0135 *)
-  (check (float 1e-6)) "estimated_cost_usd" 0.0135 cost.estimated_cost_usd
+  (check (float 1e-6)) "estimated_cost_usd" 0.0135 cost.estimated_cost_usd;
+  let reported =
+    Cost_tracking.of_agent_result ~agent_name:"test_agent" ~files_fetched:2
+      { result with reported_cost_usd = Some 0.42 }
+  in
+  (check (float 1e-6)) "reported cost wins" 0.42 reported.estimated_cost_usd
 
 let test_aggregate () =
   let rc = Cost_tracking.aggregate ~plugin:"security" [ triage_agent_cost; analysis_agent_cost ] in
@@ -3662,13 +3741,13 @@ let mk_agent_config ?thinking_budget () : Agent_runner.agent_config =
 
 let test_provider_options_empty_when_no_thinking_budget () =
   let cfg = mk_agent_config () in
-  let po = Agent_runner.build_provider_options cfg in
+  let po = Agent_runner.build_provider_options ~provider:Llm_provider.Anthropic cfg in
   (check bool) "no Anthropic options when thinking_budget = None" true
     (Option.is_none (Ai_provider_anthropic.Anthropic_options.of_provider_options po))
 
 let test_provider_options_carries_thinking_when_set () =
   let cfg = mk_agent_config ~thinking_budget:4096 () in
-  let po = Agent_runner.build_provider_options cfg in
+  let po = Agent_runner.build_provider_options ~provider:Llm_provider.Anthropic cfg in
   match Ai_provider_anthropic.Anthropic_options.of_provider_options po with
   | None -> fail "expected Anthropic options to be present when thinking_budget is set"
   | Some opts ->
@@ -3708,6 +3787,7 @@ module General_plugin_agent_runner = struct
                cache_creation_input_tokens = 0;
                steps_count = 1;
                model_id = "mock";
+               reported_cost_usd = None;
              })
 end
 
@@ -3853,7 +3933,7 @@ let test_provider_options_clamps_below_minimum () =
      the runner must either reject or clamp; we choose to clamp up to 1024 so
      misconfiguration does not crash the agent loop. *)
   let cfg = mk_agent_config ~thinking_budget:500 () in
-  let po = Agent_runner.build_provider_options cfg in
+  let po = Agent_runner.build_provider_options ~provider:Llm_provider.Anthropic cfg in
   match Ai_provider_anthropic.Anthropic_options.of_provider_options po with
   | None -> fail "expected Anthropic options to be present"
   | Some { thinking = Some t; _ } ->
@@ -3866,7 +3946,7 @@ let test_provider_options_clamps_below_minimum () =
     GADT key shape changes, or if someone "simplifies" the helper back to
     [Provider_options.empty]). *)
 let test_cached_input_provider_options_marks_ephemeral () =
-  let po = Agent_runner.cached_input_provider_options in
+  let po = Agent_runner.cached_input_provider_options Llm_provider.Anthropic in
   match Ai_provider_anthropic.Cache_control_options.get_cache_control po with
   | None -> fail "expected cache_control to be set on cached_input_provider_options"
   | Some { cache_type = Ephemeral; _ } -> ()
@@ -3892,6 +3972,11 @@ let () =
         [
           test_case "config defaults" `Quick test_config_defaults;
           test_case "config ignores removed fields" `Quick test_config_ignores_removed_fields;
+          test_case "parse secrets openrouter only" `Quick test_parse_secrets_openrouter_only;
+          test_case "llm_provider resolve precedence" `Quick test_llm_provider_resolve;
+          test_case "llm_provider normalize model id" `Quick test_llm_provider_normalize;
+          test_case "model ids no regression" `Quick test_model_ids_no_regression;
+          test_case "llm_provider usage metadata cost" `Quick test_llm_provider_usage_metadata_combines_openrouter_costs;
           test_case "review_plugins defaults" `Quick test_config_review_plugins_defaults;
           test_case "review_plugins explicit" `Quick test_config_review_plugins_explicit;
           test_case "context create requires repos by default" `Quick test_context_create_requires_repos_by_default;
@@ -4144,6 +4229,7 @@ let () =
       ( "cost_tracking",
         [
           test_case "estimate cost sonnet" `Quick test_estimate_cost_sonnet;
+          test_case "estimate cost openrouter sonnet" `Quick test_estimate_cost_openrouter_sonnet;
           test_case "estimate cost haiku" `Quick test_estimate_cost_haiku;
           test_case "estimate cost opus" `Quick test_estimate_cost_opus;
           test_case "estimate cost unknown model" `Quick test_estimate_cost_unknown_model;

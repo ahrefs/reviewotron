@@ -266,7 +266,8 @@ let repo_config_of_json (json : Yojson.Basic.t) : repo_config =
 
 type secrets = {
   repos : repo_config list;
-  anthropic_api_key : string;
+  anthropic_api_key : string option; [@json.option]
+  openrouter_api_key : string option; [@json.option]
   slack_access_token : string option; [@json.option]
 }
 [@@deriving json] [@@json.allow_extra_fields]

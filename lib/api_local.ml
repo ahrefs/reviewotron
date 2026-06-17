@@ -169,6 +169,7 @@ module Agent_runner : Api.Agent_runner = struct
           cache_creation_input_tokens = 0;
           steps_count = 1;
           model_id = "mock";
+          reported_cost_usd = None;
         }
 
   let validator_output ~path ~line ~severity ~category ~message =
