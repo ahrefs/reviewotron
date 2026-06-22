@@ -46,10 +46,8 @@ struct
   (* {2 GitHub emoji reactions}
 
      The review pipeline drops an "eyes" reaction when work starts and clears it
-     when work finishes.  When a review completes with nothing worth posting we
-     leave a "+1" instead of an empty PR review, so the author still gets a
-     signal that the bot ran.  All reaction failures are logged and swallowed —
-     a missing reaction must never abort or fail a review. *)
+     when work finishes. All reaction failures are logged and swallowed — a
+     missing reaction must never abort or fail a review. *)
 
   let create_reaction ~ctx ~repo_url target ~content =
     match target with
@@ -80,31 +78,14 @@ struct
         log#warn "failed to remove review progress reaction %d: %s" reaction_id msg;
         Lwt.return_unit)
 
-  (** Add a [+1] reaction directly to a [reaction_target] to signal a
-      successful review.  Used both to swap the in-flight "eyes" reaction
-      ({!finish_progress_reaction}) and when a review is a no-op (nothing to
-      review after filtering) and there is no progress reaction to swap.  A
-      no-op when there is no target. *)
-  let add_success_reaction ~ctx ~repo_url = function
-    | None -> Lwt.return_unit
-    | Some target ->
-      let%lwt result = create_reaction ~ctx ~repo_url target ~content:"+1" in
-      (match result with
-      | Ok _reaction_id -> Lwt.return_unit
-      | Error msg ->
-        log#warn "failed to add success reaction: %s" msg;
-        Lwt.return_unit)
-
-  let finish_progress_reaction ~ctx ~repo_url progress ~quiet_success =
-    let%lwt () = remove_progress_reaction ~ctx ~repo_url progress in
-    match quiet_success with
-    | true -> add_success_reaction ~ctx ~repo_url (Option.map (fun { target; _ } -> target) progress)
-    | false -> Lwt.return_unit
+  let publish_success_comment ~ctx ~repo_url ~number =
+    let%lwt (_ : (unit, string) result) = Sink.publish_success_comment ~ctx ~repo_url ~number in
+    Lwt.return_unit
 
   (** A report is worth posting as a PR review when it surfaces any inline
       comment, any out-of-diff finding section, a security-plugin error, or a
       general-review failure that the author must be told about.  Otherwise the
-      review stays quiet — we acknowledge it with a reaction instead. *)
+      review stays quiet — we acknowledge it with an issue comment instead. *)
   let report_has_surface (report : Review_engine.report) =
     (match report.comments with
       | [] -> false
@@ -135,11 +116,12 @@ struct
       let%lwt () =
         match report_has_surface report with
         | false ->
-          let%lwt () = finish_progress_reaction ~ctx ~repo_url:job.repo_key progress ~quiet_success:true in
+          let%lwt () = remove_progress_reaction ~ctx ~repo_url:job.repo_key progress in
+          let%lwt () = publish_success_comment ~ctx ~repo_url:job.repo_key ~number in
           log#info "PR #%d (%s): review completed with no findings; not posting a PR review" number job.title;
           Lwt.return_unit
         | true ->
-          let%lwt () = finish_progress_reaction ~ctx ~repo_url:job.repo_key progress ~quiet_success:false in
+          let%lwt () = remove_progress_reaction ~ctx ~repo_url:job.repo_key progress in
           Sink.publish_pr_review ~ctx ~job ~number report
       in
       record_pr_reviewed ~ctx ~repo_url:job.repo_key ~number ~head_sha:job.head_sha ~review_costs:report.review_costs;
@@ -150,15 +132,16 @@ struct
       Lwt.fail exn
 
   (** Surface a PR-preparation failure to the author instead of silently
-      dropping it.  An [Empty] diff is a successful no-op (acknowledge with a
-      [+1]); the size/limit and fetch failures get an explanatory issue comment.
+      dropping it.  An [Empty] diff is a successful no-op (acknowledge with an
+      issue comment); the size/limit and fetch failures get an explanatory
+      issue comment.
 
       The PR is recorded as reviewed — suppressing retries on the same head SHA
       — only for terminal outcomes whose notice was actually delivered: a
       successfully posted limit/too-large comment, or the empty no-op.  A failed
       comment post, or a transient ([Fetch_failed]) error, leaves the PR
       un-recorded so the next webhook retries. *)
-  let handle_pr_prepare_error ?reaction_target ~ctx ~repo_url ~number ~head_sha (error : Github_source.prepare_error) =
+  let handle_pr_prepare_error ~ctx ~repo_url ~number ~head_sha (error : Github_source.prepare_error) =
     let post_then_record_if_delivered failure =
       let%lwt post_result = Sink.publish_failure_comment ~ctx ~repo_url ~number failure in
       (match post_result with
@@ -169,8 +152,8 @@ struct
     match error with
     | Empty ->
       (* Nothing to review after filtering — a successful no-op, not a failure.
-         Signal "looked, all good" with a thumbs-up. *)
-      let%lwt () = add_success_reaction ~ctx ~repo_url reaction_target in
+         Signal "looked, all good" with a visible PR comment. *)
+      let%lwt () = publish_success_comment ~ctx ~repo_url ~number in
       record_pr_reviewed ~ctx ~repo_url ~number ~head_sha ~review_costs:[];
       Lwt.return_unit
     | Too_large total_lines ->
@@ -199,7 +182,7 @@ struct
     match%lwt Source.prepare_pr_review ~ctx ~config pr_notif with
     | Ok prepared -> run_prepared_pr_review ?reaction_target ~ctx prepared
     | Error error ->
-      handle_pr_prepare_error ?reaction_target ~ctx ~repo_url:pr_notif.repository.url ~number:pr_notif.number
+      handle_pr_prepare_error ~ctx ~repo_url:pr_notif.repository.url ~number:pr_notif.number
         ~head_sha:pr_notif.pull_request.head.sha error
 
   let review_pr_from_comment ?reaction_target ~ctx ~config (n : Github_types.issue_comment_notification) =

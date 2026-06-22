@@ -18,6 +18,10 @@ module Make (_ : Api.Github_review_sink) : sig
   val publish_failure_comment :
     ctx:Context.t -> repo_url:string -> number:int -> Review_failure.t -> (unit, string) result Lwt.t
 
+  (** Post the visible acknowledgement used when a PR review completes
+      successfully with nothing to report. *)
+  val publish_success_comment : ctx:Context.t -> repo_url:string -> number:int -> (unit, string) result Lwt.t
+
   (** Post commit comments for critical/warning findings from a push review.
       Lower-severity findings are intentionally ignored. *)
   val post_push_comments : ctx:Context.t -> repo_url:string -> sha:string -> Review_types.finding list -> unit Lwt.t

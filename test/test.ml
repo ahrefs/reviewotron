@@ -1681,7 +1681,7 @@ let test_comment_trigger_reviews_pr () =
   (check bool) "review posted via REVIEW comment" true (review_pos >= 0);
   (check bool) "uses general review pipeline" true (contains_sub ~sub:":robot: **REVIEW**" write_log)
 
-let test_comment_trigger_quiet_success_reacts () =
+let test_comment_trigger_quiet_success_posts_lgtm_comment () =
   Test_helpers.reset_test_state ();
   Api_local.set_agent_response_path "mock_api_responses/claude/empty_findings_response.json";
   let ctx = Test_helpers.make_test_context ~config:comment_trigger_config () in
@@ -1695,7 +1695,10 @@ let test_comment_trigger_quiet_success_reacts () =
        write_log);
   (check bool) "progress reaction removed" true
     (contains_sub ~sub:"[delete_issue_comment_reaction] repo=https://github.com/org/monorepo comment_id=9001" write_log);
-  (check bool) "quiet success reaction added to trigger comment" true
+  (check bool) "quiet success comment posted to PR" true
+    (contains_sub ~sub:"[create_issue_comment] repo=https://github.com/org/monorepo number=42" write_log);
+  (check bool) "quiet success comment says LGTM" true (contains_sub ~sub:"LGTM :+1:" write_log);
+  (check bool) "no quiet success reaction added" false
     (contains_sub
        ~sub:"[create_issue_comment_reaction] repo=https://github.com/org/monorepo comment_id=9001 content=+1"
        write_log);
@@ -1830,7 +1833,7 @@ let test_pr_synchronize_review () =
   let write_log = Api_local.get_write_log () in
   (check bool) "review posted on synchronize" true (CCString.find ~sub:"[create_pr_review]" write_log >= 0)
 
-let test_pr_all_ignored_paths_thumbs_up () =
+let test_pr_all_ignored_paths_posts_lgtm_comment () =
   Test_helpers.reset_test_state ();
   let config =
     Config_types.config_of_json
@@ -1842,10 +1845,13 @@ let test_pr_all_ignored_paths_thumbs_up () =
   let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
   Lwt_main.run (R_test.process_event ctx ~event);
   let write_log = Api_local.get_write_log () in
-  (* Nothing to review is a successful no-op: thumbs-up, no comment, no review. *)
-  (check bool) "thumbs-up reaction added" true
+  (* Nothing to review is a successful no-op: LGTM comment, no review. *)
+  (check bool) "quiet success comment posted" true
+    (contains_sub ~sub:"[create_issue_comment] repo=https://github.com/org/monorepo number=99" write_log);
+  (check bool) "quiet success comment says LGTM" true (contains_sub ~sub:"LGTM :+1:" write_log);
+  (check bool) "no thumbs-up reaction added" false
     (contains_sub ~sub:"[create_issue_reaction] repo=https://github.com/org/monorepo number=99 content=+1" write_log);
-  (check bool) "no failure comment" false (contains_sub ~sub:"[create_issue_comment]" write_log);
+  (check bool) "no failure comment" false (contains_sub ~sub:"couldn't review" write_log);
   (check bool) "no review attempted" false (contains_sub ~sub:"[create_pr_review]" write_log)
 
 let test_pr_empty_findings_review () =
@@ -1859,7 +1865,10 @@ let test_pr_empty_findings_review () =
   (check bool) "progress reaction added" true (contains_sub ~sub:"[create_issue_reaction]" write_log);
   (check bool) "progress reaction removed" true
     (contains_sub ~sub:"[delete_issue_reaction] repo=https://github.com/org/monorepo number=42" write_log);
-  (check bool) "quiet success reaction added" true
+  (check bool) "quiet success comment posted" true
+    (contains_sub ~sub:"[create_issue_comment] repo=https://github.com/org/monorepo number=42" write_log);
+  (check bool) "quiet success comment says LGTM" true (contains_sub ~sub:"LGTM :+1:" write_log);
+  (check bool) "no quiet success reaction added" false
     (contains_sub ~sub:"[create_issue_reaction] repo=https://github.com/org/monorepo number=42 content=+1" write_log);
   (check bool) "no PR review when there is nothing to add" false (contains_sub ~sub:"[create_pr_review]" write_log);
   match event with
@@ -3367,7 +3376,7 @@ let test_with_retry_exhausts_attempts () =
     serve the diff) or an internal limit (diff exceeds [max_diff_lines] /
     [max_files]), reviewotron posts an issue comment to the PR explaining why,
     instead of silently logging and returning.  "All files filtered out" is
-    treated as a successful (empty) review: a [+1] reaction, no comment. *)
+    treated as a successful (empty) review: an LGTM issue comment. *)
 
 (* Unit tests for the pure classification / formatting helpers. *)
 let test_review_failure_classify_too_large () =
@@ -3522,7 +3531,7 @@ let test_pr_too_many_files_posts_comment () =
   (check bool) "no review attempted" false (contains_sub ~sub:"[create_pr_review]" write_log);
   check_same_pr_webhook_deduped ~ctx ~event
 
-let test_pr_empty_diff_adds_thumbs_up_no_comment () =
+let test_pr_empty_diff_posts_lgtm_comment () =
   Test_helpers.reset_test_state ();
   Api_local.set_next_pr_diff "";
   let ctx = Test_helpers.make_test_context ~config:Test_helpers.auto_review_enabled_config () in
@@ -3530,9 +3539,12 @@ let test_pr_empty_diff_adds_thumbs_up_no_comment () =
   let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
   Lwt_main.run (R_test.process_event ctx ~event);
   let write_log = Api_local.get_write_log () in
-  (check bool) "thumbs-up reaction added on empty diff" true
+  (check bool) "quiet success comment posted on empty diff" true
+    (contains_sub ~sub:"[create_issue_comment] repo=https://github.com/org/monorepo number=42" write_log);
+  (check bool) "quiet success comment says LGTM" true (contains_sub ~sub:"LGTM :+1:" write_log);
+  (check bool) "no thumbs-up reaction added on empty diff" false
     (contains_sub ~sub:"[create_issue_reaction] repo=https://github.com/org/monorepo number=42 content=+1" write_log);
-  (check bool) "no failure comment posted on empty diff" false (contains_sub ~sub:"[create_issue_comment]" write_log);
+  (check bool) "no failure comment posted on empty diff" false (contains_sub ~sub:"couldn't review" write_log);
   (check bool) "no review attempted on empty diff" false (contains_sub ~sub:"[create_pr_review]" write_log);
   check_same_pr_webhook_deduped ~ctx ~event
 
@@ -4158,7 +4170,8 @@ let () =
       ( "comment_trigger",
         [
           test_case "REVIEW comment triggers PR review" `Quick test_comment_trigger_reviews_pr;
-          test_case "REVIEW quiet success reacts without posting" `Quick test_comment_trigger_quiet_success_reacts;
+          test_case "REVIEW quiet success posts LGTM comment" `Quick
+            test_comment_trigger_quiet_success_posts_lgtm_comment;
           test_case "REVIEW comment ignored when auto_review_on_comment disabled" `Quick test_comment_trigger_disabled;
           test_case "non-trigger body silently ignored" `Quick test_comment_trigger_non_review_body_silent;
           test_case "REVIEW with extra text does not trigger" `Quick test_comment_trigger_body_with_extra_text;
@@ -4173,8 +4186,8 @@ let () =
       ( "pr_edge_cases",
         [
           test_case "PR synchronize triggers review" `Quick test_pr_synchronize_review;
-          test_case "PR with all ignored paths gets thumbs-up" `Quick test_pr_all_ignored_paths_thumbs_up;
-          test_case "PR with empty findings posts summary" `Quick test_pr_empty_findings_review;
+          test_case "PR with all ignored paths posts LGTM comment" `Quick test_pr_all_ignored_paths_posts_lgtm_comment;
+          test_case "PR with empty findings posts LGTM comment" `Quick test_pr_empty_findings_review;
           test_case "large PR over max_diff_lines posts comment" `Quick test_pr_large_diff_posts_comment;
         ] );
       ( "push_review",
@@ -4315,7 +4328,7 @@ let () =
           test_case "PR over line limit retries when comment post fails" `Quick
             test_pr_too_many_lines_comment_failure_retries;
           test_case "PR over file limit posts a comment" `Quick test_pr_too_many_files_posts_comment;
-          test_case "PR with empty diff gets thumbs-up, no comment" `Quick test_pr_empty_diff_adds_thumbs_up_no_comment;
+          test_case "PR with empty diff posts LGTM comment" `Quick test_pr_empty_diff_posts_lgtm_comment;
         ] );
       "debug_dump", [ test_case "write debug dump creates file with expected content" `Quick test_write_debug_dump ];
       ( "budget_recovery",

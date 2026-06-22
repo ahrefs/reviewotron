@@ -43,6 +43,17 @@ module Make (SNK : Api.Github_review_sink) = struct
       log#error "failed to post review-failure comment on PR #%d: %s" number msg;
       Lwt.return (Error msg)
 
+  let publish_success_comment ~ctx ~repo_url ~number =
+    let body = "LGTM :+1:" in
+    let%lwt result = SNK.create_issue_comment ~ctx ~repo_url ~number { body } in
+    match result with
+    | Ok () ->
+      log#info "posted quiet-success comment on PR #%d" number;
+      Lwt.return (Ok ())
+    | Error msg ->
+      log#error "failed to post quiet-success comment on PR #%d: %s" number msg;
+      Lwt.return (Error msg)
+
   let post_push_comments ~ctx ~repo_url ~sha findings =
     Lwt_list.iter_s
       (fun (finding : Review_types.finding) ->
