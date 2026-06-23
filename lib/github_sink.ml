@@ -24,10 +24,13 @@ module Make (SNK : Api.Github_review_sink) = struct
     let body = Printf.sprintf "%s\n\n**Reviewed commit:** `%s`" report.body short_sha in
     let review_req = Github_types.{ commit_id = Some job.head_sha; body; event = Comment; comments } in
     let%lwt post_result = SNK.create_pr_review ~ctx ~repo_url:job.repo_key ~number review_req in
-    (match post_result with
-    | Ok () -> log#info "posted review for PR #%d (%s): %d inline comments" number job.title (List.length comments)
-    | Error msg -> log#error "failed to post review for PR #%d: %s" number msg);
-    Lwt.return_unit
+    match post_result with
+    | Ok () ->
+      log#info "posted review for PR #%d (%s): %d inline comments" number job.title (List.length comments);
+      Lwt.return (Ok ())
+    | Error msg ->
+      log#error "failed to post review for PR #%d: %s" number msg;
+      Lwt.return (Error msg)
 
   (** Post an issue comment explaining why a review could not be produced.
       Returns the post result so the caller can decide whether to record the PR

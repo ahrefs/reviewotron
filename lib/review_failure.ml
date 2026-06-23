@@ -9,6 +9,7 @@ type t =
       actual : int;
       limit : int;
     }
+  | Publish_failed of string
 
 let classify_fetch_error (error : Http_util.error) =
   (* GitHub answers the diff media type with HTTP 406 when the diff is too
@@ -44,3 +45,8 @@ let to_comment = function
        The diff touches %d files, which is over reviewotron's limit of %d. Consider splitting this into smaller PRs, \
        or raise `max_files` in the repo config."
       prefix actual limit
+  | Publish_failed detail ->
+    with_details detail
+      ~explanation:
+        "I produced a review, but GitHub rejected the attempt to post it. Please re-trigger the review; if this \
+         persists, check the service logs."

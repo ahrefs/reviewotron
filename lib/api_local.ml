@@ -47,6 +47,10 @@ let next_issue_comment_result : (unit, string) result option ref = ref None
 let set_next_issue_comment_error message = next_issue_comment_result := Some (Error message)
 let reset_next_issue_comment_result () = next_issue_comment_result := None
 
+let next_pr_review_result : (unit, string) result option ref = ref None
+let set_next_pr_review_error message = next_pr_review_result := Some (Error message)
+let reset_next_pr_review_result () = next_pr_review_result := None
+
 let next_reaction_id = ref 1
 let reset_reactions () = next_reaction_id := 1
 
@@ -93,11 +97,16 @@ module Github : Api.Github = struct
     | Error _ -> Lwt.return (Ok None)
 
   let create_pr_review ~ctx:_ ~repo_url ~number review =
-    let json = Melange_json.to_string (Github_types.create_review_req_to_json review) in
-    let entry = Printf.sprintf "[create_pr_review] repo=%s number=%d\n%s\n" repo_url number json in
-    Buffer.add_string write_log entry;
-    log#info "%s" entry;
-    Lwt.return (Ok ())
+    match !next_pr_review_result with
+    | Some result ->
+      next_pr_review_result := None;
+      Lwt.return result
+    | None ->
+      let json = Melange_json.to_string (Github_types.create_review_req_to_json review) in
+      let entry = Printf.sprintf "[create_pr_review] repo=%s number=%d\n%s\n" repo_url number json in
+      Buffer.add_string write_log entry;
+      log#info "%s" entry;
+      Lwt.return (Ok ())
 
   let create_commit_comment ~ctx:_ ~repo_url ~sha comment =
     let json = Melange_json.to_string (Github_types.commit_comment_req_to_json comment) in
