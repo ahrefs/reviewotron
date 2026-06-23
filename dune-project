@@ -39,7 +39,7 @@
   (mirage-crypto-pk
    (< 2.1.0))
   (ocaml-ai-sdk
-   (>= 0.3))
+   (>= 0.4))
   (mirage-crypto-rng
    (< 2.1.0))
   (ppx_deriving_jsonschema
