@@ -2,6 +2,8 @@
 
 (generate_opam_files true)
 
+(name reviewotron)
+
 (source
  (github ahrefs/reviewotron))
 
