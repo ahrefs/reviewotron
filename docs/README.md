@@ -328,7 +328,9 @@ Each repo can have a `.reviewotron.json` file in its root. For GitHub webhooks, 
       "analysis_model_tier": "standard",
       "validator_model_tier": "standard",
       "confidence_threshold": "medium",
-      "memory_max_tokens": 5000
+      "memory_max_tokens": 5000,
+      "metrics_artifacts": false,
+      "debug_artifacts": false
     }
   }
 }
@@ -375,6 +377,8 @@ Each repo can have a `.reviewotron.json` file in its root. For GitHub webhooks, 
 | `validator_model_tier` | `"standard"` | Model tier for the adversarial validator. |
 | `confidence_threshold` | `"medium"` | Minimum triage confidence to trigger analysis for enabled classes. `"high"` = only high-confidence signals. `"medium"` = high + medium. `"low"` = all signals. |
 | `memory_max_tokens` | `5000` | Target size limit for the repo's security memory file. |
+| `metrics_artifacts` | `false` | Write compact security metrics artifacts under `debug/<repo>/<sha>/security/`. These omit source code and prompt bodies. |
+| `debug_artifacts` | `false` | Write full redacted per-stage security debug artifacts under `debug/<repo>/<sha>/security/`. Sensitive and opt-in. |
 
 #### Model Tiers
 
@@ -416,7 +420,9 @@ When the security plugin is enabled, every diff goes through a multi-agent pipel
 
 ### 1. Triage (Haiku, single-shot)
 
-Scans the diff for security-relevant patterns and classifies them by vulnerability type. This is intentionally biased toward **over-flagging** — it's cheap to run an analysis agent that finds nothing, costly to miss a real issue.
+Before triage, Reviewotron runs a deterministic scan over changed paths and added hunk lines for advisory security signals such as dangerous APIs, risky paths, sensitive files, changed security controls, and stateful operations. These signals are hints only: they are summarized for triage but never become findings and never route directly to analysis.
+
+The triage agent scans the diff for security-relevant patterns and classifies them by vulnerability type. This is intentionally biased toward **over-flagging** — it's cheap to run an analysis agent that finds nothing, costly to miss a real issue.
 
 The triage agent outputs signals with confidence levels (`high`, `medium`, `low`). The `confidence_threshold` config controls which signals proceed to analysis for enabled vulnerability classes. `always_analyze_vuln_classes` is the explicit override that bypasses the threshold; classes listed there are implicitly enabled even if absent from `vuln_classes`.
 
@@ -439,8 +445,9 @@ All candidate findings from all analysis agents pass through a single validator 
 - The claimed sink actually performs the dangerous operation
 - Every step in the flow path is backed by evidence (file + line)
 - The sanitization assessment is correct
+- A confirmed result includes a concrete proof-by-construction: reproducible trigger, source-to-sink trace, missing control, expected impact, and explicit assumptions
 
-**Findings that fail validation are dropped.** This is by design — a noisy security reviewer that cries wolf loses developer trust. Dropped findings are logged for offline prompt tuning.
+**Findings that fail validation are dropped.** Confirmed validator results without concrete proof are downgraded after parsing and are not surfaced. This is by design — a noisy security reviewer that cries wolf loses developer trust. Dropped findings are logged for offline prompt tuning.
 
 ### 4. Memory Curation (Haiku, async)
 
@@ -506,6 +513,8 @@ Updates go through a queue file (`memory/{repo-slug}.queue`) for distributed saf
 ### Debug Dumps
 
 When an agent's structured output can't be parsed, a debug dump is saved to `debug/{repo-slug}/{sha-prefix}/`. These contain the raw agent output for diagnosing prompt or parsing issues.
+
+Security metrics/debug artifacts are separate and opt-in via `review_plugins.security.metrics_artifacts` and `review_plugins.security.debug_artifacts`. Metrics write compact JSON files under `debug/{repo-slug}/{sha-prefix}/security/`; full debug artifacts additionally write redacted stage inputs and outputs and should be treated as sensitive.
 
 ---
 
@@ -616,6 +625,66 @@ binary/oversized files are skipped (see [Agent Helper Mode](#agent-helper-mode))
 
 Whole-folder reviews commonly exceed the default `max_files` / `max_diff_lines`
 limits; raise them with `--config` (see [Agent Helper Mode](#agent-helper-mode)).
+
+### Local Security Timing and Artifact Comparison
+
+To compare local filesystem review behavior before and after enabling the
+security pipeline, run the same diff twice with stable repo/change keys and
+measure wall time. Use a throwaway state file so duplicate-review detection does
+not skip the second run.
+
+General-only baseline:
+
+```bash
+/usr/bin/time -p \
+  dune exec -- src/reviewotron.exe review-diff \
+  --root /path/to/repo \
+  --diff /tmp/change.diff \
+  --repo-key local-security-timing \
+  --change-key general-only-1 \
+  --no-security \
+  --output json \
+  --logfile /tmp/reviewotron-general.log \
+  --state /tmp/reviewotron-general-state.json \
+  > /tmp/reviewotron-general.json
+```
+
+Security-enabled run with metrics and redacted debug artifacts:
+
+```bash
+SECURITY_CONFIG='{
+  "max_files": 500,
+  "max_diff_lines": 50000,
+  "show_review_cost": true,
+  "review_plugins": {
+    "security": {
+      "metrics_artifacts": true,
+      "debug_artifacts": true
+    }
+  }
+}'
+
+/usr/bin/time -p \
+  dune exec -- src/reviewotron.exe review-diff \
+  --root /path/to/repo \
+  --diff /tmp/change.diff \
+  --repo-key local-security-timing \
+  --change-key security-observed-1 \
+  --config "$SECURITY_CONFIG" \
+  --output json \
+  --logfile /tmp/reviewotron-security.log \
+  --state /tmp/reviewotron-security-state.json \
+  > /tmp/reviewotron-security.json
+```
+
+Inspect the security metrics line in `/tmp/reviewotron-security.log` and the
+artifact directory under `debug/local-security-timing/<diff-digest-prefix>/security/`.
+`metrics.json` and `fetch_stats.json` are compact and omit prompt/source bodies;
+the full debug files include redacted stage inputs and outputs and should be
+treated as sensitive.
+
+To isolate just the security pipeline cost, add `"general": {"enabled": false}`
+under `review_plugins` in `SECURITY_CONFIG`.
 
 ### `reviewotron config-help` — Print the Config Schema
 
