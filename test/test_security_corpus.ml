@@ -7,7 +7,8 @@
     Run on-demand (not in CI) by setting the ANTHROPIC_API_KEY environment
     variable:
 
-      ANTHROPIC_API_KEY=sk-... dune exec test/test_security_corpus.exe
+      cd test
+      ANTHROPIC_API_KEY=sk-... dune exec ./test_security_corpus.exe
 
     When ANTHROPIC_API_KEY is absent, all tests are skipped. *)
 

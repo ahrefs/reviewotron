@@ -54,6 +54,54 @@ let confidence_jsonschema =
       "description", `String "Confidence score for the signal or finding: high, medium, or low.";
     ]
 
+(** {2 Deterministic diff signal types} *)
+
+type signal_category =
+  | Dangerous_api
+  | Risky_path
+  | Sensitive_file
+  | Changed_security_control
+  | Stateful_operation
+
+let signal_category_to_string = function
+  | Dangerous_api -> "dangerous_api"
+  | Risky_path -> "risky_path"
+  | Sensitive_file -> "sensitive_file"
+  | Changed_security_control -> "changed_security_control"
+  | Stateful_operation -> "stateful_operation"
+
+let all_signal_categories = [ Dangerous_api; Risky_path; Sensitive_file; Changed_security_control; Stateful_operation ]
+
+let signal_category_to_json category = `String (signal_category_to_string category)
+
+let signal_category_of_json = function
+  | `String "dangerous_api" -> Dangerous_api
+  | `String "risky_path" -> Risky_path
+  | `String "sensitive_file" -> Sensitive_file
+  | `String "changed_security_control" -> Changed_security_control
+  | `String "stateful_operation" -> Stateful_operation
+  | json -> Melange_json.of_json_error ~json "expected signal_category string"
+
+let signal_category_jsonschema =
+  `Assoc
+    [
+      "type", `String "string";
+      "enum", `List (List.map (fun c -> `String (signal_category_to_string c)) all_signal_categories);
+      "description", `String "Deterministic advisory signal category.";
+    ]
+
+type candidate_signal = {
+  category : signal_category; [@jsonschema.description "Deterministic advisory signal category; this is not a finding"]
+  vuln_class_hint : vuln_class option;
+     [@json.option] [@jsonschema.description "Optional vulnerability class hint for triage routing attention"]
+  path : string; [@jsonschema.description "Changed file path"]
+  start_line : int; [@jsonschema.description "First changed line associated with the signal"]
+  end_line : int; [@jsonschema.description "Last changed line associated with the signal"]
+  pattern : string; [@jsonschema.description "Short deterministic pattern label"]
+  rationale : string; [@jsonschema.description "Why this signal may be security-relevant"]
+}
+[@@deriving json, jsonschema]
+
 (** {2 Triage types} *)
 
 type region = {
@@ -195,12 +243,35 @@ let validation_verdict_jsonschema =
           "Validation outcome: confirmed, or rejected. When rejected, explain the reason in the evidence_notes field." );
     ]
 
+type exploitation_proof = {
+  trigger : string;
+     [@json.default ""]
+     [@jsonschema.description
+       "Copy-pasteable or directly reproducible request, function call, user action, or payload that triggers the bug"]
+  preconditions : string list;
+     [@json.default []] [@jsonschema.description "Concrete preconditions required before the trigger is exploitable"]
+  source_to_sink_trace : string list;
+     [@json.default []] [@jsonschema.description "Concrete source-to-sink trace steps tied to file and line evidence"]
+  missing_or_inadequate_control : string;
+     [@json.default ""] [@jsonschema.description "Specific missing or inadequate security control on the exploit path"]
+  expected_impact : string;
+     [@json.default ""] [@jsonschema.description "Concrete expected impact if the trigger is exercised"]
+  assumptions : string list;
+     [@json.default []]
+     [@jsonschema.description "Explicit unresolved assumptions; essential unchecked assumptions should cause rejection"]
+}
+[@@deriving json, jsonschema] [@@json.allow_extra_fields]
+
 type validated_finding = {
   finding : candidate_finding; [@jsonschema.description "The candidate finding that was validated"]
   verdict : validation_verdict; [@jsonschema.description "Validation outcome: confirmed, or rejected with reason"]
   evidence_notes : string; [@jsonschema.description "Validator rationale and evidence supporting the verdict"]
+  proof_by_construction : exploitation_proof option;
+     [@json.option]
+     [@jsonschema.description
+       "Concrete proof required for confirmed results; may be omitted or null for rejected results"]
 }
-[@@deriving json, jsonschema]
+[@@deriving json, jsonschema] [@@json.allow_extra_fields]
 
 type validator_output = {
   results : validated_finding list;
@@ -227,3 +298,4 @@ type architectural_observations = {
   reviewed_files : string list;
   vuln_class_distribution : (string * int) list;
 }
+[@@deriving json]

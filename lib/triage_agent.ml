@@ -61,6 +61,8 @@ Produce a JSON object with this structure:
 
 If the repository security context is provided, use it to calibrate your signals — known safe patterns reduce confidence, known risk areas increase it.
 
+If deterministic diff signals are provided, treat them as advisory hints only. They may raise attention to a changed line, but they are not findings and cannot replace source/effect/control reasoning. You may ignore any deterministic signal that is not security-actionable in the actual diff.
+
 Be thorough. Scan every file in the diff. Do not skip files based on extension alone — configuration files, scripts, and templates can all contain security-relevant changes.
 
 Your final response must be a single JSON object matching the schema. Do not wrap it in markdown code fences, and do not include any prose before or after it.|}
@@ -108,7 +110,56 @@ let config ~model_tier : Agent_runner.agent_config =
     thinking_budget = None;
   }
 
-let build_input ~diff_text ~file_paths ?security_memory () =
+let max_deterministic_signals = 40
+
+let format_line_range (signal : Security_types.candidate_signal) =
+  match Int.equal signal.start_line signal.end_line with
+  | true -> string_of_int signal.start_line
+  | false -> Printf.sprintf "%d-%d" signal.start_line signal.end_line
+
+let format_vuln_class_hint = function
+  | Some vc -> Printf.sprintf " [%s]" (Security_types.vuln_class_to_string vc)
+  | None -> ""
+
+let signal_category_rank = function
+  | Security_types.Dangerous_api -> 0
+  | Security_types.Changed_security_control -> 1
+  | Security_types.Stateful_operation -> 2
+  | Security_types.Risky_path -> 3
+  | Security_types.Sensitive_file -> 4
+
+let compare_signal (a : Security_types.candidate_signal) (b : Security_types.candidate_signal) =
+  match Int.compare (signal_category_rank a.category) (signal_category_rank b.category) with
+  | 0 ->
+    (match String.compare a.path b.path with
+    | 0 -> Int.compare a.start_line b.start_line
+    | n -> n)
+  | n -> n
+
+let add_deterministic_signals buf signals =
+  match signals with
+  | [] -> ()
+  | _ :: _ ->
+    Buffer.add_string buf "\n## Deterministic Diff Signals\n\n";
+    Buffer.add_string buf
+      "These native scanner signals are hints, not findings. Use them to focus attention, but ignore them when the \
+       diff does not support a security-actionable concern.\n\n";
+    signals
+    |> List.sort compare_signal
+    |> CCList.take max_deterministic_signals
+    |> List.iter (fun (signal : Security_types.candidate_signal) ->
+      Printf.bprintf buf "- %s %s:%s%s %s\n  Rationale: %s\n"
+        (Security_types.signal_category_to_string signal.category)
+        signal.path (format_line_range signal)
+        (format_vuln_class_hint signal.vuln_class_hint)
+        signal.pattern signal.rationale);
+    (match List.length signals > max_deterministic_signals with
+    | true ->
+      Printf.bprintf buf "- ... %d additional deterministic signal(s) omitted from the prompt summary\n"
+        (List.length signals - max_deterministic_signals)
+    | false -> ())
+
+let build_input ~diff_text ~file_paths ?security_memory ?(deterministic_signals = []) () =
   let buf = Buffer.create (String.length diff_text + 512) in
   Buffer.add_string buf "## Changed Files\n\n";
   List.iter (Printf.bprintf buf "- %s\n") file_paths;
@@ -124,6 +175,7 @@ let build_input ~diff_text ~file_paths ?security_memory () =
     Buffer.add_string buf memory;
     Buffer.add_char buf '\n'
   | Some _ | None -> ());
+  add_deterministic_signals buf deterministic_signals;
   Buffer.add_char buf '\n';
   Buffer.add_string buf Review_prompt.annotated_diff_format_explainer;
   Buffer.add_string buf "\n## Diff\n\n";

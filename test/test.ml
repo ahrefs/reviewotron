@@ -206,6 +206,8 @@ let test_config_review_plugins_defaults () =
   (check int) "always_analyze_vuln_classes default empty" 0
     (List.length config.review_plugins.security.always_analyze_vuln_classes);
   (check int) "memory_max_tokens" 5000 config.review_plugins.security.memory_max_tokens;
+  (check bool) "metrics_artifacts default off" false config.review_plugins.security.metrics_artifacts;
+  (check bool) "debug_artifacts default off" false config.review_plugins.security.debug_artifacts;
   (check bool) "show_review_cost" false config.show_review_cost
 
 let test_config_review_plugins_explicit () =
@@ -220,7 +222,9 @@ let test_config_review_plugins_explicit () =
         "always_analyze_vuln_classes": ["xss"],
         "triage_model_tier": "standard",
         "confidence_threshold": "high",
-        "memory_max_tokens": 10000
+        "memory_max_tokens": 10000,
+        "metrics_artifacts": true,
+        "debug_artifacts": true
       }
     }
   }|}
@@ -231,7 +235,9 @@ let test_config_review_plugins_explicit () =
   (check bool) "security enabled" true config.review_plugins.security.enabled;
   (check int) "vuln_classes count" 2 (List.length config.review_plugins.security.vuln_classes);
   (check int) "always_analyze count" 1 (List.length config.review_plugins.security.always_analyze_vuln_classes);
-  (check int) "memory_max_tokens" 10000 config.review_plugins.security.memory_max_tokens
+  (check int) "memory_max_tokens" 10000 config.review_plugins.security.memory_max_tokens;
+  (check bool) "metrics_artifacts" true config.review_plugins.security.metrics_artifacts;
+  (check bool) "debug_artifacts" true config.review_plugins.security.debug_artifacts
 
 let test_context_create_requires_repos_by_default () =
   let tmp_path = Filename.temp_file "reviewotron_secrets_" ".json" in
@@ -296,6 +302,8 @@ let test_security_plugin_config_roundtrip () =
       validator_model_tier = Strong;
       confidence_threshold = High;
       memory_max_tokens = 3000;
+      metrics_artifacts = true;
+      debug_artifacts = false;
     }
   in
   let json = Config_types.security_plugin_config_to_json cfg in
@@ -304,6 +312,8 @@ let test_security_plugin_config_roundtrip () =
   (check int) "vuln_classes" 2 (List.length parsed.vuln_classes);
   (check int) "always_analyze_vuln_classes" 1 (List.length parsed.always_analyze_vuln_classes);
   (check int) "memory_max_tokens" 3000 parsed.memory_max_tokens;
+  (check bool) "metrics_artifacts" true parsed.metrics_artifacts;
+  (check bool) "debug_artifacts" false parsed.debug_artifacts;
   (check string) "confidence" "high" (Config_types.confidence_to_string parsed.confidence_threshold);
   (check string) "validator tier" "strong" (Config_types.model_tier_to_string parsed.validator_model_tier)
 
@@ -432,14 +442,36 @@ let rec collect_anthropic_schema_issues ~path (json : Yojson.Basic.t) =
     |> List.concat
   | `Bool _ | `Float _ | `Int _ | `Null | `String _ -> []
 
+let field_is_required_in_schema ~field required =
+  List.exists
+    (function
+      | `String value -> String.equal value field
+      | `Assoc _ | `Bool _ | `Float _ | `Int _ | `List _ | `Null -> false)
+    required
+
+let rec schema_requires_property ~property = function
+  | `Assoc fields ->
+    let current_object_requires_property =
+      match List.assoc_opt "properties" fields, List.assoc_opt "required" fields with
+      | Some (`Assoc properties), Some (`List required) ->
+        List.mem_assoc property properties && field_is_required_in_schema ~field:property required
+      | Some (`Assoc _), Some (`Assoc _ | `Bool _ | `Float _ | `Int _ | `Null | `String _) | Some (`Assoc _), None ->
+        false
+      | Some (`Bool _ | `Float _ | `Int _ | `List _ | `Null | `String _), _ | None, _ -> false
+    in
+    current_object_requires_property || List.exists (fun (_, value) -> schema_requires_property ~property value) fields
+  | `List values -> List.exists (schema_requires_property ~property) values
+  | `Bool _ | `Float _ | `Int _ | `Null | `String _ -> false
+
 let test_anthropic_structured_output_schemas_compatible () =
+  let security_validator_schema = (Validator_agent.config ~model_tier:Standard).output_schema in
   let schemas : (string * Yojson.Basic.t) list =
     [
       "general_review", Review_types.review_output_jsonschema;
       "general_validator", Review_types.validator_output_jsonschema;
       "security_triage", Security_types.triage_output_jsonschema;
       "security_analysis", Security_types.analysis_output_jsonschema;
-      "security_validator", Security_types.validator_output_jsonschema;
+      "security_validator", security_validator_schema;
       "memory_curator", Security_types.curator_output_jsonschema;
     ]
   in
@@ -449,6 +481,11 @@ let test_anthropic_structured_output_schemas_compatible () =
   | _ ->
     let issue_preview = issues |> CCList.take 20 |> String.concat "\n" in
     fail (Printf.sprintf "generated structured output schemas violate Anthropic constraints:\n%s" issue_preview)
+
+let test_security_validator_schema_requires_proof_key () =
+  let cfg = Validator_agent.config ~model_tier:Standard in
+  (check bool) "validator schema requires proof key" true
+    (schema_requires_property ~property:"proof_by_construction" cfg.output_schema)
 
 let test_prompt_token_estimation () =
   let system = Review_prompt.system_prompt ~security_covered_elsewhere:false () in
@@ -724,22 +761,24 @@ module Sec_test = Security_review_plugin.Make (Api_local.Agent_runner)
     with hunks at [10..14] and [40..43]. *)
 let parsed_anchor_diff = parsed_two_hunk_diff
 
-let mk_validated ~source ~sink ~flow ?(verdict = Security_types.Confirmed) ?(evidence_notes = "ok") () :
+let mk_validated ~source ~sink ~flow ?(vuln_class = Security_types.Authz) ?(sanitization = Security_types.Missing)
+  ?(verdict = Security_types.Confirmed) ?(evidence_notes = "ok") ?proof_by_construction () :
   Security_types.validated_finding =
   {
     finding =
       {
-        vuln_class = Security_types.Authz;
+        vuln_class;
         source;
         sink;
         flow;
-        sanitization = Missing;
+        sanitization;
         confidence = High;
         description = "described vulnerability";
         suggested_fix = None;
       };
     verdict;
     evidence_notes;
+    proof_by_construction;
   }
 
 let src_site ~path ~line ~description : Security_types.source_evidence = { path; line; description }
@@ -1097,6 +1136,21 @@ let test_security_validator_output_roundtrip () =
               };
             verdict = Confirmed;
             evidence_notes = "Verified: URL constructed from query param without scheme validation";
+            proof_by_construction =
+              Some
+                {
+                  trigger = "GET /fetch?url=http://169.254.169.254/latest/meta-data/";
+                  preconditions = [ "The fetch endpoint is reachable by an attacker" ];
+                  source_to_sink_trace =
+                    [
+                      "lib/api.ml:10 reads url from user input";
+                      "lib/api.ml:12 passes url to fetch_url";
+                      "lib/http.ml:30 performs the HTTP GET request";
+                    ];
+                  missing_or_inadequate_control = "scheme and private-network allowlist validation";
+                  expected_impact = "The server can be induced to request internal metadata endpoints.";
+                  assumptions = [];
+                };
           };
         ];
     }
@@ -1108,6 +1162,180 @@ let test_security_validator_output_roundtrip () =
     (check string) "finding vuln_class" "ssrf" (vuln_class_to_string r.finding.vuln_class);
     (check (option string)) "suggested_fix" None r.finding.suggested_fix
   | [] -> fail "expected at least one result"
+
+let concrete_exploitation_proof () : Security_types.exploitation_proof =
+  {
+    trigger = "GET /documents/123?admin=true";
+    preconditions = [ "Attacker is authenticated as a non-admin user" ];
+    source_to_sink_trace =
+      [
+        "src/main.ml:10 reads the document id from the request";
+        "src/main.ml:12 passes the id into the update path";
+        "src/main.ml:14 updates the document without owner scoping";
+      ];
+    missing_or_inadequate_control = "owner-scoped authorization check";
+    expected_impact = "The attacker can modify another user's document.";
+    assumptions = [];
+  }
+
+let test_security_exploitation_proof_roundtrip () =
+  let proof = concrete_exploitation_proof () in
+  let parsed = roundtrip Security_types.exploitation_proof_to_json Security_types.exploitation_proof_of_json proof in
+  (check string) "trigger" proof.trigger parsed.trigger;
+  (check int) "trace steps" 3 (List.length parsed.source_to_sink_trace);
+  (check bool) "proof is concrete" true (Security_review_plugin.proof_is_concrete parsed)
+
+let test_security_exploitation_proof_rejects_vague_trace () =
+  let proof = { (concrete_exploitation_proof ()) with source_to_sink_trace = [ "user input reaches sink" ] } in
+  (check bool) "vague trace is not concrete" false (Security_review_plugin.proof_is_concrete proof)
+
+let test_security_exploitation_proof_rejects_assumptions () =
+  let proof =
+    { (concrete_exploitation_proof ()) with assumptions = [ "Imported middleware is configured this way" ] }
+  in
+  (check bool) "unresolved assumptions are not concrete" false (Security_review_plugin.proof_is_concrete proof)
+
+let test_security_enforce_confirmed_requires_proof () =
+  let vf =
+    mk_validated
+      ~source:(src_site ~path:"src/main.ml" ~line:10 ~description:"request id")
+      ~sink:(sink_site ~path:"src/main.ml" ~line:14 ~description:"document update")
+      ~flow:[ flow_step ~path:"src/main.ml" ~line:12 ~description:"passed to update" ]
+      ()
+  in
+  match Security_review_plugin.enforce_validator_proofs [ vf ] with
+  | [ enforced ] ->
+    (check string) "downgraded verdict" "rejected" (Security_types.validation_verdict_to_string enforced.verdict);
+    (check bool) "evidence note explains proof violation" true
+      (contains_sub ~sub:"proof_by_construction" enforced.evidence_notes)
+  | _ -> fail "expected one enforced result"
+
+let test_security_enforce_repairs_missing_proof_from_concrete_notes () =
+  let vf =
+    mk_validated
+      ~source:(src_site ~path:"lib/auth/jwt_middleware.ml" ~line:22 ~description:"Authorization header")
+      ~sink:(sink_site ~path:"lib/auth/jwt_middleware.ml" ~line:18 ~description:"returns Ok user_id")
+      ~flow:
+        [
+          flow_step ~path:"lib/auth/jwt_middleware.ml" ~line:11 ~description:"decodes the JWT payload";
+          flow_step ~path:"lib/auth/jwt_middleware.ml" ~line:14 ~description:"extracts sub";
+        ]
+      ~vuln_class:Security_types.Authn
+      ~evidence_notes:
+        "The diff shows line 22 reading the Authorization header, lines 11-14 decoding the payload, and line 18 \
+         returning Ok user_id without reading exp or comparing it to time."
+      ()
+  in
+  match Security_review_plugin.enforce_validator_proofs [ vf ] with
+  | [ enforced ] ->
+    (check string) "concrete missing proof stays confirmed" "confirmed"
+      (Security_types.validation_verdict_to_string enforced.verdict);
+    (check bool) "proof synthesized" true (Option.is_some enforced.proof_by_construction)
+  | _ -> fail "expected one enforced result"
+
+let test_security_enforce_does_not_repair_hedged_missing_proof () =
+  let vf =
+    mk_validated
+      ~source:(src_site ~path:"src/main.ml" ~line:10 ~description:"request id")
+      ~sink:(sink_site ~path:"src/main.ml" ~line:14 ~description:"document update")
+      ~flow:[ flow_step ~path:"src/main.ml" ~line:12 ~description:"passed to update" ]
+      ~evidence_notes:"The source might reach line 14, but this probably depends on an unknown assumption."
+      ()
+  in
+  match Security_review_plugin.enforce_validator_proofs [ vf ] with
+  | [ enforced ] ->
+    (check string) "hedged missing proof downgraded" "rejected"
+      (Security_types.validation_verdict_to_string enforced.verdict)
+  | _ -> fail "expected one enforced result"
+
+let test_security_enforce_confirmed_rejects_empty_proof () =
+  let proof = { (concrete_exploitation_proof ()) with trigger = " " } in
+  let vf =
+    mk_validated
+      ~source:(src_site ~path:"src/main.ml" ~line:10 ~description:"request id")
+      ~sink:(sink_site ~path:"src/main.ml" ~line:14 ~description:"document update")
+      ~flow:[ flow_step ~path:"src/main.ml" ~line:12 ~description:"passed to update" ]
+      ~proof_by_construction:proof ()
+  in
+  match Security_review_plugin.enforce_validator_proofs [ vf ] with
+  | [ enforced ] ->
+    (check string) "empty proof downgraded" "rejected" (Security_types.validation_verdict_to_string enforced.verdict)
+  | _ -> fail "expected one enforced result"
+
+let test_security_enforce_confirmed_requires_source_and_sink_trace () =
+  let proof =
+    {
+      (concrete_exploitation_proof ()) with
+      source_to_sink_trace = [ "src/main.ml:10 reads request id"; "src/main.ml:12 passes request id onward" ];
+    }
+  in
+  let vf =
+    mk_validated
+      ~source:(src_site ~path:"src/main.ml" ~line:10 ~description:"request id")
+      ~sink:(sink_site ~path:"src/main.ml" ~line:14 ~description:"document update")
+      ~flow:[ flow_step ~path:"src/main.ml" ~line:12 ~description:"passed to update" ]
+      ~proof_by_construction:proof ()
+  in
+  match Security_review_plugin.enforce_validator_proofs [ vf ] with
+  | [ enforced ] ->
+    (check string) "missing sink trace downgraded" "rejected"
+      (Security_types.validation_verdict_to_string enforced.verdict)
+  | _ -> fail "expected one enforced result"
+
+let test_security_partial_proof_json_downgrades () =
+  let candidate =
+    mk_candidate ~vuln_class:Authz ~sink_path:"src/main.ml" ~sink_line:14
+      ~flow:[ { path = "src/main.ml"; line = 12; description = "passed to update" } ]
+      ()
+  in
+  let json =
+    `Assoc
+      [
+        ( "results",
+          `List
+            [
+              `Assoc
+                [
+                  "finding", Security_types.candidate_finding_to_json candidate;
+                  "verdict", `String "confirmed";
+                  "evidence_notes", `String "partial proof fixture";
+                  "proof_by_construction", `Assoc [ "source_to_sink_trace", `List [ `String "src/main.ml:10" ] ];
+                ];
+            ] );
+      ]
+  in
+  let output = Security_types.validator_output_of_json json in
+  match Security_review_plugin.enforce_validator_proofs output.results with
+  | [ enforced ] ->
+    (check string) "partial proof downgraded" "rejected" (Security_types.validation_verdict_to_string enforced.verdict)
+  | _ -> fail "expected one enforced result"
+
+let test_security_enforce_rejected_without_proof_ok () =
+  let vf =
+    mk_validated
+      ~source:(src_site ~path:"src/main.ml" ~line:10 ~description:"request id")
+      ~sink:(sink_site ~path:"src/main.ml" ~line:14 ~description:"document update")
+      ~flow:[ flow_step ~path:"src/main.ml" ~line:12 ~description:"passed to update" ]
+      ~verdict:Security_types.Rejected ()
+  in
+  match Security_review_plugin.enforce_validator_proofs [ vf ] with
+  | [ enforced ] ->
+    (check string) "rejected remains rejected" "rejected" (Security_types.validation_verdict_to_string enforced.verdict)
+  | _ -> fail "expected one enforced result"
+
+let test_security_validated_to_finding_uses_proof_summary () =
+  let proof = concrete_exploitation_proof () in
+  let vf =
+    mk_validated
+      ~source:(src_site ~path:"src/main.ml" ~line:10 ~description:"request id")
+      ~sink:(sink_site ~path:"src/main.ml" ~line:14 ~description:"document update")
+      ~flow:[ flow_step ~path:"src/main.ml" ~line:12 ~description:"passed to update" ]
+      ~proof_by_construction:proof ()
+  in
+  let finding = Sec_test.validated_to_finding ~diff:parsed_anchor_diff vf in
+  (check bool) "failure scenario has trigger" true (contains_sub ~sub:"GET /documents/123" finding.failure_scenario);
+  (check bool) "evidence snippet has trace" true (contains_sub ~sub:"src/main.ml:10" finding.evidence_snippet);
+  (check bool) "why_now has missing control" true (contains_sub ~sub:"owner-scoped authorization check" finding.why_now)
 
 let test_security_triage_output_extra_fields () =
   let json_str = {|{"signals":[],"language_hints":[],"skip_reason":null,"extra_field":"ignored","another":123}|} in
@@ -1270,6 +1498,184 @@ let test_triage_agent_output_schema_valid () =
     (match schema with
     | `Assoc fields -> List.exists (fun (k, _) -> String.equal k "properties") fields
     | _ -> false)
+
+(** {2 Security artifact tests} *)
+
+let artifact_security_dir debug_dir = Filename.concat debug_dir "security"
+let artifact_path debug_dir filename = Filename.concat (artifact_security_dir debug_dir) filename
+
+let remove_if_exists path = try Sys.remove path with Sys_error _ -> ()
+
+let rmdir_if_exists path = try Unix.rmdir path with Unix.Unix_error _ -> ()
+
+let cleanup_artifacts debug_dir filenames =
+  List.iter (fun filename -> remove_if_exists (artifact_path debug_dir filename)) filenames;
+  rmdir_if_exists (artifact_security_dir debug_dir);
+  rmdir_if_exists debug_dir
+
+let test_security_artifacts_disabled_writes_nothing () =
+  let debug_dir = Filename.temp_dir "reviewotron_artifacts_disabled_" "_test" in
+  Fun.protect
+    ~finally:(fun () -> cleanup_artifacts debug_dir [ "manifest.json"; "metrics.json"; "triage_input.md" ])
+    (fun () ->
+      let artifacts = Security_artifacts.create ~debug_dir ~metrics_artifacts:false ~debug_artifacts:false in
+      Security_artifacts.write_manifest artifacts ~repo_url:"https://github.com/org/repo";
+      Security_artifacts.write_metrics artifacts (`Assoc [ "changed_file_count", `Int 1 ]);
+      Security_artifacts.write_debug_text artifacts ~filename:"triage_input.md" "diff content";
+      (check bool) "security artifact dir absent" false (Sys.file_exists (artifact_security_dir debug_dir)))
+
+let test_security_artifacts_metrics_files () =
+  let debug_dir = Filename.temp_dir "reviewotron_artifacts_metrics_" "_test" in
+  Fun.protect
+    ~finally:(fun () ->
+      cleanup_artifacts debug_dir [ "manifest.json"; "metrics.json"; "fetch_stats.json"; "triage_input.md" ])
+    (fun () ->
+      let artifacts = Security_artifacts.create ~debug_dir ~metrics_artifacts:true ~debug_artifacts:false in
+      Security_artifacts.write_manifest artifacts ~repo_url:"https://github.com/org/repo";
+      Security_artifacts.write_metrics artifacts
+        (`Assoc [ "changed_file_count", `Int 1; "triage_signal_count", `Int 0; "agent_costs", `List [] ]);
+      Security_artifacts.write_fetch_stats artifacts [];
+      Security_artifacts.write_debug_text artifacts ~filename:"triage_input.md" "prompt body with diff content";
+      (check bool) "manifest exists" true (Sys.file_exists (artifact_path debug_dir "manifest.json"));
+      (check bool) "metrics exists" true (Sys.file_exists (artifact_path debug_dir "metrics.json"));
+      (check bool) "fetch stats exists" true (Sys.file_exists (artifact_path debug_dir "fetch_stats.json"));
+      (check bool) "debug input not written" false (Sys.file_exists (artifact_path debug_dir "triage_input.md"));
+      let metrics = read_file (artifact_path debug_dir "metrics.json") in
+      (check bool) "metrics omit prompt body" false (contains_sub ~sub:"prompt body" metrics);
+      (check bool) "metrics omit diff body" false (contains_sub ~sub:"diff content" metrics))
+
+let test_security_artifacts_debug_redacts () =
+  let debug_dir = Filename.temp_dir "reviewotron_artifacts_debug_" "_test" in
+  Fun.protect
+    ~finally:(fun () -> cleanup_artifacts debug_dir [ "triage_input.md" ])
+    (fun () ->
+      let artifacts = Security_artifacts.create ~debug_dir ~metrics_artifacts:false ~debug_artifacts:true in
+      let secret_text =
+        "Authorization: Bearer abcdef1234567890\nOPENROUTER_API_KEY=sk-or-abcdefghi\n{\"password\":\"hunter2\"}"
+      in
+      Security_artifacts.write_debug_text artifacts ~filename:"triage_input.md" secret_text;
+      let written = read_file (artifact_path debug_dir "triage_input.md") in
+      (check bool) "bearer value redacted" false (contains_sub ~sub:"abcdef1234567890" written);
+      (check bool) "api key redacted" false (contains_sub ~sub:"sk-or-abcdefghi" written);
+      (check bool) "password value redacted" false (contains_sub ~sub:"hunter2" written))
+
+let test_security_artifacts_write_failure_best_effort () =
+  let debug_file = Filename.temp_file "reviewotron_artifacts_file_" "_test" in
+  Fun.protect
+    ~finally:(fun () -> remove_if_exists debug_file)
+    (fun () ->
+      let artifacts = Security_artifacts.create ~debug_dir:debug_file ~metrics_artifacts:true ~debug_artifacts:true in
+      Security_artifacts.write_manifest artifacts ~repo_url:"https://github.com/org/repo";
+      Security_artifacts.write_metrics artifacts (`Assoc [ "changed_file_count", `Int 1 ]);
+      Security_artifacts.write_debug_text artifacts ~filename:"triage_input.md" "content";
+      (check bool) "write failure did not raise" true true)
+
+(** {2 Deterministic security signal tests} *)
+
+let signal_has ?hint ~category ~path ~line ~pattern_sub signals =
+  List.exists
+    (fun (signal : Security_types.candidate_signal) ->
+      let category_matches =
+        String.equal
+          (Security_types.signal_category_to_string category)
+          (Security_types.signal_category_to_string signal.category)
+      in
+      let hint_matches =
+        match hint, signal.vuln_class_hint with
+        | Some expected, Some actual -> Security_review_plugin.vuln_class_equal expected actual
+        | None, None -> true
+        | Some _, None | None, Some _ -> false
+      in
+      category_matches
+      && hint_matches
+      && String.equal path signal.path
+      && Int.equal line signal.start_line
+      && Int.equal line signal.end_line
+      && contains_sub ~sub:pattern_sub signal.pattern)
+    signals
+
+let signal_diff =
+  {|diff --git a/src/routes/admin.ts b/src/routes/admin.ts
+--- a/src/routes/admin.ts
++++ b/src/routes/admin.ts
+@@ -8,0 +10,5 @@
++const sql = "SELECT * FROM users WHERE id = " + req.query.id;
++profile.innerHTML = profile.bio;
++authorize(user);
++balance += credits;
++fetch(req.query.url);
+|}
+
+let test_security_diff_signal_dangerous_apis_and_lines () =
+  let signals = Security_diff_signal.scan (Diff_parser.parse signal_diff) in
+  (check bool) "raw SQL signal at line 10" true
+    (signal_has ~hint:Security_types.Injection ~category:Security_types.Dangerous_api ~path:"src/routes/admin.ts"
+       ~line:10 ~pattern_sub:"raw SQL" signals);
+  (check bool) "HTML sink signal at line 11" true
+    (signal_has ~hint:Security_types.Xss ~category:Security_types.Dangerous_api ~path:"src/routes/admin.ts" ~line:11
+       ~pattern_sub:"HTML" signals);
+  (check bool) "outbound fetch signal at line 14" true
+    (signal_has ~hint:Security_types.Ssrf ~category:Security_types.Dangerous_api ~path:"src/routes/admin.ts" ~line:14
+       ~pattern_sub:"outbound" signals)
+
+let test_security_diff_signal_path_control_and_stateful () =
+  let signals = Security_diff_signal.scan (Diff_parser.parse signal_diff) in
+  (check bool) "risky admin path" true
+    (signal_has ~hint:Security_types.Authz ~category:Security_types.Risky_path ~path:"src/routes/admin.ts" ~line:10
+       ~pattern_sub:"admin" signals);
+  (check bool) "sensitive route file" true
+    (signal_has ~category:Security_types.Sensitive_file ~path:"src/routes/admin.ts" ~line:10 ~pattern_sub:"route"
+       signals);
+  (check bool) "changed security control" true
+    (signal_has ~category:Security_types.Changed_security_control ~path:"src/routes/admin.ts" ~line:12
+       ~pattern_sub:"security control" signals);
+  (check bool) "stateful operation" true
+    (signal_has ~category:Security_types.Stateful_operation ~path:"src/routes/admin.ts" ~line:13 ~pattern_sub:"stateful"
+       signals)
+
+let test_security_diff_signal_sensitive_files () =
+  let diff_text =
+    {|diff --git a/.github/workflows/deploy.yml b/.github/workflows/deploy.yml
+--- a/.github/workflows/deploy.yml
++++ b/.github/workflows/deploy.yml
+@@ -1,0 +1,1 @@
++name: deploy
+diff --git a/package.json b/package.json
+--- a/package.json
++++ b/package.json
+@@ -1,0 +1,1 @@
++{"scripts":{"start":"node server.js"}}
+|}
+  in
+  let signals = Security_diff_signal.scan (Diff_parser.parse diff_text) in
+  (check bool) "workflow sensitive file" true
+    (signal_has ~category:Security_types.Sensitive_file ~path:".github/workflows/deploy.yml" ~line:1
+       ~pattern_sub:"workflow" signals);
+  (check bool) "package manifest sensitive file" true
+    (signal_has ~category:Security_types.Sensitive_file ~path:"package.json" ~line:1 ~pattern_sub:"package" signals)
+
+let test_security_diff_signal_empty_for_safe_diff () =
+  let diff_text =
+    {|diff --git a/src/widgets/view.ts b/src/widgets/view.ts
+--- a/src/widgets/view.ts
++++ b/src/widgets/view.ts
+@@ -1,0 +1,2 @@
++const label = "hello";
++console.log(label);
+|}
+  in
+  let signals = Security_diff_signal.scan (Diff_parser.parse diff_text) in
+  (check int) "no deterministic signals" 0 (List.length signals)
+
+let test_triage_agent_build_input_with_deterministic_signals () =
+  let signals = Security_diff_signal.scan (Diff_parser.parse signal_diff) in
+  let input =
+    Triage_agent.build_input ~diff_text:"diff content" ~file_paths:[ "src/routes/admin.ts" ]
+      ~deterministic_signals:signals ()
+  in
+  (check bool) "has deterministic section" true (contains_sub ~sub:"Deterministic Diff Signals" input);
+  (check bool) "states hints not findings" true (contains_sub ~sub:"hints, not findings" input);
+  (check bool) "contains signal path" true (contains_sub ~sub:"src/routes/admin.ts:10" input)
 
 (** {2 Security review plugin tests} *)
 
@@ -3091,6 +3497,25 @@ let test_security_e2e_safe () =
   (check bool) "has deterministic review body" true (contains_sub ~sub:":robot: **REVIEW**" write_log);
   (check bool) "no security category" true (CCString.find ~sub:{|"security"|} write_log < 0)
 
+let test_security_e2e_deterministic_signals_do_not_route () =
+  Test_helpers.reset_test_state ();
+  Api_local.set_next_pr_diff signal_diff;
+  Api_local.set_agent_response_map
+    [
+      "general_review", "mock_api_responses/claude/review_response.json";
+      "security_triage", "mock_api_responses/security/triage_safe.json";
+    ];
+  let ctx = Test_helpers.make_test_context ~config:security_enabled_config () in
+  let payload = read_file "mock_payloads/pr_opened.json" in
+  let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let write_log = Api_local.get_write_log () in
+  (check bool) "review posted" true (CCString.find ~sub:"[create_pr_review]" write_log >= 0);
+  (check bool) "deterministic signals alone do not produce security output" true
+    (CCString.find ~sub:{|"security"|} write_log < 0);
+  (check bool) "no security failure notice" true
+    (CCString.find ~sub:"security review plugin encountered an error" write_log < 0)
+
 let test_security_e2e_rejected () =
   Test_helpers.reset_test_state ();
   Api_local.set_agent_response_map
@@ -4014,8 +4439,11 @@ let () =
           test_case "prompt token estimation" `Quick test_prompt_token_estimation;
         ] );
       ( "anthropic_schema_compat",
-        [ test_case "structured output schemas compatible" `Quick test_anthropic_structured_output_schemas_compatible ]
-      );
+        [
+          test_case "structured output schemas compatible" `Quick test_anthropic_structured_output_schemas_compatible;
+          test_case "security validator schema requires proof key" `Quick
+            test_security_validator_schema_requires_proof_key;
+        ] );
       ( "dedup",
         [
           test_case "same line prefers security" `Quick test_dedup_same_line_prefers_security;
@@ -4068,6 +4496,20 @@ let () =
           test_case "source fallback when flow empty" `Quick test_anchor_source_fallback_when_flow_empty;
           test_case "end_line derived from anchor, not sink" `Quick test_anchor_end_line_derived_from_anchor_not_sink;
         ] );
+      ( "security_artifacts",
+        [
+          test_case "disabled writes nothing" `Quick test_security_artifacts_disabled_writes_nothing;
+          test_case "metrics files only" `Quick test_security_artifacts_metrics_files;
+          test_case "debug redacts secrets" `Quick test_security_artifacts_debug_redacts;
+          test_case "write failure is best effort" `Quick test_security_artifacts_write_failure_best_effort;
+        ] );
+      ( "security_diff_signal",
+        [
+          test_case "dangerous APIs and line ranges" `Quick test_security_diff_signal_dangerous_apis_and_lines;
+          test_case "path, controls, and stateful signals" `Quick test_security_diff_signal_path_control_and_stateful;
+          test_case "sensitive file matching" `Quick test_security_diff_signal_sensitive_files;
+          test_case "empty safe diff" `Quick test_security_diff_signal_empty_for_safe_diff;
+        ] );
       ( "review_types",
         [
           test_case "review output roundtrip" `Quick test_review_output_roundtrip;
@@ -4081,6 +4523,21 @@ let () =
           test_case "sanitization status roundtrip" `Quick test_security_sanitization_status_roundtrip;
           test_case "validation verdict roundtrip" `Quick test_security_validation_verdict_roundtrip;
           test_case "validator output roundtrip" `Quick test_security_validator_output_roundtrip;
+          test_case "exploitation proof roundtrip" `Quick test_security_exploitation_proof_roundtrip;
+          test_case "exploitation proof rejects vague trace" `Quick test_security_exploitation_proof_rejects_vague_trace;
+          test_case "exploitation proof rejects assumptions" `Quick test_security_exploitation_proof_rejects_assumptions;
+          test_case "confirmed requires proof" `Quick test_security_enforce_confirmed_requires_proof;
+          test_case "confirmed missing proof repaired from concrete notes" `Quick
+            test_security_enforce_repairs_missing_proof_from_concrete_notes;
+          test_case "confirmed missing proof not repaired from hedged notes" `Quick
+            test_security_enforce_does_not_repair_hedged_missing_proof;
+          test_case "confirmed rejects empty proof" `Quick test_security_enforce_confirmed_rejects_empty_proof;
+          test_case "confirmed requires source and sink trace" `Quick
+            test_security_enforce_confirmed_requires_source_and_sink_trace;
+          test_case "partial proof JSON downgrades" `Quick test_security_partial_proof_json_downgrades;
+          test_case "rejected does not require proof" `Quick test_security_enforce_rejected_without_proof_ok;
+          test_case "proof summaries populate finding fields" `Quick
+            test_security_validated_to_finding_uses_proof_summary;
           test_case "triage output extra fields" `Quick test_security_triage_output_extra_fields;
         ] );
       ( "security_tools",
@@ -4107,6 +4564,8 @@ let () =
           test_case "build input with memory" `Quick test_triage_agent_build_input_with_memory;
           test_case "build input empty memory" `Quick test_triage_agent_build_input_empty_memory;
           test_case "output schema valid" `Quick test_triage_agent_output_schema_valid;
+          test_case "build input with deterministic signals" `Quick
+            test_triage_agent_build_input_with_deterministic_signals;
         ] );
       ( "security_plugin",
         [
@@ -4287,6 +4746,8 @@ let () =
         [
           test_case "vulnerable diff produces security finding" `Quick test_security_e2e_vulnerable;
           test_case "safe diff produces no security findings" `Quick test_security_e2e_safe;
+          test_case "deterministic signals do not route without triage" `Quick
+            test_security_e2e_deterministic_signals_do_not_route;
           test_case "rejected finding produces no security output" `Quick test_security_e2e_rejected;
           test_case "empty skip_reason does not silence pipeline" `Quick test_security_e2e_triage_empty_skip_reason;
           test_case "disabled plugin produces no security findings" `Quick test_security_e2e_disabled;

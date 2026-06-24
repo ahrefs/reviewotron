@@ -133,6 +133,16 @@ type security_plugin_config = {
      [@json.default Medium] [@jsonschema.description "Minimum triage confidence to trigger analysis."]
   memory_max_tokens : int;
      [@json.default 5000] [@jsonschema.description "Target size limit for the repo security memory."]
+  metrics_artifacts : bool;
+     [@json.default false]
+     [@jsonschema.description
+       "Write compact security metrics artifacts (manifest.json, metrics.json, fetch_stats.json) under the per-review \
+        debug directory. Off by default."]
+  debug_artifacts : bool;
+     [@json.default false]
+     [@jsonschema.description
+       "Write full redacted security debug artifacts, including stage inputs and outputs, under the per-review debug \
+        directory. Sensitive and off by default."]
 }
 [@@deriving json, jsonschema] [@@json.allow_extra_fields]
 
@@ -148,6 +158,8 @@ let default_security_plugin_config =
     validator_model_tier = Standard;
     confidence_threshold = Medium;
     memory_max_tokens = 5000;
+    metrics_artifacts = false;
+    debug_artifacts = false;
   }
 
 (** Aggregated review plugin configuration. *)

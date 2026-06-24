@@ -39,6 +39,35 @@ val confidence_to_json : confidence -> Yojson.Basic.t
 val confidence_of_json : Yojson.Basic.t -> confidence
 val confidence_jsonschema : Yojson.Basic.t
 
+(** {2 Deterministic diff signal types} *)
+
+type signal_category =
+  | Dangerous_api
+  | Risky_path
+  | Sensitive_file
+  | Changed_security_control
+  | Stateful_operation
+
+val signal_category_to_string : signal_category -> string
+val signal_category_to_json : signal_category -> Yojson.Basic.t
+val signal_category_of_json : Yojson.Basic.t -> signal_category
+val signal_category_jsonschema : Yojson.Basic.t
+
+(** A deterministic advisory signal extracted before LLM triage. *)
+type candidate_signal = {
+  category : signal_category;
+  vuln_class_hint : vuln_class option;
+  path : string;
+  start_line : int;
+  end_line : int;
+  pattern : string;
+  rationale : string;
+}
+
+val candidate_signal_to_json : candidate_signal -> Yojson.Basic.t
+val candidate_signal_of_json : Yojson.Basic.t -> candidate_signal
+val candidate_signal_jsonschema : Yojson.Basic.t
+
 (** {2 Triage types} *)
 
 (** A region of interest within a diff file. *)
@@ -171,11 +200,26 @@ val validation_verdict_to_json : validation_verdict -> Yojson.Basic.t
 val validation_verdict_of_json : Yojson.Basic.t -> validation_verdict
 val validation_verdict_jsonschema : Yojson.Basic.t
 
+(** Static exploitation sketch required for confirmed validator results. *)
+type exploitation_proof = {
+  trigger : string;
+  preconditions : string list;
+  source_to_sink_trace : string list;
+  missing_or_inadequate_control : string;
+  expected_impact : string;
+  assumptions : string list;
+}
+
+val exploitation_proof_to_json : exploitation_proof -> Yojson.Basic.t
+val exploitation_proof_of_json : Yojson.Basic.t -> exploitation_proof
+val exploitation_proof_jsonschema : Yojson.Basic.t
+
 (** A candidate finding after adversarial validation. *)
 type validated_finding = {
   finding : candidate_finding;
   verdict : validation_verdict;
   evidence_notes : string;
+  proof_by_construction : exploitation_proof option;
 }
 
 val validated_finding_to_json : validated_finding -> Yojson.Basic.t
@@ -209,3 +253,6 @@ type architectural_observations = {
   reviewed_files : string list;
   vuln_class_distribution : (string * int) list;
 }
+
+val architectural_observations_to_json : architectural_observations -> Yojson.Basic.t
+val architectural_observations_of_json : Yojson.Basic.t -> architectural_observations

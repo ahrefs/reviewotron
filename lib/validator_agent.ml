@@ -52,6 +52,15 @@ The analysis agent's assessment of sanitization (Adequate, Inadequate, Missing, 
 
 **Stored XSS via component props**: When a frontend component renders user-generated content fields (e.g., `bio`, `about_me`, `description`, `comment`, `message`) through a dangerous sink like `dangerouslySetInnerHTML` or `innerHTML`, the component prop IS the source. Do not reject the finding merely because the diff does not show the API endpoint that populates the prop. User-generated content fields are user-controlled by definition — the vulnerability is in the rendering pattern. The relevant question is whether sanitization (e.g., DOMPurify, server-side HTML encoding) is applied before or during rendering, not whether you can trace the prop back to an HTTP request handler.
 
+### 5. Proof by Construction
+
+No candidate may be confirmed unless you can construct a concrete static exploitation sketch:
+- `trigger` must be copy-pasteable or directly reproducible as a request, function call, user action, or payload.
+- `source_to_sink_trace` must be tied to file and line evidence.
+- `missing_or_inadequate_control` must identify the specific absent or insufficient control.
+- `expected_impact` must state what happens if the trigger is exercised.
+- List unresolved assumptions explicitly. If an assumption is essential to exploitability and cannot be checked from the diff or fetched files, REJECT.
+
 ## Tool Usage
 
 You have access to `get_file_content` to spot-check evidence claims. Use it to:
@@ -74,6 +83,9 @@ Produce a JSON object matching the provided output schema. The `results` array m
 - `finding`: the original candidate finding object, reproduced exactly as provided
 - `verdict`: one of the strings `"confirmed"` or `"rejected"`
 - `evidence_notes`: your reasoning — what you checked, what you found, and why you reached your verdict. When the verdict is `"rejected"`, include the concrete reason for rejection here.
+- `proof_by_construction`: required key for every result. For `"confirmed"`, it must be a concrete object with `trigger`, `preconditions`, `source_to_sink_trace`, `missing_or_inadequate_control`, `expected_impact`, and `assumptions`. For `"rejected"`, it must be `null`.
+
+Always emit the `proof_by_construction` key for every result. A `"confirmed"` result with `proof_by_construction: null` or with the key omitted is invalid and will be rejected by the caller.
 
 Every candidate finding in the input MUST appear in your output — do not silently drop findings.
 
@@ -102,17 +114,54 @@ let format_finding buf ~index (f : Security_types.candidate_finding) =
   (match f.suggested_fix with
   | Some fix -> Printf.bprintf buf "**Suggested fix:** %s\n" fix
   | None -> ());
+  Printf.bprintf buf
+    "**If confirmed:** `proof_by_construction.source_to_sink_trace` must include `%s:%d` and `%s:%d`; `assumptions` \
+     must be `[]`. If unresolved assumptions remain, reject this finding.\n"
+    f.source.path f.source.line f.sink.path f.sink.line;
   Buffer.add_char buf '\n'
 
+let field_is_required ~field required =
+  List.exists
+    (function
+      | `String value -> String.equal value field
+      | `Assoc _ | `Bool _ | `Float _ | `Int _ | `List _ | `Null -> false)
+    required
+
+let require_schema_field ~field fields =
+  let rec aux acc = function
+    | [] -> List.rev (("required", `List [ `String field ]) :: acc)
+    | ("required", `List required) :: rest ->
+      let required =
+        match field_is_required ~field required with
+        | true -> required
+        | false -> List.rev (`String field :: List.rev required)
+      in
+      List.rev_append acc (("required", `List required) :: rest)
+    | item :: rest -> aux (item :: acc) rest
+  in
+  aux [] fields
+
+let object_has_property ~property fields =
+  match List.assoc_opt "properties" fields with
+  | Some (`Assoc properties) -> List.exists (fun (key, _) -> String.equal key property) properties
+  | Some (`Bool _ | `Float _ | `Int _ | `List _ | `Null | `String _) | None -> false
+
+let rec require_proof_field = function
+  | `Assoc fields ->
+    let fields = List.map (fun (key, value) -> key, require_proof_field value) fields in
+    let fields =
+      match object_has_property ~property:"proof_by_construction" fields with
+      | true -> require_schema_field ~field:"proof_by_construction" fields
+      | false -> fields
+    in
+    `Assoc fields
+  | `List values -> `List (List.map require_proof_field values)
+  | (`Bool _ | `Float _ | `Int _ | `Null | `String _) as scalar -> scalar
+
+let output_schema = require_proof_field Security_types.validator_output_jsonschema
+
 let config ~model_tier : Agent_runner.agent_config =
-  {
-    name = "security_validator";
-    system_prompt;
-    model_tier;
-    output_schema = Security_types.validator_output_jsonschema;
-    max_steps = 12;
-    thinking_budget = None;
-  }
+  { name = "security_validator"; system_prompt; model_tier; output_schema; max_steps = 12; thinking_budget = None }
 
 let build_input ~diff_text ~candidate_findings () =
   let buf = Buffer.create (String.length diff_text + 1024) in

@@ -68,6 +68,8 @@ type security_plugin_config = {
   validator_model_tier : model_tier;
   confidence_threshold : confidence;
   memory_max_tokens : int;
+  metrics_artifacts : bool;
+  debug_artifacts : bool;
 }
 
 val security_plugin_config_to_json : security_plugin_config -> Yojson.Basic.t

@@ -36,7 +36,19 @@
         "suggested_fix": "Use Caqti prepared statements with typed parameters instead of string concatenation."
       },
       "verdict": "confirmed",
-      "evidence_notes": "Source is user-controllable (Dream.query parameter). Sink is Db.exec with string concatenation. Flow path fully traced with file and line evidence. No sanitization present."
+      "evidence_notes": "Source is user-controllable (Dream.query parameter). Sink is Db.exec with string concatenation. Flow path fully traced with file and line evidence. No sanitization present.",
+      "proof_by_construction": {
+        "trigger": "GET /?id=' OR '1'='1",
+        "preconditions": ["The reviewed Dream handler is reachable over HTTP"],
+        "source_to_sink_trace": [
+          "src/main.ml:10 reads id from Dream.query",
+          "src/main.ml:12 concatenates id into the SQL string",
+          "src/main.ml:14 passes the raw SQL to Db.exec"
+        ],
+        "missing_or_inadequate_control": "parameterized query binding",
+        "expected_impact": "An attacker can alter the WHERE clause and read or modify unintended rows.",
+        "assumptions": []
+      }
     }
   ]
 }
