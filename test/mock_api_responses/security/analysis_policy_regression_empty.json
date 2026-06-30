@@ -1,0 +1,5 @@
+{
+  "findings": [],
+  "files_examined": ["modules/sudo/manifests/deploy.pp"],
+  "notes": "The sudo grant is scoped to one reload action for one service unit, so no broader policy capability is introduced."
+}

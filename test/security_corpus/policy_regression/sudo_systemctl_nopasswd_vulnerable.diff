@@ -1,0 +1,9 @@
+diff --git a/modules/sudo/manifests/deploy.pp b/modules/sudo/manifests/deploy.pp
+--- a/modules/sudo/manifests/deploy.pp
++++ b/modules/sudo/manifests/deploy.pp
+@@ -1,5 +1,6 @@
+ class profile::sudo::deploy {
+   sudo::conf { 'deploy-systemctl':
++    content => "deploy ALL=(root) NOPASSWD: /usr/bin/systemctl\n",
+   }
+ }

@@ -202,7 +202,11 @@ let test_config_review_plugins_defaults () =
   (check bool) "general enabled" true config.review_plugins.general.enabled;
   (check bool) "general prompt override" true (Option.is_none config.review_plugins.general.system_prompt_override);
   (check bool) "security disabled by default" false config.review_plugins.security.enabled;
-  (check int) "vuln_classes count" 6 (List.length config.review_plugins.security.vuln_classes);
+  (check int) "vuln_classes count" 7 (List.length config.review_plugins.security.vuln_classes);
+  (check bool) "policy_regression enabled by default" true
+    (List.exists
+       (Security_review_plugin.vuln_class_equal Config_types.Policy_regression)
+       config.review_plugins.security.vuln_classes);
   (check int) "always_analyze_vuln_classes default empty" 0
     (List.length config.review_plugins.security.always_analyze_vuln_classes);
   (check int) "memory_max_tokens" 5000 config.review_plugins.security.memory_max_tokens;
@@ -234,6 +238,10 @@ let test_config_review_plugins_explicit () =
   (check bool) "general disabled" false config.review_plugins.general.enabled;
   (check bool) "security enabled" true config.review_plugins.security.enabled;
   (check int) "vuln_classes count" 2 (List.length config.review_plugins.security.vuln_classes);
+  (check bool) "explicit old class list stays explicit" false
+    (List.exists
+       (Security_review_plugin.vuln_class_equal Config_types.Policy_regression)
+       config.review_plugins.security.vuln_classes);
   (check int) "always_analyze count" 1 (List.length config.review_plugins.security.always_analyze_vuln_classes);
   (check int) "memory_max_tokens" 10000 config.review_plugins.security.memory_max_tokens;
   (check bool) "metrics_artifacts" true config.review_plugins.security.metrics_artifacts;
@@ -1282,6 +1290,60 @@ let test_security_enforce_confirmed_requires_source_and_sink_trace () =
       (Security_types.validation_verdict_to_string enforced.verdict)
   | _ -> fail "expected one enforced result"
 
+let test_security_enforce_policy_regression_accepts_concrete_proof () =
+  let proof : Security_types.exploitation_proof =
+    {
+      trigger = "Apply the sudoers change, then deploy runs `sudo /usr/bin/systemctl restart sshd.service`.";
+      preconditions = [ "The deploy user receives this sudoers policy." ];
+      source_to_sink_trace =
+        [
+          "ops/sudoers/deploy:5 source: deploy gets NOPASSWD for /usr/bin/systemctl";
+          "ops/sudoers/deploy:5 sink: deploy can run systemctl as root without password";
+        ];
+      missing_or_inadequate_control = "missing command/unit/action allowlist on the NOPASSWD systemctl grant";
+      expected_impact = "The deploy user can restart or control root services through systemctl.";
+      assumptions = [];
+    }
+  in
+  let vf =
+    mk_validated ~vuln_class:Security_types.Policy_regression
+      ~source:(src_site ~path:"ops/sudoers/deploy" ~line:5 ~description:"deploy NOPASSWD systemctl sudo grant")
+      ~sink:(sink_site ~path:"ops/sudoers/deploy" ~line:5 ~description:"deploy can run systemctl as root")
+      ~flow:
+        [ flow_step ~path:"ops/sudoers/deploy" ~line:5 ~description:"sudoers policy grants root systemctl capability" ]
+      ~proof_by_construction:proof ()
+  in
+  match Security_review_plugin.enforce_validator_proofs [ vf ] with
+  | [ enforced ] ->
+    (check string) "concrete policy proof stays confirmed" "confirmed"
+      (Security_types.validation_verdict_to_string enforced.verdict)
+  | _ -> fail "expected one enforced result"
+
+let test_security_enforce_policy_regression_rejects_vague_proof () =
+  let proof : Security_types.exploitation_proof =
+    {
+      trigger = "Apply the policy change.";
+      preconditions = [ "The policy is deployed." ];
+      source_to_sink_trace =
+        [ "ops/policy.yml:3 source: security relevant policy change"; "ops/policy.yml:4 sink: security impact" ];
+      missing_or_inadequate_control = "missing security control";
+      expected_impact = "Security posture is worse.";
+      assumptions = [];
+    }
+  in
+  let vf =
+    mk_validated ~vuln_class:Security_types.Policy_regression
+      ~source:(src_site ~path:"ops/policy.yml" ~line:3 ~description:"security relevant policy change")
+      ~sink:(sink_site ~path:"ops/policy.yml" ~line:4 ~description:"security impact")
+      ~flow:[ flow_step ~path:"ops/policy.yml" ~line:4 ~description:"policy effect" ]
+      ~proof_by_construction:proof ()
+  in
+  match Security_review_plugin.enforce_validator_proofs [ vf ] with
+  | [ enforced ] ->
+    (check string) "vague policy proof downgraded" "rejected"
+      (Security_types.validation_verdict_to_string enforced.verdict)
+  | _ -> fail "expected one enforced result"
+
 let test_security_partial_proof_json_downgrades () =
   let candidate =
     mk_candidate ~vuln_class:Authz ~sink_path:"src/main.ml" ~sink_line:14
@@ -1436,6 +1498,12 @@ let test_triage_agent_config () =
     | `Assoc _ -> true
     | _ -> false)
 
+let test_triage_agent_prompt_includes_policy_regression () =
+  let cfg = Triage_agent.config ~model_tier:Fast in
+  (check bool) "mentions class" true (Devkit.Stre.exists cfg.system_prompt "policy_regression");
+  (check bool) "mentions sudo policy" true (Devkit.Stre.exists cfg.system_prompt "NOPASSWD");
+  (check bool) "mentions CI permission broadening" true (Devkit.Stre.exists cfg.system_prompt "contents: write")
+
 let test_triage_agent_config_model_tier () =
   let fast = Triage_agent.config ~model_tier:Fast in
   let standard = Triage_agent.config ~model_tier:Standard in
@@ -1551,13 +1619,20 @@ let test_security_artifacts_debug_redacts () =
     (fun () ->
       let artifacts = Security_artifacts.create ~debug_dir ~metrics_artifacts:false ~debug_artifacts:true in
       let secret_text =
-        "Authorization: Bearer abcdef1234567890\nOPENROUTER_API_KEY=sk-or-abcdefghi\n{\"password\":\"hunter2\"}"
+        "Authorization: Bearer abcdef1234567890\n\
+         OPENROUTER_API_KEY=sk-or-abcdefghi\n\
+         {\"password\":\"hunter2\"}\n\
+         {\"opaque\":\"0123456789abcdef0123456789abcdef\"}\n\
+         \"backend/clickhouse/querybuilding/gen_schema/clickhouse_schema\""
       in
       Security_artifacts.write_debug_text artifacts ~filename:"triage_input.md" secret_text;
       let written = read_file (artifact_path debug_dir "triage_input.md") in
       (check bool) "bearer value redacted" false (contains_sub ~sub:"abcdef1234567890" written);
       (check bool) "api key redacted" false (contains_sub ~sub:"sk-or-abcdefghi" written);
-      (check bool) "password value redacted" false (contains_sub ~sub:"hunter2" written))
+      (check bool) "password value redacted" false (contains_sub ~sub:"hunter2" written);
+      (check bool) "opaque value redacted" false (contains_sub ~sub:"0123456789abcdef0123456789abcdef" written);
+      (check bool) "path value preserved" true
+        (contains_sub ~sub:"backend/clickhouse/querybuilding/gen_schema/clickhouse_schema" written))
 
 let test_security_artifacts_write_failure_best_effort () =
   let debug_file = Filename.temp_file "reviewotron_artifacts_file_" "_test" in
@@ -1573,6 +1648,8 @@ let test_security_artifacts_write_failure_best_effort () =
 (** {2 Deterministic security signal tests} *)
 
 let signal_has ?hint ~category ~path ~line ~pattern_sub signals =
+  let start_line = line in
+  let end_line = line in
   List.exists
     (fun (signal : Security_types.candidate_signal) ->
       let category_matches =
@@ -1589,8 +1666,30 @@ let signal_has ?hint ~category ~path ~line ~pattern_sub signals =
       category_matches
       && hint_matches
       && String.equal path signal.path
-      && Int.equal line signal.start_line
-      && Int.equal line signal.end_line
+      && Int.equal start_line signal.start_line
+      && Int.equal end_line signal.end_line
+      && contains_sub ~sub:pattern_sub signal.pattern)
+    signals
+
+let signal_has_range ?hint ~category ~path ~start_line ~end_line ~pattern_sub signals =
+  List.exists
+    (fun (signal : Security_types.candidate_signal) ->
+      let category_matches =
+        String.equal
+          (Security_types.signal_category_to_string category)
+          (Security_types.signal_category_to_string signal.category)
+      in
+      let hint_matches =
+        match hint, signal.vuln_class_hint with
+        | Some expected, Some actual -> Security_review_plugin.vuln_class_equal expected actual
+        | None, None -> true
+        | Some _, None | None, Some _ -> false
+      in
+      category_matches
+      && hint_matches
+      && String.equal path signal.path
+      && Int.equal start_line signal.start_line
+      && Int.equal end_line signal.end_line
       && contains_sub ~sub:pattern_sub signal.pattern)
     signals
 
@@ -1654,6 +1753,92 @@ diff --git a/package.json b/package.json
   (check bool) "package manifest sensitive file" true
     (signal_has ~category:Security_types.Sensitive_file ~path:"package.json" ~line:1 ~pattern_sub:"package" signals)
 
+let test_security_diff_signal_policy_regression_patterns () =
+  let diff_text =
+    {|diff --git a/modules/sudo/manifests/deploy.pp b/modules/sudo/manifests/deploy.pp
+--- a/modules/sudo/manifests/deploy.pp
++++ b/modules/sudo/manifests/deploy.pp
+@@ -0,0 +1,1 @@
++deploy ALL=(ALL) NOPASSWD: /usr/bin/systemctl
+diff --git a/infra/iam/admin.yml b/infra/iam/admin.yml
+--- a/infra/iam/admin.yml
++++ b/infra/iam/admin.yml
+@@ -0,0 +10,1 @@
++Action: *
+diff --git a/k8s/workload.yml b/k8s/workload.yml
+--- a/k8s/workload.yml
++++ b/k8s/workload.yml
+@@ -0,0 +20,1 @@
++  privileged: true
+diff --git a/.github/workflows/deploy.yml b/.github/workflows/deploy.yml
+--- a/.github/workflows/deploy.yml
++++ b/.github/workflows/deploy.yml
+@@ -0,0 +30,1 @@
++permissions: write-all
+diff --git a/src/client.py b/src/client.py
+--- a/src/client.py
++++ b/src/client.py
+@@ -0,0 +40,1 @@
++requests.get(url, verify=False)
+|}
+  in
+  let signals = Security_diff_signal.scan (Diff_parser.parse diff_text) in
+  (check bool) "sudo policy signal" true
+    (signal_has ~hint:Security_types.Policy_regression ~category:Security_types.Changed_security_control
+       ~path:"modules/sudo/manifests/deploy.pp" ~line:1 ~pattern_sub:"sudo" signals);
+  (check bool) "IAM wildcard signal" true
+    (signal_has ~hint:Security_types.Policy_regression ~category:Security_types.Changed_security_control
+       ~path:"infra/iam/admin.yml" ~line:10 ~pattern_sub:"IAM/RBAC" signals);
+  (check bool) "Kubernetes privileged signal" true
+    (signal_has ~hint:Security_types.Policy_regression ~category:Security_types.Changed_security_control
+       ~path:"k8s/workload.yml" ~line:20 ~pattern_sub:"Kubernetes" signals);
+  (check bool) "CI permission signal" true
+    (signal_has ~hint:Security_types.Policy_regression ~category:Security_types.Changed_security_control
+       ~path:".github/workflows/deploy.yml" ~line:30 ~pattern_sub:"CI token" signals);
+  (check bool) "control weakening signal" true
+    (signal_has ~hint:Security_types.Policy_regression ~category:Security_types.Changed_security_control
+       ~path:"src/client.py" ~line:40 ~pattern_sub:"security control weakening" signals)
+
+let test_security_diff_signal_multiline_policy_wildcards () =
+  let diff_text =
+    {|diff --git a/k8s/rbac.yml b/k8s/rbac.yml
+--- a/k8s/rbac.yml
++++ b/k8s/rbac.yml
+@@ -0,0 +10,4 @@
++verbs:
++  - "*"
++resources:
++  - "*"
+diff --git a/infra/iam/policy.tf b/infra/iam/policy.tf
+--- a/infra/iam/policy.tf
++++ b/infra/iam/policy.tf
+@@ -0,0 +20,3 @@
++actions = [
++  "*",
++]
+diff --git a/infra/iam/existing.yml b/infra/iam/existing.yml
+--- a/infra/iam/existing.yml
++++ b/infra/iam/existing.yml
+@@ -30,3 +30,4 @@
+ actions:
+   - "s3:GetObject"
++  - "*"
+|}
+  in
+  let signals = Security_diff_signal.scan (Diff_parser.parse diff_text) in
+  (check bool) "kubernetes verbs wildcard range" true
+    (signal_has_range ~hint:Security_types.Policy_regression ~category:Security_types.Changed_security_control
+       ~path:"k8s/rbac.yml" ~start_line:10 ~end_line:11 ~pattern_sub:"multiline wildcard" signals);
+  (check bool) "kubernetes resources wildcard range" true
+    (signal_has_range ~hint:Security_types.Policy_regression ~category:Security_types.Changed_security_control
+       ~path:"k8s/rbac.yml" ~start_line:12 ~end_line:13 ~pattern_sub:"multiline wildcard" signals);
+  (check bool) "terraform actions wildcard range" true
+    (signal_has_range ~hint:Security_types.Policy_regression ~category:Security_types.Changed_security_control
+       ~path:"infra/iam/policy.tf" ~start_line:20 ~end_line:21 ~pattern_sub:"multiline wildcard" signals);
+  (check bool) "existing key added wildcard anchors changed line" true
+    (signal_has_range ~hint:Security_types.Policy_regression ~category:Security_types.Changed_security_control
+       ~path:"infra/iam/existing.yml" ~start_line:32 ~end_line:32 ~pattern_sub:"multiline wildcard" signals)
+
 let test_security_diff_signal_empty_for_safe_diff () =
   let diff_text =
     {|diff --git a/src/widgets/view.ts b/src/widgets/view.ts
@@ -1699,9 +1884,7 @@ let test_security_vuln_class_equal () =
   (check bool) "same class" true (vuln_class_equal Config_types.Injection Injection);
   (check bool) "different class" false (vuln_class_equal Injection Xss);
   (check bool) "all classes equal themselves" true
-    (List.for_all
-       (fun vc -> vuln_class_equal vc vc)
-       Config_types.[ Injection; Xss; Command_injection; Authn; Authz; Ssrf ])
+    (List.for_all (fun vc -> vuln_class_equal vc vc) Config_types.all_vuln_classes)
 
 let test_security_should_analyze_above_threshold () =
   let security_config = Config_types.default_security_plugin_config in
@@ -1881,12 +2064,14 @@ let test_analysis_agent_config_per_class () =
   let authn = Analysis_agent.config ~vuln_class:Authn ~model_tier:Standard ~language_hints:[] in
   let authz = Analysis_agent.config ~vuln_class:Authz ~model_tier:Standard ~language_hints:[] in
   let ssrf = Analysis_agent.config ~vuln_class:Ssrf ~model_tier:Standard ~language_hints:[] in
+  let policy = Analysis_agent.config ~vuln_class:Policy_regression ~model_tier:Standard ~language_hints:[] in
   (check string) "injection name" "security_analysis_injection" injection.name;
   (check string) "xss name" "security_analysis_xss" xss.name;
   (check string) "cmd name" "security_analysis_command_injection" cmd.name;
   (check string) "authn name" "security_analysis_authn" authn.name;
   (check string) "authz name" "security_analysis_authz" authz.name;
   (check string) "ssrf name" "security_analysis_ssrf" ssrf.name;
+  (check string) "policy name" "security_analysis_policy_regression" policy.name;
   (* Each agent has a distinct system prompt *)
   (check bool) "injection prompt differs from xss" true (not (String.equal injection.system_prompt xss.system_prompt))
 
@@ -1913,7 +2098,8 @@ let test_analysis_agent_prompt_contains_methodology () =
   (check bool) "sink identification" true (Devkit.Stre.exists cfg.system_prompt "Sink Identification");
   (check bool) "data flow tracing" true (Devkit.Stre.exists cfg.system_prompt "Data Flow Tracing");
   (check bool) "sanitization evaluation" true (Devkit.Stre.exists cfg.system_prompt "Sanitization Evaluation");
-  (check bool) "get_file_content tool" true (Devkit.Stre.exists cfg.system_prompt "get_file_content")
+  (check bool) "get_file_content tool" true (Devkit.Stre.exists cfg.system_prompt "get_file_content");
+  (check bool) "policy proof model" true (Devkit.Stre.exists cfg.system_prompt "policy/control state")
 
 let test_analysis_agent_prompt_contains_class_section () =
   let injection = Analysis_agent.config ~vuln_class:Injection ~model_tier:Standard ~language_hints:[] in
@@ -1922,12 +2108,15 @@ let test_analysis_agent_prompt_contains_class_section () =
   let authn = Analysis_agent.config ~vuln_class:Authn ~model_tier:Standard ~language_hints:[] in
   let authz = Analysis_agent.config ~vuln_class:Authz ~model_tier:Standard ~language_hints:[] in
   let ssrf = Analysis_agent.config ~vuln_class:Ssrf ~model_tier:Standard ~language_hints:[] in
+  let policy = Analysis_agent.config ~vuln_class:Policy_regression ~model_tier:Standard ~language_hints:[] in
   (check bool) "injection section" true (Devkit.Stre.exists injection.system_prompt "SQL/Query Injection");
   (check bool) "xss section" true (Devkit.Stre.exists xss.system_prompt "Cross-Site Scripting");
   (check bool) "cmd section" true (Devkit.Stre.exists cmd.system_prompt "Command Injection");
   (check bool) "authn section" true (Devkit.Stre.exists authn.system_prompt "Authentication");
   (check bool) "authz section" true (Devkit.Stre.exists authz.system_prompt "Authorization");
-  (check bool) "ssrf section" true (Devkit.Stre.exists ssrf.system_prompt "Server-Side Request Forgery")
+  (check bool) "ssrf section" true (Devkit.Stre.exists ssrf.system_prompt "Server-Side Request Forgery");
+  (check bool) "policy section" true (Devkit.Stre.exists policy.system_prompt "Security Policy Regression");
+  (check bool) "policy source model" true (Devkit.Stre.exists policy.system_prompt "changed principal")
 
 let test_analysis_agent_language_hints () =
   let with_hints =
@@ -1988,7 +2177,9 @@ let test_analysis_agent_shared_methodology () =
     (Devkit.Stre.exists methodology "Render the sink's actual input")
 
 let test_analysis_agent_vuln_class_section_all_classes () =
-  let classes : Security_types.vuln_class list = [ Injection; Xss; Command_injection; Authn; Authz; Ssrf ] in
+  let classes : Security_types.vuln_class list =
+    [ Injection; Xss; Command_injection; Authn; Authz; Ssrf; Policy_regression ]
+  in
   List.iter
     (fun vc ->
       let section = Analysis_agent.vuln_class_section vc ~language_hints:[] in
@@ -2773,6 +2964,76 @@ let test_local_review_diff_text_returns_markdown () =
   | Ok markdown ->
     (check bool) "has summary" true (CCString.find ~sub:"The changes look generally good" markdown >= 0);
     (check bool) "has inline comments section" true (CCString.find ~sub:"### Inline comments" markdown >= 0)
+
+let test_local_review_security_only_empty_is_success () =
+  Test_helpers.reset_test_state ();
+  Api_local.set_agent_response_map [ "security_triage", "mock_api_responses/security/triage_safe.json" ];
+  let ctx = Test_helpers.make_test_context () in
+  let config =
+    Config_types.config_of_json
+      (Melange_json.of_string {|{"review_plugins": {"general": {"enabled": false}, "security": {"enabled": true}}}|})
+  in
+  let diff_text = read_file "mock_api_responses/github/pr_42.diff" in
+  let result =
+    Lwt_main.run
+      (Local_review_test.review_diff_text ~ctx ~root:"." ~repo_key:"local/repo" ~change_key:"security-only-empty"
+         ~title:"Generated local diff" ~description:"Local description" ~diff_text ~config ())
+  in
+  match result with
+  | Error msg -> fail msg
+  | Ok markdown ->
+    (check bool) "has deterministic review body" true (contains_sub ~sub:":robot: **REVIEW**" markdown);
+    (check bool) "does not report failure" false (contains_sub ~sub:"Review failed" markdown);
+    (check bool) "does not ask for retrigger" false (contains_sub ~sub:"re-trigger the review" markdown)
+
+let security_only_local_config () =
+  Config_types.config_of_json
+    (Melange_json.of_string {|{"review_plugins": {"general": {"enabled": false}, "security": {"enabled": true}}}|})
+
+let test_local_review_policy_regression_sudo_vulnerable () =
+  Test_helpers.reset_test_state ();
+  Api_local.set_agent_response_map
+    [
+      "security_triage", "mock_api_responses/security/triage_policy_regression_sudo.json";
+      "security_analysis_policy_regression", "mock_api_responses/security/analysis_policy_regression_sudo.json";
+      "security_validator", "mock_api_responses/security/validator_policy_regression_confirmed.json";
+    ];
+  let ctx = Test_helpers.make_test_context () in
+  let config = security_only_local_config () in
+  let diff_text = read_file "security_corpus/policy_regression/sudo_systemctl_nopasswd_vulnerable.diff" in
+  let result =
+    Lwt_main.run
+      (Local_review_test.review_diff_text ~ctx ~root:"." ~repo_key:"local/repo" ~change_key:"policy-sudo-vuln"
+         ~title:"Policy regression diff" ~description:"Local description" ~diff_text ~config ())
+  in
+  match result with
+  | Error msg -> fail msg
+  | Ok markdown ->
+    (check bool) "has security finding" true (contains_sub ~sub:"**[critical]** security" markdown);
+    (check bool) "mentions NOPASSWD" true (contains_sub ~sub:"NOPASSWD" markdown);
+    (check bool) "mentions systemctl" true (contains_sub ~sub:"systemctl" markdown)
+
+let test_local_review_policy_regression_sudo_scoped_safe () =
+  Test_helpers.reset_test_state ();
+  Api_local.set_agent_response_map
+    [
+      "security_triage", "mock_api_responses/security/triage_policy_regression_sudo.json";
+      "security_analysis_policy_regression", "mock_api_responses/security/analysis_policy_regression_empty.json";
+    ];
+  let ctx = Test_helpers.make_test_context () in
+  let config = security_only_local_config () in
+  let diff_text = read_file "security_corpus/policy_regression/sudo_systemctl_reload_scoped_safe.diff" in
+  let result =
+    Lwt_main.run
+      (Local_review_test.review_diff_text ~ctx ~root:"." ~repo_key:"local/repo" ~change_key:"policy-sudo-safe"
+         ~title:"Scoped sudo diff" ~description:"Local description" ~diff_text ~config ())
+  in
+  match result with
+  | Error msg -> fail msg
+  | Ok markdown ->
+    (check bool) "has deterministic review body" true (contains_sub ~sub:":robot: **REVIEW**" markdown);
+    (check bool) "no security finding" false (contains_sub ~sub:"**[critical]** security" markdown);
+    (check bool) "no review failure" false (contains_sub ~sub:"Review failed" markdown)
 
 let test_local_review_uses_supplied_config_for_plugins () =
   Test_helpers.reset_test_state ();
@@ -4508,6 +4769,8 @@ let () =
           test_case "dangerous APIs and line ranges" `Quick test_security_diff_signal_dangerous_apis_and_lines;
           test_case "path, controls, and stateful signals" `Quick test_security_diff_signal_path_control_and_stateful;
           test_case "sensitive file matching" `Quick test_security_diff_signal_sensitive_files;
+          test_case "policy regression patterns" `Quick test_security_diff_signal_policy_regression_patterns;
+          test_case "multiline policy wildcards" `Quick test_security_diff_signal_multiline_policy_wildcards;
           test_case "empty safe diff" `Quick test_security_diff_signal_empty_for_safe_diff;
         ] );
       ( "review_types",
@@ -4534,6 +4797,8 @@ let () =
           test_case "confirmed rejects empty proof" `Quick test_security_enforce_confirmed_rejects_empty_proof;
           test_case "confirmed requires source and sink trace" `Quick
             test_security_enforce_confirmed_requires_source_and_sink_trace;
+          test_case "policy proof concrete" `Quick test_security_enforce_policy_regression_accepts_concrete_proof;
+          test_case "policy proof rejects vague" `Quick test_security_enforce_policy_regression_rejects_vague_proof;
           test_case "partial proof JSON downgrades" `Quick test_security_partial_proof_json_downgrades;
           test_case "rejected does not require proof" `Quick test_security_enforce_rejected_without_proof_ok;
           test_case "proof summaries populate finding fields" `Quick
@@ -4556,6 +4821,7 @@ let () =
       ( "triage_agent",
         [
           test_case "config defaults" `Quick test_triage_agent_config;
+          test_case "prompt includes policy_regression" `Quick test_triage_agent_prompt_includes_policy_regression;
           test_case "config model tier" `Quick test_triage_agent_config_model_tier;
           test_case "detect languages" `Quick test_triage_agent_detect_languages;
           test_case "detect languages empty" `Quick test_triage_agent_detect_languages_empty;
@@ -4685,6 +4951,10 @@ let () =
             test_local_source_default_change_key_uses_filtered_diff;
           test_case "review diff returns markdown" `Quick test_local_review_diff_returns_markdown;
           test_case "review generated diff text returns markdown" `Quick test_local_review_diff_text_returns_markdown;
+          test_case "security-only empty review is success" `Quick test_local_review_security_only_empty_is_success;
+          test_case "policy sudo regression produces finding" `Quick test_local_review_policy_regression_sudo_vulnerable;
+          test_case "policy sudo scoped safe produces no finding" `Quick
+            test_local_review_policy_regression_sudo_scoped_safe;
           test_case "review plugins use supplied config" `Quick test_local_review_uses_supplied_config_for_plugins;
           test_case "duplicate local change skipped" `Quick test_local_review_skips_duplicate_change;
           test_case "github plugins use captured config" `Quick test_github_review_uses_captured_config_for_plugins;

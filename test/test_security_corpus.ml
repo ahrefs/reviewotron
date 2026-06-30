@@ -136,6 +136,26 @@ let corpus_cases : corpus_case list =
       file_path = "src/handlers/webhook.py";
       expected = Vulnerable Security_types.Ssrf;
     };
+    {
+      name = "policy_regression/sudo_systemctl_nopasswd_vulnerable";
+      file_path = "modules/sudo/manifests/deploy.pp";
+      expected = Vulnerable Security_types.Policy_regression;
+    };
+    {
+      name = "policy_regression/sudo_systemctl_reload_scoped_safe";
+      file_path = "modules/sudo/manifests/deploy.pp";
+      expected = Clean;
+    };
+    {
+      name = "policy_regression/ci_permissions_write_vulnerable";
+      file_path = ".github/workflows/build.yml";
+      expected = Vulnerable Security_types.Policy_regression;
+    };
+    {
+      name = "policy_regression/tls_verify_disabled_vulnerable";
+      file_path = "src/integrations/vendor_client.py";
+      expected = Vulnerable Security_types.Policy_regression;
+    };
   ]
 
 (** All vulnerable cases (those expecting at least one finding). *)

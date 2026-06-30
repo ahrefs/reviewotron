@@ -1,0 +1,18 @@
+{
+  "signals": [
+    {
+      "vuln_class": "policy_regression",
+      "confidence": "high",
+      "regions": [
+        {
+          "path": "modules/sudo/manifests/deploy.pp",
+          "start_line": 3,
+          "end_line": 3
+        }
+      ],
+      "rationale": "Sudoers policy grants deploy NOPASSWD access to systemctl as root"
+    }
+  ],
+  "language_hints": ["puppet"],
+  "skip_reason": null
+}
