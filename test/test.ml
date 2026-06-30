@@ -1230,8 +1230,8 @@ let test_security_enforce_repairs_missing_proof_from_concrete_notes () =
         ]
       ~vuln_class:Security_types.Authn
       ~evidence_notes:
-        "The diff shows line 22 reading the Authorization header, lines 11-14 decoding the payload, and line 18 \
-         returning Ok user_id without reading exp or comparing it to time."
+        "The diff shows lib/auth/jwt_middleware.ml:22 reading the Authorization header, lines 11-14 decoding the \
+         payload, and lib/auth/jwt_middleware.ml:18 returning Ok user_id without reading exp or comparing it to time."
       ()
   in
   match Security_review_plugin.enforce_validator_proofs [ vf ] with
@@ -1239,6 +1239,20 @@ let test_security_enforce_repairs_missing_proof_from_concrete_notes () =
     (check string) "concrete missing proof stays confirmed" "confirmed"
       (Security_types.validation_verdict_to_string enforced.verdict);
     (check bool) "proof synthesized" true (Option.is_some enforced.proof_by_construction)
+  | _ -> fail "expected one enforced result"
+
+let test_security_enforce_does_not_repair_path_only_same_file_notes () =
+  let vf =
+    mk_validated
+      ~source:(src_site ~path:"src/main.ml" ~line:10 ~description:"request id")
+      ~sink:(sink_site ~path:"src/main.ml" ~line:14 ~description:"document update")
+      ~flow:[ flow_step ~path:"src/main.ml" ~line:12 ~description:"passed to update" ]
+      ~evidence_notes:"src/main.ml has no sanitizer on the source-to-sink path." ()
+  in
+  match Security_review_plugin.enforce_validator_proofs [ vf ] with
+  | [ enforced ] ->
+    (check string) "path-only same-file notes downgraded" "rejected"
+      (Security_types.validation_verdict_to_string enforced.verdict)
   | _ -> fail "expected one enforced result"
 
 let test_security_enforce_does_not_repair_hedged_missing_proof () =
@@ -4792,6 +4806,8 @@ let () =
           test_case "confirmed requires proof" `Quick test_security_enforce_confirmed_requires_proof;
           test_case "confirmed missing proof repaired from concrete notes" `Quick
             test_security_enforce_repairs_missing_proof_from_concrete_notes;
+          test_case "confirmed missing proof not repaired from path-only same-file notes" `Quick
+            test_security_enforce_does_not_repair_path_only_same_file_notes;
           test_case "confirmed missing proof not repaired from hedged notes" `Quick
             test_security_enforce_does_not_repair_hedged_missing_proof;
           test_case "confirmed rejects empty proof" `Quick test_security_enforce_confirmed_rejects_empty_proof;

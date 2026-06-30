@@ -161,12 +161,15 @@ let proof_violation_note =
 
 let notes_mention_line ~line notes =
   let line = string_of_int line in
+  let notes = String.lowercase_ascii notes in
   [
-    Printf.sprintf ":%s" line; Printf.sprintf "line %s" line; Printf.sprintf "lines %s" line; Printf.sprintf "`%s`" line;
+    Printf.sprintf {|:%s([^0-9]|$)|} line;
+    Printf.sprintf {|\blines?[ \t]+%s([^0-9]|$)|} line;
+    Printf.sprintf {|`%s`|} line;
   ]
-  |> List.exists (fun sub -> lower_contains ~sub notes)
+  |> List.exists (fun re -> Re2.matches (Re2.create_exn re) notes)
 
-let notes_mention_site ~path ~line notes = contains_sub ~sub:path notes || notes_mention_line ~line notes
+let notes_mention_site ~path ~line notes = contains_sub ~sub:path notes && notes_mention_line ~line notes
 
 let notes_are_decisive notes =
   [ "assume"; "assumption"; "could not"; "difficult"; "non-trivial"; "probably"; "unclear"; "unknown" ]
