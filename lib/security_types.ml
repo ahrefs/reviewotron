@@ -25,6 +25,7 @@ type vuln_class = Config_types.vuln_class =
   | Authn
   | Authz
   | Ssrf
+  | Policy_regression
 
 let vuln_class_to_string = Config_types.vuln_class_to_string
 let vuln_class_to_json = Config_types.vuln_class_to_json
@@ -35,7 +36,9 @@ let vuln_class_jsonschema =
       "type", `String "string";
       "enum", `List (List.map (fun vc -> `String (Config_types.vuln_class_to_string vc)) Config_types.all_vuln_classes);
       ( "description",
-        `String "Security vulnerability class to analyze: injection, xss, command_injection, authn, authz, or ssrf." );
+        `String
+          "Security vulnerability class to analyze: injection, xss, command_injection, authn, authz, ssrf, or \
+           policy_regression." );
     ]
 
 type confidence = Config_types.confidence =
@@ -134,15 +137,19 @@ type triage_output = {
 
 type source_evidence = {
   path : string; [@jsonschema.description "File path of the source"]
-  line : int; [@jsonschema.description "Line number where user-controlled data enters"]
-  description : string; [@jsonschema.description "e.g. 'HTTP request parameter id'"]
+  line : int;
+     [@jsonschema.description
+       "Line number where user-controlled data enters, or for policy_regression, where the policy/control change starts"]
+  description : string; [@jsonschema.description "e.g. 'HTTP request parameter id' or 'sudoers grant for deploy user'"]
 }
 [@@deriving json, jsonschema]
 
 type sink_evidence = {
   path : string; [@jsonschema.description "File path of the sink"]
   line : int; [@jsonschema.description "Line number where dangerous operation occurs"]
-  description : string; [@jsonschema.description "e.g. 'String concatenation into SQL query'"]
+  description : string;
+     [@jsonschema.description
+       "e.g. 'String concatenation into SQL query' or for policy_regression, 'effective systemctl root capability'"]
 }
 [@@deriving json, jsonschema]
 

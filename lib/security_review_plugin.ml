@@ -15,9 +15,10 @@ let vuln_class_equal a b =
   | Command_injection, Command_injection
   | Authn, Authn
   | Authz, Authz
-  | Ssrf, Ssrf ->
+  | Ssrf, Ssrf
+  | Policy_regression, Policy_regression ->
     true
-  | (Injection | Xss | Command_injection | Authn | Authz | Ssrf), _ -> false
+  | (Injection | Xss | Command_injection | Authn | Authz | Ssrf | Policy_regression), _ -> false
 
 (** Convert a config model tier to the agent runner's model tier type.
 
@@ -67,17 +68,96 @@ let trace_contains_site ~path ~line trace =
   let site = Printf.sprintf "%s:%d" path line in
   List.exists (fun step -> CCString.find ~sub:site step >= 0) trace
 
+let contains_sub ~sub s = CCString.find ~sub s >= 0
+
+let lower_contains ~sub s = contains_sub ~sub (String.lowercase_ascii s)
+
+let text_contains_any needles text = List.exists (fun sub -> lower_contains ~sub text) needles
+
+let policy_proof_is_concrete (finding : Security_types.candidate_finding) (proof : Security_types.exploitation_proof) =
+  let text =
+    String.concat " "
+      ([
+         finding.source.description;
+         finding.sink.description;
+         finding.description;
+         proof.trigger;
+         proof.missing_or_inadequate_control;
+         proof.expected_impact;
+       ]
+      @ proof.source_to_sink_trace)
+  in
+  let has_policy_subject =
+    text_contains_any
+      [
+        "principal";
+        "user";
+        "group";
+        "role";
+        "service account";
+        "token";
+        "workflow";
+        "job";
+        "pod";
+        "deploy";
+        "runner";
+        "sudo";
+        "iam";
+        "rbac";
+        "clusterrole";
+        "systemctl";
+        "tls";
+        "csrf";
+        "auth";
+      ]
+      text
+  in
+  let has_policy_action =
+    text_contains_any
+      [
+        "nopasswd";
+        "root";
+        "write";
+        "admin";
+        "delete";
+        "create";
+        "update";
+        "restart";
+        "reload";
+        "systemctl";
+        "wildcard";
+        "all resources";
+        "cluster-admin";
+        "privileged";
+        "hostpath";
+        "hostnetwork";
+        "id-token";
+        "verify";
+        "csrf";
+        "auth";
+        "allow_all";
+        "skip_verify";
+      ]
+      text
+  in
+  let has_effect =
+    text_contains_any
+      [ "now"; "grant"; "allow"; "can "; "permits"; "broad"; "without password"; "disabled"; "weaken"; "removed" ]
+      text
+  in
+  has_policy_subject && has_policy_action && has_effect
+
 let proof_matches_finding (finding : Security_types.candidate_finding) (proof : Security_types.exploitation_proof) =
   trace_contains_site ~path:finding.source.path ~line:finding.source.line proof.source_to_sink_trace
   && trace_contains_site ~path:finding.sink.path ~line:finding.sink.line proof.source_to_sink_trace
+  &&
+  match finding.vuln_class with
+  | Policy_regression -> policy_proof_is_concrete finding proof
+  | Injection | Xss | Command_injection | Authn | Authz | Ssrf -> true
 
 let proof_violation_note =
   "Rejected by Reviewotron after validator parsing: confirmed validator result did not include a concrete \
    proof_by_construction."
-
-let contains_sub ~sub s = CCString.find ~sub s >= 0
-
-let lower_contains ~sub s = contains_sub ~sub (String.lowercase_ascii s)
 
 let notes_mention_line ~line notes =
   let line = string_of_int line in
@@ -135,6 +215,10 @@ let proof_repair_trigger (f : Security_types.candidate_finding) =
   | Ssrf ->
     Printf.sprintf "Submit `http://169.254.169.254/latest/meta-data/` through %s so the server fetches it at %s."
       f.source.description f.sink.description
+  | Policy_regression ->
+    Printf.sprintf
+      "Apply the reviewed policy/configuration change at %s and exercise the newly granted capability at %s."
+      f.source.description f.sink.description
 
 let proof_repair_impact (f : Security_types.candidate_finding) =
   match f.vuln_class with
@@ -144,6 +228,7 @@ let proof_repair_impact (f : Security_types.candidate_finding) =
   | Authn -> "An invalid, expired, or otherwise unsafe authentication token can be accepted."
   | Authz -> "The attacker can access or mutate a resource without the required authorization check."
   | Ssrf -> "The server makes an attacker-controlled outbound request to an internal or sensitive URL."
+  | Policy_regression -> "The changed policy or control now permits an action that was previously constrained."
 
 let proof_trace_from_finding (f : Security_types.candidate_finding) =
   let source = Printf.sprintf "%s:%d source: %s" f.source.path f.source.line f.source.description in
@@ -208,6 +293,7 @@ type analysis_metrics = {
   validator_confirmed : int;
   validator_rejected : int;
   final_findings_produced : int;
+  class_drops : (string * int * string) list;
 }
 
 let empty_analysis_metrics ~actionable_triage_signal_count =
@@ -220,6 +306,7 @@ let empty_analysis_metrics ~actionable_triage_signal_count =
     validator_confirmed = 0;
     validator_rejected = 0;
     final_findings_produced = 0;
+    class_drops = [];
   }
 
 let count_confirmed results =
@@ -237,6 +324,9 @@ let total_estimated_cost costs =
   List.fold_left (fun acc (cost : Cost_tracking.agent_cost) -> acc +. cost.estimated_cost_usd) 0.0 costs
 
 let metrics_json ~changed_file_count ~deterministic_signals ~triage_signal_count ~metrics ~costs =
+  let class_drop_json (vuln_class, signal_count, reason) =
+    `Assoc [ "vuln_class", `String vuln_class; "triage_signal_count", `Int signal_count; "reason", `String reason ]
+  in
   `Assoc
     [
       "changed_file_count", `Int changed_file_count;
@@ -250,6 +340,7 @@ let metrics_json ~changed_file_count ~deterministic_signals ~triage_signal_count
       "validator_results_confirmed", `Int metrics.validator_confirmed;
       "validator_results_rejected", `Int metrics.validator_rejected;
       "final_findings_produced", `Int metrics.final_findings_produced;
+      "analysis_class_drops", `List (List.map class_drop_json metrics.class_drops);
       ( "finding_routing",
         `Assoc
           [
@@ -266,11 +357,12 @@ let log_stage_metrics ~changed_file_count ~deterministic_signals ~triage_signal_
   log#info
     "security metrics: files=%d deterministic_signals=%d triage_signals=%d actionable=%d analysis_agents=%d \
      raw_candidates=%d deduped=%d duplicates_dropped=%d validator_confirmed=%d validator_rejected=%d final_findings=%d \
-     files_fetched=%d estimated_cost=$%.4f"
+     class_drops=%d files_fetched=%d estimated_cost=$%.4f"
     changed_file_count (List.length deterministic_signals) triage_signal_count metrics.actionable_triage_signal_count
     metrics.analysis_agents_run metrics.raw_candidates_produced metrics.candidates_kept_after_deduplication
     metrics.duplicate_candidates_dropped metrics.validator_confirmed metrics.validator_rejected
-    metrics.final_findings_produced (total_files_fetched costs) (total_estimated_cost costs)
+    metrics.final_findings_produced (List.length metrics.class_drops) (total_files_fetched costs)
+    (total_estimated_cost costs)
 
 module Make (AI : Api.Agent_runner) = struct
   let name = "security"
@@ -654,6 +746,23 @@ module Make (AI : Api.Agent_runner) = struct
           groups
       in
       let%lwt results = Lwt.all promises in
+      let class_drops =
+        let rec collect acc groups results =
+          match groups, results with
+          | [], [] -> List.rev acc
+          | (vuln_class, triage_signals) :: rest_groups, (candidates, _) :: rest_results ->
+            (match candidates with
+            | [] ->
+              let vc_name = Security_types.vuln_class_to_string vuln_class in
+              let signal_count = List.length triage_signals in
+              log#info "analysis drop: %s had %d actionable triage signal(s) but produced no candidates" vc_name
+                signal_count;
+              collect ((vc_name, signal_count, "analysis_returned_no_candidates") :: acc) rest_groups rest_results
+            | _ :: _ -> collect acc rest_groups rest_results)
+          | [], _ :: _ | _ :: _, [] -> List.rev acc
+        in
+        collect [] groups results
+      in
       let raw_candidates = List.concat_map fst results in
       let analysis_costs = List.concat_map snd results in
       log#info "analysis complete: %d total candidate findings" (List.length raw_candidates);
@@ -675,6 +784,7 @@ module Make (AI : Api.Agent_runner) = struct
             validator_confirmed = 0;
             validator_rejected = 0;
             final_findings_produced = 0;
+            class_drops;
           }
         in
         Lwt.return ([], analysis_costs, metrics)
@@ -707,6 +817,7 @@ module Make (AI : Api.Agent_runner) = struct
             validator_confirmed = List.length confirmed;
             validator_rejected = List.length validated - List.length confirmed;
             final_findings_produced = List.length findings;
+            class_drops;
           }
         in
         Lwt.return (findings, analysis_costs @ validator_costs, metrics))
@@ -780,6 +891,11 @@ module Make (AI : Api.Agent_runner) = struct
       Security_artifacts.create ~debug_dir ~metrics_artifacts:security_config.metrics_artifacts
         ~debug_artifacts:security_config.debug_artifacts
     in
+    (match Security_artifacts.enabled artifacts with
+    | true ->
+      log#info "security artifacts: writing to %s (metrics=%b debug=%b)" (Security_artifacts.root artifacts)
+        security_config.metrics_artifacts security_config.debug_artifacts
+    | false -> log#debug "security artifacts: disabled");
     Security_artifacts.write_manifest artifacts ~repo_url;
     let deterministic_signals = Security_diff_signal.scan diff in
     log#info "deterministic signals: %d signal(s)" (List.length deterministic_signals);

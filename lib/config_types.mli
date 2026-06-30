@@ -10,6 +10,7 @@ type vuln_class =
   | Authn
   | Authz
   | Ssrf
+  | Policy_regression
 
 val vuln_class_to_string : vuln_class -> string
 val vuln_class_to_json : vuln_class -> Yojson.Basic.t

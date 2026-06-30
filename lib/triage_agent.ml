@@ -42,6 +42,17 @@ Database mutation operations (update, delete) where a user-supplied resource ide
 ### ssrf
 HTTP client calls, URL construction from user inputs, redirect handling, webhook URL configuration, any pattern where user input influences the target of an outbound HTTP request.
 
+### policy_regression
+Security policy or configuration changes that directly broaden privilege, grant new write/admin/root capabilities, or weaken a named control. These are not source-to-sink user-input bugs; flag them when the diff itself proves a policy/control effect that may now allow an action that was previously constrained.
+
+High-confidence examples:
+- sudoers/Puppet/Chef/Ansible/Terraform changes adding broad `NOPASSWD`, root command grants, `ALL=(ALL)`, or broad `/usr/bin/systemctl` access
+- IAM/RBAC/Kubernetes policies adding wildcard actions/resources (`*`), `cluster-admin`, broad role bindings, privileged pods, `hostPath`, `hostNetwork`, or host namespace access
+- GitHub Actions or CI config broadening token permissions such as `contents: write`, `id-token: write`, `permissions: write-all`, or using `pull_request_target` with checkout/build of untrusted code
+- Security controls weakened or removed: TLS/certificate verification disabled, auth/CSRF checks bypassed, `allow_all`, `skip_verify`, `verify=false`, `rejectUnauthorized: false`
+
+Do not flag purely administrative refactors, policy comments, or a tightly scoped grant where the changed line itself constrains principal, resource, action, and approval/condition so no broader capability is introduced.
+
 ## Confidence Levels
 
 - **high**: Direct, unambiguous pattern match (e.g., string concatenation into `db.query()`, `exec(user_input)`)
@@ -52,7 +63,7 @@ HTTP client calls, URL construction from user inputs, redirect handling, webhook
 
 Produce a JSON object with this structure:
 - `signals`: array of triage signals, each with:
-  - `vuln_class`: one of "injection", "xss", "command_injection", "authn", "authz", "ssrf"
+  - `vuln_class`: one of "injection", "xss", "command_injection", "authn", "authz", "ssrf", "policy_regression"
   - `confidence`: one of "high", "medium", "low"
   - `regions`: array of regions, each with `path` (file path), `start_line`, `end_line`. Both line numbers MUST be copied verbatim from the left column of the annotated diff — the exact numbers printed for the first and last lines you want the analysis agent to inspect. Do not count or estimate.
   - `rationale`: brief explanation of why this region is flagged

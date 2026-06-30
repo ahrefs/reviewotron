@@ -19,6 +19,7 @@ type vuln_class = Config_types.vuln_class =
   | Authn
   | Authz
   | Ssrf
+  | Policy_regression
 
 val vuln_class_to_string : vuln_class -> string
 val vuln_class_to_json : vuln_class -> Yojson.Basic.t
@@ -106,7 +107,8 @@ val triage_output_jsonschema : Yojson.Basic.t
 
 (** {2 Analysis types} *)
 
-(** Evidence of a user-controlled input source. *)
+(** Evidence of a user-controlled input source, or for [Policy_regression],
+    evidence of the changed principal, grant, config entry, or removed control. *)
 type source_evidence = {
   path : string;
   line : int;
@@ -117,7 +119,8 @@ val source_evidence_to_json : source_evidence -> Yojson.Basic.t
 val source_evidence_of_json : Yojson.Basic.t -> source_evidence
 val source_evidence_jsonschema : Yojson.Basic.t
 
-(** Evidence of a dangerous operation (sink). *)
+(** Evidence of a dangerous operation or effective privileged capability
+    (sink). *)
 type sink_evidence = {
   path : string;
   line : int;

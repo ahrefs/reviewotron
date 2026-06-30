@@ -18,11 +18,19 @@ type path_rule = {
   matches_path : string -> bool;
 }
 
+type right_line = {
+  line_number : int;
+  text : string;
+  is_addition : bool;
+}
+
 let contains ~sub s = CCString.find ~sub s >= 0
 let lower s = String.lowercase_ascii s
 let lower_contains ~sub s = contains ~sub (lower s)
 
 let contains_any needles s = List.exists (fun needle -> lower_contains ~sub:needle s) needles
+
+let starts_with_any prefixes s = List.exists (fun prefix -> String.starts_with ~prefix s) prefixes
 
 let has_sql_shape s =
   let has_sql_keyword = contains_any [ "select "; "insert "; "update "; "delete "; " where "; " from "; "raw(" ] s in
@@ -113,6 +121,119 @@ let has_security_control_shape s =
     ]
     s
 
+let has_sudo_policy_shape s = contains_any [ "nopasswd"; "sudoers"; "/etc/sudoers"; "visudo"; "systemctl"; "sudo " ] s
+
+let has_iam_rbac_policy_shape s =
+  let has_policy_term =
+    contains_any
+      [
+        "iam:";
+        "action:";
+        "actions:";
+        "resource:";
+        "resources:";
+        "principal:";
+        "principals:";
+        "effect: allow";
+        "\"effect\": \"allow\"";
+        "clusterrole";
+        "rolebinding";
+        "clusterrolebinding";
+        "apigroup";
+        "verbs:";
+        "rbac.authorization.k8s.io";
+      ]
+      s
+  in
+  let has_broad_grant = contains_any [ "\"*\""; "'*'"; " *"; ":*"; "/*"; "cluster-admin"; "admin" ] s in
+  has_policy_term && has_broad_grant
+
+let policy_collection_keys =
+  [
+    "action";
+    "actions";
+    "notaction";
+    "notactions";
+    "resource";
+    "resources";
+    "principal";
+    "principals";
+    "verb";
+    "verbs";
+    "apigroup";
+    "apigroups";
+    "api_groups";
+  ]
+
+let policy_key_prefixes key = [ key ^ ":"; key ^ " ="; key ^ "="; "\"" ^ key ^ "\""; "'" ^ key ^ "'" ]
+
+let has_policy_collection_key s =
+  let s = s |> lower |> String.trim in
+  policy_collection_keys |> List.concat_map policy_key_prefixes |> fun prefixes -> starts_with_any prefixes s
+
+let strip_trailing_comma s =
+  let s = String.trim s in
+  let length = String.length s in
+  match length > 0 && Char.equal s.[length - 1] ',' with
+  | true -> String.sub s 0 (length - 1) |> String.trim
+  | false -> s
+
+let has_standalone_wildcard s =
+  let s = s |> lower |> strip_trailing_comma in
+  List.exists (String.equal s) [ "*"; "\"*\""; "'*'"; "- *"; "- \"*\""; "- '*'" ]
+
+let has_kubernetes_privilege_shape s =
+  contains_any
+    [
+      "cluster-admin";
+      "privileged: true";
+      "hostpath";
+      "hostnetwork: true";
+      "hostpid: true";
+      "hostipc: true";
+      "runasuser: 0";
+      "allowprivilegeescalation: true";
+    ]
+    s
+
+let has_ci_permission_broadening_shape s =
+  contains_any
+    [
+      "pull_request_target";
+      "permissions: write-all";
+      "permissions: all";
+      "id-token: write";
+      "contents: write";
+      "actions: write";
+      "checks: write";
+      "packages: write";
+      "security-events: write";
+      "deployments: write";
+    ]
+    s
+
+let has_security_control_weakening_shape s =
+  contains_any
+    [
+      "verify=false";
+      "verify: false";
+      "ssl_verify: false";
+      "tls_verify: false";
+      "skip_verify";
+      "insecure_skip_verify";
+      "rejectunauthorized: false";
+      "csrf_exempt";
+      "disablecsrf";
+      "disable_csrf";
+      "allow_all";
+      "permitall";
+      "auth_required = false";
+      "require_auth = false";
+      "requireauth: false";
+      "authorization: false";
+    ]
+    s
+
 let has_stateful_shape s =
   contains_any
     [
@@ -195,6 +316,46 @@ let security_control_rules =
       rationale = "Changed line appears to modify validation, sanitization, authorization, or related control logic.";
       matches = has_security_control_shape;
     };
+    {
+      category = ST.Changed_security_control;
+      vuln_class_hint = Some ST.Policy_regression;
+      pattern = "sudo/root policy grant";
+      rationale =
+        "Changed line appears to broaden sudo/root command policy; review the effective privileged capability.";
+      matches = has_sudo_policy_shape;
+    };
+    {
+      category = ST.Changed_security_control;
+      vuln_class_hint = Some ST.Policy_regression;
+      pattern = "IAM/RBAC wildcard grant";
+      rationale =
+        "Changed line appears to grant a broad IAM/RBAC/Kubernetes capability; review principal, scope, and action.";
+      matches = has_iam_rbac_policy_shape;
+    };
+    {
+      category = ST.Changed_security_control;
+      vuln_class_hint = Some ST.Policy_regression;
+      pattern = "Kubernetes privileged workload";
+      rationale =
+        "Changed line appears to enable a privileged Kubernetes boundary crossing such as host access or privileged \
+         pods.";
+      matches = has_kubernetes_privilege_shape;
+    };
+    {
+      category = ST.Changed_security_control;
+      vuln_class_hint = Some ST.Policy_regression;
+      pattern = "CI token permission broadening";
+      rationale = "Changed line appears to broaden GitHub Actions token permissions or execution context.";
+      matches = has_ci_permission_broadening_shape;
+    };
+    {
+      category = ST.Changed_security_control;
+      vuln_class_hint = Some ST.Policy_regression;
+      pattern = "security control weakening";
+      rationale =
+        "Changed line appears to disable verification, authorization, CSRF, or another named security control.";
+      matches = has_security_control_weakening_shape;
+    };
   ]
 
 let stateful_rules =
@@ -225,6 +386,9 @@ let risky_path_rules =
     mk ~hint:ST.Authz "admin" "Changed file path is admin or access-control sensitive.";
     mk ~hint:ST.Authz "tenant" "Changed file path is multi-tenant access-control sensitive.";
     mk ~hint:ST.Authz "policy" "Changed file path is policy or permission sensitive.";
+    mk ~hint:ST.Policy_regression "sudoers" "Changed file path controls sudo/root privilege policy.";
+    mk ~hint:ST.Policy_regression "iam" "Changed file path controls IAM policy.";
+    mk ~hint:ST.Policy_regression "rbac" "Changed file path controls RBAC policy.";
     mk "payment" "Changed file path is payment-sensitive.";
     mk "billing" "Changed file path is billing-sensitive.";
     mk ~hint:ST.Ssrf "webhook" "Changed file path is webhook-sensitive.";
@@ -319,6 +483,25 @@ let added_lines (fd : Diff_parser.file_diff) =
         hunk.lines)
     fd.hunks
 
+let right_side_lines (fd : Diff_parser.file_diff) =
+  List.concat_map
+    (fun (hunk : Diff_parser.hunk) ->
+      let new_line = ref hunk.new_start in
+      List.filter_map
+        (fun line ->
+          match line with
+          | Diff_parser.Addition text ->
+            let line_number = !new_line in
+            incr new_line;
+            Some { line_number; text; is_addition = true }
+          | Diff_parser.Context text ->
+            let line_number = !new_line in
+            incr new_line;
+            Some { line_number; text; is_addition = false }
+          | Diff_parser.Deletion _ -> None)
+        hunk.lines)
+    fd.hunks
+
 let signal_of_line_rule ~path ~start_line ~end_line (rule : line_rule) =
   Security_types.
     {
@@ -349,6 +532,70 @@ let line_signals ~path (line_number, text) =
   |> List.filter (fun rule -> rule.matches lowered)
   |> List.map (signal_of_line_rule ~path ~start_line:line_number ~end_line:line_number)
 
+let first_n n values =
+  let rec aux remaining acc values =
+    match values with
+    | [] -> List.rev acc
+    | _ :: _ when remaining <= 0 -> List.rev acc
+    | value :: rest -> aux (remaining - 1) (value :: acc) rest
+  in
+  aux n [] values
+
+let added_span lines =
+  let added = List.filter (fun line -> line.is_addition) lines in
+  match added with
+  | [] -> None
+  | first :: rest ->
+    let start_line, end_line =
+      List.fold_left
+        (fun (min_line, max_line) line -> min min_line line.line_number, max max_line line.line_number)
+        (first.line_number, first.line_number) rest
+    in
+    Some (start_line, end_line)
+
+let multiline_policy_signal ~path ~start_line ~end_line =
+  Security_types.
+    {
+      category = Changed_security_control;
+      vuln_class_hint = Some Policy_regression;
+      path;
+      start_line;
+      end_line;
+      pattern = "IAM/RBAC multiline wildcard grant";
+      rationale =
+        "Changed policy key and wildcard list entry appear to combine into a broad IAM/RBAC/Kubernetes grant; review \
+         effective principal, action, and resource scope.";
+    }
+
+let multiline_policy_signals ~path lines =
+  let rec aux acc lines =
+    match lines with
+    | [] -> List.rev acc
+    | key_line :: rest ->
+      let acc =
+        match has_policy_collection_key key_line.text with
+        | false -> acc
+        | true ->
+          let nearby = first_n 4 rest in
+          let wildcard =
+            List.find_opt
+              (fun wildcard_line ->
+                has_standalone_wildcard wildcard_line.text
+                && (key_line.is_addition || wildcard_line.is_addition)
+                && not (Int.equal key_line.line_number wildcard_line.line_number))
+              nearby
+          in
+          (match wildcard with
+          | None -> acc
+          | Some wildcard_line ->
+          match added_span [ key_line; wildcard_line ] with
+          | None -> acc
+          | Some (start_line, end_line) -> multiline_policy_signal ~path ~start_line ~end_line :: acc)
+      in
+      aux acc rest
+  in
+  aux [] lines
+
 let path_signals (fd : Diff_parser.file_diff) =
   match first_right_line fd with
   | None -> []
@@ -358,6 +605,8 @@ let path_signals (fd : Diff_parser.file_diff) =
     |> List.map (signal_of_path_rule ~path:fd.path ~start_line:line ~end_line:line)
 
 let scan_file (fd : Diff_parser.file_diff) =
-  path_signals fd @ List.concat_map (line_signals ~path:fd.path) (added_lines fd)
+  path_signals fd
+  @ List.concat_map (line_signals ~path:fd.path) (added_lines fd)
+  @ multiline_policy_signals ~path:fd.path (right_side_lines fd)
 
 let scan diff = List.concat_map scan_file diff

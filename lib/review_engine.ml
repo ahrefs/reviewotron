@@ -269,7 +269,10 @@ let review_body ~change_label ~general_output ~findings ~unchanged_findings ~anc
       | "" -> ":robot: **REVIEW**"
       | summary -> Printf.sprintf ":robot: **REVIEW**\n\nMinor:\n%s" summary)
     | Some (Error reason) -> failure_notice (Some reason)
-    | None -> failure_notice None
+    | None ->
+    match config.review_plugins.general.enabled with
+    | true -> failure_notice None
+    | false -> ":robot: **REVIEW**"
   in
   let body = body ^ unchanged_section ^ anchor_failed_section in
   let body = if security_error then body ^ security_error_notice else body in

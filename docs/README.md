@@ -322,7 +322,7 @@ Each repo can have a `.reviewotron.json` file in its root. For GitHub webhooks, 
     },
     "security": {
       "enabled": false,
-      "vuln_classes": ["injection", "xss", "command_injection", "authn", "authz", "ssrf"],
+      "vuln_classes": ["injection", "xss", "command_injection", "authn", "authz", "ssrf", "policy_regression"],
       "always_analyze_vuln_classes": [],
       "triage_model_tier": "fast",
       "analysis_model_tier": "standard",
@@ -370,7 +370,7 @@ Each repo can have a `.reviewotron.json` file in its root. For GitHub webhooks, 
 | Field | Default | Description |
 |-------|---------|-------------|
 | `enabled` | `false` | Enable/disable security analysis. |
-| `vuln_classes` | All 6 classes | Which vulnerability types to scan for. |
+| `vuln_classes` | All 7 classes | Which vulnerability types to scan for. |
 | `always_analyze_vuln_classes` | `[]` | Vulnerability classes that bypass `confidence_threshold`. Classes listed here are implicitly enabled even if absent from `vuln_classes`. Use sparingly for high-risk repos or temporarily while tuning recall. |
 | `triage_model_tier` | `"fast"` | Model tier for the triage agent. |
 | `analysis_model_tier` | `"standard"` | Model tier for per-class analysis agents. |
@@ -398,6 +398,7 @@ Each repo can have a `.reviewotron.json` file in its root. For GitHub webhooks, 
 | `"authn"` | Authentication bypass, weak token validation, missing expiry |
 | `"authz"` | Authorization flaws, IDOR, missing permission checks |
 | `"ssrf"` | Server-side request forgery via user-controlled URLs |
+| `"policy_regression"` | Security policy/control regressions such as broad sudo, CI/cloud/RBAC permission expansion, privileged Kubernetes workload settings, and disabled TLS/auth/CSRF controls |
 
 ### Skip Behavior
 
@@ -435,6 +436,8 @@ For each flagged vulnerability class, a specialized agent runs deep analysis:
 3. **Data flow tracing** — Can the source reach the sink? Traces through variables, function calls, returns.
 4. **Sanitization evaluation** — Is there adequate, context-correct sanitization on the path?
 
+For `policy_regression`, the same finding schema is used with a policy proof instead of a runtime user-input flow: source is the changed principal/grant/config entry or removed control, sink is the effective privileged capability or weakened boundary, flow is changed line -> effective policy/control state -> concrete action now possible, and sanitization is the missing or inadequate scoping/mitigation.
+
 Analysis agents can fetch additional files from the repo via the GitHub Contents API when they need to trace a data flow beyond the diff.
 
 ### 3. Validation (Sonnet, adversarial)
@@ -446,6 +449,8 @@ All candidate findings from all analysis agents pass through a single validator 
 - Every step in the flow path is backed by evidence (file + line)
 - The sanitization assessment is correct
 - A confirmed result includes a concrete proof-by-construction: reproducible trigger, source-to-sink trace, missing control, expected impact, and explicit assumptions
+
+For `policy_regression`, validation does not require a user-controlled runtime source, but it does require exact file/line evidence, a concrete effective privilege/control change, a concrete action now possible, no unresolved assumptions, and enough proof to reject vague "security relevant" policy edits.
 
 **Findings that fail validation are dropped.** Confirmed validator results without concrete proof are downgraded after parsing and are not surfaced. This is by design — a noisy security reviewer that cries wolf loses developer trust. Dropped findings are logged for offline prompt tuning.
 
@@ -762,11 +767,11 @@ The security pipeline performs **static analysis on the diff and referenced file
 - Execute code or run tests
 - Detect runtime-only vulnerabilities
 - Analyze compiled/minified code meaningfully
-- Check infrastructure configuration (Terraform, Docker, etc.)
+- Fully model infrastructure or policy state outside the reviewed diff and fetched files
 
 ### Security Scope
 
-- 6 vulnerability classes are supported. Other classes (e.g., cryptographic weaknesses, deserialization, path traversal) are not covered.
+- 7 vulnerability classes are supported. Other classes (e.g., cryptographic weaknesses, deserialization, path traversal) are not covered.
 - The triage agent may miss security signals in unusual code patterns. Bumping `triage_model_tier` to `"standard"` (Sonnet) can improve recall at higher cost.
 - AuthN/AuthZ/SSRF analysis from diff context alone is inherently limited. These classes produce the most false negatives.
 

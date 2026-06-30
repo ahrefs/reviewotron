@@ -26,7 +26,7 @@ let redaction_rules =
       "<redacted-secret>" );
     ( Re2.create_exn {|(?i)"[^"]*(?:password|secret|token|api_key|private_key)[^"]*"\s*:\s*"[^"]*"|},
       {|"redacted_secret":"<redacted-secret>"|} );
-    Re2.create_exn {|"[A-Za-z0-9+/=_-]{32,}"|}, {|"<redacted-high-entropy-string>"|};
+    Re2.create_exn {|"[A-Za-z0-9+_=-]{32,}"|}, {|"<redacted-high-entropy-string>"|};
   ]
 
 let redact_text text = List.fold_left (fun acc (re, template) -> Re2.rewrite_exn re acc ~template) text redaction_rules

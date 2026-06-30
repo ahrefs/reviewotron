@@ -26,11 +26,20 @@ Find user-controlled inputs in the flagged regions. A source is any data that en
 
 For each source, record the file path, line number, and a description of what data enters.
 
+For `policy_regression`, do not look for a runtime user-controlled source. The source is the changed principal, grant,
+configuration entry, or removed/disabled control. Record the exact changed file and line that creates the broader policy
+state.
+
 ### Step 2 — Sink Identification
 
 Find dangerous operations for the vulnerability class you are analyzing. A sink is any function or operation where tainted data could cause harm if it arrives unsanitized.
 
 For each sink, record the file path, line number, and a description of what dangerous operation occurs.
+
+For `policy_regression`, the sink is the effective privileged capability or weakened security boundary made possible by
+the changed policy/control, such as "deploy user can run systemctl as root without a password", "workflow token can write
+repository contents from this job", "service account now has wildcard Kubernetes verbs", or "TLS certificate validation
+is disabled for outbound requests".
 
 **Render the sink's actual input.** Before claiming a sink is reached unsafely, quote the exact argument expression from the source (verbatim — including template literals, array element positions, wrapping helper calls, and any string construction that happens at the call site). Then state, in plain prose, the concrete string the sink receives at runtime. Do not paraphrase, do not abstract, and do not skip this step.
 
@@ -60,13 +69,24 @@ If the flow path leaves the visible diff, use the `get_file_content` tool to fet
 
 **Critical**: Every step in the flow must be backed by evidence. No gaps, no assumptions, no "this probably passes through..." reasoning. If you cannot trace the full path, do not report the finding.
 
+For `policy_regression`, trace policy effect rather than data flow: changed line -> effective policy/control state ->
+concrete action or boundary bypass now possible. The trace may live entirely in the diff when the policy language is
+self-contained, but every step still needs exact file and line evidence.
+
 ### Step 4 — Sanitization Evaluation
 
 For each source→sink path you traced, evaluate whether adequate sanitization exists:
 - **Adequate**: Context-correct sanitization is applied on every path from source to sink (e.g., parameterized queries for SQL, HTML encoding for XSS in HTML context, shell escaping for command injection)
 - **Inadequate**: Sanitization exists but is insufficient — explain why (wrong encoding, wrong context, bypassable)
 - **Missing**: No sanitization found on any path from source to sink
-- **Unknown**: The path leaves the visible scope and you cannot determine sanitization status even after fetching additional files|}
+- **Unknown**: The path leaves the visible scope and you cannot determine sanitization status even after fetching additional files
+
+For `policy_regression`, treat sanitization as the scoping/mitigation on the grant or weakened control:
+- **Adequate**: principal, action, resource, environment, approval/condition, tenant/user boundary, or compensating control
+  is narrow enough that no broader capability is introduced
+- **Inadequate**: a mitigation exists but is too broad or bypassable
+- **Missing**: no meaningful scoping, allowlist, approval, condition, boundary, or compensating control is present
+- **Unknown**: the effective scope cannot be established even after fetching needed context|}
 
 let preamble =
   "You are a security analysis agent specializing in detecting vulnerabilities in code changes. You are part of a \
@@ -647,6 +667,73 @@ These are safe patterns that may superficially resemble SSRF but are not exploit
 - Requests routed through a properly configured egress proxy (e.g., Smokescreen, Envoy with egress filtering) that blocks internal destinations at the network level
 - `Dream.redirect` / `res.redirect()` / `redirect()` returning a redirect response to the client (the browser follows the redirect, not the server) — this is an open redirect issue, not SSRF, unless the server subsequently follows the redirect itself|}
 
+let policy_regression_section =
+  {|## Vulnerability Class: Security Policy Regression
+
+This class covers changes where the diff itself broadens privilege, grants a new privileged capability, or weakens a named
+security control. These are not runtime source-to-sink bugs: do not suppress them because no user-controlled request
+parameter exists. The proof is a policy/control proof.
+
+### Sources (Changed Policy or Control Entry)
+
+The source is the exact changed line that alters policy state:
+- Sudoers or configuration management entries that grant `NOPASSWD`, `ALL=(ALL)`, root execution, or broad commands such
+  as `/usr/bin/systemctl`
+- IAM policy statements, Terraform IAM resources, cloud role assignments, RBAC role bindings, Kubernetes `Role`,
+  `ClusterRole`, `RoleBinding`, or `ClusterRoleBinding`
+- GitHub Actions or CI configuration that changes job permissions, event triggers, OIDC token access, deployment
+  credentials, or checkout/build behavior
+- Kubernetes workload security context changes such as `privileged: true`, `hostPath`, `hostNetwork`, host namespaces,
+  `runAsUser: 0`, or `allowPrivilegeEscalation: true`
+- Application/framework configuration that disables TLS/certificate verification, auth checks, CSRF protection,
+  tenant/user scoping, allowlists, or other named security controls
+
+### Sinks (Effective Privilege or Weakened Boundary)
+
+The sink is the effective action or security boundary after the policy is applied:
+- A named principal can run a root command without a password, restart services, write root-owned files, or execute a
+  command that can be turned into code execution
+- A CI job token can write repository contents, mint OIDC tokens, alter checks/deployments, or run privileged workflows in
+  a context exposed to untrusted code
+- A cloud, IAM, or Kubernetes subject can perform wildcard actions, access all resources, bind `cluster-admin`, run
+  privileged pods, mount host paths, or reach host/network namespaces
+- A control such as TLS verification, CSRF enforcement, authentication/authorization, tenant isolation, or approval gates
+  is disabled or bypassed
+
+### Policy Proof Methodology
+
+For every candidate:
+1. Identify the changed principal/grant/control line as `source`.
+2. Identify the effective capability or weakened boundary as `sink`.
+3. Trace `source -> effective policy/control state -> concrete action now possible` in `flow`.
+4. Evaluate scoping/mitigation in `sanitization`: principal constraints, exact resource/action allowlists, conditions,
+   environment restrictions, approval gates, tenant/user boundaries, or compensating controls.
+
+Report only when the diff gives exact file/line evidence for a concrete capability. The description must name the
+principal, action, resource/boundary, and why the change broadens access or weakens protection.
+
+### Vulnerable Patterns
+
+- `NOPASSWD: /usr/bin/systemctl` where the principal can operate arbitrary services or service actions as root
+- `NOPASSWD: ALL`, `ALL=(ALL) ALL`, or equivalent broad root command grants
+- IAM/RBAC policies with `Action: "*"`, `Resource: "*"`, wildcard verbs/resources, `cluster-admin`, or broad role
+  bindings to service accounts used by CI or workloads
+- GitHub Actions `permissions: write-all`, `contents: write`, `id-token: write`, or `pull_request_target` combined with
+  code checkout/build patterns that can expose secrets or write capabilities
+- `verify: false`, `rejectUnauthorized: false`, `insecure_skip_verify`, `csrf_exempt`, `allow_all`, or removed auth/CSRF
+  middleware on a protected boundary
+
+### Adequate Scoping / Common False Positive Patterns — DO NOT REPORT
+
+- Sudo grants scoped to an exact harmless command and exact arguments, such as allowing a deploy user to run only
+  `/usr/bin/systemctl reload reviewotron-readonly.service` when that unit/action cannot be influenced by the principal
+- Read-only IAM/RBAC grants scoped to a named resource and namespace with no wildcard action/resource expansion
+- CI permissions explicitly set to `contents: read` or least-privilege job-level permissions with no privileged event
+  trigger or secret exposure path
+- Security controls disabled only in tests, local development fixtures, generated examples, or comments, with production
+  paths still enforcing the control
+- Policy formatting, comments, or moves that do not change the effective principal/action/resource/control state|}
+
 let vuln_class_section vuln_class ~language_hints =
   let language_note =
     match language_hints with
@@ -664,6 +751,7 @@ let vuln_class_section vuln_class ~language_hints =
     | Security_types.Authn -> authn_section
     | Security_types.Authz -> authz_section
     | Security_types.Ssrf -> ssrf_section
+    | Security_types.Policy_regression -> policy_regression_section
   in
   base ^ language_note
 
