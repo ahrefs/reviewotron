@@ -13,6 +13,7 @@ Reviewotron includes a **multi-agent security analysis pipeline** that detects i
 - [Security Review Pipeline](#security-review-pipeline)
 - [Slack Integration](#slack-integration)
 - [State and Persistence](#state-and-persistence)
+- [Review Feedback](#review-feedback)
 - [CLI Usage](#cli-usage)
 - [Cost Tracking](#cost-tracking)
 - [Limitations](#limitations)
@@ -509,6 +510,108 @@ When an agent's structured output can't be parsed, a debug dump is saved to `deb
 
 ---
 
+## Review Feedback
+
+When webhook mode is started with `--state`, Reviewotron also enables feedback
+persistence for inline PR review comments. Each inline finding comment gets a
+hidden marker:
+
+```markdown
+<!-- reviewotron-feedback-id: rvf_... -->
+```
+
+GitHub hides the marker in the UI but keeps it in the API body, which lets the
+collector map a posted review comment back to a local feedback target.
+
+By default, feedback data is stored next to the state file, not inside
+`state.json`:
+
+```text
+/path/to/state.json
+/path/to/reviewotron-feedback-targets.json
+/path/to/reviewotron-feedback-events.jsonl
+/path/to/reviewotron-feedback-evidence/
+```
+
+Use `--feedback-dir /durable/path` on both `run` and `collect-feedback` to keep
+targets, events, and evidence bundles somewhere other than the state file's
+directory. This is recommended when `--state` points at a temporary or
+ephemeral location. When `reviewotron run` has a feedback store, it collects
+reaction counts in the server process. A target is polled immediately the first
+time, then waits one hour between polls by default; pass
+`--poll-interval-seconds 60` to run the server poller on a minute cadence.
+
+`reviewotron-feedback-targets.json` stores polling state for inline PR review
+comments. `reviewotron-feedback-events.jsonl` stores append-only aggregate
+events such as reaction count changes, comment ID resolution, and target
+finalization.
+
+For each successfully posted GitHub PR review that contains Reviewotron inline
+comments, Reviewotron also writes one immutable evidence bundle under
+`reviewotron-feedback-evidence/<review_batch_id>/`. Target records link each
+feedback ID back to the bundle and finding ID. Bundles contain the reviewed
+filtered diff, the posted review/comment bodies with feedback markers, routed
+findings with plugin-level provenance, review costs, review config, and fetched
+file metadata hashes. They are intended as input for a later feedback-review
+agent/command that correlates GitHub reactions with review context and produces
+improvement recommendations; humans should not need to inspect the JSON files
+manually.
+
+Privacy rules:
+
+- Only aggregate `+1` and `-1` counts are stored.
+- Evidence bundles are written only for successfully posted GitHub PR reviews
+  with inline Reviewotron comments.
+- Raw reaction objects are not stored.
+- Webhook payloads are not stored.
+- Raw prompts, agent transcripts, tool outputs, and unrelated logs are not
+  stored.
+- Fetched file contents are not stored by default; only path, byte count, and
+  SHA-256 metadata are written.
+- GitHub user identity fields such as `sender`, `user`, `login`, `name`,
+  `email`, `author`, `committer`, `pusher`, and `avatar_url` are not written to
+  feedback files.
+
+Polling stops after the earliest of five days from target creation, 24 hours
+after the first qualifying human PR interaction, or PR close/merge. A closed PR
+receives one final poll before the target is marked closed.
+
+The `collect-feedback` command is a one-shot fallback for backfills, debugging,
+or smoke tests when the server is not running:
+
+```bash
+reviewotron collect-feedback --secrets secrets.json --state /path/to/state.json --feedback-dir /durable/path
+```
+
+Both the server poller and the one-shot collector are idempotent. They resolve
+missing GitHub review comment IDs from hidden markers, poll reaction counts,
+update target state, and append JSONL events only when counts change or targets
+finalize.
+
+After collection, summarize the local feedback store with:
+
+```bash
+reviewotron feedback-report --state /path/to/state.json --feedback-dir /durable/path
+```
+
+Use `--output json` when feeding the parsed feedback into another tool or a
+future feedback-review agent. The report joins target records, aggregate events,
+and evidence bundles, grouping feedback by posted PR review and preserving the
+feedback ID, finding ID, plugin/source, reaction counts, reviewed PR metadata,
+GitHub discussion URL, and evidence bundle path. For large feedback sets, keep
+investigations bounded with filters such as:
+
+```bash
+reviewotron feedback-report --state /path/to/state.json --feedback-dir /durable/path \
+  --sentiment negative --limit 20 --brief
+```
+
+Use `review_batch_id` to open one evidence bundle, `finding_id` to select the
+exact finding in `findings.json` or `posted_review.json`, and `comment_id` or
+`github_comment_url` to return to the GitHub discussion.
+
+---
+
 ## CLI Usage
 
 ### `reviewotron run` — Start the Webhook Server
@@ -523,6 +626,8 @@ reviewotron run [OPTIONS]
 | `--secrets` | `secrets.json` | Path to secrets file |
 | `--config-filename` | `.reviewotron.json` | Config filename to look for in repos |
 | `--state` | (none — in-memory) | Path to state file for persistence |
+| `--feedback-dir` | sibling paths next to `--state` | Directory for feedback targets, events, and evidence bundles |
+| `--poll-interval-seconds` | `3600` | Minimum seconds between feedback polls; use `60` for minute polling |
 | `--logfile` | (stderr) | Log file path |
 | `--loglevel` | (default) | Log level: `debug`, `info`, `warn`, `error` |
 
@@ -628,6 +733,46 @@ enum domain (for `vuln_classes`, model tiers, confidence), and a one-line
 description. An agent can read this to discover which knobs exist and what they
 accept, then pass chosen values via `--config`. Takes no options and makes no
 network calls.
+
+### `reviewotron collect-feedback` — Poll Review Feedback Reactions
+
+```
+reviewotron collect-feedback --secrets secrets.json --state state.json [OPTIONS]
+```
+
+Runs one GitHub reaction collection pass for feedback targets stored next to
+`state.json`. Server mode normally collects feedback automatically; this command
+is for backfills, debugging, and smoke tests.
+
+| Option | Required | Description |
+|--------|----------|-------------|
+| `--secrets` | Yes | Secrets file with repo authentication |
+| `--state` | Yes | State file whose sibling feedback files should be loaded |
+| `--feedback-dir` | No | Directory containing feedback targets, events, and evidence bundles; must match the server's `--feedback-dir` when set |
+| `--poll-interval-seconds` | No | Minimum seconds between polls for the same feedback target; defaults to 3600 |
+| `--logfile` | No | Log file path |
+| `--loglevel` | No | Log level: `debug`, `info`, `warn`, `error` |
+
+### `reviewotron feedback-report` — Summarize Collected Feedback
+
+```
+reviewotron feedback-report --state state.json [OPTIONS]
+```
+
+Reads local feedback files and evidence bundles without contacting GitHub or an
+LLM. Markdown output is intended for quick inspection; JSON output is intended
+for downstream tools.
+
+| Option | Required | Description |
+|--------|----------|-------------|
+| `--state` | Yes | State file whose sibling feedback files should be loaded |
+| `--feedback-dir` | No | Directory containing feedback targets, events, and evidence bundles; must match the server's `--feedback-dir` when set |
+| `--output` | No | `markdown` or `json`; defaults to `markdown` |
+| `--sentiment` | No | Filter targets: `all`, `reacted`, `positive`, `negative`, `mixed`, or `unreacted`; defaults to `all` |
+| `--review-batch-id` | No | Limit output to one evidence bundle/review batch |
+| `--pr` | No | Limit output to one pull request number |
+| `--limit` | No | Limit output to the first N matching feedback targets |
+| `--brief` | No | Omit finding message snippets from markdown output |
 
 ### Endpoints
 
