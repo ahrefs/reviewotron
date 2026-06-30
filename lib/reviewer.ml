@@ -112,6 +112,11 @@ struct
     | Ok () -> record_pr_reviewed_if_head_known ~ctx ~repo_url ~number ~head_sha ~review_costs:[]
     | Error _ -> ()
 
+  let record_push_reviewed ~ctx ~repo_url ~after_sha =
+    let state = Context.state ctx in
+    State.record_push_review state ~repo_url ~after_sha;
+    State.save state
+
   let run_prepared_pr_review ?reaction_target ~ctx (prepared : Github_source.prepared_pr_review) =
     let Github_source.{ number; job } = prepared in
     let%lwt progress = start_progress_reaction ~ctx ~repo_url:job.repo_key reaction_target in
@@ -251,6 +256,32 @@ struct
       let text, attachment = push_failure_message ~push ~findings ~security_error ?reason () in
       SL.post_message ~ctx ~channel ~text ~attachments:[ attachment ] ()
 
+  let handle_push_prepare_error ~ctx ~(config : Config_types.config) (push : Github_types.commit_pushed_notification)
+    (error : Github_source.prepare_error) =
+    let record_terminal () =
+      record_push_reviewed ~ctx ~repo_url:push.repository.url ~after_sha:push.after;
+      Lwt.return_unit
+    in
+    let post_terminal_failure ?reason () =
+      let%lwt () = post_push_failure_to_slack ~ctx ~config ~push ~findings:[] ~security_error:false ?reason () in
+      record_terminal ()
+    in
+    match error with
+    | Empty ->
+      log#info "push %s completed with empty filtered diff; recording no-op review" push.after;
+      record_terminal ()
+    | Too_large _ | Too_many_files _ ->
+      let reason = prepare_error_reason ~config error in
+      post_terminal_failure ~reason ()
+    | Fetch_failed fetch_error ->
+    match Review_failure.classify_fetch_error fetch_error with
+    | Diff_too_large_remote _ ->
+      let reason = prepare_error_reason ~config error in
+      post_terminal_failure ~reason ()
+    | Fetch_failed _ | Too_many_lines _ | Too_many_files _ | Publish_failed _ ->
+      let reason = prepare_error_reason ~config error in
+      post_push_failure_to_slack ~ctx ~config ~push ~findings:[] ~security_error:false ~reason ()
+
   let review_pr ?reaction_target ~ctx ~config (pr_notif : Github_types.pr_notification) =
     match%lwt Source.prepare_pr_review ~ctx ~config pr_notif with
     | Ok prepared -> run_prepared_pr_review ?reaction_target ~ctx prepared
@@ -263,9 +294,7 @@ struct
 
   let review_push ~ctx ~config (push : Github_types.commit_pushed_notification) =
     match%lwt Source.prepare_push_review ~ctx ~config push with
-    | Error error ->
-      let reason = prepare_error_reason ~config error in
-      post_push_failure_to_slack ~ctx ~config ~push ~findings:[] ~security_error:false ~reason ()
+    | Error error -> handle_push_prepare_error ~ctx ~config push error
     | Ok prepared ->
       let Github_source.{ job; push } = prepared in
       let debug_dir =
@@ -300,9 +329,7 @@ struct
         | None -> Lwt.return_unit
         | Some channel -> SL.post_message ~ctx ~channel ~text:slack_text ~attachments:[ attachment ] ()
       in
-      let state = Context.state ctx in
-      State.record_push_review state ~repo_url:job.repo_key ~after_sha:job.head_sha;
-      State.save state;
+      record_push_reviewed ~ctx ~repo_url:job.repo_key ~after_sha:job.head_sha;
       Lwt.return_unit
 
   let event_config ctx event =

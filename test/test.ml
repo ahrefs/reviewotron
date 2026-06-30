@@ -3261,7 +3261,36 @@ let test_push_prepare_failure_posts_slack () =
   | None -> fail "expected Slack attachments"
   | Some [] -> fail "expected at least one attachment"
   | Some (att :: _) ->
-    (check bool) "attachment explains file limit" true (contains_sub ~sub:"diff touches 4 files" att.Slack_types.text)
+    (check bool) "attachment explains file limit" true (contains_sub ~sub:"diff touches 4 files" att.Slack_types.text);
+    (match event with
+    | Github.Push push ->
+      (check bool) "terminal prepare failure recorded in state" true
+        (State.is_push_reviewed (Context.state ctx) ~repo_url:push.repository.url ~after_sha:push.after)
+    | Github.Pull_request _ | Github.Issue_comment _ | Github.Unknown _ -> fail "expected push event");
+    Api_local.clear_write_log ();
+    Api_local.clear_slack_messages ();
+    Lwt_main.run (R_test.process_event ctx ~event);
+    (check string) "duplicate terminal failure skipped" "" (Api_local.get_write_log ());
+    (check int) "duplicate terminal failure sends no Slack" 0 (List.length (Api_local.get_slack_messages ()))
+
+let test_push_empty_prepare_no_slack () =
+  Test_helpers.reset_test_state ();
+  let config =
+    Config_types.config_of_json
+      (Melange_json.of_string
+         {|{"review_pushes_to_develop": true, "slack_channel": "dev-reviews", "ignored_paths": ["backend/api/src/request_handler.ml", "backend/lib/string_utils.ml", "backend/lib/string_utils.mli", "backend/lib/dune"]}|})
+  in
+  let ctx = Test_helpers.make_test_context ~config () in
+  let payload = read_file "mock_payloads/push_develop.json" in
+  let event = Test_helpers.parse_event_exn ~event_type:"push" ~body:payload in
+  Lwt_main.run (R_test.process_event ctx ~event);
+  (check string) "empty push diff is a quiet no-op" "" (Api_local.get_write_log ());
+  (check int) "empty push diff sends no Slack" 0 (List.length (Api_local.get_slack_messages ()));
+  match event with
+  | Github.Push push ->
+    (check bool) "empty push diff recorded in state" true
+      (State.is_push_reviewed (Context.state ctx) ~repo_url:push.repository.url ~after_sha:push.after)
+  | Github.Pull_request _ | Github.Issue_comment _ | Github.Unknown _ -> fail "expected push event"
 
 (** {2 Security plugin failure notice tests} *)
 
@@ -4426,6 +4455,7 @@ let () =
           test_case "push review posts comments on general failure with findings" `Quick
             test_push_general_failure_with_findings;
           test_case "push prepare failure posts Slack" `Quick test_push_prepare_failure_posts_slack;
+          test_case "push empty prepare is quiet" `Quick test_push_empty_prepare_no_slack;
         ] );
       ( "security_failure_notice",
         [
