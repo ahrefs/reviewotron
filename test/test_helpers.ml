@@ -17,7 +17,7 @@ let auto_review_enabled_config =
 
 (** Create a test context with default config and mock secrets.
     Pre-populates the repo config cache so tests don't need to fetch from GitHub. *)
-let make_test_context ?state ?(config = Config_types.config_of_json (Melange_json.of_string "{}")) () =
+let make_test_context ?state ?feedback_store ?(config = Config_types.config_of_json (Melange_json.of_string "{}")) () =
   let secrets : Config_types.secrets =
     {
       repos = [ { url = test_repo_url; auth = Some (GH_token "test-token"); gh_hook_secret = None } ];
@@ -26,7 +26,7 @@ let make_test_context ?state ?(config = Config_types.config_of_json (Melange_jso
       slack_access_token = None;
     }
   in
-  let ctx = Context.make ~secrets ?state () in
+  let ctx = Context.make ~secrets ?state ?feedback_store () in
   Context.set_config ctx ~repo_key:test_repo_url config;
   ctx
 
@@ -38,6 +38,10 @@ let reset_test_state () =
   Api_local.clear_agent_response_map ();
   Api_local.reset_next_pr_diff ();
   Api_local.reset_next_issue_comment_result ();
+  Api_local.reset_next_pr_review_result ();
+  Api_local.set_next_created_review_id 1000;
+  Api_local.reset_pr_review_comments ();
+  Api_local.reset_pr_review_comment_reactions ();
   Api_local.reset_reactions ()
 
 (** Build a minimal repository JSON object. *)

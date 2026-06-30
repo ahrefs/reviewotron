@@ -47,6 +47,32 @@ let next_issue_comment_result : (unit, string) result option ref = ref None
 let set_next_issue_comment_error message = next_issue_comment_result := Some (Error message)
 let reset_next_issue_comment_result () = next_issue_comment_result := None
 
+let next_created_review_id = ref 1000
+let next_pr_review_result : (Github_types.created_pr_review, string) result option ref = ref None
+
+let set_next_created_review_id id = next_created_review_id := id
+let set_next_pr_review_error message = next_pr_review_result := Some (Error message)
+let reset_next_pr_review_result () = next_pr_review_result := None
+
+let pr_review_comment_results : (int * (Github_types.pr_review_comment list, string) result) list ref = ref []
+let reaction_results : (int * (Github_types.reaction list, string) result) list ref = ref []
+
+let set_pr_review_comments ~review_id comments =
+  pr_review_comment_results := (review_id, Ok comments) :: List.remove_assoc review_id !pr_review_comment_results
+
+let set_pr_review_comments_error ~review_id message =
+  pr_review_comment_results := (review_id, Error message) :: List.remove_assoc review_id !pr_review_comment_results
+
+let reset_pr_review_comments () = pr_review_comment_results := []
+
+let set_pr_review_comment_reactions ~comment_id reactions =
+  reaction_results := (comment_id, Ok reactions) :: List.remove_assoc comment_id !reaction_results
+
+let set_pr_review_comment_reactions_error ~comment_id message =
+  reaction_results := (comment_id, Error message) :: List.remove_assoc comment_id !reaction_results
+
+let reset_pr_review_comment_reactions () = reaction_results := []
+
 let next_reaction_id = ref 1
 let reset_reactions () = next_reaction_id := 1
 
@@ -93,11 +119,19 @@ module Github : Api.Github = struct
     | Error _ -> Lwt.return (Ok None)
 
   let create_pr_review ~ctx:_ ~repo_url ~number review =
-    let json = Melange_json.to_string (Github_types.create_review_req_to_json review) in
-    let entry = Printf.sprintf "[create_pr_review] repo=%s number=%d\n%s\n" repo_url number json in
-    Buffer.add_string write_log entry;
-    log#info "%s" entry;
-    Lwt.return (Ok ())
+    match !next_pr_review_result with
+    | Some result ->
+      next_pr_review_result := None;
+      Lwt.return result
+    | None ->
+      let json = Melange_json.to_string (Github_types.create_review_req_to_json review) in
+      let entry = Printf.sprintf "[create_pr_review] repo=%s number=%d\n%s\n" repo_url number json in
+      Buffer.add_string write_log entry;
+      log#info "%s" entry;
+      let id = !next_created_review_id in
+      next_created_review_id := id + 1;
+      Lwt.return
+        (Ok { Github_types.id; html_url = Some (Printf.sprintf "%s/pull/%d#pullrequestreview-%d" repo_url number id) })
 
   let create_commit_comment ~ctx:_ ~repo_url ~sha comment =
     let json = Melange_json.to_string (Github_types.commit_comment_req_to_json comment) in
@@ -117,6 +151,22 @@ module Github : Api.Github = struct
       Buffer.add_string write_log entry;
       log#info "%s" entry;
       Lwt.return (Ok ())
+
+  let list_pr_review_comments ~ctx:_ ~repo_url ~number ~review_id =
+    let entry = Printf.sprintf "[list_pr_review_comments] repo=%s number=%d review_id=%d\n" repo_url number review_id in
+    Buffer.add_string write_log entry;
+    log#info "%s" entry;
+    match List.assoc_opt review_id !pr_review_comment_results with
+    | Some result -> Lwt.return result
+    | None -> Lwt.return (Ok [])
+
+  let list_pr_review_comment_reactions ~ctx:_ ~repo_url ~comment_id =
+    let entry = Printf.sprintf "[list_pr_review_comment_reactions] repo=%s comment_id=%d\n" repo_url comment_id in
+    Buffer.add_string write_log entry;
+    log#info "%s" entry;
+    match List.assoc_opt comment_id !reaction_results with
+    | Some result -> Lwt.return result
+    | None -> Lwt.return (Ok [])
 
   let create_issue_reaction ~ctx:_ ~repo_url ~number ~content =
     let reaction_id = !next_reaction_id in

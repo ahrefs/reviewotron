@@ -31,6 +31,12 @@ val is_embeddable : string -> bool
 (** Shorten an identifier for logs and labels. *)
 val short_display_id : string -> string
 
+(** Stable string representation for review sources. *)
+val source_kind_to_string : source_kind -> string
+
+(** Stable string representation for review triggers. *)
+val trigger_to_string : trigger -> string
+
 (** A prepared review job.
 
     [change_key] is the stable identity used for deduplication. [change_label]
@@ -52,3 +58,9 @@ type t = {
   trigger : trigger;
   source_kind : source_kind;
 }
+
+(** SHA-256 of the filtered diff text that is sent to review agents. *)
+val diff_sha256 : t -> string
+
+(** SHA-256 of the review configuration JSON. *)
+val config_sha256 : t -> string

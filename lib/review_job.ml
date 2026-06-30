@@ -14,6 +14,20 @@ type fetch_file = path:string -> (string option, string) result Lwt.t
 
 let short_display_id id = String.sub id 0 (min 8 (String.length id))
 
+let source_kind_to_string = function
+  | Github -> "github"
+  | Local -> "local"
+  | Other value -> value
+
+let trigger_to_string = function
+  | Pull_request -> "pull_request"
+  | Push -> "push"
+  | Manual -> "manual"
+  | Local -> "local"
+  | Other value -> value
+
+let sha256_hex value = Digestif.SHA256.(digest_string value |> to_hex)
+
 let max_embeddable_bytes = 256 * 1024
 
 (* Well-formed UTF-8 with no NUL bytes. A NUL byte is git's own signal that a
@@ -52,3 +66,7 @@ type t = {
   trigger : trigger;
   source_kind : source_kind;
 }
+
+let diff_sha256 job = sha256_hex job.diff_text
+
+let config_sha256 job = Config_types.config_to_json job.config |> Yojson.Basic.to_string |> sha256_hex

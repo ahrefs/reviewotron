@@ -104,8 +104,19 @@ struct
     State.record_pr_review state ~repo_url ~pr_number:number ~head_sha ~review_costs;
     State.save state
 
+  let log_pr_review_identity ~number (job : Review_job.t) =
+    log#info
+      "PR #%d (%s): review input identity head_sha=%s trigger=%s source=%s diff_sha256=%s config_sha256=%s \
+       filtered_files=%d fetched_files=%d diff_bytes=%d"
+      number job.title job.head_sha
+      (Review_job.trigger_to_string job.trigger)
+      (Review_job.source_kind_to_string job.source_kind)
+      (Review_job.diff_sha256 job) (Review_job.config_sha256 job) (List.length job.filtered_diff)
+      (List.length job.file_contents) (String.length job.diff_text)
+
   let run_prepared_pr_review ?reaction_target ~ctx (prepared : Github_source.prepared_pr_review) =
     let Github_source.{ number; job } = prepared in
+    log_pr_review_identity ~number job;
     let%lwt progress = start_progress_reaction ~ctx ~repo_url:job.repo_key reaction_target in
     (* The review pipeline can raise (network errors, SDK schema drift, etc.).
        Ensure the progress reaction is cleared even when the pipeline crashes —
@@ -201,7 +212,7 @@ struct
         Printf.sprintf "debug/%s/%s" slug sha_prefix
       in
       let%lwt plugin_result = Engine.run_plugins ~ctx ~job ~debug_dir in
-      let Review_engine.{ general_output; findings; review_costs; security_error } = plugin_result in
+      let Review_engine.{ general_output; findings; review_costs; security_error; _ } = plugin_result in
       Cost_tracking.log_review_costs review_costs;
       let%lwt () = Sink.post_push_comments ~ctx ~repo_url:job.repo_key ~sha:job.head_sha findings in
       let security_note = String.trim Review_engine.security_error_notice in
@@ -267,11 +278,24 @@ struct
       log#warn "failed to refresh repo config: %s" msg;
       Lwt.return (Context.get_config ctx ~repo_key)
 
+  let handle_feedback_webhook_event ctx ~event =
+    match Context.feedback_store ctx with
+    | None -> Lwt.return_unit
+    | Some store ->
+      Lwt.catch
+        (fun () -> Feedback_store.handle_webhook_event store ~event ~received_at:(Ptime_clock.now ()))
+        (fun exn ->
+          log#error "feedback webhook update failed: %s" (Exn.str exn);
+          Lwt.return_unit)
+
   let process_event ctx ~event =
+    let%lwt () = handle_feedback_webhook_event ctx ~event in
     let%lwt config =
       match event with
       | Github.Unknown _ -> Lwt.return (Context.default_config ())
-      | Github.Pull_request _ | Github.Push _ | Github.Issue_comment _ -> event_config ctx event
+      | Github.Pull_request _ | Github.Push _ | Github.Issue_comment _ | Github.Pull_request_review _
+      | Github.Pull_request_review_comment _ ->
+        event_config ctx event
     in
     match event with
     | Github.Pull_request pr ->
@@ -304,4 +328,5 @@ struct
     | Github.Unknown kind ->
       log#debug "ignoring unhandled event type: %s" kind;
       Lwt.return_unit
+    | Github.Pull_request_review _ | Github.Pull_request_review_comment _ -> Lwt.return_unit
 end

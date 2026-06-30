@@ -11,6 +11,30 @@ type finding_source =
   | From_general
   | From_security
 
+val finding_source_to_string : finding_source -> string
+
+type sourced_finding = {
+  source : finding_source;
+  plugin_name : string;
+  finding : Review_types.finding;
+}
+
+type routing_outcome =
+  | Routed_inline of Review_comment.t
+  | Routed_unchanged
+  | Routed_anchor_failed
+  | Routed_dropped_unchanged_low_severity
+
+type routed_finding = {
+  sourced : sourced_finding;
+  outcome : routing_outcome;
+}
+
+type inline_finding = {
+  comment : Review_comment.t;
+  sourced : sourced_finding;
+}
+
 (** Deduplicate findings across plugins. Two passes:
     1. exact [(path, line)] collisions -> security-plugin finding wins;
        otherwise higher severity wins.
@@ -18,6 +42,8 @@ type finding_source =
        most severe. Security-plugin findings are exempted from pass 2 because
        the validator agent already filters for uniqueness. *)
 val deduplicate_findings : (finding_source * Review_types.finding) list -> Review_types.finding list
+
+val deduplicate_sourced_findings : sourced_finding list -> sourced_finding list
 
 type prepare_diff_error =
   [ `Empty
@@ -55,6 +81,7 @@ type plugin_result = {
           in the failure notice so the author sees the cause, not just "it
           failed"), or [None] when the plugin is disabled. *)
   findings : Review_types.finding list;
+  sourced_findings : sourced_finding list;
   review_costs : Cost_tracking.review_cost list;
   security_error : bool;
 }
@@ -63,7 +90,10 @@ type plugin_result = {
 type report = {
   body : string;
   comments : Review_comment.t list;
+  inline_findings : inline_finding list;
   findings : Review_types.finding list;
+  sourced_findings : sourced_finding list;
+  routed_findings : routed_finding list;
   unchanged_findings : Review_types.finding list;
   anchor_failed_findings : Review_types.finding list;
   review_costs : Cost_tracking.review_cost list;
