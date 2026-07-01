@@ -24,12 +24,16 @@ type event =
   | Pull_request of Github_types.pr_notification
   | Push of Github_types.commit_pushed_notification
   | Issue_comment of Github_types.issue_comment_notification
+  | Pull_request_review of Github_types.pull_request_review_notification
+  | Pull_request_review_comment of Github_types.pull_request_review_comment_notification
   | Unknown of string
 
 let repo_url_of_event = function
   | Pull_request n -> n.repository.url
   | Push n -> n.repository.url
   | Issue_comment n -> n.repository.url
+  | Pull_request_review n -> n.repository.url
+  | Pull_request_review_comment n -> n.repository.url
   | Unknown _ -> ""
 
 let validate_signature ~secret ~signature ~body =
@@ -64,4 +68,18 @@ let parse_event ~event_type ~body =
          n.sender.login;
        Ok (Issue_comment n)
      with exn -> Error (Printf.sprintf "failed to parse issue_comment payload: %s" (Exn.str exn)))
+  | "pull_request_review" ->
+    (try
+       let n = Github_types.pull_request_review_notification_of_json (Melange_json.of_string body) in
+       log#info "[%s] pull_request_review: action=%s, pr=#%d, sender=%s" n.repository.full_name n.action
+         n.pull_request.number n.sender.login;
+       Ok (Pull_request_review n)
+     with exn -> Error (Printf.sprintf "failed to parse pull_request_review payload: %s" (Exn.str exn)))
+  | "pull_request_review_comment" ->
+    (try
+       let n = Github_types.pull_request_review_comment_notification_of_json (Melange_json.of_string body) in
+       log#info "[%s] pull_request_review_comment: action=%s, pr=#%d, sender=%s" n.repository.full_name n.action
+         n.pull_request.number n.sender.login;
+       Ok (Pull_request_review_comment n)
+     with exn -> Error (Printf.sprintf "failed to parse pull_request_review_comment payload: %s" (Exn.str exn)))
   | other -> Ok (Unknown other)

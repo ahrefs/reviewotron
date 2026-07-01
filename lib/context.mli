@@ -41,6 +41,7 @@ val create :
   secrets_filepath:string ->
   ?config_filename:string ->
   ?state_filepath:string ->
+  ?feedback_dir:string ->
   ?require_repos:bool ->
   unit ->
   (t, string) result
@@ -82,8 +83,18 @@ val secrets : t -> Config_types.secrets
 (** Access the state handle. *)
 val state : t -> State.t
 
+(** Access the feedback store, enabled automatically when a state filepath is
+    supplied to {!create}. *)
+val feedback_store : t -> Feedback_store.t option
+
 (** The config filename to look for in repos (e.g. [".reviewotron.json"]). *)
 val config_filename : t -> string
 
 (** Construct a context directly. Useful for testing. *)
-val make : secrets:Config_types.secrets -> ?config_filename:string -> ?state:State.t -> unit -> t
+val make :
+  secrets:Config_types.secrets ->
+  ?config_filename:string ->
+  ?state:State.t ->
+  ?feedback_store:Feedback_store.t ->
+  unit ->
+  t

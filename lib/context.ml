@@ -5,6 +5,7 @@ type t = {
   secrets : Config_types.secrets;
   repo_configs : (string, Config_types.config) Hashtbl.t;
   state : State.t;
+  feedback_store : Feedback_store.t option;
 }
 
 let default_secrets_filepath = "secrets.json"
@@ -48,7 +49,15 @@ let load_secrets ~require_repos ~secrets_filepath =
 
 let load_secrets_file ~filepath = load_secrets ~require_repos:false ~secrets_filepath:filepath
 
-let create ~secrets_filepath ?config_filename ?state_filepath ?(require_repos = true) () =
+let create_feedback_store ?feedback_dir = function
+  | None -> Ok None
+  | Some state_filepath ->
+  match Feedback_store.create ?feedback_dir ~state_filepath () with
+  | store -> Ok (Some store)
+  | exception exn ->
+    Error (Printf.sprintf "failed to initialize feedback store for state %s: %s" state_filepath (Exn.str exn))
+
+let create ~secrets_filepath ?config_filename ?state_filepath ?feedback_dir ?(require_repos = true) () =
   match load_secrets ~require_repos ~secrets_filepath with
   | Error e -> Error e
   | Ok secrets ->
@@ -58,7 +67,9 @@ let create ~secrets_filepath ?config_filename ?state_filepath ?(require_repos = 
       | Some path -> State.load ~filepath:path
       | None -> State.create ()
     in
-    Ok { config_filename; secrets; repo_configs = Hashtbl.create 16; state }
+    (match create_feedback_store ?feedback_dir state_filepath with
+    | Error e -> Error e
+    | Ok feedback_store -> Ok { config_filename; secrets; repo_configs = Hashtbl.create 16; state; feedback_store })
 
 let find_config ctx ~repo_key = Hashtbl.find_opt ctx.repo_configs repo_key
 
@@ -92,13 +103,14 @@ let get_gh_token ctx ~repo_url =
 
 let secrets ctx = ctx.secrets
 let state ctx = ctx.state
+let feedback_store ctx = ctx.feedback_store
 let config_filename ctx = ctx.config_filename
 
-let make ~secrets ?config_filename ?state () =
+let make ~secrets ?config_filename ?state ?feedback_store () =
   let config_filename = Option.default default_config_filename config_filename in
   let state =
     match state with
     | Some s -> s
     | None -> State.create ()
   in
-  { config_filename; secrets; repo_configs = Hashtbl.create 16; state }
+  { config_filename; secrets; repo_configs = Hashtbl.create 16; state; feedback_store }

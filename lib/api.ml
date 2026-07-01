@@ -21,13 +21,29 @@ end
 
 module type Github_review_sink = sig
   val create_pr_review :
-    ctx:Context.t -> repo_url:string -> number:int -> Github_types.create_review_req -> (unit, string) result Lwt.t
+    ctx:Context.t ->
+    repo_url:string ->
+    number:int ->
+    Github_types.create_review_req ->
+    (Github_types.created_pr_review, string) result Lwt.t
 
   val create_commit_comment :
     ctx:Context.t -> repo_url:string -> sha:string -> Github_types.commit_comment_req -> (unit, string) result Lwt.t
 
   val create_issue_comment :
     ctx:Context.t -> repo_url:string -> number:int -> Github_types.issue_comment_req -> (unit, string) result Lwt.t
+end
+
+module type Github_feedback = sig
+  val list_pr_review_comments :
+    ctx:Context.t ->
+    repo_url:string ->
+    number:int ->
+    review_id:int ->
+    (Github_types.pr_review_comment list, string) result Lwt.t
+
+  val list_pr_review_comment_reactions :
+    ctx:Context.t -> repo_url:string -> comment_id:int -> (Github_types.reaction list, string) result Lwt.t
 end
 
 (** GitHub-specific emoji reactions on PRs and issue comments. Kept separate
@@ -51,6 +67,7 @@ end
 module type Github = sig
   include Github_review_source
   include Github_review_sink
+  include Github_feedback
   include Reactions
 end
 

@@ -34,7 +34,8 @@ module Make (SRC : Api.Github_review_source) = struct
   let refresh_repo_config ctx event =
     match event with
     | Github.Unknown _ -> Lwt.return (Ok (Context.default_config ()))
-    | Github.Pull_request _ | Github.Push _ | Github.Issue_comment _ ->
+    | Github.Pull_request _ | Github.Push _ | Github.Issue_comment _ | Github.Pull_request_review _
+    | Github.Pull_request_review_comment _ ->
       let repo_url = Github.repo_url_of_event event in
       (match Context.find_config ctx ~repo_key:repo_url with
       | None -> fetch_config ~ctx ~repo_url
@@ -44,7 +45,9 @@ module Make (SRC : Api.Github_review_source) = struct
         let modified_files = List.concat_map (fun (c : Github_types.commit) -> c.added @ c.modified) push.commits in
         let config_modified = List.exists (String.equal (Context.config_filename ctx)) modified_files in
         if config_modified then fetch_config ~ctx ~repo_url else Lwt.return (Ok config)
-      | Github.Pull_request _ | Github.Issue_comment _ -> Lwt.return (Ok config)
+      | Github.Pull_request _ | Github.Issue_comment _ | Github.Pull_request_review _
+      | Github.Pull_request_review_comment _ ->
+        Lwt.return (Ok config)
       | Github.Unknown _ -> Lwt.return (Ok config))
 
   let is_bot_sender login = CCString.suffix ~suf:"[bot]" login
@@ -213,6 +216,7 @@ module Make (SRC : Api.Github_review_source) = struct
           repository = n.repository;
           sender = n.sender;
           installation = n.installation;
+          performed_via_github_app = n.performed_via_github_app;
         }
       in
       prepare_pr_review_with_trigger ~trigger:Review_job.Manual ~ctx ~config synthesised

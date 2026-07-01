@@ -6,6 +6,32 @@ type finding_source =
   | From_general
   | From_security
 
+let finding_source_to_string = function
+  | From_general -> "general"
+  | From_security -> "security"
+
+type sourced_finding = {
+  source : finding_source;
+  plugin_name : string;
+  finding : Review_types.finding;
+}
+
+type routing_outcome =
+  | Routed_inline of Review_comment.t
+  | Routed_unchanged
+  | Routed_anchor_failed
+  | Routed_dropped_unchanged_low_severity
+
+type routed_finding = {
+  sourced : sourced_finding;
+  outcome : routing_outcome;
+}
+
+type inline_finding = {
+  comment : Review_comment.t;
+  sourced : sourced_finding;
+}
+
 (** A findings-producing review plugin registered with the engine.
 
     The general plugin is handled separately because its summary becomes the
@@ -44,21 +70,24 @@ let same_source a b =
 let same_category a b =
   String.equal (Review_types.finding_category_to_string a) (Review_types.finding_category_to_string b)
 
-let pick_for_same_line (sa, fa) (sb, fb) =
-  match sa, sb with
-  | From_security, From_general -> sa, fa
-  | From_general, From_security -> sb, fb
+let sourced_of_pair (source, finding) = { source; plugin_name = finding_source_to_string source; finding }
+
+let pick_for_same_line a b =
+  match a.source, b.source with
+  | From_security, From_general -> a
+  | From_general, From_security -> b
   | From_general, From_general | From_security, From_security ->
-    if severity_rank fa.Review_types.severity >= severity_rank fb.Review_types.severity then sa, fa else sb, fb
+    if severity_rank a.finding.Review_types.severity >= severity_rank b.finding.Review_types.severity then a else b
 
 let collapse_same_line sourced_findings =
   let tbl = Hashtbl.create (List.length sourced_findings) in
   List.iter
-    (fun (source, (f : Review_types.finding)) ->
-      let key = f.path, f.line in
+    (fun sourced ->
+      let f = sourced.finding in
+      let key = f.Review_types.path, f.line in
       match Hashtbl.find_opt tbl key with
-      | None -> Hashtbl.add tbl key (source, f)
-      | Some existing -> Hashtbl.replace tbl key (pick_for_same_line existing (source, f)))
+      | None -> Hashtbl.add tbl key sourced
+      | Some existing -> Hashtbl.replace tbl key (pick_for_same_line existing sourced))
     sourced_findings;
   Hashtbl.fold (fun _ v acc -> v :: acc) tbl []
 
@@ -67,21 +96,23 @@ let near_line_window = 3
 let collapse_near_lines sourced_findings =
   let by_path = Hashtbl.create 16 in
   List.iter
-    (fun ((_, f) as sf : finding_source * Review_types.finding) ->
-      let bucket = try Hashtbl.find by_path f.path with Not_found -> [] in
-      Hashtbl.replace by_path f.path (sf :: bucket))
+    (fun sourced ->
+      let bucket = try Hashtbl.find by_path sourced.finding.path with Not_found -> [] in
+      Hashtbl.replace by_path sourced.finding.path (sourced :: bucket))
     sourced_findings;
   let keep = ref [] in
   Hashtbl.iter
     (fun _path bucket ->
-      let sorted = List.sort (fun (_, a) (_, b) -> Int.compare a.Review_types.line b.Review_types.line) bucket in
-      let collides (src, f) (src', f') =
-        same_source src' src
-        && same_category f'.Review_types.category f.Review_types.category
-        && abs (f'.Review_types.line - f.line) <= near_line_window
+      let sorted = List.sort (fun a b -> Int.compare a.finding.Review_types.line b.finding.Review_types.line) bucket in
+      let collides sourced other =
+        same_source other.source sourced.source
+        && same_category other.finding.Review_types.category sourced.finding.Review_types.category
+        && abs (other.finding.Review_types.line - sourced.finding.line) <= near_line_window
       in
-      let pick_more_severe (bsrc, bf) (csrc, cf) =
-        if severity_rank cf.Review_types.severity > severity_rank bf.Review_types.severity then csrc, cf else bsrc, bf
+      let pick_more_severe best candidate =
+        if severity_rank candidate.finding.Review_types.severity > severity_rank best.finding.Review_types.severity then
+          candidate
+        else best
       in
       let rec collect_near_lines best rest =
         let colliding, others = List.partition (collides best) rest in
@@ -93,7 +124,7 @@ let collapse_near_lines sourced_findings =
       in
       let rec sweep acc = function
         | [] -> acc
-        | ((From_security, _) as finding) :: rest -> sweep (finding :: acc) rest
+        | ({ source = From_security; _ } as finding) :: rest -> sweep (finding :: acc) rest
         | finding :: rest ->
           let best, others = collect_near_lines finding rest in
           sweep (best :: acc) others
@@ -103,15 +134,19 @@ let collapse_near_lines sourced_findings =
     by_path;
   !keep
 
-let deduplicate_findings sourced_findings =
+let deduplicate_sourced_findings sourced_findings =
   sourced_findings
   |> collapse_same_line
   |> collapse_near_lines
-  |> List.map snd
-  |> List.sort (fun (a : Review_types.finding) (b : Review_types.finding) ->
-    match String.compare a.path b.path with
-    | 0 -> Int.compare a.line b.line
+  |> List.sort (fun a b ->
+    let a_finding = a.finding in
+    let b_finding = b.finding in
+    match String.compare a_finding.Review_types.path b_finding.Review_types.path with
+    | 0 -> Int.compare a_finding.line b_finding.line
     | n -> n)
+
+let deduplicate_findings sourced_findings =
+  sourced_findings |> List.map sourced_of_pair |> deduplicate_sourced_findings |> List.map (fun sf -> sf.finding)
 
 type prepare_diff_error =
   [ `Empty
@@ -193,6 +228,7 @@ type plugin_result = {
           [Some (Error reason)] when it ran but failed (the reason is surfaced
           in the failure notice), or [None] when the plugin is disabled. *)
   findings : Review_types.finding list;
+  sourced_findings : sourced_finding list;
   review_costs : Cost_tracking.review_cost list;
   security_error : bool;
 }
@@ -200,7 +236,10 @@ type plugin_result = {
 type report = {
   body : string;
   comments : Review_comment.t list;
+  inline_findings : inline_finding list;
   findings : Review_types.finding list;
+  sourced_findings : sourced_finding list;
+  routed_findings : routed_finding list;
   unchanged_findings : Review_types.finding list;
   anchor_failed_findings : Review_types.finding list;
   review_costs : Cost_tracking.review_cost list;
@@ -354,11 +393,16 @@ module Make (AI : Api.Agent_runner) = struct
     in
     let plugin_findings =
       List.concat_map
-        (fun (plugin, findings, _costs, _errored) -> List.map (fun f -> plugin.fp_source, f) findings)
+        (fun (plugin, findings, _costs, _errored) ->
+          List.map (fun finding -> { source = plugin.fp_source; plugin_name = plugin.fp_name; finding }) findings)
         findings_results
     in
-    let sourced = List.map (fun f -> From_general, f) general_findings @ plugin_findings in
-    let findings = deduplicate_findings sourced in
+    let sourced =
+      List.map (fun finding -> { source = From_general; plugin_name = General_plugin.name; finding }) general_findings
+      @ plugin_findings
+    in
+    let sourced_findings = deduplicate_sourced_findings sourced in
+    let findings = List.map (fun sourced -> sourced.finding) sourced_findings in
     let plugin_costs =
       List.map
         (fun (plugin, _findings, costs, _errored) -> Cost_tracking.aggregate ~plugin:plugin.fp_name costs)
@@ -371,26 +415,33 @@ module Make (AI : Api.Agent_runner) = struct
         | [] -> false
         | _ :: _ -> true)
     in
-    Lwt.return { general_output; findings; review_costs; security_error }
+    Lwt.return { general_output; findings; sourced_findings; review_costs; security_error }
 
   let route_findings ~change_label ~filtered_diff findings =
     List.fold_left
-      (fun (comments, unchanged, anchor_failed) (finding : Review_types.finding) ->
+      (fun (routed, inline_findings, unchanged, anchor_failed) sourced ->
+        let finding = sourced.finding in
         match route_finding ~diff:filtered_diff finding with
-        | Positioned comment -> comment :: comments, unchanged, anchor_failed
+        | Positioned comment ->
+          let inline = { comment; sourced } in
+          { sourced; outcome = Routed_inline comment } :: routed, inline :: inline_findings, unchanged, anchor_failed
         | File_not_in_diff ->
           (match surfaces_in_unchanged_section finding with
-          | true -> comments, finding :: unchanged, anchor_failed
+          | true ->
+            { sourced; outcome = Routed_unchanged } :: routed, inline_findings, finding :: unchanged, anchor_failed
           | false ->
             log#info "%s: dropping low-severity finding on unchanged file %s:%d (%s)" change_label finding.path
               finding.line
               (Review_types.severity_to_string finding.severity);
-            comments, unchanged, anchor_failed)
+            ( { sourced; outcome = Routed_dropped_unchanged_low_severity } :: routed,
+              inline_findings,
+              unchanged,
+              anchor_failed ))
         | Anchor_failed ->
           log#warn "%s: finding on changed file %s:%d could not be anchored — surfacing for investigation" change_label
             finding.path finding.line;
-          comments, unchanged, finding :: anchor_failed)
-      ([], [], []) findings
+          { sourced; outcome = Routed_anchor_failed } :: routed, inline_findings, unchanged, finding :: anchor_failed)
+      ([], [], [], []) findings
 
   let run_review ~ctx ~(job : Review_job.t) =
     let debug_dir =
@@ -401,10 +452,12 @@ module Make (AI : Api.Agent_runner) = struct
     let filtered_diff = job.filtered_diff in
     let%lwt plugin_result = run_plugins ~ctx ~job ~debug_dir in
     Cost_tracking.log_review_costs plugin_result.review_costs;
-    let comments_rev, unchanged_rev, anchor_failed_rev =
-      route_findings ~change_label:job.change_label ~filtered_diff plugin_result.findings
+    let routed_rev, inline_findings_rev, unchanged_rev, anchor_failed_rev =
+      route_findings ~change_label:job.change_label ~filtered_diff plugin_result.sourced_findings
     in
-    let comments = List.rev comments_rev in
+    let routed_findings = List.rev routed_rev in
+    let inline_findings = List.rev inline_findings_rev in
+    let comments = List.map (fun inline -> inline.comment) inline_findings in
     let unchanged_findings = List.rev unchanged_rev in
     let anchor_failed_findings = List.rev anchor_failed_rev in
     let body =
@@ -421,7 +474,10 @@ module Make (AI : Api.Agent_runner) = struct
       {
         body;
         comments;
+        inline_findings;
         findings = plugin_result.findings;
+        sourced_findings = plugin_result.sourced_findings;
+        routed_findings;
         unchanged_findings;
         anchor_failed_findings;
         review_costs = plugin_result.review_costs;

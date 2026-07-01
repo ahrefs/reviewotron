@@ -83,6 +83,46 @@ let flatten_result f result = result |> Result.map_error Http_util.error_to_stri
 (* Specialisation for the common write call that ignores the response body. *)
 let ignore_body_result result = flatten_result (fun (_body : string) -> ()) result
 
+let parse_created_pr_review body =
+  try Ok (Github_types.created_pr_review_of_json (Melange_json.of_string body))
+  with exn -> Error (Printf.sprintf "failed to parse created PR review response: %s" (Exn.str exn))
+
+let parse_pr_review_comments body =
+  try Ok (Melange_json.Primitives.list_of_json Github_types.pr_review_comment_of_json (Melange_json.of_string body))
+  with exn -> Error (Printf.sprintf "failed to parse PR review comments response: %s" (Exn.str exn))
+
+let parse_reactions body =
+  try Ok (Melange_json.Primitives.list_of_json Github_types.reaction_of_json (Melange_json.of_string body))
+  with exn -> Error (Printf.sprintf "failed to parse reactions response: %s" (Exn.str exn))
+
+let github_page_size = 100
+
+let paginated_path ~page_size ~page path =
+  let separator =
+    match String.contains path '?' with
+    | true -> "&"
+    | false -> "?"
+  in
+  Printf.sprintf "%s%sper_page=%d&page=%d" path separator page_size page
+
+let collect_paginated_list ~page_size ~fetch_page ~parse =
+  if page_size < 1 then invalid_arg "page_size must be positive"
+  else (
+    let rec loop page acc =
+      let%lwt result = fetch_page page in
+      match result with
+      | Error e -> Lwt.return (Error (Http_util.error_to_string e))
+      | Ok body ->
+      match parse body with
+      | Error msg -> Lwt.return (Error msg)
+      | Ok items ->
+        let acc = List.rev_append items acc in
+        (match List.compare_length_with items page_size < 0 with
+        | true -> Lwt.return (Ok (List.rev acc))
+        | false -> loop (page + 1) acc)
+    in
+    loop 1 [])
+
 (** {2 Github module implementation} *)
 
 module Github : Api.Github = struct
@@ -146,7 +186,10 @@ module Github : Api.Github = struct
     let path = Printf.sprintf "/pulls/%d/reviews" number in
     let body = Melange_json.to_string (Github_types.create_review_req_to_json review) in
     let%lwt result = github_post ~ctx ~repo_url ~path ~accept:"application/vnd.github+json" ~body () in
-    Lwt.return (ignore_body_result result)
+    Lwt.return
+      (match result with
+      | Error e -> Error (Http_util.error_to_string e)
+      | Ok body -> parse_created_pr_review body)
 
   let create_commit_comment ~ctx ~repo_url ~sha comment =
     let path = Printf.sprintf "/commits/%s/comments" sha in
@@ -159,6 +202,20 @@ module Github : Api.Github = struct
     let body = Melange_json.to_string (Github_types.issue_comment_req_to_json comment) in
     let%lwt result = github_post ~ctx ~repo_url ~path ~body () in
     Lwt.return (ignore_body_result result)
+
+  let list_pr_review_comments ~ctx ~repo_url ~number ~review_id =
+    let path = Printf.sprintf "/pulls/%d/reviews/%d/comments" number review_id in
+    collect_paginated_list ~page_size:github_page_size ~parse:parse_pr_review_comments ~fetch_page:(fun page ->
+      github_get ~ctx ~repo_url
+        ~path:(paginated_path ~page_size:github_page_size ~page path)
+        ~accept:"application/vnd.github+json" ())
+
+  let list_pr_review_comment_reactions ~ctx ~repo_url ~comment_id =
+    let path = Printf.sprintf "/pulls/comments/%d/reactions" comment_id in
+    collect_paginated_list ~page_size:github_page_size ~parse:parse_reactions ~fetch_page:(fun page ->
+      github_get ~ctx ~repo_url
+        ~path:(paginated_path ~page_size:github_page_size ~page path)
+        ~accept:"application/vnd.github+json" ())
 
   let create_reaction ~ctx ~repo_url ~path ~content =
     let body = Melange_json.to_string (Github_types.reaction_req_to_json { content }) in

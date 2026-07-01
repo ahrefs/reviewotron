@@ -33,8 +33,11 @@ type github_user = {
   url : string;
   html_url : string;
   avatar_url : string;
+  type_ : string option; [@json.key "type"] [@json.option]
 }
 [@@deriving json] [@@json.allow_extra_fields]
+
+type github_app = { id : int } [@@deriving json] [@@json.allow_extra_fields]
 
 type label = { name : string } [@@deriving json] [@@json.allow_extra_fields]
 
@@ -113,6 +116,13 @@ type pull_request = {
   additions : int;
   deletions : int;
   changed_files : int;
+  performed_via_github_app : github_app option; [@json.option]
+}
+[@@deriving json] [@@json.allow_extra_fields]
+
+type webhook_pull_request_ref = {
+  number : int;
+  title : string;
 }
 [@@deriving json] [@@json.allow_extra_fields]
 
@@ -125,6 +135,7 @@ type pr_notification = {
   repository : repository;
   sender : github_user;
   installation : installation option; [@json.option]
+  performed_via_github_app : github_app option; [@json.option]
 }
 [@@deriving json] [@@json.allow_extra_fields]
 
@@ -162,6 +173,7 @@ type issue_comment = {
   body : string;
   user : github_user option; [@json.option]
   html_url : string;
+  performed_via_github_app : github_app option; [@json.option]
 }
 [@@deriving json] [@@json.allow_extra_fields]
 
@@ -172,6 +184,50 @@ type issue_comment_notification = {
   repository : repository;
   sender : github_user;
   installation : installation option; [@json.option]
+  performed_via_github_app : github_app option; [@json.option]
+}
+[@@deriving json] [@@json.allow_extra_fields]
+
+(** {2 Pull request review webhook types} *)
+
+type pull_request_review = {
+  id : int;
+  body : string option; [@json.option]
+  state : string;
+  user : github_user option; [@json.option]
+  performed_via_github_app : github_app option; [@json.option]
+}
+[@@deriving json] [@@json.allow_extra_fields]
+
+type pull_request_review_notification = {
+  action : string;
+  review : pull_request_review;
+  pull_request : webhook_pull_request_ref;
+  repository : repository;
+  sender : github_user;
+  installation : installation option; [@json.option]
+  performed_via_github_app : github_app option; [@json.option]
+}
+[@@deriving json] [@@json.allow_extra_fields]
+
+type pull_request_review_comment = {
+  id : int;
+  body : string;
+  path : string option; [@json.option]
+  line : int option; [@json.option]
+  user : github_user option; [@json.option]
+  performed_via_github_app : github_app option; [@json.option]
+}
+[@@deriving json] [@@json.allow_extra_fields]
+
+type pull_request_review_comment_notification = {
+  action : string;
+  comment : pull_request_review_comment;
+  pull_request : webhook_pull_request_ref;
+  repository : repository;
+  sender : github_user;
+  installation : installation option; [@json.option]
+  performed_via_github_app : github_app option; [@json.option]
 }
 [@@deriving json] [@@json.allow_extra_fields]
 
@@ -258,6 +314,12 @@ type create_review_req = {
 }
 [@@deriving of_json]
 
+type created_pr_review = {
+  id : int;
+  html_url : string option; [@json.option]
+}
+[@@deriving json] [@@json.allow_extra_fields]
+
 (** Manual [to_json]: omits [comments] when empty (matching ATD's behavior
     of dropping default-valued fields). *)
 let create_review_req_to_json req =
@@ -292,6 +354,12 @@ type reaction_req = { content : string } [@@deriving json]
 type reaction = {
   id : int;
   content : string;
+}
+[@@deriving json] [@@json.allow_extra_fields]
+
+type pr_review_comment = {
+  id : int;
+  body : string;
 }
 [@@deriving json] [@@json.allow_extra_fields]
 

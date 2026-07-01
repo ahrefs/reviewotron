@@ -21,8 +21,11 @@ type github_user = {
   url : string;
   html_url : string;
   avatar_url : string;
+  type_ : string option;
 }
 [@@deriving json]
+
+type github_app = { id : int } [@@deriving json]
 
 type label = { name : string } [@@deriving json]
 
@@ -101,6 +104,13 @@ type pull_request = {
   additions : int;
   deletions : int;
   changed_files : int;
+  performed_via_github_app : github_app option;
+}
+[@@deriving json]
+
+type webhook_pull_request_ref = {
+  number : int;
+  title : string;
 }
 [@@deriving json]
 
@@ -113,6 +123,7 @@ type pr_notification = {
   repository : repository;
   sender : github_user;
   installation : installation option;
+  performed_via_github_app : github_app option;
 }
 [@@deriving json]
 
@@ -140,6 +151,7 @@ type issue_comment = {
   body : string;
   user : github_user option;
   html_url : string;
+  performed_via_github_app : github_app option;
 }
 [@@deriving json]
 
@@ -150,6 +162,50 @@ type issue_comment_notification = {
   repository : repository;
   sender : github_user;
   installation : installation option;
+  performed_via_github_app : github_app option;
+}
+[@@deriving json]
+
+(** {2 Pull request review webhook types} *)
+
+type pull_request_review = {
+  id : int;
+  body : string option;
+  state : string;
+  user : github_user option;
+  performed_via_github_app : github_app option;
+}
+[@@deriving json]
+
+type pull_request_review_notification = {
+  action : string;
+  review : pull_request_review;
+  pull_request : webhook_pull_request_ref;
+  repository : repository;
+  sender : github_user;
+  installation : installation option;
+  performed_via_github_app : github_app option;
+}
+[@@deriving json]
+
+type pull_request_review_comment = {
+  id : int;
+  body : string;
+  path : string option;
+  line : int option;
+  user : github_user option;
+  performed_via_github_app : github_app option;
+}
+[@@deriving json]
+
+type pull_request_review_comment_notification = {
+  action : string;
+  comment : pull_request_review_comment;
+  pull_request : webhook_pull_request_ref;
+  repository : repository;
+  sender : github_user;
+  installation : installation option;
+  performed_via_github_app : github_app option;
 }
 [@@deriving json]
 
@@ -216,6 +272,12 @@ type create_review_req = {
 val create_review_req_to_json : create_review_req -> Yojson.Basic.t
 val create_review_req_of_json : Yojson.Basic.t -> create_review_req
 
+type created_pr_review = {
+  id : int;
+  html_url : string option;
+}
+[@@deriving json]
+
 type commit_comment_req = {
   body : string;
   path : string option;
@@ -234,6 +296,12 @@ type reaction_req = { content : string } [@@deriving json]
 type reaction = {
   id : int;
   content : string;
+}
+[@@deriving json]
+
+type pr_review_comment = {
+  id : int;
+  body : string;
 }
 [@@deriving json]
 

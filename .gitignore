@@ -8,3 +8,6 @@ secrets.json
 state.json
 debug/
 memory/
+reviewotron-feedback-targets.json
+reviewotron-feedback-events.jsonl
+reviewotron-feedback-evidence/
