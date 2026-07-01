@@ -1,0 +1,43 @@
+{
+  "results": [
+    {
+      "finding": {
+        "vuln_class": "policy_regression",
+        "source": {
+          "path": "modules/sudo/manifests/deploy.pp",
+          "line": 3,
+          "description": "deploy sudoers grant with NOPASSWD systemctl"
+        },
+        "sink": {
+          "path": "modules/sudo/manifests/deploy.pp",
+          "line": 3,
+          "description": "deploy user can run systemctl as root without password"
+        },
+        "flow": [
+          {
+            "path": "modules/sudo/manifests/deploy.pp",
+            "line": 3,
+            "description": "sudoers policy grants the deploy user root systemctl capability"
+          }
+        ],
+        "sanitization": "missing",
+        "confidence": "high",
+        "description": "The sudoers change lets the deploy user run /usr/bin/systemctl as root with NOPASSWD and no unit/action allowlist, so the deploy principal now has broad root service-control capability.",
+        "suggested_fix": "Constrain sudoers to an exact systemctl action and unit, or require a password/approval gate for privileged service operations."
+      },
+      "verdict": "confirmed",
+      "evidence_notes": "Line 3 grants deploy NOPASSWD root access to /usr/bin/systemctl. Sudoers command matching permits arguments unless explicitly constrained, so this is a concrete broad systemctl capability with no unit/action allowlist.",
+      "proof_by_construction": {
+        "trigger": "Apply the sudoers change, then the deploy user runs `sudo /usr/bin/systemctl restart sshd.service`.",
+        "preconditions": ["The deploy principal receives the reviewed sudoers policy."],
+        "source_to_sink_trace": [
+          "modules/sudo/manifests/deploy.pp:3 source: deploy gets NOPASSWD for /usr/bin/systemctl",
+          "modules/sudo/manifests/deploy.pp:3 sink: deploy can run systemctl as root without password"
+        ],
+        "missing_or_inadequate_control": "missing command/unit/action allowlist on the NOPASSWD systemctl grant",
+        "expected_impact": "The deploy user can restart or control root services through systemctl.",
+        "assumptions": []
+      }
+    }
+  ]
+}

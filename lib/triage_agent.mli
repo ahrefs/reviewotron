@@ -23,8 +23,15 @@ val config : model_tier:Agent_runner.model_tier -> Agent_runner.agent_config
 
     @param diff_text Raw unified diff text.
     @param file_paths List of changed file paths in the reviewed change.
-    @param security_memory Optional repo security memory contents. *)
-val build_input : diff_text:string -> file_paths:string list -> ?security_memory:string -> unit -> string
+    @param security_memory Optional repo security memory contents.
+    @param deterministic_signals Advisory native scanner signals to summarize for triage. *)
+val build_input :
+  diff_text:string ->
+  file_paths:string list ->
+  ?security_memory:string ->
+  ?deterministic_signals:Security_types.candidate_signal list ->
+  unit ->
+  string
 
 (** Detect programming languages from file extensions.
 

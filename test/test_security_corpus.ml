@@ -7,7 +7,8 @@
     Run on-demand (not in CI) by setting the ANTHROPIC_API_KEY environment
     variable:
 
-      ANTHROPIC_API_KEY=sk-... dune exec test/test_security_corpus.exe
+      cd test
+      ANTHROPIC_API_KEY=sk-... dune exec ./test_security_corpus.exe
 
     When ANTHROPIC_API_KEY is absent, all tests are skipped. *)
 
@@ -134,6 +135,26 @@ let corpus_cases : corpus_case list =
       name = "ssrf/url_from_user_input";
       file_path = "src/handlers/webhook.py";
       expected = Vulnerable Security_types.Ssrf;
+    };
+    {
+      name = "policy_regression/sudo_systemctl_nopasswd_vulnerable";
+      file_path = "modules/sudo/manifests/deploy.pp";
+      expected = Vulnerable Security_types.Policy_regression;
+    };
+    {
+      name = "policy_regression/sudo_systemctl_reload_scoped_safe";
+      file_path = "modules/sudo/manifests/deploy.pp";
+      expected = Clean;
+    };
+    {
+      name = "policy_regression/ci_permissions_write_vulnerable";
+      file_path = ".github/workflows/build.yml";
+      expected = Vulnerable Security_types.Policy_regression;
+    };
+    {
+      name = "policy_regression/tls_verify_disabled_vulnerable";
+      file_path = "src/integrations/vendor_client.py";
+      expected = Vulnerable Security_types.Policy_regression;
     };
   ]
 

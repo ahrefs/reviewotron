@@ -20,7 +20,8 @@
   (glob_files_rec mock_api_responses/claude/*)
   (glob_files_rec mock_api_responses/triage/*)
   (glob_files_rec mock_api_responses/security/*)
-  (glob_files_rec security_corpus/injection/*))
+  (glob_files_rec security_corpus/injection/*)
+  (glob_files_rec security_corpus/policy_regression/*))
  (preprocess
   (pps lwt_ppx)))
 
@@ -34,7 +35,8 @@
   (glob_files_rec security_corpus/command_injection/*)
   (glob_files_rec security_corpus/authn/*)
   (glob_files_rec security_corpus/authz/*)
-  (glob_files_rec security_corpus/ssrf/*)))
+  (glob_files_rec security_corpus/ssrf/*)
+  (glob_files_rec security_corpus/policy_regression/*)))
 
 (test
  (name test_diff_parser)
