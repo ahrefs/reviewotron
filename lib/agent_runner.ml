@@ -52,6 +52,8 @@ type agent_result = {
   cache_read_input_tokens : int;
   cache_creation_input_tokens : int;
   steps_count : int;
+  tool_calls_count : int;
+  tool_results_count : int;
   model_id : string;
   reported_cost_usd : float option;
 }
@@ -196,22 +198,27 @@ let messages_of_steps (steps : Ai_core.Generate_text_result.step list) =
         ])
     steps
 
-let finalization_instruction =
-  "You have reached the tool-use budget for this task. Do NOT request any more tool calls. Based solely on the \
-   evidence you already gathered in the turns above, produce your final answer now as a single JSON object matching \
-   the declared output schema. If you do not have enough evidence to confirm any finding, return an empty [findings] \
-   array and note the reason in the [notes] field (or equivalent field of your schema) — this is the correct behaviour \
-   when evidence is incomplete, and is strictly preferred over reporting unverified findings."
+let finalization_instruction ~reason =
+  Printf.sprintf
+    "Your previous response stopped because %s. Do NOT request any more tool calls. Based solely on the evidence you \
+     already gathered in the turns above, produce your final answer now as a single JSON object matching the declared \
+     output schema. Keep it concise and schema-complete. If the schema has an output array that corresponds to input \
+     items, include one element for every input item; do not silently omit items. When evidence is incomplete, choose \
+     the conservative schema-valid outcome: finding-producing schemas should return no findings, validation schemas \
+     should reject unverifiable items and set proof fields to null when the schema defines them, and triage schemas \
+     should emit no signals with a short skip reason. Reporting unverified findings is strictly worse than returning \
+     the conservative empty or rejected result."
+    reason
 
-(** Attempt a budget-exhaustion recovery: on [finish_reason = tool-calls] with
-    no structured output, replay the completed turns plus a trailing user
-    instruction asking the model to produce its JSON from what it has, and
-    run a single no-tools turn.
+(** Attempt structured-output recovery: when a tool-use agent returns no
+    structured output because it exhausted a budget, replay the completed turns
+    plus a trailing user instruction asking the model to produce its JSON from
+    what it has, and run a single no-tools turn.
 
     Returns [Some finalized_result] on success with combined usage/steps,
     [None] when the recovery itself fails (the caller then errors out as
     before). *)
-let finalize_after_budget_exhaustion ~provider ~model ~config ~provider_options ~input ~output_spec ~max_retries
+let finalize_after_budget_exhaustion ~provider ~model ~config ~provider_options ~input ~output_spec ~max_retries ~reason
   ~(first : Ai_core.Generate_text_result.t) =
   (* Reuse the same cache breakpoint on the input block we put there in
      [run_agent]: same prefix → same cache key, so this single-shot
@@ -225,10 +232,11 @@ let finalize_after_budget_exhaustion ~provider ~model ~config ~provider_options 
     :: messages_of_steps first.steps
   in
   let follow_up =
-    Ai_provider.Prompt.User { content = [ Text { text = finalization_instruction; provider_options = po } ] }
+    let text = finalization_instruction ~reason in
+    Ai_provider.Prompt.User { content = [ Text { text; provider_options = po } ] }
   in
   let messages = base_messages @ [ follow_up ] in
-  log#info "agent %s: budget exhausted, attempting graceful finalization with %d replayed turns" config.name
+  log#info "agent %s: %s, attempting graceful finalization with %d replayed turns" config.name reason
     (List.length base_messages - 1);
   try%lwt
     let%lwt second =
@@ -290,13 +298,16 @@ let run_agent ~provider ~model ?tools ?(max_retries = 2) ?debug_dir ~config ~inp
     let cache_read_input_tokens, cache_creation_input_tokens, reported_cost_usd = usage_of_result ~provider result in
     log#info "agent %s: finished (%d steps, %d input tokens, %d output tokens)" config.name steps_count
       result.usage.input_tokens result.usage.output_tokens;
-    let make_result ~output ~usage ~extra_cache_read ~extra_cache_write ~extra_cost ~extra_steps =
+    let make_result ~output ~usage ~extra_cache_read ~extra_cache_write ~extra_cost ~extra_steps ~extra_tool_calls
+      ~extra_tool_results =
       {
         output;
         usage;
         cache_read_input_tokens = cache_read_input_tokens + extra_cache_read;
         cache_creation_input_tokens = cache_creation_input_tokens + extra_cache_write;
         steps_count = steps_count + extra_steps;
+        tool_calls_count = List.length result.tool_calls + extra_tool_calls;
+        tool_results_count = List.length result.tool_results + extra_tool_results;
         model_id;
         reported_cost_usd = Llm_provider.sum_cost reported_cost_usd extra_cost;
       }
@@ -305,15 +316,16 @@ let run_agent ~provider ~model ?tools ?(max_retries = 2) ?debug_dir ~config ~inp
     | Some output ->
       Lwt.return_ok
         (make_result ~output ~usage:result.usage ~extra_cache_read:0 ~extra_cache_write:0 ~extra_cost:None
-           ~extra_steps:0)
+           ~extra_steps:0 ~extra_tool_calls:0 ~extra_tool_results:0)
     | None ->
-      let tool_calls_exhaustion =
+      let recoverable_exhaustion =
         match result.finish_reason with
-        | Ai_provider.Finish_reason.Tool_calls -> true
-        | _ -> false
+        | Ai_provider.Finish_reason.Tool_calls -> Some "it reached the tool-use budget"
+        | Ai_provider.Finish_reason.Length -> Some "it reached the model output length limit"
+        | _ -> None
       in
-      (match tool_calls_exhaustion with
-      | false ->
+      (match recoverable_exhaustion with
+      | None ->
         let msg =
           Printf.sprintf "agent %s: no structured output returned (finish_reason=%s)" config.name
             (Ai_provider.Finish_reason.to_string result.finish_reason)
@@ -327,10 +339,10 @@ let run_agent ~provider ~model ?tools ?(max_retries = 2) ?debug_dir ~config ~inp
           | None -> log#warn "%s" msg)
         | None -> log#warn "%s" msg);
         Lwt.return_error msg
-      | true ->
+      | Some reason ->
         let%lwt recovered =
           finalize_after_budget_exhaustion ~provider ~model ~config ~provider_options ~input ~output_spec ~max_retries
-            ~first:result
+            ~reason ~first:result
         in
         (match recovered with
         | Some second ->
@@ -340,7 +352,8 @@ let run_agent ~provider ~model ?tools ?(max_retries = 2) ?debug_dir ~config ~inp
           | Some output ->
             Lwt.return_ok
               (make_result ~output ~usage ~extra_cache_read ~extra_cache_write ~extra_cost
-                 ~extra_steps:(List.length second.steps))
+                 ~extra_steps:(List.length second.steps) ~extra_tool_calls:(List.length second.tool_calls)
+                 ~extra_tool_results:(List.length second.tool_results))
           | None ->
             (* Impossible: finalize returns Some only when second.output is Some. *)
             let msg = Printf.sprintf "agent %s: finalization returned empty output" config.name in
@@ -348,8 +361,9 @@ let run_agent ~provider ~model ?tools ?(max_retries = 2) ?debug_dir ~config ~inp
             Lwt.return_error msg)
         | None ->
           let msg =
-            Printf.sprintf
-              "agent %s: no structured output returned (finish_reason=tool-calls; finalization also failed)" config.name
+            Printf.sprintf "agent %s: no structured output returned (finish_reason=%s; finalization also failed)"
+              config.name
+              (Ai_provider.Finish_reason.to_string result.finish_reason)
           in
           (match debug_dir with
           | Some dir ->

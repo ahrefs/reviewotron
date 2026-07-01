@@ -121,7 +121,7 @@ let config ~model_tier : Agent_runner.agent_config =
     thinking_budget = None;
   }
 
-let max_deterministic_signals = 40
+let max_exact_deterministic_signals = 12
 
 let format_line_range (signal : Security_types.candidate_signal) =
   match Int.equal signal.start_line signal.end_line with
@@ -133,11 +133,11 @@ let format_vuln_class_hint = function
   | None -> ""
 
 let signal_category_rank = function
-  | Security_types.Dangerous_api -> 0
-  | Security_types.Changed_security_control -> 1
-  | Security_types.Stateful_operation -> 2
+  | Security_types.Changed_security_control -> 0
+  | Security_types.Dangerous_api -> 1
+  | Security_types.Sensitive_file -> 2
   | Security_types.Risky_path -> 3
-  | Security_types.Sensitive_file -> 4
+  | Security_types.Stateful_operation -> 4
 
 let compare_signal (a : Security_types.candidate_signal) (b : Security_types.candidate_signal) =
   match Int.compare (signal_category_rank a.category) (signal_category_rank b.category) with
@@ -147,27 +147,74 @@ let compare_signal (a : Security_types.candidate_signal) (b : Security_types.can
     | n -> n)
   | n -> n
 
+let bump_count key counts =
+  let matching, others = List.partition (fun (k, _) -> String.equal k key) counts in
+  let existing =
+    match matching with
+    | (_, n) :: _ -> n
+    | [] -> 0
+  in
+  (key, existing + 1) :: others
+
+let sort_counts counts =
+  List.sort
+    (fun (key_a, count_a) (key_b, count_b) ->
+      match Int.compare count_b count_a with
+      | 0 -> String.compare key_a key_b
+      | n -> n)
+    counts
+
+let add_counts buf ~title counts =
+  match counts with
+  | [] -> ()
+  | _ :: _ ->
+    Printf.bprintf buf "%s\n" title;
+    counts |> sort_counts |> List.iter (fun (key, count) -> Printf.bprintf buf "- %s: %d\n" key count);
+    Buffer.add_char buf '\n'
+
+let category_counts signals =
+  List.fold_left
+    (fun counts (signal : Security_types.candidate_signal) ->
+      bump_count (Security_types.signal_category_to_string signal.category) counts)
+    [] signals
+
+let vuln_class_hint_counts signals =
+  List.fold_left
+    (fun counts (signal : Security_types.candidate_signal) ->
+      match signal.vuln_class_hint with
+      | Some vc -> bump_count (Security_types.vuln_class_to_string vc) counts
+      | None -> bump_count "no_class_hint" counts)
+    [] signals
+
+let path_counts signals =
+  List.fold_left (fun counts (signal : Security_types.candidate_signal) -> bump_count signal.path counts) [] signals
+
 let add_deterministic_signals buf signals =
   match signals with
   | [] -> ()
   | _ :: _ ->
-    Buffer.add_string buf "\n## Deterministic Diff Signals\n\n";
+    Printf.bprintf buf "\n## Deterministic Diff Signal Summary\n\n";
+    Printf.bprintf buf "Total native scanner hints: %d. These are hints, not findings.\n\n" (List.length signals);
     Buffer.add_string buf
-      "These native scanner signals are hints, not findings. Use them to focus attention, but ignore them when the \
-       diff does not support a security-actionable concern.\n\n";
+      "Use this summary to prioritize review attention. Do not route analysis from counts alone: only emit a triage \
+       signal when the diff itself supports a concrete security question for a vulnerability class.\n\n";
+    add_counts buf ~title:"By category:" (category_counts signals);
+    add_counts buf ~title:"By vulnerability-class hint:" (vuln_class_hint_counts signals);
+    add_counts buf ~title:"Most affected files:" (signals |> path_counts |> sort_counts |> CCList.take 8);
+    Printf.bprintf buf "Strongest exact hints (capped at %d):\n" max_exact_deterministic_signals;
     signals
     |> List.sort compare_signal
-    |> CCList.take max_deterministic_signals
+    |> CCList.take max_exact_deterministic_signals
     |> List.iter (fun (signal : Security_types.candidate_signal) ->
       Printf.bprintf buf "- %s %s:%s%s %s\n  Rationale: %s\n"
         (Security_types.signal_category_to_string signal.category)
         signal.path (format_line_range signal)
         (format_vuln_class_hint signal.vuln_class_hint)
         signal.pattern signal.rationale);
-    (match List.length signals > max_deterministic_signals with
+    (match List.length signals > max_exact_deterministic_signals with
     | true ->
-      Printf.bprintf buf "- ... %d additional deterministic signal(s) omitted from the prompt summary\n"
-        (List.length signals - max_deterministic_signals)
+      Printf.bprintf buf "- ... %d additional exact hint(s) omitted; use the aggregate counts above instead\n"
+        (List.length signals - max_exact_deterministic_signals)
     | false -> ())
 
 let build_input ~diff_text ~file_paths ?security_memory ?(deterministic_signals = []) () =

@@ -1488,6 +1488,15 @@ let test_security_partial_proof_json_downgrades () =
     (check string) "partial proof downgraded" "rejected" (Security_types.validation_verdict_to_string enforced.verdict)
   | _ -> fail "expected one enforced result"
 
+let test_security_validator_result_count_mismatch_is_error () =
+  let candidate = mk_candidate ~vuln_class:Injection ~sink_path:"src/main.ml" ~sink_line:14 () in
+  let output : Security_types.validator_output = { results = [] } in
+  match Security_review_plugin.validator_results_for_candidates ~candidate_findings:[ candidate ] output with
+  | Ok _ -> fail "expected validator result-count mismatch to fail"
+  | Error msg ->
+    (check bool) "message includes result count" true (contains_sub ~sub:"returned 0 results" msg);
+    (check bool) "message includes candidate count" true (contains_sub ~sub:"for 1 candidates" msg)
+
 let test_security_enforce_rejected_without_proof_ok () =
   let vf =
     mk_validated
@@ -1974,7 +1983,11 @@ let test_triage_agent_build_input_with_deterministic_signals () =
     Triage_agent.build_input ~diff_text:"diff content" ~file_paths:[ "src/routes/admin.ts" ]
       ~deterministic_signals:signals ()
   in
-  (check bool) "has deterministic section" true (contains_sub ~sub:"Deterministic Diff Signals" input);
+  (check bool) "has deterministic section" true (contains_sub ~sub:"Deterministic Diff Signal Summary" input);
+  (check bool) "has total count" true (contains_sub ~sub:"Total native scanner hints:" input);
+  (check bool) "has category summary" true (contains_sub ~sub:"By category:" input);
+  (check bool) "has class summary" true (contains_sub ~sub:"By vulnerability-class hint:" input);
+  (check bool) "has capped exact hints" true (contains_sub ~sub:"Strongest exact hints" input);
   (check bool) "states hints not findings" true (contains_sub ~sub:"hints, not findings" input);
   (check bool) "contains signal path" true (contains_sub ~sub:"src/routes/admin.ts:10" input)
 
@@ -2088,6 +2101,26 @@ let test_security_agent_model_tier () =
     (match agent_model_tier Strong with
     | Strong -> true
     | Fast | Standard -> false)
+
+let test_security_analysis_step_budget () =
+  let high_authn = make_triage_signal ~vuln_class:Authn ~confidence:High in
+  let medium_authn = make_triage_signal ~vuln_class:Authn ~confidence:Medium in
+  let low_authn = make_triage_signal ~vuln_class:Authn ~confidence:Low in
+  let high_injection = make_triage_signal ~vuln_class:Injection ~confidence:High in
+  let medium_policy = make_triage_signal ~vuln_class:Policy_regression ~confidence:Medium in
+  (check int) "high authn gets deep budget" 12
+    (Security_review_plugin.analysis_step_budget ~vuln_class:Authn ~triage_signals:[ high_authn ]);
+  (check int) "medium authn is bounded" 9
+    (Security_review_plugin.analysis_step_budget ~vuln_class:Authn ~triage_signals:[ medium_authn ]);
+  (check int) "low authn is short" 7
+    (Security_review_plugin.analysis_step_budget ~vuln_class:Authn ~triage_signals:[ low_authn ]);
+  (check int) "high injection is local" 10
+    (Security_review_plugin.analysis_step_budget ~vuln_class:Injection ~triage_signals:[ high_injection ]);
+  (check int) "medium policy is diff-local" 5
+    (Security_review_plugin.analysis_step_budget ~vuln_class:Policy_regression ~triage_signals:[ medium_policy ]);
+  (check int) "multiple signals add capped headroom" 12
+    (Security_review_plugin.analysis_step_budget ~vuln_class:Authn
+       ~triage_signals:[ high_authn; high_authn; high_authn; high_authn; high_authn ])
 
 (** {2 Security corpus triage tests} *)
 
@@ -2261,6 +2294,9 @@ let test_analysis_agent_build_input_minimal () =
   (check bool) "contains rationale" true (Devkit.Stre.exists input "SQL string concatenation");
   (check bool) "contains confidence" true (Devkit.Stre.exists input "high");
   (check bool) "contains regions" true (Devkit.Stre.exists input "lines 10");
+  (check bool) "contains analysis scope" true (Devkit.Stre.exists input "Analysis Scope");
+  (check bool) "contains analysis question" true
+    (Devkit.Stre.exists input "Can any flagged externally controlled value");
   (check bool) "no repository security context section" false (Devkit.Stre.exists input "Repository Security Context")
 
 let test_analysis_agent_tools () =
@@ -2796,6 +2832,8 @@ module Capturing_agent_runner = struct
              cache_read_input_tokens = 0;
              cache_creation_input_tokens = 0;
              steps_count = 1;
+             tool_calls_count = 0;
+             tool_results_count = 0;
              model_id = config.name;
              reported_cost_usd = None;
            })
@@ -3400,6 +3438,38 @@ let ptime_exn value =
   match Feedback_store.parse_time value with
   | Ok time -> time
   | Error msg -> fail (Printf.sprintf "invalid test timestamp %s: %s" value msg)
+
+module Engine_debug_test = Review_engine.Make (Api_local.Agent_runner)
+
+let debug_dir_test_job ?(repo_key = Test_helpers.test_repo_url) ?(head_sha = "fb15a13a357f3e108dfc8257b480ef19ac5d0c00")
+  () : Review_job.t =
+  {
+    repo_key;
+    change_key = "change";
+    change_label = "PR #1";
+    title = "Test";
+    description = "";
+    head_sha;
+    diff_text = "";
+    filtered_diff = [];
+    config = Config_types.config_of_json (Melange_json.of_string "{}");
+    file_contents = [];
+    fetch_file = (fun ~path:_ -> Lwt.return (Ok None));
+    trigger = Pull_request;
+    source_kind = Github;
+  }
+
+let test_debug_dir_without_feedback_store_uses_relative_debug () =
+  let ctx = Test_helpers.make_test_context () in
+  let dir = Engine_debug_test.debug_dir_for_job ~ctx (debug_dir_test_job ()) in
+  (check string) "relative debug dir" "debug/org-monorepo/fb15a13a" dir
+
+let test_debug_dir_with_feedback_store_uses_feedback_sibling () =
+  with_temp_feedback_store_dir (fun _state_path paths store ->
+    let ctx = Test_helpers.make_test_context ~feedback_store:store () in
+    let dir = Engine_debug_test.debug_dir_for_job ~ctx (debug_dir_test_job ()) in
+    let expected = Filename.concat (Filename.concat (Filename.dirname paths.evidence_root) "debug") "org-monorepo" in
+    (check string) "feedback sibling debug dir" (Filename.concat expected "fb15a13a") dir)
 
 let feedback_created_at = ptime_exn "2026-06-24T10:00:00Z"
 
@@ -4225,6 +4295,8 @@ let test_of_agent_result () =
       cache_read_input_tokens = 0;
       cache_creation_input_tokens = 0;
       steps_count = 3;
+      tool_calls_count = 3;
+      tool_results_count = 2;
       model_id = "claude-sonnet-4-6-20260414";
       reported_cost_usd = None;
     }
@@ -5540,6 +5612,8 @@ module General_plugin_agent_runner = struct
                cache_read_input_tokens = 0;
                cache_creation_input_tokens = 0;
                steps_count = 1;
+               tool_calls_count = 0;
+               tool_results_count = 0;
                model_id = "mock";
                reported_cost_usd = None;
              })
@@ -5865,6 +5939,8 @@ let () =
           test_case "policy proof concrete" `Quick test_security_enforce_policy_regression_accepts_concrete_proof;
           test_case "policy proof rejects vague" `Quick test_security_enforce_policy_regression_rejects_vague_proof;
           test_case "partial proof JSON downgrades" `Quick test_security_partial_proof_json_downgrades;
+          test_case "validator result count mismatch is error" `Quick
+            test_security_validator_result_count_mismatch_is_error;
           test_case "rejected does not require proof" `Quick test_security_enforce_rejected_without_proof_ok;
           test_case "proof summaries populate finding fields" `Quick
             test_security_validated_to_finding_uses_proof_summary;
@@ -5913,6 +5989,7 @@ let () =
             test_security_should_analyze_high_threshold_restricted;
           test_case "should analyze low threshold" `Quick test_security_should_analyze_low_threshold;
           test_case "agent model tier conversion" `Quick test_security_agent_model_tier;
+          test_case "analysis step budget" `Quick test_security_analysis_step_budget;
         ] );
       ( "triage_corpus",
         [
@@ -6037,6 +6114,9 @@ let () =
         [
           test_case "paths derive from state" `Quick test_feedback_paths_from_state;
           test_case "paths derive from custom feedback dir" `Quick test_feedback_paths_from_custom_dir;
+          test_case "debug dir defaults to relative debug" `Quick
+            test_debug_dir_without_feedback_store_uses_relative_debug;
+          test_case "debug dir uses feedback sibling" `Quick test_debug_dir_with_feedback_store_uses_feedback_sibling;
           test_case "marker and deterministic ids" `Quick test_feedback_marker_and_id_helpers;
           test_case "target roundtrip and privacy scan" `Quick test_feedback_target_roundtrip_and_privacy;
           test_case "target schema v1 compatibility and v2 fields" `Quick

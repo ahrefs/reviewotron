@@ -776,8 +776,63 @@ let append_regions buf regions =
     (fun (r : Security_types.region) -> Printf.bprintf buf "  - %s lines %d-%d\n" r.path r.start_line r.end_line)
     regions
 
+let analysis_question = function
+  | Security_types.Injection ->
+    "Can any flagged externally controlled value reach a query construction or query execution sink without \
+     parameterization?"
+  | Xss ->
+    "Can any flagged user-controlled content reach HTML, DOM, markdown-to-HTML, or template rendering without \
+     context-correct escaping or sanitization?"
+  | Command_injection ->
+    "Can any flagged externally controlled value reach a shell command string, process invocation, or fragile escaping \
+     boundary?"
+  | Authn ->
+    "Does the flagged authentication, token, session, password, API-key, or OAuth path accept invalid, expired, \
+     forged, fallback, or otherwise unsafe credentials?"
+  | Authz ->
+    "Does the flagged authorization or resource-access path allow a caller to access or mutate a resource without the \
+     required role, permission, ownership, or tenant boundary?"
+  | Ssrf ->
+    "Can any flagged externally controlled URL, host, redirect, webhook, or stored URL reach a server-side outbound \
+     request without adequate destination controls?"
+  | Policy_regression ->
+    "Does the flagged policy or configuration change concretely broaden privilege or weaken a named security control?"
+
+let highest_confidence signals =
+  List.fold_left
+    (fun best (signal : Security_types.triage_signal) ->
+      match Config_types.confidence_rank signal.confidence > Config_types.confidence_rank best with
+      | true -> signal.confidence
+      | false -> best)
+    Security_types.Low signals
+
+let add_analysis_scope buf triage_signals =
+  match triage_signals with
+  | [] -> ()
+  | first :: _ ->
+    let confidence = highest_confidence triage_signals in
+    Printf.bprintf buf "## Analysis Scope\n\n";
+    Printf.bprintf buf "**Question:** %s\n\n" (analysis_question first.vuln_class);
+    Printf.bprintf buf "**Routing confidence:** %s across %d triage signal(s).\n\n"
+      (Security_types.confidence_to_string confidence)
+      (List.length triage_signals);
+    Buffer.add_string buf
+      "Start from the flagged regions and direct callees/config references. Do not perform broad repository \
+       archaeology. If those bounded checks do not establish a concrete source/effect, sink/capability, and missing or \
+       inadequate control, return an empty `findings` array with a short note.\n\n";
+    (match confidence with
+    | High ->
+      Buffer.add_string buf
+        "Because the routing confidence is high, fetch additional files only when they directly close a specific \
+         evidence gap in an otherwise concrete chain.\n\n"
+    | Medium | Low ->
+      Buffer.add_string buf
+        "Because the routing confidence is not high, treat this as a bounded verification pass: inspect changed \
+         regions and immediate dependencies first, and stop early if the concrete chain is not emerging.\n\n")
+
 let build_input ~diff_text ~triage_signals ~file_paths () =
   let buf = Buffer.create (String.length diff_text + 512) in
+  add_analysis_scope buf triage_signals;
   Buffer.add_string buf "## Triage Signals\n\n";
   Buffer.add_string buf "The triage agent flagged the following regions for your analysis:\n\n";
   List.iter

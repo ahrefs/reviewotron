@@ -105,6 +105,11 @@ type report = {
 }
 
 module Make (_ : Api.Agent_runner) : sig
+  (** Build the per-review debug dump directory. In persistent server mode the
+      root lives beside feedback files; in in-memory/local mode it falls back
+      to [debug/] under the current working directory. *)
+  val debug_dir_for_job : ctx:Context.t -> Review_job.t -> string
+
   (** Run all enabled review plugins and collect findings and costs. *)
   val run_plugins : ctx:Context.t -> job:Review_job.t -> debug_dir:string -> plugin_result Lwt.t
 

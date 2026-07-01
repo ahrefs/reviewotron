@@ -43,6 +43,41 @@ let should_analyze ~security_config (signal : Security_types.triage_signal) =
   let above_threshold = confidence_rank signal.confidence >= confidence_rank threshold in
   enabled && (above_threshold || always_analyze)
 
+let highest_signal_confidence signals =
+  List.fold_left
+    (fun best (signal : Security_types.triage_signal) ->
+      match confidence_rank signal.confidence > confidence_rank best with
+      | true -> signal.confidence
+      | false -> best)
+    Security_types.Low signals
+
+let analysis_budget_cap = function
+  | Security_types.Authn | Authz | Ssrf -> 12
+  | Injection | Xss | Command_injection -> 10
+  | Policy_regression -> 7
+
+let base_analysis_budget vuln_class confidence =
+  match vuln_class, confidence with
+  | Security_types.Policy_regression, Security_types.High -> 7
+  | Policy_regression, Security_types.Medium | Policy_regression, Security_types.Low -> 5
+  | (Authn | Authz | Ssrf), Security_types.High -> 12
+  | (Authn | Authz | Ssrf), Security_types.Medium -> 9
+  | (Authn | Authz | Ssrf), Security_types.Low -> 7
+  | (Injection | Xss | Command_injection), Security_types.High -> 10
+  | (Injection | Xss | Command_injection), Security_types.Medium -> 8
+  | (Injection | Xss | Command_injection), Security_types.Low -> 6
+
+let signal_count_budget_bonus triage_signals =
+  match List.length triage_signals with
+  | n when n >= 5 -> 2
+  | n when n >= 3 -> 1
+  | _ -> 0
+
+let analysis_step_budget ~vuln_class ~triage_signals =
+  let confidence = highest_signal_confidence triage_signals in
+  min (analysis_budget_cap vuln_class)
+    (base_analysis_budget vuln_class confidence + signal_count_budget_bonus triage_signals)
+
 let non_empty s = String.length (String.trim s) > 0
 
 let proof_trace_site_re = Re2.create_exn {|[A-Za-z0-9_./-]+:[1-9][0-9]*|}
@@ -287,6 +322,14 @@ let enforce_validator_proofs results =
       | Rejected, Some _ | Rejected, None -> vf)
     results
 
+let validator_results_for_candidates ~candidate_findings (output : Security_types.validator_output) =
+  let candidate_count = List.length candidate_findings in
+  let result_count = List.length output.results in
+  match Int.equal candidate_count result_count with
+  | false ->
+    Error (Printf.sprintf "security validator returned %d results for %d candidates" result_count candidate_count)
+  | true -> Ok (enforce_validator_proofs output.results)
+
 type analysis_metrics = {
   actionable_triage_signal_count : int;
   analysis_agents_run : int;
@@ -415,7 +458,12 @@ module Make (AI : Api.Agent_runner) = struct
     ~triage_signals ~artifacts ?debug_dir () =
     let vc_name = Security_types.vuln_class_to_string vuln_class in
     let model_tier = agent_model_tier security_config.Config_types.analysis_model_tier in
-    let agent_config = Analysis_agent.config ~vuln_class ~model_tier ~language_hints in
+    let agent_config =
+      let base = Analysis_agent.config ~vuln_class ~model_tier ~language_hints in
+      { base with max_steps = analysis_step_budget ~vuln_class ~triage_signals }
+    in
+    log#info "analysis agent %s: using max_steps=%d for %d triage signal(s)" vc_name agent_config.max_steps
+      (List.length triage_signals);
     let input = Analysis_agent.build_input ~diff_text ~triage_signals ~file_paths () in
     Security_artifacts.write_debug_text artifacts ~filename:(Printf.sprintf "analysis_%s_input.md" vc_name) input;
     let tools = Analysis_agent.tools ~fetch_file:(fun path -> fetch_file ~path) in
@@ -426,7 +474,7 @@ module Make (AI : Api.Agent_runner) = struct
       Lwt.return ([], [])
     | Ok agent_result ->
       let agent_name = Printf.sprintf "%s_analysis" vc_name in
-      let files_fetched = agent_result.steps_count - 1 |> max 0 in
+      let files_fetched = agent_result.tool_results_count in
       let cost = Cost_tracking.of_agent_result ~agent_name ~files_fetched agent_result in
       Security_artifacts.write_debug_json artifacts
         ~filename:(Printf.sprintf "analysis_%s_output.json" vc_name)
@@ -607,18 +655,22 @@ module Make (AI : Api.Agent_runner) = struct
       log#error "validator agent failed: %s" msg;
       Lwt.return ([], [])
     | Ok agent_result ->
-      let files_fetched = agent_result.steps_count - 1 |> max 0 in
+      let files_fetched = agent_result.tool_results_count in
       let cost = Cost_tracking.of_agent_result ~agent_name:"validator" ~files_fetched agent_result in
       Security_artifacts.write_debug_json artifacts ~filename:"validator_output.json" agent_result.output;
       (try
          let output = Security_types.validator_output_of_json agent_result.output in
-         let results = enforce_validator_proofs output.results in
-         let downgraded = count_confirmed output.results - count_confirmed results in
-         (match downgraded > 0 with
-         | true -> log#warn "validator: downgraded %d confirmed result(s) without concrete proof" downgraded
-         | false -> ());
-         log#info "validator: %d results" (List.length results);
-         Lwt.return (results, [ cost ])
+         match validator_results_for_candidates ~candidate_findings output with
+         | Error msg ->
+           log#error "%s" msg;
+           Lwt.return ([], [ cost ])
+         | Ok results ->
+           let downgraded = count_confirmed output.results - count_confirmed results in
+           (match downgraded > 0 with
+           | true -> log#warn "validator: downgraded %d confirmed result(s) without concrete proof" downgraded
+           | false -> ());
+           log#info "validator: %d results" (List.length results);
+           Lwt.return (results, [ cost ])
        with exn ->
          log#error "validator output parse failed: %s" (Exn.str exn);
          Lwt.return ([], [ cost ]))

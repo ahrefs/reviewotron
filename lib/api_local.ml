@@ -218,6 +218,8 @@ module Agent_runner : Api.Agent_runner = struct
           cache_read_input_tokens = 0;
           cache_creation_input_tokens = 0;
           steps_count = 1;
+          tool_calls_count = 0;
+          tool_results_count = 0;
           model_id = "mock";
           reported_cost_usd = None;
         }

@@ -378,8 +378,8 @@ Each repo can have a `.reviewotron.json` file in its root. For GitHub webhooks, 
 | `validator_model_tier` | `"standard"` | Model tier for the adversarial validator. |
 | `confidence_threshold` | `"medium"` | Minimum triage confidence to trigger analysis for enabled classes. `"high"` = only high-confidence signals. `"medium"` = high + medium. `"low"` = all signals. |
 | `memory_max_tokens` | `5000` | Target size limit for the repo's security memory file. |
-| `metrics_artifacts` | `false` | Write compact security metrics artifacts under `debug/<repo>/<sha>/security/`. These omit source code and prompt bodies. |
-| `debug_artifacts` | `false` | Write full redacted per-stage security debug artifacts under `debug/<repo>/<sha>/security/`. Sensitive and opt-in. |
+| `metrics_artifacts` | `false` | Write compact security metrics artifacts under the review debug dir's `security/` subdirectory. These omit source code and prompt bodies. |
+| `debug_artifacts` | `false` | Write full redacted per-stage security debug artifacts under the review debug dir's `security/` subdirectory. Sensitive and opt-in. |
 
 #### Model Tiers
 
@@ -422,7 +422,7 @@ When the security plugin is enabled, every diff goes through a multi-agent pipel
 
 ### 1. Triage (Haiku, single-shot)
 
-Before triage, Reviewotron runs a deterministic scan over changed paths and added hunk lines for advisory security signals such as dangerous APIs, risky paths, sensitive files, changed security controls, and stateful operations. These signals are hints only: they are summarized for triage but never become findings and never route directly to analysis.
+Before triage, Reviewotron runs a deterministic scan over changed paths and added hunk lines for advisory security signals such as dangerous APIs, risky paths, sensitive files, changed security controls, and stateful operations. These signals are hints only: they are summarized by category, vulnerability hint, and affected file for triage, with only the strongest exact hints included. They never become findings and never route directly to analysis.
 
 The triage agent scans the diff for security-relevant patterns and classifies them by vulnerability type. This is intentionally biased toward **over-flagging** — it's cheap to run an analysis agent that finds nothing, costly to miss a real issue.
 
@@ -439,7 +439,9 @@ For each flagged vulnerability class, a specialized agent runs deep analysis:
 
 For `policy_regression`, the same finding schema is used with a policy proof instead of a runtime user-input flow: source is the changed principal/grant/config entry or removed control, sink is the effective privileged capability or weakened boundary, flow is changed line -> effective policy/control state -> concrete action now possible, and sanitization is the missing or inadequate scoping/mitigation.
 
-Analysis agents can fetch additional files from the repo via the GitHub Contents API when they need to trace a data flow beyond the diff.
+Analysis agents can fetch additional files from the repo via the GitHub Contents API when they need to trace a data flow beyond the diff. Each run starts from a focused, class-specific analysis question and the triage evidence. The agent is instructed to inspect changed regions and direct dependencies first, fetch more files only to close a specific evidence gap, and return no finding when a bounded check cannot establish the required source/effect, sink/capability, and missing control.
+
+Analysis depth is budgeted by vulnerability class, triage confidence, and signal count. High-confidence AuthN/AuthZ/SSRF signals still get the most room because those classes often need cross-file context; medium/low-confidence and policy-regression runs are kept tighter to avoid broad repo archaeology.
 
 ### 3. Validation (Sonnet, adversarial)
 
@@ -518,9 +520,9 @@ Updates go through a queue file (`memory/{repo-slug}.queue`) for distributed saf
 
 ### Debug Dumps
 
-When an agent's structured output can't be parsed, a debug dump is saved to `debug/{repo-slug}/{sha-prefix}/`. These contain the raw agent output for diagnosing prompt or parsing issues.
+When an agent's structured output can't be parsed, a debug dump is saved to the review debug dir. In in-memory/local mode this is `debug/{repo-slug}/{sha-prefix}/`. In persistent server mode it uses a sibling root next to feedback evidence; for example, if feedback evidence is under `./var/reviewotron-feedback-evidence/`, debug dumps go under `./var/debug/{repo-slug}/{sha-prefix}/`. These contain the raw agent output for diagnosing prompt or parsing issues.
 
-Security metrics/debug artifacts are separate and opt-in via `review_plugins.security.metrics_artifacts` and `review_plugins.security.debug_artifacts`. Metrics write compact JSON files under `debug/{repo-slug}/{sha-prefix}/security/`; full debug artifacts additionally write redacted stage inputs and outputs and should be treated as sensitive.
+Security metrics/debug artifacts are separate and opt-in via `review_plugins.security.metrics_artifacts` and `review_plugins.security.debug_artifacts`. Metrics write compact JSON files under the review debug dir's `security/` subdirectory; full debug artifacts additionally write redacted stage inputs and outputs and should be treated as sensitive.
 
 ---
 
@@ -902,7 +904,7 @@ Only pushes to `refs/heads/develop` are reviewed. Other branches, including `mai
 ### File Content Fetching
 
 - The general review plugin fetches up to **5 key files** for additional context (added or modified files only)
-- Security analysis agents can fetch any file via `get_file_content`, bounded by the agent's `max_steps` limit
+- Security analysis agents can fetch any file via `get_file_content`, bounded by a dynamic step budget derived from vulnerability class, triage confidence, and signal count
 - All file fetches use the PR head SHA as the git ref, so agents see the PR branch state (not the default branch)
 
 ### Static Analysis Only
@@ -965,7 +967,7 @@ Multiple reviews can run concurrently (events are processed via `Lwt.async`). Th
 
 ### Debug dumps
 
-When an agent produces output that can't be parsed as structured JSON, a debug dump is saved to `debug/{repo-slug}/{sha-prefix}/`. Look here when you see `"failed to parse ... output"` in the logs.
+When an agent produces output that can't be parsed as structured JSON, a debug dump is saved to the review debug dir. In persistent server mode, look for `debug/{repo-slug}/{sha-prefix}/` under the sibling root next to the feedback evidence root, for example `./var/debug/{repo-slug}/{sha-prefix}/`. Look here when you see `"failed to parse ... output"` in the logs.
 
 ---
 

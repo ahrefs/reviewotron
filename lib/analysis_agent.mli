@@ -14,8 +14,9 @@
     [model_tier] controls which model is used — typically [Standard] (Sonnet).
     [language_hints] parameterizes source/sink catalogs for detected languages.
 
-    The returned config has [max_steps = 10] to allow multiple tool round-trips
-    for demand-driven context expansion. *)
+    The returned base config has [max_steps = 15] to allow multiple tool
+    round-trips for demand-driven context expansion. The security plugin may
+    apply a tighter per-class dynamic budget after triage. *)
 val config :
   vuln_class:Security_types.vuln_class ->
   model_tier:Agent_runner.model_tier ->

@@ -40,10 +40,25 @@ val agent_model_tier : Config_types.model_tier -> Agent_runner.model_tier
     [always_analyze_vuln_classes]. *)
 val should_analyze : security_config:Config_types.security_plugin_config -> Security_types.triage_signal -> bool
 
+(** Step budget for a per-class analysis agent after routing.
+
+    High-confidence signals still get enough room for multi-file evidence
+    tracing. Medium/low-confidence or broad classes get a bounded verification
+    pass so speculative routes do not consume the full global agent budget. *)
+val analysis_step_budget : vuln_class:Config_types.vuln_class -> triage_signals:Security_types.triage_signal list -> int
+
 (** Return [true] when a validator proof has the concrete fields required for
     a confirmed result. Trace steps must contain file:line evidence, and
     unresolved assumptions must be empty. *)
 val proof_is_concrete : Security_types.exploitation_proof -> bool
+
+(** Validate the security validator's result cardinality and enforce concrete
+    proofs. A malformed validator response is an error rather than a partial
+    validation because omitted candidates must not be silently dropped. *)
+val validator_results_for_candidates :
+  candidate_findings:Security_types.candidate_finding list ->
+  Security_types.validator_output ->
+  (Security_types.validated_finding list, string) result
 
 (** Enforce the validator invariant that [Confirmed] results must include a
     concrete [proof_by_construction]. Confirmed results with missing or empty

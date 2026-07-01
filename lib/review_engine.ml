@@ -332,6 +332,18 @@ module Make (AI : Api.Agent_runner) = struct
       };
     ]
 
+  let debug_root ~ctx =
+    match Context.feedback_store ctx with
+    | Some store ->
+      let paths = Feedback_store.paths store in
+      Filename.concat (Filename.dirname paths.evidence_root) "debug"
+    | None -> "debug"
+
+  let debug_dir_for_job ~ctx (job : Review_job.t) =
+    let slug = Security_memory.repo_slug job.repo_key in
+    let sha_prefix = String.sub job.head_sha 0 (min 8 (String.length job.head_sha)) in
+    Filename.concat (Filename.concat (debug_root ~ctx) slug) sha_prefix
+
   let metadata_of_job (job : Review_job.t) =
     Review_plugin.
       {
@@ -444,11 +456,7 @@ module Make (AI : Api.Agent_runner) = struct
       ([], [], [], []) findings
 
   let run_review ~ctx ~(job : Review_job.t) =
-    let debug_dir =
-      let slug = Security_memory.repo_slug job.repo_key in
-      let sha_prefix = String.sub job.head_sha 0 (min 8 (String.length job.head_sha)) in
-      Printf.sprintf "debug/%s/%s" slug sha_prefix
-    in
+    let debug_dir = debug_dir_for_job ~ctx job in
     let filtered_diff = job.filtered_diff in
     let%lwt plugin_result = run_plugins ~ctx ~job ~debug_dir in
     Cost_tracking.log_review_costs plugin_result.review_costs;

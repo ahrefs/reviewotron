@@ -36,6 +36,13 @@ type agent_result = {
   cache_read_input_tokens : int;
   cache_creation_input_tokens : int;
   steps_count : int;
+  tool_calls_count : int;
+    (** Number of tool calls requested by the model, including any final calls
+        that could not execute because the step budget was exhausted. *)
+  tool_results_count : int;
+    (** Number of completed tool results returned to the model. For agents whose
+        only tool is [get_file_content], this is the number of file-fetch
+        attempts that actually ran. *)
   model_id : string;
   reported_cost_usd : float option;
     (** The provider's actual billed USD cost for the run, when it reports one

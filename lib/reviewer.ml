@@ -308,11 +308,7 @@ struct
     | Error error -> handle_push_prepare_error ~ctx ~config push error
     | Ok prepared ->
       let Github_source.{ job; push } = prepared in
-      let debug_dir =
-        let slug = Security_memory.repo_slug job.repo_key in
-        let sha_prefix = String.sub job.head_sha 0 (min 8 (String.length job.head_sha)) in
-        Printf.sprintf "debug/%s/%s" slug sha_prefix
-      in
+      let debug_dir = Engine.debug_dir_for_job ~ctx job in
       let%lwt plugin_result = Engine.run_plugins ~ctx ~job ~debug_dir in
       let Review_engine.{ general_output; findings; review_costs; security_error; _ } = plugin_result in
       Cost_tracking.log_review_costs review_costs;
