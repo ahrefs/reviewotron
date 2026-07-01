@@ -267,7 +267,7 @@ module Agent_runner : Api.Agent_runner = struct
       validator_output ~path:"src/main.ml" ~line:14 ~severity:Review_types.Warning ~category:Review_types.Error_handling
         ~message:"The `process` function can raise exceptions but the result is used without error handling."
 
-  let run ~ctx:_ ~repo_url:_ ?model_id:_ ?tools:_ ?debug_dir:_ ~config ~input:_ () =
+  let run ~ctx:_ ~repo_url:_ ?model_id:_ ?tools:_ ?debug_dir:_ ?log_context:_ ~config ~input:_ () =
     match List.assoc_opt config.Agent_runner.name !agent_response_map, config.Agent_runner.name with
     | None, "general_validator" -> Lwt.return (result (default_validator_output ()))
     | path_opt, _ ->

@@ -249,7 +249,7 @@ end
 (** {2 Agent runner — wraps ocaml-ai-sdk for AI agent execution} *)
 
 module Agent_runner : Api.Agent_runner = struct
-  let run ~ctx ~repo_url ?model_id ?tools ?debug_dir ~config ~input () =
+  let run ~ctx ~repo_url ?model_id ?tools ?debug_dir ?log_context ~config ~input () =
     let secrets = Context.secrets ctx in
     ignore (repo_url : string);
     match Llm_provider.resolve secrets with
@@ -258,7 +258,7 @@ module Agent_runner : Api.Agent_runner = struct
       let base_model_id = Option.default (Agent_runner.default_model_id config.Agent_runner.model_tier) model_id in
       let model_id = Llm_provider.normalize_model_id provider base_model_id in
       let model = Llm_provider.language_model provider ~secrets ~model_id in
-      Agent_runner.run_agent ~provider ~model ?tools ?debug_dir ~config ~input ()
+      Agent_runner.run_agent ~provider ~model ?tools ?debug_dir ?log_context ~config ~input ()
 end
 
 (** {2 Slack API} *)

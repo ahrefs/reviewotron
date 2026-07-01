@@ -2,19 +2,7 @@ open Devkit
 
 let log = Log.from "security_memory"
 
-let repo_slug url =
-  let url =
-    match String.split_on_char '/' url with
-    | ("https:" | "http:") :: "" :: _host :: parts -> String.concat "/" parts
-    | _ -> url
-  in
-  let url = Stre.rstrip ~chars:"/" url in
-  let url = Option.default url (Filename.chop_suffix_opt ~suffix:".git" url) in
-  String.map
-    (function
-      | '/' -> '-'
-      | c -> c)
-    url
+let repo_slug = Review_job.repo_slug
 
 let memory_path ~memory_dir ~repo_url = Filename.concat memory_dir (repo_slug repo_url ^ ".md")
 

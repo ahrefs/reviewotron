@@ -31,6 +31,9 @@ val is_embeddable : string -> bool
 (** Shorten an identifier for logs and labels. *)
 val short_display_id : string -> string
 
+(** Stable, filesystem-safe slug for a repository key or URL. *)
+val repo_slug : string -> string
+
 (** Stable string representation for review sources. *)
 val source_kind_to_string : source_kind -> string
 
@@ -58,6 +61,9 @@ type t = {
   trigger : trigger;
   source_kind : source_kind;
 }
+
+(** Stable log context prefix for correlating concurrent review logs. *)
+val log_context : t -> string
 
 (** SHA-256 of the filtered diff text that is sent to review agents. *)
 val diff_sha256 : t -> string

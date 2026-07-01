@@ -2808,7 +2808,7 @@ module Capturing_agent_runner = struct
     in
     Review_types.validator_output_to_json { results }
 
-  let run ~ctx:_ ~repo_url:_ ?model_id ?tools ?debug_dir ~config ~input:_ () =
+  let run ~ctx:_ ~repo_url:_ ?model_id ?tools ?debug_dir ?log_context:_ ~config ~input:_ () =
     let tools_count =
       match tools with
       | None -> 0
@@ -3470,6 +3470,21 @@ let test_debug_dir_with_feedback_store_uses_feedback_sibling () =
     let dir = Engine_debug_test.debug_dir_for_job ~ctx (debug_dir_test_job ()) in
     let expected = Filename.concat (Filename.concat (Filename.dirname paths.evidence_root) "debug") "org-monorepo" in
     (check string) "feedback sibling debug dir" (Filename.concat expected "fb15a13a") dir)
+
+let test_review_job_log_context () =
+  let context = Review_job.log_context (debug_dir_test_job ()) in
+  (check string) "PR log context" "[org-monorepo/#1/fb15a13a]" context;
+  let context = Review_job.log_context (debug_dir_test_job ~head_sha:"abc123" ()) in
+  (check string) "short sha log context" "[org-monorepo/#1/abc123]" context;
+  let context =
+    Review_job.log_context
+      {
+        (debug_dir_test_job ()) with
+        change_label = "push fb15a13a";
+        head_sha = "fb15a13a357f3e108dfc8257b480ef19ac5d0c00";
+      }
+  in
+  (check string) "push log context" "[org-monorepo/push-fb15a13a/fb15a13a]" context
 
 let feedback_created_at = ptime_exn "2026-06-24T10:00:00Z"
 
@@ -5598,7 +5613,7 @@ module General_plugin_agent_runner = struct
   let outputs : (string * Yojson.Basic.t) list ref = ref []
   let set_outputs entries = outputs := entries
 
-  let run ~ctx:_ ~repo_url:_ ?model_id:_ ?tools:_ ?debug_dir:_ ~config ~input:_ () =
+  let run ~ctx:_ ~repo_url:_ ?model_id:_ ?tools:_ ?debug_dir:_ ?log_context:_ ~config ~input:_ () =
     match List.assoc_opt config.Agent_runner.name !outputs with
     | None -> Lwt.return (Error (Printf.sprintf "missing mock output for %s" config.Agent_runner.name))
     | Some output ->
@@ -6117,6 +6132,7 @@ let () =
           test_case "debug dir defaults to relative debug" `Quick
             test_debug_dir_without_feedback_store_uses_relative_debug;
           test_case "debug dir uses feedback sibling" `Quick test_debug_dir_with_feedback_store_uses_feedback_sibling;
+          test_case "review job log context" `Quick test_review_job_log_context;
           test_case "marker and deterministic ids" `Quick test_feedback_marker_and_id_helpers;
           test_case "target roundtrip and privacy scan" `Quick test_feedback_target_roundtrip_and_privacy;
           test_case "target schema v1 compatibility and v2 fields" `Quick

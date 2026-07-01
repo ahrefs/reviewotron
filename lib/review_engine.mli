@@ -64,10 +64,11 @@ type finding_routing =
   | Anchor_failed
 
 (** Classify a finding into one of the [finding_routing] cases. *)
-val route_finding : diff:Diff_parser.file_diff list -> Review_types.finding -> finding_routing
+val route_finding : ?log_context:string -> diff:Diff_parser.file_diff list -> Review_types.finding -> finding_routing
 
 (** Convenience wrapper: returns [Some _] only for the [Positioned] case. *)
-val finding_to_review_comment : diff:Diff_parser.file_diff list -> Review_types.finding -> Review_comment.t option
+val finding_to_review_comment :
+  ?log_context:string -> diff:Diff_parser.file_diff list -> Review_types.finding -> Review_comment.t option
 
 (** Notice appended when the security plugin fails or produces no cost record
     despite being enabled. *)

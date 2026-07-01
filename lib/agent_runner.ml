@@ -2,6 +2,10 @@ open Devkit
 
 let log = Log.from "agent_runner"
 
+let log_context_prefix = function
+  | None -> ""
+  | Some context -> context ^ " "
+
 type model_tier =
   | Fast
   | Standard
@@ -218,8 +222,8 @@ let finalization_instruction ~reason =
     Returns [Some finalized_result] on success with combined usage/steps,
     [None] when the recovery itself fails (the caller then errors out as
     before). *)
-let finalize_after_budget_exhaustion ~provider ~model ~config ~provider_options ~input ~output_spec ~max_retries ~reason
-  ~(first : Ai_core.Generate_text_result.t) =
+let finalize_after_budget_exhaustion ~log_prefix ~provider ~model ~config ~provider_options ~input ~output_spec
+  ~max_retries ~reason ~(first : Ai_core.Generate_text_result.t) =
   (* Reuse the same cache breakpoint on the input block we put there in
      [run_agent]: same prefix → same cache key, so this single-shot
      finalization call (fired immediately after the main loop) gets a cache
@@ -236,7 +240,7 @@ let finalize_after_budget_exhaustion ~provider ~model ~config ~provider_options 
     Ai_provider.Prompt.User { content = [ Text { text; provider_options = po } ] }
   in
   let messages = base_messages @ [ follow_up ] in
-  log#info "agent %s: %s, attempting graceful finalization with %d replayed turns" config.name reason
+  log#info "%sagent %s: %s, attempting graceful finalization with %d replayed turns" log_prefix config.name reason
     (List.length base_messages - 1);
   try%lwt
     let%lwt second =
@@ -245,26 +249,29 @@ let finalize_after_budget_exhaustion ~provider ~model ~config ~provider_options 
     in
     match second.output with
     | Some _ ->
-      log#info "agent %s: finalization produced structured output (%d additional input tokens, %d output tokens)"
-        config.name second.usage.input_tokens second.usage.output_tokens;
+      log#info "%sagent %s: finalization produced structured output (%d additional input tokens, %d output tokens)"
+        log_prefix config.name second.usage.input_tokens second.usage.output_tokens;
       Lwt.return (Some second)
     | None ->
-      log#warn "agent %s: finalization still returned no structured output (finish_reason=%s); giving up" config.name
+      log#warn "%sagent %s: finalization still returned no structured output (finish_reason=%s); giving up" log_prefix
+        config.name
         (Ai_provider.Finish_reason.to_string second.finish_reason);
       Lwt.return None
   with
   | Ai_core.Retry.Retry_error err ->
-    log#warn "agent %s: finalization retries exhausted (%s): %s" config.name
+    log#warn "%sagent %s: finalization retries exhausted (%s): %s" log_prefix config.name
       (Ai_core.Retry.reason_to_string err.reason)
       err.message;
     Lwt.return None
   | Ai_provider.Provider_error.Provider_error err ->
-    log#warn "agent %s: finalization provider error: %s" config.name (Ai_provider.Provider_error.to_string err);
+    log#warn "%sagent %s: finalization provider error: %s" log_prefix config.name
+      (Ai_provider.Provider_error.to_string err);
     Lwt.return None
 
-let run_agent ~provider ~model ?tools ?(max_retries = 2) ?debug_dir ~config ~input () =
+let run_agent ~provider ~model ?tools ?(max_retries = 2) ?debug_dir ?log_context ~config ~input () =
+  let log_prefix = log_context_prefix log_context in
   let fail msg =
-    log#error "%s" msg;
+    log#error "%s%s" log_prefix msg;
     Lwt.return_error msg
   in
   let output_spec = Ai_core.Output.object_ ~name:(config.name ^ "_output") ~schema:config.output_schema () in
@@ -275,8 +282,8 @@ let run_agent ~provider ~model ?tools ?(max_retries = 2) ?debug_dir ~config ~inp
     | None -> "off"
     | Some n -> string_of_int (clamp_thinking_budget n)
   in
-  log#info "agent %s: starting (model=%s, max_steps=%d, thinking_budget=%s)" config.name model_id config.max_steps
-    thinking_budget_str;
+  log#info "%sagent %s: starting (model=%s, max_steps=%d, thinking_budget=%s)" log_prefix config.name model_id
+    config.max_steps thinking_budget_str;
   let tools = Option.default [] tools in
   (* Hand-build the [messages] list (instead of using [~prompt:input]) so we
      can attach a [cache_control] marker to the input text block.  The
@@ -296,7 +303,7 @@ let run_agent ~provider ~model ?tools ?(max_retries = 2) ?debug_dir ~config ~inp
     in
     let steps_count = List.length result.steps in
     let cache_read_input_tokens, cache_creation_input_tokens, reported_cost_usd = usage_of_result ~provider result in
-    log#info "agent %s: finished (%d steps, %d input tokens, %d output tokens)" config.name steps_count
+    log#info "%sagent %s: finished (%d steps, %d input tokens, %d output tokens)" log_prefix config.name steps_count
       result.usage.input_tokens result.usage.output_tokens;
     let make_result ~output ~usage ~extra_cache_read ~extra_cache_write ~extra_cost ~extra_steps ~extra_tool_calls
       ~extra_tool_results =
@@ -335,14 +342,14 @@ let run_agent ~provider ~model ?tools ?(max_retries = 2) ?debug_dir ~config ~inp
           (match
              write_debug_dump ~dir ~config ~finish_reason:result.finish_reason ~steps:result.steps ~usage:result.usage
            with
-          | Some filepath -> log#warn "agent %s: parse failed, debug dump at %s" config.name filepath
-          | None -> log#warn "%s" msg)
-        | None -> log#warn "%s" msg);
+          | Some filepath -> log#warn "%sagent %s: parse failed, debug dump at %s" log_prefix config.name filepath
+          | None -> log#warn "%s%s" log_prefix msg)
+        | None -> log#warn "%s%s" log_prefix msg);
         Lwt.return_error msg
       | Some reason ->
         let%lwt recovered =
-          finalize_after_budget_exhaustion ~provider ~model ~config ~provider_options ~input ~output_spec ~max_retries
-            ~reason ~first:result
+          finalize_after_budget_exhaustion ~log_prefix ~provider ~model ~config ~provider_options ~input ~output_spec
+            ~max_retries ~reason ~first:result
         in
         (match recovered with
         | Some second ->
@@ -357,7 +364,7 @@ let run_agent ~provider ~model ?tools ?(max_retries = 2) ?debug_dir ~config ~inp
           | None ->
             (* Impossible: finalize returns Some only when second.output is Some. *)
             let msg = Printf.sprintf "agent %s: finalization returned empty output" config.name in
-            log#error "%s" msg;
+            log#error "%s%s" log_prefix msg;
             Lwt.return_error msg)
         | None ->
           let msg =
@@ -370,9 +377,9 @@ let run_agent ~provider ~model ?tools ?(max_retries = 2) ?debug_dir ~config ~inp
             (match
                write_debug_dump ~dir ~config ~finish_reason:result.finish_reason ~steps:result.steps ~usage:result.usage
              with
-            | Some filepath -> log#warn "agent %s: parse failed, debug dump at %s" config.name filepath
-            | None -> log#warn "%s" msg)
-          | None -> log#warn "%s" msg);
+            | Some filepath -> log#warn "%sagent %s: parse failed, debug dump at %s" log_prefix config.name filepath
+            | None -> log#warn "%s%s" log_prefix msg)
+          | None -> log#warn "%s%s" log_prefix msg);
           Lwt.return_error msg))
   with
   | Ai_core.Retry.Retry_error err ->

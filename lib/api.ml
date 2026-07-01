@@ -78,6 +78,7 @@ module type Agent_runner = sig
     ?model_id:string ->
     ?tools:(string * Ai_core.Core_tool.t) list ->
     ?debug_dir:string ->
+    ?log_context:string ->
     config:Agent_runner.agent_config ->
     input:string ->
     unit ->

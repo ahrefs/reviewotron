@@ -34,6 +34,7 @@ module Make (_ : Api.Agent_runner) : sig
     diff_text:string ->
     metadata:Review_plugin.review_metadata ->
     ?debug_dir:string ->
+    ?log_context:string ->
     unit ->
     ((Review_types.review_output, string) result * Cost_tracking.agent_cost list) Lwt.t
 end

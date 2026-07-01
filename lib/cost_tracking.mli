@@ -40,8 +40,10 @@ val estimate_cost :
 (** Build an {!agent_cost} from an agent result.
 
     @param agent_name identifies the agent (e.g. ["triage"], ["injection_analysis"])
+    @param log_context prefixes pricing warnings for concurrent review log correlation
     @param files_fetched number of [get_file_content] tool calls the agent made *)
-val of_agent_result : agent_name:string -> files_fetched:int -> Agent_runner.agent_result -> agent_cost
+val of_agent_result :
+  ?log_context:string -> agent_name:string -> files_fetched:int -> Agent_runner.agent_result -> agent_cost
 
 (** Aggregate a list of per-agent costs into a per-plugin summary. *)
 val aggregate : plugin:string -> agent_cost list -> review_cost
@@ -50,5 +52,8 @@ val aggregate : plugin:string -> agent_cost list -> review_cost
     Returns a markdown string like ["Review cost: 3 agents, ~$0.42"]. *)
 val format_footer : review_cost list -> string
 
-(** Log all agent costs at info level. *)
-val log_review_costs : review_cost list -> unit
+(** Log all agent costs at info level.
+
+    [log_context], when supplied, prefixes each line so concurrent review logs
+    can be correlated. *)
+val log_review_costs : ?log_context:string -> review_cost list -> unit

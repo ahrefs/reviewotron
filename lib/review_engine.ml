@@ -2,6 +2,10 @@ open Devkit
 
 let log = Log.from "review_engine"
 
+let log_context_prefix = function
+  | None -> ""
+  | Some context -> context ^ " "
+
 type finding_source =
   | From_general
   | From_security
@@ -50,6 +54,7 @@ type findings_plugin = {
     diff:Diff_parser.file_diff list ->
     diff_text:string ->
     metadata:Review_plugin.review_metadata ->
+    log_context:string option ->
     debug_dir:string ->
     (Review_types.finding list * Cost_tracking.agent_cost list) Lwt.t;
 }
@@ -168,15 +173,16 @@ let prepare_diff ~config diff_text =
     if total_lines > config.max_diff_lines then Error (`Too_large total_lines)
     else Ok (filtered_diff, Diff_parser.to_string_annotated filtered_diff)
 
-let valid_multiline_range fd (finding : Review_types.finding) ~resolved_line =
+let valid_multiline_range ?log_context fd (finding : Review_types.finding) ~resolved_line =
+  let log_prefix = log_context_prefix log_context in
   match finding.end_line with
   | None -> None
   | Some end_line ->
   match () with
   | () when end_line <= resolved_line -> None
   | () when not (Diff_anchor.single_hunk_contains fd ~start_line:resolved_line ~end_line) ->
-    log#info "degrading multi-line finding to single-line (range %s:%d..%d crosses hunk boundary or is out of diff)"
-      finding.path resolved_line end_line;
+    log#info "%sdegrading multi-line finding to single-line (range %s:%d..%d crosses hunk boundary or is out of diff)"
+      log_prefix finding.path resolved_line end_line;
     None
   | () -> Some (resolved_line, end_line)
 
@@ -185,7 +191,7 @@ type finding_routing =
   | File_not_in_diff
   | Anchor_failed
 
-let route_finding ~diff (finding : Review_types.finding) =
+let route_finding ?log_context ~diff (finding : Review_types.finding) =
   let file_diff = Diff_anchor.find_file_diff_by_path ~diff finding.path in
   match file_diff with
   | None -> File_not_in_diff
@@ -197,7 +203,7 @@ let route_finding ~diff (finding : Review_types.finding) =
   | None -> Anchor_failed
   | Some resolved_line ->
     let start_line, start_side, end_line =
-      match valid_multiline_range fd finding ~resolved_line with
+      match valid_multiline_range ?log_context fd finding ~resolved_line with
       | Some (s, e) -> Some s, Some Review_comment.Right, e
       | None -> None, None, resolved_line
     in
@@ -212,8 +218,8 @@ let route_finding ~diff (finding : Review_types.finding) =
           body = Review_format.format_finding_body finding;
         }
 
-let finding_to_review_comment ~diff finding =
-  match route_finding ~diff finding with
+let finding_to_review_comment ?log_context ~diff finding =
+  match route_finding ?log_context ~diff finding with
   | Positioned c -> Some c
   | File_not_in_diff | Anchor_failed -> None
 
@@ -272,8 +278,9 @@ let with_failure_details ~reason body =
   | None -> body
   | Some reason -> Printf.sprintf "%s\n\n<details><summary>Details</summary>\n\n```\n%s\n```\n\n</details>" body reason
 
-let review_body ~change_label ~general_output ~findings ~unchanged_findings ~anchor_failed_findings ~review_costs
-  ~security_error ~(config : Config_types.config) =
+let review_body ~log_context ~change_label ~general_output ~findings ~unchanged_findings ~anchor_failed_findings
+  ~review_costs ~security_error ~(config : Config_types.config) =
+  let log_prefix = log_context_prefix (Some log_context) in
   let unchanged_section =
     render_section ~title:"### Findings on unchanged code (please investigate)"
       ~lead:
@@ -289,7 +296,7 @@ let review_body ~change_label ~general_output ~findings ~unchanged_findings ~anc
       anchor_failed_findings
   in
   let failure_notice reason =
-    log#error "review failed for %s: no review output produced" change_label;
+    log#error "%sreview failed for %s: no review output produced" log_prefix change_label;
     let notice =
       match findings with
       | _ :: _ ->
@@ -354,19 +361,24 @@ module Make (AI : Api.Agent_runner) = struct
       }
 
   let run_plugins ~ctx ~job ~debug_dir =
+    let log_context = Review_job.log_context job in
+    let log_prefix = log_context_prefix (Some log_context) in
     let repo_url = job.Review_job.repo_key in
     let config = job.config in
     let diff = job.filtered_diff in
     let metadata = metadata_of_job job in
     let plugins_config = config.Config_types.review_plugins in
+    log#info "%splugins starting: general=%b security=%b files=%d diff_bytes=%d debug_dir=%s" log_prefix
+      plugins_config.general.enabled plugins_config.security.enabled (List.length diff) (String.length job.diff_text)
+      debug_dir;
     let general_promise =
       if plugins_config.general.enabled then begin
         let%lwt result, costs =
-          General_plugin.run_review ~ctx ~repo_url ~config ~diff_text:job.diff_text ~metadata ~debug_dir ()
+          General_plugin.run_review ~ctx ~repo_url ~config ~diff_text:job.diff_text ~metadata ~debug_dir ~log_context ()
         in
         (match result with
         | Ok _ -> ()
-        | Error msg -> log#error "general review plugin failed: %s" msg);
+        | Error msg -> log#error "%sgeneral review plugin failed: %s" log_prefix msg);
         Lwt.return (Some result, costs)
       end
       else Lwt.return (None, [])
@@ -378,11 +390,12 @@ module Make (AI : Api.Agent_runner) = struct
         Lwt.catch
           (fun () ->
             let%lwt findings, costs =
-              plugin.fp_run ~ctx ~repo_url ~config ~diff ~diff_text:job.diff_text ~metadata ~debug_dir
+              plugin.fp_run ~ctx ~repo_url ~config ~diff ~diff_text:job.diff_text ~metadata
+                ~log_context:(Some log_context) ~debug_dir
             in
             Lwt.return (plugin, findings, costs, false))
           (fun exn ->
-            log#error "%s review plugin raised: %s" plugin.fp_name (Exn.str exn);
+            log#error "%s%s review plugin raised: %s" log_prefix plugin.fp_name (Exn.str exn);
             Lwt.return (plugin, [], [], true))
     in
     let%lwt (general_output, general_costs), findings_results =
@@ -397,7 +410,7 @@ module Make (AI : Api.Agent_runner) = struct
         (fun (plugin, _findings, costs, errored) -> errored || (plugin.fp_enabled config && costs = []))
         findings_results
     in
-    if security_error then log#warn "a findings plugin encountered an error; results may be incomplete";
+    if security_error then log#warn "%sa findings plugin encountered an error; results may be incomplete" log_prefix;
     let general_findings =
       match general_output with
       | Some (Ok (r : Review_types.review_output)) -> r.findings
@@ -427,13 +440,22 @@ module Make (AI : Api.Agent_runner) = struct
         | [] -> false
         | _ :: _ -> true)
     in
+    let general_status =
+      match general_output with
+      | Some (Ok _) -> "ok"
+      | Some (Error _) -> "error"
+      | None -> "disabled"
+    in
+    log#info "%splugins complete: findings=%d general=%s findings_plugin_error=%b" log_prefix (List.length findings)
+      general_status security_error;
     Lwt.return { general_output; findings; sourced_findings; review_costs; security_error }
 
-  let route_findings ~change_label ~filtered_diff findings =
+  let route_findings ~log_context ~change_label ~filtered_diff findings =
+    let log_prefix = log_context_prefix (Some log_context) in
     List.fold_left
       (fun (routed, inline_findings, unchanged, anchor_failed) sourced ->
         let finding = sourced.finding in
-        match route_finding ~diff:filtered_diff finding with
+        match route_finding ~log_context ~diff:filtered_diff finding with
         | Positioned comment ->
           let inline = { comment; sourced } in
           { sourced; outcome = Routed_inline comment } :: routed, inline :: inline_findings, unchanged, anchor_failed
@@ -442,26 +464,32 @@ module Make (AI : Api.Agent_runner) = struct
           | true ->
             { sourced; outcome = Routed_unchanged } :: routed, inline_findings, finding :: unchanged, anchor_failed
           | false ->
-            log#info "%s: dropping low-severity finding on unchanged file %s:%d (%s)" change_label finding.path
-              finding.line
+            log#info "%s%s: dropping low-severity finding on unchanged file %s:%d (%s)" log_prefix change_label
+              finding.path finding.line
               (Review_types.severity_to_string finding.severity);
             ( { sourced; outcome = Routed_dropped_unchanged_low_severity } :: routed,
               inline_findings,
               unchanged,
               anchor_failed ))
         | Anchor_failed ->
-          log#warn "%s: finding on changed file %s:%d could not be anchored — surfacing for investigation" change_label
-            finding.path finding.line;
+          log#warn "%s%s: finding on changed file %s:%d could not be anchored — surfacing for investigation" log_prefix
+            change_label finding.path finding.line;
           { sourced; outcome = Routed_anchor_failed } :: routed, inline_findings, unchanged, finding :: anchor_failed)
       ([], [], [], []) findings
 
   let run_review ~ctx ~(job : Review_job.t) =
+    let log_context = Review_job.log_context job in
+    let log_prefix = log_context_prefix (Some log_context) in
     let debug_dir = debug_dir_for_job ~ctx job in
     let filtered_diff = job.filtered_diff in
+    log#info "%sreview starting: trigger=%s source=%s files=%d diff_bytes=%d debug_dir=%s" log_prefix
+      (Review_job.trigger_to_string job.trigger)
+      (Review_job.source_kind_to_string job.source_kind)
+      (List.length filtered_diff) (String.length job.diff_text) debug_dir;
     let%lwt plugin_result = run_plugins ~ctx ~job ~debug_dir in
-    Cost_tracking.log_review_costs plugin_result.review_costs;
+    Cost_tracking.log_review_costs ~log_context plugin_result.review_costs;
     let routed_rev, inline_findings_rev, unchanged_rev, anchor_failed_rev =
-      route_findings ~change_label:job.change_label ~filtered_diff plugin_result.sourced_findings
+      route_findings ~log_context ~change_label:job.change_label ~filtered_diff plugin_result.sourced_findings
     in
     let routed_findings = List.rev routed_rev in
     let inline_findings = List.rev inline_findings_rev in
@@ -469,7 +497,7 @@ module Make (AI : Api.Agent_runner) = struct
     let unchanged_findings = List.rev unchanged_rev in
     let anchor_failed_findings = List.rev anchor_failed_rev in
     let body =
-      review_body ~change_label:job.change_label ~general_output:plugin_result.general_output
+      review_body ~log_context ~change_label:job.change_label ~general_output:plugin_result.general_output
         ~findings:plugin_result.findings ~unchanged_findings ~anchor_failed_findings
         ~review_costs:plugin_result.review_costs ~security_error:plugin_result.security_error ~config:job.config
     in
@@ -478,6 +506,9 @@ module Make (AI : Api.Agent_runner) = struct
       | Some (Error _) -> true
       | Some (Ok _) | None -> false
     in
+    log#info "%sreview routed: inline=%d unchanged=%d anchor_failed=%d total_findings=%d" log_prefix
+      (List.length inline_findings) (List.length unchanged_findings) (List.length anchor_failed_findings)
+      (List.length plugin_result.findings);
     Lwt.return
       {
         body;

@@ -3,6 +3,10 @@ open Melange_json.Primitives
 
 let log = Log.from "cost_tracking"
 
+let log_context_prefix = function
+  | None -> ""
+  | Some context -> context ^ " "
+
 type model_pricing = {
   model_id_prefix : string;
   input_per_million : float;
@@ -74,10 +78,11 @@ let find_pricing ~model_id =
   let model_id = pricing_model_id model_id in
   List.find_opt (fun p -> String.starts_with ~prefix:p.model_id_prefix model_id) pricing_table
 
-let estimate_cost ~model_id ~input_tokens ~output_tokens ~cache_read_input_tokens ~cache_creation_input_tokens =
+let estimate_cost_with_prefix ~log_prefix ~model_id ~input_tokens ~output_tokens ~cache_read_input_tokens
+  ~cache_creation_input_tokens =
   match find_pricing ~model_id with
   | None ->
-    log#warn "no pricing found for model %s, using zero cost" model_id;
+    log#warn "%sno pricing found for model %s, using zero cost" log_prefix model_id;
     0.0
   | Some p ->
     let per_m tokens rate = Float.of_int tokens *. rate /. 1_000_000.0 in
@@ -87,7 +92,11 @@ let estimate_cost ~model_id ~input_tokens ~output_tokens ~cache_read_input_token
     let cache_read_cost = per_m cache_read_input_tokens p.cache_read_per_million in
     input_cost +. output_cost +. cache_write_cost +. cache_read_cost
 
-let of_agent_result ~agent_name ~files_fetched (result : Agent_runner.agent_result) =
+let estimate_cost ~model_id ~input_tokens ~output_tokens ~cache_read_input_tokens ~cache_creation_input_tokens =
+  estimate_cost_with_prefix ~log_prefix:"" ~model_id ~input_tokens ~output_tokens ~cache_read_input_tokens
+    ~cache_creation_input_tokens
+
+let of_agent_result ?log_context ~agent_name ~files_fetched (result : Agent_runner.agent_result) =
   let input_tokens = result.usage.input_tokens in
   let output_tokens = result.usage.output_tokens in
   let cache_read_input_tokens = result.cache_read_input_tokens in
@@ -100,7 +109,8 @@ let of_agent_result ~agent_name ~files_fetched (result : Agent_runner.agent_resu
     match result.reported_cost_usd with
     | Some c -> c
     | None ->
-      estimate_cost ~model_id:model ~input_tokens ~output_tokens ~cache_read_input_tokens ~cache_creation_input_tokens
+      estimate_cost_with_prefix ~log_prefix:(log_context_prefix log_context) ~model_id:model ~input_tokens
+        ~output_tokens ~cache_read_input_tokens ~cache_creation_input_tokens
   in
   {
     agent_name;
@@ -138,15 +148,17 @@ let format_footer (costs : review_cost list) =
   Printf.sprintf "\n\n---\n*Review cost: %d %s (%s), ~$%.2f*" total_agents (pluralize ~n:total_agents "agent") details
     total_cost
 
-let log_review_costs (costs : review_cost list) =
+let log_review_costs ?log_context (costs : review_cost list) =
+  let log_prefix = log_context_prefix log_context in
   List.iter
     (fun c ->
       List.iter
         (fun a ->
-          log#info "cost [%s/%s] model=%s input=%d output=%d cache_read=%d cache_write=%d turns=%d files=%d cost=$%.4f"
-            c.plugin a.agent_name a.model a.input_tokens a.output_tokens a.cache_read_input_tokens
+          log#info
+            "%scost [%s/%s] model=%s input=%d output=%d cache_read=%d cache_write=%d turns=%d files=%d cost=$%.4f"
+            log_prefix c.plugin a.agent_name a.model a.input_tokens a.output_tokens a.cache_read_input_tokens
             a.cache_creation_input_tokens a.turns a.files_fetched a.estimated_cost_usd)
         c.agents;
-      log#info "cost [%s] total: input=%d output=%d cost=$%.4f" c.plugin c.total_input_tokens c.total_output_tokens
-        c.total_estimated_cost_usd)
+      log#info "%scost [%s] total: input=%d output=%d cost=$%.4f" log_prefix c.plugin c.total_input_tokens
+        c.total_output_tokens c.total_estimated_cost_usd)
     costs

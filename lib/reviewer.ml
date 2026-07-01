@@ -38,7 +38,7 @@ struct
     | File_not_in_diff
     | Anchor_failed
 
-  let route_finding = Review_engine.route_finding
+  let route_finding ~diff finding = Review_engine.route_finding ~diff finding
 
   let finding_to_comment ~diff finding =
     Option.map Github_sink.review_comment_req_of_comment (Review_engine.finding_to_review_comment ~diff finding)
@@ -308,14 +308,16 @@ struct
     | Error error -> handle_push_prepare_error ~ctx ~config push error
     | Ok prepared ->
       let Github_source.{ job; push } = prepared in
+      let log_context = Review_job.log_context job in
+      let log_prefix = log_context ^ " " in
       let debug_dir = Engine.debug_dir_for_job ~ctx job in
       let%lwt plugin_result = Engine.run_plugins ~ctx ~job ~debug_dir in
       let Review_engine.{ general_output; findings; review_costs; security_error; _ } = plugin_result in
-      Cost_tracking.log_review_costs review_costs;
+      Cost_tracking.log_review_costs ~log_context review_costs;
       let%lwt () = Sink.post_push_comments ~ctx ~repo_url:job.repo_key ~sha:job.head_sha findings in
       let security_note = String.trim Review_engine.security_error_notice in
       let failure_attachment reason =
-        log#error "review failed for push %s: no review output produced" push.after;
+        log#error "%sreview failed for push %s: no review output produced" log_prefix push.after;
         push_failure_message ~push ~findings ~security_error ?reason ()
       in
       let slack_text, attachment =

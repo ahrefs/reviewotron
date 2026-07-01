@@ -14,6 +14,49 @@ type fetch_file = path:string -> (string option, string) result Lwt.t
 
 let short_display_id id = String.sub id 0 (min 8 (String.length id))
 
+let strip_trailing_slashes value =
+  let rec length_without_trailing_slashes i =
+    match i < 0 with
+    | true -> 0
+    | false ->
+    match Char.equal value.[i] '/' with
+    | true -> length_without_trailing_slashes (i - 1)
+    | false -> i + 1
+  in
+  String.sub value 0 (length_without_trailing_slashes (String.length value - 1))
+
+let repo_slug url =
+  let url =
+    match String.split_on_char '/' url with
+    | ("https:" | "http:") :: "" :: _host :: parts -> String.concat "/" parts
+    | _ -> url
+  in
+  let url = strip_trailing_slashes url in
+  let url =
+    match Filename.chop_suffix_opt ~suffix:".git" url with
+    | Some without_suffix -> without_suffix
+    | None -> url
+  in
+  String.map
+    (function
+      | '/' -> '-'
+      | c -> c)
+    url
+
+let compact_change_label change_label =
+  let label = String.trim change_label in
+  let pr_prefix = "PR " in
+  let label =
+    match String.starts_with ~prefix:pr_prefix label with
+    | true -> String.sub label (String.length pr_prefix) (String.length label - String.length pr_prefix)
+    | false -> label
+  in
+  String.map
+    (function
+      | ' ' | '\t' | '\n' | '\r' | '/' -> '-'
+      | c -> c)
+    label
+
 let source_kind_to_string = function
   | Github -> "github"
   | Local -> "local"
@@ -66,6 +109,10 @@ type t = {
   trigger : trigger;
   source_kind : source_kind;
 }
+
+let log_context job =
+  Printf.sprintf "[%s/%s/%s]" (repo_slug job.repo_key) (compact_change_label job.change_label)
+    (short_display_id job.head_sha)
 
 let diff_sha256 job = sha256_hex job.diff_text
 

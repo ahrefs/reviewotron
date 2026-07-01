@@ -71,7 +71,9 @@ let run_pipeline ~ctx ~diff_text ~diff =
   in
   let config = Context.get_config ctx ~repo_key:corpus_repo_url in
   let findings, _costs =
-    Lwt_main.run (SP.run ~ctx ~repo_url:corpus_repo_url ~config ~diff ~diff_text ~metadata ~debug_dir:"debug/corpus")
+    Lwt_main.run
+      (SP.run ~ctx ~repo_url:corpus_repo_url ~config ~diff ~diff_text ~metadata ~log_context:None
+         ~debug_dir:"debug/corpus")
   in
   findings
 

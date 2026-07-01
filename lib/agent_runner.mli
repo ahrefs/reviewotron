@@ -101,6 +101,7 @@ val cached_input_provider_options : Llm_provider.t -> Ai_provider.Provider_optio
     @param tools Named tool definitions for context expansion
     @param max_retries Per-call retry count (default 2)
     @param debug_dir Directory for debug dumps on parse failure
+    @param log_context Review identifier prefix for correlating concurrent logs
     @param config Agent configuration (prompt, schema, limits)
     @param input User message content *)
 val run_agent :
@@ -109,6 +110,7 @@ val run_agent :
   ?tools:(string * Ai_core.Core_tool.t) list ->
   ?max_retries:int ->
   ?debug_dir:string ->
+  ?log_context:string ->
   config:agent_config ->
   input:string ->
   unit ->

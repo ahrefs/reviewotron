@@ -78,6 +78,7 @@ module Make (_ : Api.Agent_runner) : sig
     diff:Diff_parser.file_diff list ->
     diff_text:string ->
     metadata:Review_plugin.review_metadata ->
+    log_context:string option ->
     debug_dir:string ->
     (Review_types.finding list * Cost_tracking.agent_cost list) Lwt.t
 
@@ -85,7 +86,8 @@ module Make (_ : Api.Agent_runner) : sig
       inline anchor from the evidence chain so that findings whose sink lives
       in unchanged code still land on a changed line when the flow traces
       through one.  Exposed for testing the anchor-snapping logic. *)
-  val validated_to_finding : diff:Diff_parser.file_diff list -> Security_types.validated_finding -> Review_types.finding
+  val validated_to_finding :
+    ?log_context:string -> diff:Diff_parser.file_diff list -> Security_types.validated_finding -> Review_types.finding
 
   (** Collapse candidate findings that share the same [(sink.path, sink.line)].
 
@@ -95,7 +97,8 @@ module Make (_ : Api.Agent_runner) : sig
       first-seen — so the validator sees each defect exactly once.  Distinct
       sink lines are always preserved; merging only happens at literally the
       same file and line.  Exposed for testing. *)
-  val dedup_candidates : Security_types.candidate_finding list -> Security_types.candidate_finding list
+  val dedup_candidates :
+    ?log_context:string -> Security_types.candidate_finding list -> Security_types.candidate_finding list
 
   (** Build the architectural observations passed to the memory curator.
 
