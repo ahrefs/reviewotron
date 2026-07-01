@@ -15,9 +15,12 @@ val repo_slug : string -> string
 (** Full filesystem path to the memory file for a given repo. *)
 val memory_path : memory_dir:string -> repo_url:string -> string
 
-(** Load the memory file contents. Returns [None] if file doesn't exist or is empty. *)
-val load : memory_dir:string -> repo_url:string -> string option
+(** Load the memory file contents. Returns [None] if file doesn't exist or is empty.
+
+    [log_context], when supplied, prefixes load warnings/info for concurrent
+    review log correlation. *)
+val load : log_context:string option -> memory_dir:string -> repo_url:string -> string option
 
 (** Save memory content to the file, creating the directory if needed.
     Uses atomic writes via [Files.save_as]. *)
-val save : memory_dir:string -> repo_url:string -> content:string -> unit
+val save : log_context:string option -> memory_dir:string -> repo_url:string -> content:string -> unit

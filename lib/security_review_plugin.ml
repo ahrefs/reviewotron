@@ -933,7 +933,7 @@ module Make (AI : Api.Agent_runner) = struct
       accumulates. *)
   let curate_memory ~ctx ~repo_url ~memory_dir ~security_config ~observations ?debug_dir ?log_context () =
     let log_prefix = log_context_prefix log_context in
-    let current_memory = Security_memory.load ~memory_dir ~repo_url in
+    let current_memory = Security_memory.load ~log_context ~memory_dir ~repo_url in
     let memory_max_tokens = security_config.Config_types.memory_max_tokens in
     let repo_name = Security_memory.repo_slug repo_url in
     let curator_config = Memory_curator_agent.config ~model_tier:(agent_model_tier security_config.triage_model_tier) in
@@ -951,7 +951,7 @@ module Make (AI : Api.Agent_runner) = struct
       let estimated = Memory_curator_agent.estimate_tokens output.updated_memory in
       if estimated > memory_max_tokens then
         log#warn "%scurator output exceeds token limit (%d > %d), saving anyway" log_prefix estimated memory_max_tokens;
-      Security_memory.save ~memory_dir ~repo_url ~content:output.updated_memory;
+      Security_memory.save ~log_context ~memory_dir ~repo_url ~content:output.updated_memory;
       log#info "%smemory brief updated" log_prefix;
       Lwt.return [ cost ]
 
@@ -960,7 +960,7 @@ module Make (AI : Api.Agent_runner) = struct
     let log_prefix = log_context_prefix log_context in
     let security_config = config.review_plugins.security in
     let memory_dir = "memory" in
-    let security_memory = Security_memory.load ~memory_dir ~repo_url in
+    let security_memory = Security_memory.load ~log_context ~memory_dir ~repo_url in
     let file_paths = List.map (fun (fd : Diff_parser.file_diff) -> fd.path) diff in
     let artifacts =
       Security_artifacts.create ~debug_dir ~metrics_artifacts:security_config.metrics_artifacts

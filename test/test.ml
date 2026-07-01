@@ -4449,7 +4449,10 @@ let test_memory_path () =
   (check string) "memory path" "memory/org-monorepo.md" path
 
 let test_memory_load_missing () =
-  let result = Security_memory.load ~memory_dir:"nonexistent_dir_for_test" ~repo_url:"https://github.com/test/repo" in
+  let result =
+    Security_memory.load ~log_context:None ~memory_dir:"nonexistent_dir_for_test"
+      ~repo_url:"https://github.com/test/repo"
+  in
   (check bool) "missing file returns None" true (Option.is_none result)
 
 let test_memory_save_load_roundtrip () =
@@ -4461,8 +4464,13 @@ let test_memory_save_load_roundtrip () =
       try Unix.rmdir tmp_dir with Unix.Unix_error _ -> ())
     (fun () ->
       let content = "# Security Memory: test/repo\n\n## Architecture\n- Backend: OCaml\n" in
-      Security_memory.save ~memory_dir:tmp_dir ~repo_url:"https://github.com/test/repo" ~content;
-      let loaded = Security_memory.load ~memory_dir:tmp_dir ~repo_url:"https://github.com/test/repo" in
+      let log_context = "[test-repo/#1/abc123]" in
+      Security_memory.save ~log_context:(Some log_context) ~memory_dir:tmp_dir ~repo_url:"https://github.com/test/repo"
+        ~content;
+      let loaded =
+        Security_memory.load ~log_context:(Some log_context) ~memory_dir:tmp_dir
+          ~repo_url:"https://github.com/test/repo"
+      in
       match loaded with
       | Some s -> (check string) "roundtrip content" content s
       | None -> Alcotest.fail "expected Some content after save")
@@ -4475,8 +4483,10 @@ let test_memory_load_empty_file () =
       (try Sys.remove path with Sys_error _ -> ());
       try Unix.rmdir tmp_dir with Unix.Unix_error _ -> ())
     (fun () ->
-      Security_memory.save ~memory_dir:tmp_dir ~repo_url:"https://github.com/test/repo" ~content:"";
-      let loaded = Security_memory.load ~memory_dir:tmp_dir ~repo_url:"https://github.com/test/repo" in
+      Security_memory.save ~log_context:None ~memory_dir:tmp_dir ~repo_url:"https://github.com/test/repo" ~content:"";
+      let loaded =
+        Security_memory.load ~log_context:None ~memory_dir:tmp_dir ~repo_url:"https://github.com/test/repo"
+      in
       (check bool) "empty file returns None" true (Option.is_none loaded))
 
 (** {2 Memory curator agent tests} *)
@@ -4680,8 +4690,8 @@ let test_curator_save_load_roundtrip () =
       let updated_memory =
         "# test-repo\n\n## Architecture\n- OCaml with Dream\n\n## Known Safe Patterns\n- Db.query parameterized\n"
       in
-      Security_memory.save ~memory_dir:tmp_dir ~repo_url ~content:updated_memory;
-      let loaded = Security_memory.load ~memory_dir:tmp_dir ~repo_url in
+      Security_memory.save ~log_context:None ~memory_dir:tmp_dir ~repo_url ~content:updated_memory;
+      let loaded = Security_memory.load ~log_context:None ~memory_dir:tmp_dir ~repo_url in
       match loaded with
       | None -> Alcotest.fail "expected memory to be present after save"
       | Some content -> (check bool) "loaded content matches saved" true (String.equal content updated_memory))
