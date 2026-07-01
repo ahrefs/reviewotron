@@ -2,8 +2,8 @@
 
     These are the cases where reviewotron gives up before posting a review and
     instead leaves the author an issue comment with context: GitHub refused to
-    serve the diff (external limit), or the diff is larger than reviewotron's
-    own limits (internal limit). *)
+    serve the diff (external limit), the diff is larger than reviewotron's own
+    limits (internal limit), or GitHub rejected the review publication. *)
 
 type t =
   | Diff_too_large_remote of string
@@ -18,6 +18,9 @@ type t =
       actual : int;
       limit : int;
     }  (** The filtered diff touches more files than [Config_types.max_files]. *)
+  | Publish_failed of string
+    (** A review was produced but could not be posted to GitHub.  Carries the raw
+        publishing error for the comment detail. *)
 
 (** Classify a diff-fetch error into [Diff_too_large_remote] (GitHub answered the
     diff media type with HTTP 406, meaning the diff is too large to serve) or

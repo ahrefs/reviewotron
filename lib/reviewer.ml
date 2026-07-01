@@ -78,9 +78,7 @@ struct
         log#warn "failed to remove review progress reaction %d: %s" reaction_id msg;
         Lwt.return_unit)
 
-  let publish_success_comment ~ctx ~repo_url ~number =
-    let%lwt (_ : (unit, string) result) = Sink.publish_success_comment ~ctx ~repo_url ~number in
-    Lwt.return_unit
+  let publish_success_comment ~ctx ~repo_url ~number = Sink.publish_success_comment ~ctx ~repo_url ~number
 
   (** A report is worth posting as a PR review when it surfaces any inline
       comment, any out-of-diff finding section, a security-plugin error, or a
@@ -104,6 +102,21 @@ struct
     State.record_pr_review state ~repo_url ~pr_number:number ~head_sha ~review_costs;
     State.save state
 
+  let record_pr_reviewed_if_head_known ~ctx ~repo_url ~number ~head_sha ~review_costs =
+    match head_sha with
+    | None -> ()
+    | Some head_sha -> record_pr_reviewed ~ctx ~repo_url ~number ~head_sha ~review_costs
+
+  let record_pr_notice_if_delivered ~ctx ~repo_url ~number ~head_sha result =
+    match result with
+    | Ok () -> record_pr_reviewed_if_head_known ~ctx ~repo_url ~number ~head_sha ~review_costs:[]
+    | Error _ -> ()
+
+  let record_push_reviewed ~ctx ~repo_url ~after_sha =
+    let state = Context.state ctx in
+    State.record_push_review state ~repo_url ~after_sha;
+    State.save state
+
   let run_prepared_pr_review ?reaction_target ~ctx (prepared : Github_source.prepared_pr_review) =
     let Github_source.{ number; job } = prepared in
     let%lwt progress = start_progress_reaction ~ctx ~repo_url:job.repo_key reaction_target in
@@ -117,14 +130,33 @@ struct
         match report_has_surface report with
         | false ->
           let%lwt () = remove_progress_reaction ~ctx ~repo_url:job.repo_key progress in
-          let%lwt () = publish_success_comment ~ctx ~repo_url:job.repo_key ~number in
-          log#info "PR #%d (%s): review completed with no findings; not posting a PR review" number job.title;
+          let%lwt post_result = publish_success_comment ~ctx ~repo_url:job.repo_key ~number in
+          (match post_result with
+          | Ok () ->
+            record_pr_reviewed ~ctx ~repo_url:job.repo_key ~number ~head_sha:job.head_sha
+              ~review_costs:report.review_costs;
+            log#info "PR #%d (%s): review completed with no findings; not posting a PR review" number job.title
+          | Error _ -> ());
           Lwt.return_unit
         | true ->
           let%lwt () = remove_progress_reaction ~ctx ~repo_url:job.repo_key progress in
-          Sink.publish_pr_review ~ctx ~job ~number report
+          let%lwt post_result = Sink.publish_pr_review ~ctx ~job ~number report in
+          (match post_result with
+          | Ok () ->
+            record_pr_reviewed ~ctx ~repo_url:job.repo_key ~number ~head_sha:job.head_sha
+              ~review_costs:report.review_costs;
+            Lwt.return_unit
+          | Error msg ->
+            let%lwt fallback_result =
+              Sink.publish_failure_comment ~ctx ~repo_url:job.repo_key ~number (Publish_failed msg)
+            in
+            (match fallback_result with
+            | Ok () ->
+              record_pr_reviewed ~ctx ~repo_url:job.repo_key ~number ~head_sha:job.head_sha
+                ~review_costs:report.review_costs
+            | Error _ -> ());
+            Lwt.return_unit)
       in
-      record_pr_reviewed ~ctx ~repo_url:job.repo_key ~number ~head_sha:job.head_sha ~review_costs:report.review_costs;
       Lwt.return_unit
     with exn ->
       log#error "review pipeline for PR #%d raised: %s" number (Exn.str exn);
@@ -141,20 +173,19 @@ struct
       successfully posted limit/too-large comment, or the empty no-op.  A failed
       comment post, or a transient ([Fetch_failed]) error, leaves the PR
       un-recorded so the next webhook retries. *)
-  let handle_pr_prepare_error ~ctx ~repo_url ~number ~head_sha (error : Github_source.prepare_error) =
+  let handle_pr_prepare_error ~ctx ~repo_url ~number (pr_error : Github_source.pr_prepare_error) =
+    let Github_source.{ error; head_sha } = pr_error in
     let post_then_record_if_delivered failure =
       let%lwt post_result = Sink.publish_failure_comment ~ctx ~repo_url ~number failure in
-      (match post_result with
-      | Ok () -> record_pr_reviewed ~ctx ~repo_url ~number ~head_sha ~review_costs:[]
-      | Error _ -> ());
+      record_pr_notice_if_delivered ~ctx ~repo_url ~number ~head_sha post_result;
       Lwt.return_unit
     in
     match error with
     | Empty ->
       (* Nothing to review after filtering — a successful no-op, not a failure.
          Signal "looked, all good" with a visible PR comment. *)
-      let%lwt () = publish_success_comment ~ctx ~repo_url ~number in
-      record_pr_reviewed ~ctx ~repo_url ~number ~head_sha ~review_costs:[];
+      let%lwt post_result = publish_success_comment ~ctx ~repo_url ~number in
+      record_pr_notice_if_delivered ~ctx ~repo_url ~number ~head_sha post_result;
       Lwt.return_unit
     | Too_large total_lines ->
       let config = Context.get_config ctx ~repo_key:repo_url in
@@ -169,30 +200,101 @@ struct
          record it once the notice lands.  Any other fetch failure may be
          transient — never record it, so the review is retried. *)
       (match failure with
-      | Diff_too_large_remote _ ->
-        (match post_result with
-        | Ok () -> record_pr_reviewed ~ctx ~repo_url ~number ~head_sha ~review_costs:[]
-        | Error _ -> ())
-      | Fetch_failed _ | Too_many_lines _ | Too_many_files _ -> ());
+      | Diff_too_large_remote _ -> record_pr_notice_if_delivered ~ctx ~repo_url ~number ~head_sha post_result
+      | Fetch_failed _ | Too_many_lines _ | Too_many_files _ | Publish_failed _ -> ());
       Lwt.return_unit
 
-  let ignore_prepare_error (_ : Github_source.prepare_error) = Lwt.return_unit
+  let prepare_error_reason ~(config : Config_types.config) (error : Github_source.prepare_error) =
+    match error with
+    | Empty -> "All files were filtered out, so there was nothing to review."
+    | Too_large total_lines ->
+      Printf.sprintf "The diff is %d lines, which is over reviewotron's limit of %d." total_lines config.max_diff_lines
+    | Too_many_files file_count ->
+      Printf.sprintf "The diff touches %d files, which is over reviewotron's limit of %d." file_count config.max_files
+    | Fetch_failed fetch_error ->
+    match Review_failure.classify_fetch_error fetch_error with
+    | Diff_too_large_remote detail -> Printf.sprintf "The diff is too large for the GitHub API to serve.\n\n%s" detail
+    | Fetch_failed detail -> Printf.sprintf "I couldn't fetch the diff from GitHub.\n\n%s" detail
+    | Too_many_lines _ | Too_many_files _ | Publish_failed _ -> Http_util.error_to_string fetch_error
+
+  let push_failure_message ~(push : Github_types.commit_pushed_notification) ~findings ~security_error ?reason () =
+    let text = Printf.sprintf ":warning: *Code Review Failed* for push to `develop` by %s" push.pusher.name in
+    let failure_text =
+      match findings with
+      | _ :: _ ->
+        "\xE2\x9A\xA0\xEF\xB8\x8F Review partially failed \xE2\x80\x94 the general code review agent encountered an \
+         error. Security findings were posted as commit comments."
+      | [] ->
+        "\xE2\x9A\xA0\xEF\xB8\x8F Review failed \xE2\x80\x94 the code review encountered an error and could not \
+         produce results. Check the service logs."
+    in
+    let failure_text =
+      match reason with
+      | None -> failure_text
+      | Some reason -> Printf.sprintf "%s\n```\n%s\n```" failure_text reason
+    in
+    let failure_text =
+      if security_error then failure_text ^ "\n" ^ String.trim Review_engine.security_error_notice else failure_text
+    in
+    let attachment =
+      Slack_types.
+        {
+          color = "#dc3545";
+          title = Printf.sprintf "Push by %s \xE2\x80\x94 %d commits" push.pusher.name (List.length push.commits);
+          title_link = push.compare;
+          text = failure_text;
+          fields = [];
+          footer = Some "reviewotron";
+        }
+    in
+    text, attachment
+
+  let post_push_failure_to_slack ~ctx ~(config : Config_types.config) ~push ~findings ~security_error ?reason () =
+    match config.slack_channel with
+    | None -> Lwt.return_unit
+    | Some channel ->
+      let text, attachment = push_failure_message ~push ~findings ~security_error ?reason () in
+      SL.post_message ~ctx ~channel ~text ~attachments:[ attachment ] ()
+
+  let handle_push_prepare_error ~ctx ~(config : Config_types.config) (push : Github_types.commit_pushed_notification)
+    (error : Github_source.prepare_error) =
+    let record_terminal () =
+      record_push_reviewed ~ctx ~repo_url:push.repository.url ~after_sha:push.after;
+      Lwt.return_unit
+    in
+    let post_terminal_failure ?reason () =
+      let%lwt () = post_push_failure_to_slack ~ctx ~config ~push ~findings:[] ~security_error:false ?reason () in
+      record_terminal ()
+    in
+    match error with
+    | Empty ->
+      log#info "push %s completed with empty filtered diff; recording no-op review" push.after;
+      record_terminal ()
+    | Too_large _ | Too_many_files _ ->
+      let reason = prepare_error_reason ~config error in
+      post_terminal_failure ~reason ()
+    | Fetch_failed fetch_error ->
+    match Review_failure.classify_fetch_error fetch_error with
+    | Diff_too_large_remote _ ->
+      let reason = prepare_error_reason ~config error in
+      post_terminal_failure ~reason ()
+    | Fetch_failed _ | Too_many_lines _ | Too_many_files _ | Publish_failed _ ->
+      let reason = prepare_error_reason ~config error in
+      post_push_failure_to_slack ~ctx ~config ~push ~findings:[] ~security_error:false ~reason ()
 
   let review_pr ?reaction_target ~ctx ~config (pr_notif : Github_types.pr_notification) =
     match%lwt Source.prepare_pr_review ~ctx ~config pr_notif with
     | Ok prepared -> run_prepared_pr_review ?reaction_target ~ctx prepared
-    | Error error ->
-      handle_pr_prepare_error ~ctx ~repo_url:pr_notif.repository.url ~number:pr_notif.number
-        ~head_sha:pr_notif.pull_request.head.sha error
+    | Error error -> handle_pr_prepare_error ~ctx ~repo_url:pr_notif.repository.url ~number:pr_notif.number error
 
   let review_pr_from_comment ?reaction_target ~ctx ~config (n : Github_types.issue_comment_notification) =
     match%lwt Source.prepare_pr_review_from_comment ~ctx ~config n with
     | Ok prepared -> run_prepared_pr_review ?reaction_target ~ctx prepared
-    | Error error -> ignore_prepare_error error
+    | Error error -> handle_pr_prepare_error ~ctx ~repo_url:n.repository.url ~number:n.issue.number error
 
   let review_push ~ctx ~config (push : Github_types.commit_pushed_notification) =
     match%lwt Source.prepare_push_review ~ctx ~config push with
-    | Error error -> ignore_prepare_error error
+    | Error error -> handle_push_prepare_error ~ctx ~config push error
     | Ok prepared ->
       let Github_source.{ job; push } = prepared in
       let debug_dir =
@@ -207,34 +309,7 @@ struct
       let security_note = String.trim Review_engine.security_error_notice in
       let failure_attachment reason =
         log#error "review failed for push %s: no review output produced" push.after;
-        let text = Printf.sprintf ":warning: *Code Review Failed* for push to `develop` by %s" push.pusher.name in
-        let failure_text =
-          match findings with
-          | _ :: _ ->
-            "\xE2\x9A\xA0\xEF\xB8\x8F Review partially failed \xE2\x80\x94 the general code review agent encountered \
-             an error. Security findings were posted as commit comments."
-          | [] ->
-            "\xE2\x9A\xA0\xEF\xB8\x8F Review failed \xE2\x80\x94 the code review encountered an error and could not \
-             produce results. Check the service logs."
-        in
-        let failure_text =
-          match reason with
-          | None -> failure_text
-          | Some reason -> Printf.sprintf "%s\n```\n%s\n```" failure_text reason
-        in
-        let failure_text = if security_error then failure_text ^ " " ^ security_note else failure_text in
-        let att =
-          Slack_types.
-            {
-              color = "#dc3545";
-              title = Printf.sprintf "Push by %s \xE2\x80\x94 %d commits" push.pusher.name (List.length push.commits);
-              title_link = push.compare;
-              text = failure_text;
-              fields = [];
-              footer = Some "reviewotron";
-            }
-        in
-        text, att
+        push_failure_message ~push ~findings ~security_error ?reason ()
       in
       let slack_text, attachment =
         match general_output with
@@ -254,9 +329,7 @@ struct
         | None -> Lwt.return_unit
         | Some channel -> SL.post_message ~ctx ~channel ~text:slack_text ~attachments:[ attachment ] ()
       in
-      let state = Context.state ctx in
-      State.record_push_review state ~repo_url:job.repo_key ~after_sha:job.head_sha;
-      State.save state;
+      record_push_reviewed ~ctx ~repo_url:job.repo_key ~after_sha:job.head_sha;
       Lwt.return_unit
 
   let event_config ctx event =

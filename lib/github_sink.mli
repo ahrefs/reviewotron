@@ -7,9 +7,11 @@
 val review_comment_req_of_comment : Review_comment.t -> Github_types.review_comment_req
 
 module Make (_ : Api.Github_review_sink) : sig
-  (** Publish a PR-style report as a GitHub pull request review. Errors are
-      logged and swallowed to preserve the historical reviewer behavior. *)
-  val publish_pr_review : ctx:Context.t -> job:Review_job.t -> number:int -> Review_engine.report -> unit Lwt.t
+  (** Publish a PR-style report as a GitHub pull request review. Returns the
+      post result so the caller can decide whether to record the PR or publish
+      a fallback notice. *)
+  val publish_pr_review :
+    ctx:Context.t -> job:Review_job.t -> number:int -> Review_engine.report -> (unit, string) result Lwt.t
 
   (** Post an issue comment to a PR explaining why a review could not be
       produced (diff fetch failure or size/file limit exceeded). Returns the

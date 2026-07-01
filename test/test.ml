@@ -3239,6 +3239,59 @@ let test_push_general_failure_with_findings () =
   (check bool) "slack message sent" true (CCString.find ~sub:"[slack]" write_log >= 0);
   (check bool) "slack mentions failure" true (CCString.find ~sub:"Code Review Failed" write_log >= 0)
 
+let test_push_prepare_failure_posts_slack () =
+  Test_helpers.reset_test_state ();
+  let config =
+    Config_types.config_of_json
+      (Melange_json.of_string {|{"review_pushes_to_develop": true, "slack_channel": "dev-reviews", "max_files": 1}|})
+  in
+  let ctx = Test_helpers.make_test_context ~config () in
+  let payload = read_file "mock_payloads/push_develop.json" in
+  let event = Test_helpers.parse_event_exn ~event_type:"push" ~body:payload in
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let write_log = Api_local.get_write_log () in
+  (check bool) "slack message sent" true (contains_sub ~sub:"[slack]" write_log);
+  (check bool) "no commit comments attempted" false (contains_sub ~sub:"[create_commit_comment]" write_log);
+  let slack_msgs = Api_local.get_slack_messages () in
+  (check int) "one slack message" 1 (List.length slack_msgs);
+  match slack_msgs with
+  | [] -> fail "expected at least one Slack message"
+  | (_channel, _text, attachments) :: _ ->
+  match attachments with
+  | None -> fail "expected Slack attachments"
+  | Some [] -> fail "expected at least one attachment"
+  | Some (att :: _) ->
+    (check bool) "attachment explains file limit" true (contains_sub ~sub:"diff touches 4 files" att.Slack_types.text);
+    (match event with
+    | Github.Push push ->
+      (check bool) "terminal prepare failure recorded in state" true
+        (State.is_push_reviewed (Context.state ctx) ~repo_url:push.repository.url ~after_sha:push.after)
+    | Github.Pull_request _ | Github.Issue_comment _ | Github.Unknown _ -> fail "expected push event");
+    Api_local.clear_write_log ();
+    Api_local.clear_slack_messages ();
+    Lwt_main.run (R_test.process_event ctx ~event);
+    (check string) "duplicate terminal failure skipped" "" (Api_local.get_write_log ());
+    (check int) "duplicate terminal failure sends no Slack" 0 (List.length (Api_local.get_slack_messages ()))
+
+let test_push_empty_prepare_no_slack () =
+  Test_helpers.reset_test_state ();
+  let config =
+    Config_types.config_of_json
+      (Melange_json.of_string
+         {|{"review_pushes_to_develop": true, "slack_channel": "dev-reviews", "ignored_paths": ["backend/api/src/request_handler.ml", "backend/lib/string_utils.ml", "backend/lib/string_utils.mli", "backend/lib/dune"]}|})
+  in
+  let ctx = Test_helpers.make_test_context ~config () in
+  let payload = read_file "mock_payloads/push_develop.json" in
+  let event = Test_helpers.parse_event_exn ~event_type:"push" ~body:payload in
+  Lwt_main.run (R_test.process_event ctx ~event);
+  (check string) "empty push diff is a quiet no-op" "" (Api_local.get_write_log ());
+  (check int) "empty push diff sends no Slack" 0 (List.length (Api_local.get_slack_messages ()));
+  match event with
+  | Github.Push push ->
+    (check bool) "empty push diff recorded in state" true
+      (State.is_push_reviewed (Context.state ctx) ~repo_url:push.repository.url ~after_sha:push.after)
+  | Github.Pull_request _ | Github.Issue_comment _ | Github.Unknown _ -> fail "expected push event"
+
 (** {2 Security plugin failure notice tests} *)
 
 let test_pr_security_failure_notice () =
@@ -3385,14 +3438,14 @@ let test_review_failure_classify_too_large () =
   let error : Http_util.error = Http_util.Status (406, "the diff exceeded the maximum number of files (300)") in
   match Review_failure.classify_fetch_error error with
   | Diff_too_large_remote _ -> ()
-  | Fetch_failed _ | Too_many_lines _ | Too_many_files _ ->
+  | Fetch_failed _ | Too_many_lines _ | Too_many_files _ | Publish_failed _ ->
     Alcotest.fail "expected Diff_too_large_remote for a 406 response"
 
 let test_review_failure_classify_generic () =
   let error : Http_util.error = Http_util.Status (503, "service unavailable") in
   match Review_failure.classify_fetch_error error with
   | Fetch_failed _ -> ()
-  | Diff_too_large_remote _ | Too_many_lines _ | Too_many_files _ ->
+  | Diff_too_large_remote _ | Too_many_lines _ | Too_many_files _ | Publish_failed _ ->
     Alcotest.fail "expected Fetch_failed for a non-406 status"
 
 let test_review_failure_classify_transport_error () =
@@ -3401,7 +3454,7 @@ let test_review_failure_classify_transport_error () =
   let error : Http_util.error = Http_util.Transport Curl.CURLE_COULDNT_CONNECT in
   match Review_failure.classify_fetch_error error with
   | Fetch_failed _ -> ()
-  | Diff_too_large_remote _ | Too_many_lines _ | Too_many_files _ ->
+  | Diff_too_large_remote _ | Too_many_lines _ | Too_many_files _ | Publish_failed _ ->
     Alcotest.fail "expected Fetch_failed for a transport error with no status"
 
 let test_review_failure_comment_mentions_cause () =
@@ -3414,7 +3467,10 @@ let test_review_failure_comment_mentions_cause () =
   (check bool) "file-limit comment shows limit" true (contains_sub ~sub:"50" too_many);
   let remote = Review_failure.to_comment (Diff_too_large_remote "http 406: too_large") in
   (check bool) "remote-too-large comment is about size, not a generic failure" true
-    (contains_sub ~sub:"too large" (String.lowercase_ascii remote))
+    (contains_sub ~sub:"too large" (String.lowercase_ascii remote));
+  let publish = Review_failure.to_comment (Publish_failed "http 422: invalid comments") in
+  (check bool) "publish failure says review was produced" true (contains_sub ~sub:"produced a review" publish);
+  (check bool) "publish failure includes raw error" true (contains_sub ~sub:"http 422" publish)
 
 (* Integration tests: drive process_event and assert on the write log. *)
 let check_same_pr_webhook_deduped ~ctx ~event =
@@ -3530,6 +3586,105 @@ let test_pr_too_many_files_posts_comment () =
     (contains_sub ~sub:"[create_issue_comment]" write_log);
   (check bool) "no review attempted" false (contains_sub ~sub:"[create_pr_review]" write_log);
   check_same_pr_webhook_deduped ~ctx ~event
+
+let test_comment_trigger_too_many_files_posts_comment () =
+  Test_helpers.reset_test_state ();
+  let config =
+    Config_types.config_of_json (Melange_json.of_string {|{"auto_review_on_comment": true, "max_files": 1}|})
+  in
+  let ctx = Test_helpers.make_test_context ~config () in
+  let payload = Test_helpers.make_issue_comment_payload () in
+  let event = Test_helpers.parse_event_exn ~event_type:"issue_comment" ~body:payload in
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let write_log = Api_local.get_write_log () in
+  (check bool) "failure comment posted via REVIEW trigger" true
+    (contains_sub ~sub:"[create_issue_comment] repo=https://github.com/org/monorepo number=42" write_log);
+  (check bool) "comment explains file limit" true (contains_sub ~sub:"diff touches 2 files" write_log);
+  (check bool) "no review attempted" false (contains_sub ~sub:"[create_pr_review]" write_log)
+
+let test_comment_trigger_diff_fetch_error_posts_comment () =
+  Test_helpers.reset_test_state ();
+  Api_local.set_next_pr_diff_error ~status:406
+    {|http 406: {"message":"Sorry, the diff exceeded the maximum number of files (300).","code":"too_large"}|};
+  let ctx = Test_helpers.make_test_context ~config:comment_trigger_config () in
+  let payload = Test_helpers.make_issue_comment_payload () in
+  let event = Test_helpers.parse_event_exn ~event_type:"issue_comment" ~body:payload in
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let write_log = Api_local.get_write_log () in
+  (check bool) "failure comment posted via REVIEW trigger" true
+    (contains_sub ~sub:"[create_issue_comment] repo=https://github.com/org/monorepo number=42" write_log);
+  (check bool) "comment explains remote diff limit" true
+    (contains_sub ~sub:"too large" (String.lowercase_ascii write_log));
+  (check bool) "no review attempted" false (contains_sub ~sub:"[create_pr_review]" write_log)
+
+let test_comment_trigger_pr_fetch_error_posts_comment () =
+  Test_helpers.reset_test_state ();
+  let ctx = Test_helpers.make_test_context ~config:comment_trigger_config () in
+  let payload = Test_helpers.make_issue_comment_payload ~number:999 () in
+  let event = Test_helpers.parse_event_exn ~event_type:"issue_comment" ~body:payload in
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let write_log = Api_local.get_write_log () in
+  (check bool) "failure comment posted to requested PR" true
+    (contains_sub ~sub:"[create_issue_comment] repo=https://github.com/org/monorepo number=999" write_log);
+  (check bool) "comment explains fetch failure" true (contains_sub ~sub:"couldn't fetch" write_log);
+  (check bool) "no review attempted" false (contains_sub ~sub:"[create_pr_review]" write_log)
+
+let test_pr_review_post_failure_posts_fallback_comment () =
+  Test_helpers.reset_test_state ();
+  Api_local.set_next_pr_review_error "missing Pull requests write permission";
+  let state = State.create () in
+  let ctx = Test_helpers.make_test_context ~state ~config:Test_helpers.auto_review_enabled_config () in
+  let payload = Test_helpers.make_pr_payload () in
+  let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let write_log = Api_local.get_write_log () in
+  (check bool) "fallback issue comment posted" true
+    (contains_sub ~sub:"[create_issue_comment] repo=https://github.com/org/monorepo number=42" write_log);
+  (check bool) "fallback explains publish failure" true (contains_sub ~sub:"produced a review" write_log);
+  (check bool) "fallback includes raw publish error" true
+    (contains_sub ~sub:"missing Pull requests write permission" write_log);
+  check_pr_reviewed_state ~ctx ~event true;
+  check_same_pr_webhook_deduped ~ctx ~event
+
+let test_pr_review_post_failure_retries_when_fallback_fails () =
+  Test_helpers.reset_test_state ();
+  Api_local.set_next_pr_review_error "missing Pull requests write permission";
+  Api_local.set_next_issue_comment_error "missing Issues write permission";
+  let state = State.create () in
+  let ctx = Test_helpers.make_test_context ~state ~config:Test_helpers.auto_review_enabled_config () in
+  let payload = Test_helpers.make_pr_payload () in
+  let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let write_log = Api_local.get_write_log () in
+  (check bool) "fallback issue comment not posted" false (contains_sub ~sub:"[create_issue_comment]" write_log);
+  check_pr_reviewed_state ~ctx ~event false;
+  Api_local.clear_write_log ();
+  Api_local.set_next_pr_review_error "missing Pull requests write permission";
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let retry_log = Api_local.get_write_log () in
+  (check bool) "same PR webhook retries fallback comment" true (contains_sub ~sub:"[create_issue_comment]" retry_log);
+  check_pr_reviewed_state ~ctx ~event true
+
+let test_pr_quiet_success_comment_failure_retries () =
+  Test_helpers.reset_test_state ();
+  Api_local.set_agent_response_path "mock_api_responses/claude/empty_findings_response.json";
+  Api_local.set_next_issue_comment_error "missing Issues write permission";
+  let state = State.create () in
+  let ctx = Test_helpers.make_test_context ~state ~config:Test_helpers.auto_review_enabled_config () in
+  let payload = Test_helpers.make_pr_payload () in
+  let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let write_log = Api_local.get_write_log () in
+  (check bool) "quiet success comment not posted" false (contains_sub ~sub:"[create_issue_comment]" write_log);
+  (check bool) "no review posted" false (contains_sub ~sub:"[create_pr_review]" write_log);
+  check_pr_reviewed_state ~ctx ~event false;
+  Api_local.clear_write_log ();
+  Api_local.set_agent_response_path "mock_api_responses/claude/empty_findings_response.json";
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let retry_log = Api_local.get_write_log () in
+  (check bool) "same PR webhook retries quiet success comment" true
+    (contains_sub ~sub:"[create_issue_comment]" retry_log);
+  check_pr_reviewed_state ~ctx ~event true
 
 let test_pr_empty_diff_posts_lgtm_comment () =
   Test_helpers.reset_test_state ();
@@ -4299,6 +4454,8 @@ let () =
           test_case "push review posts Slack on general failure" `Quick test_push_general_failure;
           test_case "push review posts comments on general failure with findings" `Quick
             test_push_general_failure_with_findings;
+          test_case "push prepare failure posts Slack" `Quick test_push_prepare_failure_posts_slack;
+          test_case "push empty prepare is quiet" `Quick test_push_empty_prepare_no_slack;
         ] );
       ( "security_failure_notice",
         [
@@ -4328,6 +4485,15 @@ let () =
           test_case "PR over line limit retries when comment post fails" `Quick
             test_pr_too_many_lines_comment_failure_retries;
           test_case "PR over file limit posts a comment" `Quick test_pr_too_many_files_posts_comment;
+          test_case "REVIEW over file limit posts a comment" `Quick test_comment_trigger_too_many_files_posts_comment;
+          test_case "REVIEW diff fetch failure posts a comment" `Quick
+            test_comment_trigger_diff_fetch_error_posts_comment;
+          test_case "REVIEW PR fetch failure posts a comment" `Quick test_comment_trigger_pr_fetch_error_posts_comment;
+          test_case "PR review publish failure posts fallback comment" `Quick
+            test_pr_review_post_failure_posts_fallback_comment;
+          test_case "PR review publish failure retries when fallback fails" `Quick
+            test_pr_review_post_failure_retries_when_fallback_fails;
+          test_case "PR quiet success retries when comment fails" `Quick test_pr_quiet_success_comment_failure_retries;
           test_case "PR with empty diff posts LGTM comment" `Quick test_pr_empty_diff_posts_lgtm_comment;
         ] );
       "debug_dump", [ test_case "write debug dump creates file with expected content" `Quick test_write_debug_dump ];
