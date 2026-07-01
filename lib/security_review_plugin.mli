@@ -40,6 +40,16 @@ val agent_model_tier : Config_types.model_tier -> Agent_runner.model_tier
     [always_analyze_vuln_classes]. *)
 val should_analyze : security_config:Config_types.security_plugin_config -> Security_types.triage_signal -> bool
 
+(** Return [true] when a validator proof has the concrete fields required for
+    a confirmed result. Trace steps must contain file:line evidence, and
+    unresolved assumptions must be empty. *)
+val proof_is_concrete : Security_types.exploitation_proof -> bool
+
+(** Enforce the validator invariant that [Confirmed] results must include a
+    concrete [proof_by_construction]. Confirmed results with missing or empty
+    proof are downgraded to [Rejected] with an evidence note. *)
+val enforce_validator_proofs : Security_types.validated_finding list -> Security_types.validated_finding list
+
 (** Security review plugin functor. File content fetching is supplied through
     {!Review_plugin.review_metadata}, so the plugin is independent of any
     specific source adapter. *)

@@ -42,6 +42,17 @@ Database mutation operations (update, delete) where a user-supplied resource ide
 ### ssrf
 HTTP client calls, URL construction from user inputs, redirect handling, webhook URL configuration, any pattern where user input influences the target of an outbound HTTP request.
 
+### policy_regression
+Security policy or configuration changes that directly broaden privilege, grant new write/admin/root capabilities, or weaken a named control. These are not source-to-sink user-input bugs; flag them when the diff itself proves a policy/control effect that may now allow an action that was previously constrained.
+
+High-confidence examples:
+- sudoers/Puppet/Chef/Ansible/Terraform changes adding broad `NOPASSWD`, root command grants, `ALL=(ALL)`, or broad `/usr/bin/systemctl` access
+- IAM/RBAC/Kubernetes policies adding wildcard actions/resources (`*`), `cluster-admin`, broad role bindings, privileged pods, `hostPath`, `hostNetwork`, or host namespace access
+- GitHub Actions or CI config broadening token permissions such as `contents: write`, `id-token: write`, `permissions: write-all`, or using `pull_request_target` with checkout/build of untrusted code
+- Security controls weakened or removed: TLS/certificate verification disabled, auth/CSRF checks bypassed, `allow_all`, `skip_verify`, `verify=false`, `rejectUnauthorized: false`
+
+Do not flag purely administrative refactors, policy comments, or a tightly scoped grant where the changed line itself constrains principal, resource, action, and approval/condition so no broader capability is introduced.
+
 ## Confidence Levels
 
 - **high**: Direct, unambiguous pattern match (e.g., string concatenation into `db.query()`, `exec(user_input)`)
@@ -52,7 +63,7 @@ HTTP client calls, URL construction from user inputs, redirect handling, webhook
 
 Produce a JSON object with this structure:
 - `signals`: array of triage signals, each with:
-  - `vuln_class`: one of "injection", "xss", "command_injection", "authn", "authz", "ssrf"
+  - `vuln_class`: one of "injection", "xss", "command_injection", "authn", "authz", "ssrf", "policy_regression"
   - `confidence`: one of "high", "medium", "low"
   - `regions`: array of regions, each with `path` (file path), `start_line`, `end_line`. Both line numbers MUST be copied verbatim from the left column of the annotated diff — the exact numbers printed for the first and last lines you want the analysis agent to inspect. Do not count or estimate.
   - `rationale`: brief explanation of why this region is flagged
@@ -60,6 +71,8 @@ Produce a JSON object with this structure:
 - `skip_reason`: if the diff contains nothing security-relevant, set this to a brief explanation and leave `signals` empty
 
 If the repository security context is provided, use it to calibrate your signals — known safe patterns reduce confidence, known risk areas increase it.
+
+If deterministic diff signals are provided, treat them as advisory hints only. They may raise attention to a changed line, but they are not findings and cannot replace source/effect/control reasoning. You may ignore any deterministic signal that is not security-actionable in the actual diff.
 
 Be thorough. Scan every file in the diff. Do not skip files based on extension alone — configuration files, scripts, and templates can all contain security-relevant changes.
 
@@ -108,7 +121,56 @@ let config ~model_tier : Agent_runner.agent_config =
     thinking_budget = None;
   }
 
-let build_input ~diff_text ~file_paths ?security_memory () =
+let max_deterministic_signals = 40
+
+let format_line_range (signal : Security_types.candidate_signal) =
+  match Int.equal signal.start_line signal.end_line with
+  | true -> string_of_int signal.start_line
+  | false -> Printf.sprintf "%d-%d" signal.start_line signal.end_line
+
+let format_vuln_class_hint = function
+  | Some vc -> Printf.sprintf " [%s]" (Security_types.vuln_class_to_string vc)
+  | None -> ""
+
+let signal_category_rank = function
+  | Security_types.Dangerous_api -> 0
+  | Security_types.Changed_security_control -> 1
+  | Security_types.Stateful_operation -> 2
+  | Security_types.Risky_path -> 3
+  | Security_types.Sensitive_file -> 4
+
+let compare_signal (a : Security_types.candidate_signal) (b : Security_types.candidate_signal) =
+  match Int.compare (signal_category_rank a.category) (signal_category_rank b.category) with
+  | 0 ->
+    (match String.compare a.path b.path with
+    | 0 -> Int.compare a.start_line b.start_line
+    | n -> n)
+  | n -> n
+
+let add_deterministic_signals buf signals =
+  match signals with
+  | [] -> ()
+  | _ :: _ ->
+    Buffer.add_string buf "\n## Deterministic Diff Signals\n\n";
+    Buffer.add_string buf
+      "These native scanner signals are hints, not findings. Use them to focus attention, but ignore them when the \
+       diff does not support a security-actionable concern.\n\n";
+    signals
+    |> List.sort compare_signal
+    |> CCList.take max_deterministic_signals
+    |> List.iter (fun (signal : Security_types.candidate_signal) ->
+      Printf.bprintf buf "- %s %s:%s%s %s\n  Rationale: %s\n"
+        (Security_types.signal_category_to_string signal.category)
+        signal.path (format_line_range signal)
+        (format_vuln_class_hint signal.vuln_class_hint)
+        signal.pattern signal.rationale);
+    (match List.length signals > max_deterministic_signals with
+    | true ->
+      Printf.bprintf buf "- ... %d additional deterministic signal(s) omitted from the prompt summary\n"
+        (List.length signals - max_deterministic_signals)
+    | false -> ())
+
+let build_input ~diff_text ~file_paths ?security_memory ?(deterministic_signals = []) () =
   let buf = Buffer.create (String.length diff_text + 512) in
   Buffer.add_string buf "## Changed Files\n\n";
   List.iter (Printf.bprintf buf "- %s\n") file_paths;
@@ -124,6 +186,7 @@ let build_input ~diff_text ~file_paths ?security_memory () =
     Buffer.add_string buf memory;
     Buffer.add_char buf '\n'
   | Some _ | None -> ());
+  add_deterministic_signals buf deterministic_signals;
   Buffer.add_char buf '\n';
   Buffer.add_string buf Review_prompt.annotated_diff_format_explainer;
   Buffer.add_string buf "\n## Diff\n\n";

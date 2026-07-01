@@ -15,9 +15,10 @@ let vuln_class_equal a b =
   | Command_injection, Command_injection
   | Authn, Authn
   | Authz, Authz
-  | Ssrf, Ssrf ->
+  | Ssrf, Ssrf
+  | Policy_regression, Policy_regression ->
     true
-  | (Injection | Xss | Command_injection | Authn | Authz | Ssrf), _ -> false
+  | (Injection | Xss | Command_injection | Authn | Authz | Ssrf | Policy_regression), _ -> false
 
 (** Convert a config model tier to the agent runner's model tier type.
 
@@ -42,16 +43,342 @@ let should_analyze ~security_config (signal : Security_types.triage_signal) =
   let above_threshold = confidence_rank signal.confidence >= confidence_rank threshold in
   enabled && (above_threshold || always_analyze)
 
+let non_empty s = String.length (String.trim s) > 0
+
+let proof_trace_site_re = Re2.create_exn {|[A-Za-z0-9_./-]+:[1-9][0-9]*|}
+
+let proof_trace_step_has_site step = Re2.matches proof_trace_site_re step
+
+let proof_is_concrete (proof : Security_types.exploitation_proof) =
+  non_empty proof.trigger
+  && non_empty proof.missing_or_inadequate_control
+  && non_empty proof.expected_impact
+  && (match proof.source_to_sink_trace with
+    | [] -> false
+    | _ :: _ -> true)
+  && List.for_all non_empty proof.source_to_sink_trace
+  && List.for_all proof_trace_step_has_site proof.source_to_sink_trace
+  && List.for_all non_empty proof.preconditions
+  &&
+  match proof.assumptions with
+  | [] -> true
+  | _ :: _ -> false
+
+let trace_contains_site ~path ~line trace =
+  let site = Printf.sprintf "%s:%d" path line in
+  List.exists (fun step -> CCString.find ~sub:site step >= 0) trace
+
+let contains_sub ~sub s = CCString.find ~sub s >= 0
+
+let lower_contains ~sub s = contains_sub ~sub (String.lowercase_ascii s)
+
+let text_contains_any needles text = List.exists (fun sub -> lower_contains ~sub text) needles
+
+let policy_proof_is_concrete (finding : Security_types.candidate_finding) (proof : Security_types.exploitation_proof) =
+  let text =
+    String.concat " "
+      ([
+         finding.source.description;
+         finding.sink.description;
+         finding.description;
+         proof.trigger;
+         proof.missing_or_inadequate_control;
+         proof.expected_impact;
+       ]
+      @ proof.source_to_sink_trace)
+  in
+  let has_policy_subject =
+    text_contains_any
+      [
+        "principal";
+        "user";
+        "group";
+        "role";
+        "service account";
+        "token";
+        "workflow";
+        "job";
+        "pod";
+        "deploy";
+        "runner";
+        "sudo";
+        "iam";
+        "rbac";
+        "clusterrole";
+        "systemctl";
+        "tls";
+        "csrf";
+        "auth";
+      ]
+      text
+  in
+  let has_policy_action =
+    text_contains_any
+      [
+        "nopasswd";
+        "root";
+        "write";
+        "admin";
+        "delete";
+        "create";
+        "update";
+        "restart";
+        "reload";
+        "systemctl";
+        "wildcard";
+        "all resources";
+        "cluster-admin";
+        "privileged";
+        "hostpath";
+        "hostnetwork";
+        "id-token";
+        "verify";
+        "csrf";
+        "auth";
+        "allow_all";
+        "skip_verify";
+      ]
+      text
+  in
+  let has_effect =
+    text_contains_any
+      [ "now"; "grant"; "allow"; "can "; "permits"; "broad"; "without password"; "disabled"; "weaken"; "removed" ]
+      text
+  in
+  has_policy_subject && has_policy_action && has_effect
+
+let proof_matches_finding (finding : Security_types.candidate_finding) (proof : Security_types.exploitation_proof) =
+  trace_contains_site ~path:finding.source.path ~line:finding.source.line proof.source_to_sink_trace
+  && trace_contains_site ~path:finding.sink.path ~line:finding.sink.line proof.source_to_sink_trace
+  &&
+  match finding.vuln_class with
+  | Policy_regression -> policy_proof_is_concrete finding proof
+  | Injection | Xss | Command_injection | Authn | Authz | Ssrf -> true
+
+let proof_violation_note =
+  "Rejected by Reviewotron after validator parsing: confirmed validator result did not include a concrete \
+   proof_by_construction."
+
+let notes_mention_line ~line notes =
+  let line = string_of_int line in
+  let notes = String.lowercase_ascii notes in
+  [
+    Printf.sprintf {|:%s([^0-9]|$)|} line;
+    Printf.sprintf {|\blines?[ \t]+%s([^0-9]|$)|} line;
+    Printf.sprintf {|`%s`|} line;
+  ]
+  |> List.exists (fun re -> Re2.matches (Re2.create_exn re) notes)
+
+let notes_mention_site ~path ~line notes = contains_sub ~sub:path notes && notes_mention_line ~line notes
+
+let notes_are_decisive notes =
+  [ "assume"; "assumption"; "could not"; "difficult"; "non-trivial"; "probably"; "unclear"; "unknown" ]
+  |> List.for_all (fun sub -> not (lower_contains ~sub notes))
+
+let sanitization_supports_repair = function
+  | Security_types.Missing | Inadequate -> true
+  | Adequate | Unknown -> false
+
+let evidence_supports_proof_repair (f : Security_types.candidate_finding) notes =
+  non_empty notes
+  && notes_are_decisive notes
+  && non_empty f.source.path
+  && non_empty f.sink.path
+  && f.source.line > 0
+  && f.sink.line > 0
+  && notes_mention_site ~path:f.source.path ~line:f.source.line notes
+  && notes_mention_site ~path:f.sink.path ~line:f.sink.line notes
+  && sanitization_supports_repair f.sanitization
+
+let proof_repair_control (f : Security_types.candidate_finding) =
+  match f.sanitization with
+  | Missing ->
+    Printf.sprintf "missing %s control on the source-to-sink path" (Security_types.vuln_class_to_string f.vuln_class)
+  | Inadequate ->
+    Printf.sprintf "inadequate %s control on the source-to-sink path" (Security_types.vuln_class_to_string f.vuln_class)
+  | Adequate | Unknown -> "unproven security control state"
+
+let proof_repair_trigger (f : Security_types.candidate_finding) =
+  match f.vuln_class with
+  | Injection ->
+    Printf.sprintf "Submit attacker-controlled input such as `' OR '1'='1` through %s so it reaches %s."
+      f.source.description f.sink.description
+  | Xss ->
+    Printf.sprintf "Submit `<img src=x onerror=alert(1)>` through %s and render the value at %s." f.source.description
+      f.sink.description
+  | Command_injection ->
+    Printf.sprintf "Submit shell metacharacters such as `; id` through %s so they reach %s." f.source.description
+      f.sink.description
+  | Authn ->
+    Printf.sprintf "Send an authentication request with attacker-controlled token or credential data through %s."
+      f.source.description
+  | Authz ->
+    Printf.sprintf "Call the reviewed handler through %s for a resource the caller should not be allowed to access."
+      f.source.description
+  | Ssrf ->
+    Printf.sprintf "Submit `http://169.254.169.254/latest/meta-data/` through %s so the server fetches it at %s."
+      f.source.description f.sink.description
+  | Policy_regression ->
+    Printf.sprintf
+      "Apply the reviewed policy/configuration change at %s and exercise the newly granted capability at %s."
+      f.source.description f.sink.description
+
+let proof_repair_impact (f : Security_types.candidate_finding) =
+  match f.vuln_class with
+  | Injection -> "The attacker can alter the query executed by the application."
+  | Xss -> "The attacker-controlled script executes in another user's browser."
+  | Command_injection -> "The attacker-controlled command fragment executes on the server."
+  | Authn -> "An invalid, expired, or otherwise unsafe authentication token can be accepted."
+  | Authz -> "The attacker can access or mutate a resource without the required authorization check."
+  | Ssrf -> "The server makes an attacker-controlled outbound request to an internal or sensitive URL."
+  | Policy_regression -> "The changed policy or control now permits an action that was previously constrained."
+
+let proof_trace_from_finding (f : Security_types.candidate_finding) =
+  let source = Printf.sprintf "%s:%d source: %s" f.source.path f.source.line f.source.description in
+  let flow =
+    List.map
+      (fun (step : Security_types.flow_step) -> Printf.sprintf "%s:%d flow: %s" step.path step.line step.description)
+      f.flow
+  in
+  let sink = Printf.sprintf "%s:%d sink: %s" f.sink.path f.sink.line f.sink.description in
+  (source :: flow) @ [ sink ]
+
+let proof_from_validated_notes (vf : Security_types.validated_finding) =
+  let finding = vf.finding in
+  match evidence_supports_proof_repair finding vf.evidence_notes with
+  | false -> None
+  | true ->
+    Some
+      {
+        Security_types.trigger = proof_repair_trigger finding;
+        preconditions = [ "The reviewed source and sink sites are present in the validator evidence." ];
+        source_to_sink_trace = proof_trace_from_finding finding;
+        missing_or_inadequate_control = proof_repair_control finding;
+        expected_impact = proof_repair_impact finding;
+        assumptions = [];
+      }
+
+let repair_missing_validator_proof (vf : Security_types.validated_finding) =
+  match vf.verdict, vf.proof_by_construction with
+  | Confirmed, None ->
+    (match proof_from_validated_notes vf with
+    | Some proof -> { vf with proof_by_construction = Some proof }
+    | None -> vf)
+  | Confirmed, Some _ | Rejected, Some _ | Rejected, None -> vf
+
+let reject_for_missing_proof (vf : Security_types.validated_finding) =
+  let evidence_notes =
+    match String.trim vf.evidence_notes with
+    | "" -> proof_violation_note
+    | notes -> Printf.sprintf "%s\n\n%s" notes proof_violation_note
+  in
+  { vf with verdict = Rejected; evidence_notes; proof_by_construction = None }
+
+let enforce_validator_proofs results =
+  List.map
+    (fun (vf : Security_types.validated_finding) ->
+      let vf = repair_missing_validator_proof vf in
+      match vf.verdict, vf.proof_by_construction with
+      | Confirmed, Some proof ->
+        (match proof_is_concrete proof && proof_matches_finding vf.finding proof with
+        | true -> vf
+        | false -> reject_for_missing_proof vf)
+      | Confirmed, None -> reject_for_missing_proof vf
+      | Rejected, Some _ | Rejected, None -> vf)
+    results
+
+type analysis_metrics = {
+  actionable_triage_signal_count : int;
+  analysis_agents_run : int;
+  raw_candidates_produced : int;
+  candidates_kept_after_deduplication : int;
+  duplicate_candidates_dropped : int;
+  validator_confirmed : int;
+  validator_rejected : int;
+  final_findings_produced : int;
+  class_drops : (string * int * string) list;
+}
+
+let empty_analysis_metrics ~actionable_triage_signal_count =
+  {
+    actionable_triage_signal_count;
+    analysis_agents_run = 0;
+    raw_candidates_produced = 0;
+    candidates_kept_after_deduplication = 0;
+    duplicate_candidates_dropped = 0;
+    validator_confirmed = 0;
+    validator_rejected = 0;
+    final_findings_produced = 0;
+    class_drops = [];
+  }
+
+let count_confirmed results =
+  List.fold_left
+    (fun acc (vf : Security_types.validated_finding) ->
+      match vf.verdict with
+      | Confirmed -> acc + 1
+      | Rejected -> acc)
+    0 results
+
+let total_files_fetched costs =
+  List.fold_left (fun acc (cost : Cost_tracking.agent_cost) -> acc + cost.files_fetched) 0 costs
+
+let total_estimated_cost costs =
+  List.fold_left (fun acc (cost : Cost_tracking.agent_cost) -> acc +. cost.estimated_cost_usd) 0.0 costs
+
+let metrics_json ~changed_file_count ~deterministic_signals ~triage_signal_count ~metrics ~costs =
+  let class_drop_json (vuln_class, signal_count, reason) =
+    `Assoc [ "vuln_class", `String vuln_class; "triage_signal_count", `Int signal_count; "reason", `String reason ]
+  in
+  `Assoc
+    [
+      "changed_file_count", `Int changed_file_count;
+      "deterministic_signals", Security_artifacts.signal_counts_json deterministic_signals;
+      "triage_signal_count", `Int triage_signal_count;
+      "actionable_triage_signal_count", `Int metrics.actionable_triage_signal_count;
+      "analysis_agents_run", `Int metrics.analysis_agents_run;
+      "raw_candidates_produced", `Int metrics.raw_candidates_produced;
+      "candidates_kept_after_deduplication", `Int metrics.candidates_kept_after_deduplication;
+      "duplicate_candidates_dropped", `Int metrics.duplicate_candidates_dropped;
+      "validator_results_confirmed", `Int metrics.validator_confirmed;
+      "validator_results_rejected", `Int metrics.validator_rejected;
+      "final_findings_produced", `Int metrics.final_findings_produced;
+      "analysis_class_drops", `List (List.map class_drop_json metrics.class_drops);
+      ( "finding_routing",
+        `Assoc
+          [
+            "inline", `Null;
+            "unchanged", `Null;
+            "anchor_failed", `Null;
+            "note", `String "not_recorded_before_review_engine_routing";
+          ] );
+      "security_files_fetched", `Int (total_files_fetched costs);
+      "agent_costs", Security_artifacts.agent_costs_json costs;
+    ]
+
+let log_stage_metrics ~changed_file_count ~deterministic_signals ~triage_signal_count ~metrics ~costs =
+  log#info
+    "security metrics: files=%d deterministic_signals=%d triage_signals=%d actionable=%d analysis_agents=%d \
+     raw_candidates=%d deduped=%d duplicates_dropped=%d validator_confirmed=%d validator_rejected=%d final_findings=%d \
+     class_drops=%d files_fetched=%d estimated_cost=$%.4f"
+    changed_file_count (List.length deterministic_signals) triage_signal_count metrics.actionable_triage_signal_count
+    metrics.analysis_agents_run metrics.raw_candidates_produced metrics.candidates_kept_after_deduplication
+    metrics.duplicate_candidates_dropped metrics.validator_confirmed metrics.validator_rejected
+    metrics.final_findings_produced (List.length metrics.class_drops) (total_files_fetched costs)
+    (total_estimated_cost costs)
+
 module Make (AI : Api.Agent_runner) = struct
   let name = "security"
 
   (** Run the triage agent and parse its structured output.
       Returns the parsed output (if successful) and any agent costs incurred. *)
-  let run_triage ~ctx ~repo_url ~security_config ~diff_text ~file_paths ?security_memory ?debug_dir () =
+  let run_triage ~ctx ~repo_url ~security_config ~diff_text ~file_paths ~deterministic_signals ~artifacts
+    ?security_memory ?debug_dir () =
     let triage_config =
       Triage_agent.config ~model_tier:(agent_model_tier security_config.Config_types.triage_model_tier)
     in
-    let triage_input = Triage_agent.build_input ~diff_text ~file_paths ?security_memory () in
+    let triage_input = Triage_agent.build_input ~diff_text ~file_paths ?security_memory ~deterministic_signals () in
+    Security_artifacts.write_debug_text artifacts ~filename:"triage_input.md" triage_input;
     let%lwt result = AI.run ~ctx ~repo_url ?debug_dir ~config:triage_config ~input:triage_input () in
     match result with
     | Error msg ->
@@ -59,6 +386,7 @@ module Make (AI : Api.Agent_runner) = struct
       Lwt.return (None, [])
     | Ok agent_result ->
       let cost = Cost_tracking.of_agent_result ~agent_name:"triage" ~files_fetched:0 agent_result in
+      Security_artifacts.write_debug_json artifacts ~filename:"triage_output.json" agent_result.output;
       let triage_output = Security_types.triage_output_of_json agent_result.output in
       Lwt.return (Some triage_output, [ cost ])
 
@@ -84,11 +412,12 @@ module Make (AI : Api.Agent_runner) = struct
       Returns the list of candidate findings and the agent cost on success,
       or an empty list with no cost if the agent fails. *)
   let run_single_analysis ~ctx ~repo_url ~fetch_file ~security_config ~diff_text ~file_paths ~language_hints ~vuln_class
-    ~triage_signals ?debug_dir () =
+    ~triage_signals ~artifacts ?debug_dir () =
     let vc_name = Security_types.vuln_class_to_string vuln_class in
     let model_tier = agent_model_tier security_config.Config_types.analysis_model_tier in
     let agent_config = Analysis_agent.config ~vuln_class ~model_tier ~language_hints in
     let input = Analysis_agent.build_input ~diff_text ~triage_signals ~file_paths () in
+    Security_artifacts.write_debug_text artifacts ~filename:(Printf.sprintf "analysis_%s_input.md" vc_name) input;
     let tools = Analysis_agent.tools ~fetch_file:(fun path -> fetch_file ~path) in
     let%lwt result = AI.run ~ctx ~repo_url ~tools ?debug_dir ~config:agent_config ~input () in
     match result with
@@ -99,6 +428,9 @@ module Make (AI : Api.Agent_runner) = struct
       let agent_name = Printf.sprintf "%s_analysis" vc_name in
       let files_fetched = agent_result.steps_count - 1 |> max 0 in
       let cost = Cost_tracking.of_agent_result ~agent_name ~files_fetched agent_result in
+      Security_artifacts.write_debug_json artifacts
+        ~filename:(Printf.sprintf "analysis_%s_output.json" vc_name)
+        agent_result.output;
       let analysis = Security_types.analysis_output_of_json agent_result.output in
       log#info "analysis agent %s: %d findings, %d files examined" vc_name (List.length analysis.findings)
         (List.length analysis.files_examined);
@@ -179,6 +511,45 @@ module Make (AI : Api.Agent_runner) = struct
     | `Flow | `Source ->
       Printf.sprintf "**Related sink:** `%s:%d` — %s\n\n%s" f.sink.path f.sink.line f.sink.description f.description
 
+  let truncate_text ~max_len s =
+    match String.length s <= max_len with
+    | true -> s
+    | false -> String.sub s 0 max_len ^ "..."
+
+  let first_n n values =
+    let rec aux remaining acc = function
+      | [] -> List.rev acc
+      | _ :: _ when remaining <= 0 -> List.rev acc
+      | value :: rest -> aux (remaining - 1) (value :: acc) rest
+    in
+    aux n [] values
+
+  let fallback_trace (f : Security_types.candidate_finding) =
+    Printf.sprintf "%s:%d source -> %s:%d sink" f.source.path f.source.line f.sink.path f.sink.line
+
+  let proof_summaries (vf : Security_types.validated_finding) =
+    let f = vf.finding in
+    match vf.proof_by_construction with
+    | None -> "", "", ""
+    | Some proof ->
+      let failure_scenario =
+        Printf.sprintf "Trigger: %s Impact: %s" proof.trigger proof.expected_impact |> truncate_text ~max_len:420
+      in
+      let trace =
+        match proof.source_to_sink_trace with
+        | [] -> fallback_trace f
+        | _ :: _ -> proof.source_to_sink_trace |> first_n 4 |> String.concat " -> "
+      in
+      let evidence_snippet =
+        Printf.sprintf "%s. Control: %s" trace proof.missing_or_inadequate_control |> truncate_text ~max_len:520
+      in
+      let why_now =
+        Printf.sprintf "The reviewed change leaves this path reaching `%s:%d` without %s." f.sink.path f.sink.line
+          proof.missing_or_inadequate_control
+        |> truncate_text ~max_len:320
+      in
+      failure_scenario, evidence_snippet, why_now
+
   (** Convert a validated finding into a review finding.
 
       Only called for findings with a [Confirmed] verdict.  Severity is
@@ -193,6 +564,7 @@ module Make (AI : Api.Agent_runner) = struct
   let validated_to_finding ~diff (vf : Security_types.validated_finding) : Review_types.finding =
     let f = vf.finding in
     let anchor_kind, anchor_path, anchor_line = pick_inline_anchor ~diff f in
+    let failure_scenario, evidence_snippet, why_now = proof_summaries vf in
     (match anchor_kind with
     | `Sink -> ()
     | `Flow | `Source ->
@@ -210,9 +582,9 @@ module Make (AI : Api.Agent_runner) = struct
       severity = severity_of_confidence f.confidence;
       category = Security;
       message = enrich_message_with_sink ~anchor_kind ~f;
-      failure_scenario = "";
-      evidence_snippet = "";
-      why_now = "";
+      failure_scenario;
+      evidence_snippet;
+      why_now;
       confidence = f.confidence;
       suggested_fix = f.suggested_fix;
     }
@@ -222,10 +594,12 @@ module Make (AI : Api.Agent_runner) = struct
       Returns the list of validated findings and the agent cost on success.
       If the validator agent fails or its output cannot be parsed, returns
       an empty list — unvalidated findings are never reported. *)
-  let run_validator ~ctx ~repo_url ~fetch_file ~security_config ~diff_text ~candidate_findings ?debug_dir () =
+  let run_validator ~ctx ~repo_url ~fetch_file ~security_config ~diff_text ~candidate_findings ~artifacts ?debug_dir ()
+      =
     let model_tier = agent_model_tier security_config.Config_types.validator_model_tier in
     let agent_config = Validator_agent.config ~model_tier in
     let input = Validator_agent.build_input ~diff_text ~candidate_findings () in
+    Security_artifacts.write_debug_text artifacts ~filename:"validator_input.md" input;
     let tools = Validator_agent.tools ~fetch_file:(fun path -> fetch_file ~path) in
     let%lwt result = AI.run ~ctx ~repo_url ~tools ?debug_dir ~config:agent_config ~input () in
     match result with
@@ -235,9 +609,19 @@ module Make (AI : Api.Agent_runner) = struct
     | Ok agent_result ->
       let files_fetched = agent_result.steps_count - 1 |> max 0 in
       let cost = Cost_tracking.of_agent_result ~agent_name:"validator" ~files_fetched agent_result in
-      let output = Security_types.validator_output_of_json agent_result.output in
-      log#info "validator: %d results" (List.length output.results);
-      Lwt.return (output.results, [ cost ])
+      Security_artifacts.write_debug_json artifacts ~filename:"validator_output.json" agent_result.output;
+      (try
+         let output = Security_types.validator_output_of_json agent_result.output in
+         let results = enforce_validator_proofs output.results in
+         let downgraded = count_confirmed output.results - count_confirmed results in
+         (match downgraded > 0 with
+         | true -> log#warn "validator: downgraded %d confirmed result(s) without concrete proof" downgraded
+         | false -> ());
+         log#info "validator: %d results" (List.length results);
+         Lwt.return (results, [ cost ])
+       with exn ->
+         log#error "validator output parse failed: %s" (Exn.str exn);
+         Lwt.return ([], [ cost ]))
 
   (** Collapse candidate findings that share the same [(sink.path, sink.line)].
 
@@ -342,13 +726,13 @@ module Make (AI : Api.Agent_runner) = struct
       single agent invocation with all relevant triage context.  Candidate
       findings are passed through the validator agent; only confirmed
       findings are converted to review findings. *)
-  let run_analysis ~ctx ~repo_url ~fetch_file ~security_config ~diff ~diff_text ~file_paths ~language_hints ?debug_dir
-    signals =
+  let run_analysis ~ctx ~repo_url ~fetch_file ~security_config ~diff ~diff_text ~file_paths ~language_hints ~artifacts
+    ?debug_dir signals =
     let actionable = List.filter (should_analyze ~security_config) signals in
     match actionable with
     | [] ->
       log#info "triage: no actionable signals";
-      Lwt.return ([], [])
+      Lwt.return ([], [], empty_analysis_metrics ~actionable_triage_signal_count:0)
     | _ :: _ ->
       log#info "triage: %d signals, %d actionable" (List.length signals) (List.length actionable);
       let groups = group_by_vuln_class actionable in
@@ -358,13 +742,30 @@ module Make (AI : Api.Agent_runner) = struct
             Lwt.catch
               (fun () ->
                 run_single_analysis ~ctx ~repo_url ~fetch_file ~security_config ~diff_text ~file_paths ~language_hints
-                  ~vuln_class ~triage_signals ?debug_dir ())
+                  ~vuln_class ~triage_signals ~artifacts ?debug_dir ())
               (fun exn ->
                 log#error "analysis agent %s raised: %s" (Security_types.vuln_class_to_string vuln_class) (Exn.str exn);
                 Lwt.return ([], [])))
           groups
       in
       let%lwt results = Lwt.all promises in
+      let class_drops =
+        let rec collect acc groups results =
+          match groups, results with
+          | [], [] -> List.rev acc
+          | (vuln_class, triage_signals) :: rest_groups, (candidates, _) :: rest_results ->
+            (match candidates with
+            | [] ->
+              let vc_name = Security_types.vuln_class_to_string vuln_class in
+              let signal_count = List.length triage_signals in
+              log#info "analysis drop: %s had %d actionable triage signal(s) but produced no candidates" vc_name
+                signal_count;
+              collect ((vc_name, signal_count, "analysis_returned_no_candidates") :: acc) rest_groups rest_results
+            | _ :: _ -> collect acc rest_groups rest_results)
+          | [], _ :: _ | _ :: _, [] -> List.rev acc
+        in
+        collect [] groups results
+      in
       let raw_candidates = List.concat_map fst results in
       let analysis_costs = List.concat_map snd results in
       log#info "analysis complete: %d total candidate findings" (List.length raw_candidates);
@@ -375,11 +776,25 @@ module Make (AI : Api.Agent_runner) = struct
           (List.length candidates)
       | false -> ());
       (match candidates with
-      | [] -> Lwt.return ([], analysis_costs)
+      | [] ->
+        let metrics =
+          {
+            actionable_triage_signal_count = List.length actionable;
+            analysis_agents_run = List.length groups;
+            raw_candidates_produced = List.length raw_candidates;
+            candidates_kept_after_deduplication = List.length candidates;
+            duplicate_candidates_dropped = List.length raw_candidates - List.length candidates;
+            validator_confirmed = 0;
+            validator_rejected = 0;
+            final_findings_produced = 0;
+            class_drops;
+          }
+        in
+        Lwt.return ([], analysis_costs, metrics)
       | _ :: _ ->
         let%lwt validated, validator_costs =
-          run_validator ~ctx ~repo_url ~fetch_file ~security_config ~diff_text ~candidate_findings:candidates ?debug_dir
-            ()
+          run_validator ~ctx ~repo_url ~fetch_file ~security_config ~diff_text ~candidate_findings:candidates ~artifacts
+            ?debug_dir ()
         in
         log_rejected validated;
         let confirmed =
@@ -392,7 +807,23 @@ module Make (AI : Api.Agent_runner) = struct
         in
         log#info "validation complete: %d confirmed, %d rejected" (List.length confirmed)
           (List.length validated - List.length confirmed);
-        Lwt.return (List.map (validated_to_finding ~diff) confirmed, analysis_costs @ validator_costs))
+        let findings = List.map (validated_to_finding ~diff) confirmed in
+        Security_artifacts.write_debug_json artifacts ~filename:"final_findings.json"
+          (Security_artifacts.final_findings_json findings);
+        let metrics =
+          {
+            actionable_triage_signal_count = List.length actionable;
+            analysis_agents_run = List.length groups;
+            raw_candidates_produced = List.length raw_candidates;
+            candidates_kept_after_deduplication = List.length candidates;
+            duplicate_candidates_dropped = List.length raw_candidates - List.length candidates;
+            validator_confirmed = List.length confirmed;
+            validator_rejected = List.length validated - List.length confirmed;
+            final_findings_produced = List.length findings;
+            class_drops;
+          }
+        in
+        Lwt.return (findings, analysis_costs @ validator_costs, metrics))
 
   (** Build the architectural observations passed to the memory curator.
 
@@ -459,11 +890,35 @@ module Make (AI : Api.Agent_runner) = struct
     let memory_dir = "memory" in
     let security_memory = Security_memory.load ~memory_dir ~repo_url in
     let file_paths = List.map (fun (fd : Diff_parser.file_diff) -> fd.path) diff in
+    let artifacts =
+      Security_artifacts.create ~debug_dir ~metrics_artifacts:security_config.metrics_artifacts
+        ~debug_artifacts:security_config.debug_artifacts
+    in
+    (match Security_artifacts.enabled artifacts with
+    | true ->
+      log#info "security artifacts: writing to %s (metrics=%b debug=%b)" (Security_artifacts.root artifacts)
+        security_config.metrics_artifacts security_config.debug_artifacts
+    | false -> log#debug "security artifacts: disabled");
+    Security_artifacts.write_manifest artifacts ~repo_url;
+    let deterministic_signals = Security_diff_signal.scan diff in
+    log#info "deterministic signals: %d signal(s)" (List.length deterministic_signals);
+    Security_artifacts.write_debug_json artifacts ~filename:"deterministic_signals.json"
+      (`List (List.map Security_types.candidate_signal_to_json deterministic_signals));
     let%lwt triage_result, triage_costs =
-      run_triage ~ctx ~repo_url ~security_config ~diff_text ~file_paths ?security_memory ~debug_dir ()
+      run_triage ~ctx ~repo_url ~security_config ~diff_text ~file_paths ~deterministic_signals ~artifacts
+        ?security_memory ~debug_dir ()
     in
     match triage_result with
-    | None -> Lwt.return ([], triage_costs)
+    | None ->
+      let metrics = empty_analysis_metrics ~actionable_triage_signal_count:0 in
+      log_stage_metrics ~changed_file_count:(List.length file_paths) ~deterministic_signals ~triage_signal_count:0
+        ~metrics ~costs:triage_costs;
+      Security_artifacts.write_metrics artifacts
+        (metrics_json ~changed_file_count:(List.length file_paths) ~deterministic_signals ~triage_signal_count:0
+           ~metrics ~costs:triage_costs);
+      Security_artifacts.write_fetch_stats artifacts triage_costs;
+      Security_artifacts.write_debug_json artifacts ~filename:"final_findings.json" (`List []);
+      Lwt.return ([], triage_costs)
     | Some triage_output ->
       (* Triage is sometimes asked to choose between [skip_reason = None] (proceed)
        and [skip_reason = Some "..."] (bail).  When it has nothing to say but
@@ -480,13 +935,32 @@ module Make (AI : Api.Agent_runner) = struct
       (match effective_skip_reason with
       | Some reason ->
         log#info "triage: skipped (%s)" reason;
+        let metrics = empty_analysis_metrics ~actionable_triage_signal_count:0 in
+        log_stage_metrics ~changed_file_count:(List.length file_paths) ~deterministic_signals
+          ~triage_signal_count:(List.length triage_output.signals) ~metrics ~costs:triage_costs;
+        Security_artifacts.write_metrics artifacts
+          (metrics_json ~changed_file_count:(List.length file_paths) ~deterministic_signals
+             ~triage_signal_count:(List.length triage_output.signals) ~metrics ~costs:triage_costs);
+        Security_artifacts.write_fetch_stats artifacts triage_costs;
+        Security_artifacts.write_debug_json artifacts ~filename:"final_findings.json" (`List []);
         Lwt.return ([], triage_costs)
       | None ->
-        let%lwt findings, analysis_costs =
+        let%lwt findings, analysis_costs, analysis_metrics =
           run_analysis ~ctx ~repo_url ~fetch_file:metadata.fetch_file ~security_config ~diff ~diff_text ~file_paths
-            ~language_hints:triage_output.language_hints ~debug_dir triage_output.signals
+            ~language_hints:triage_output.language_hints ~artifacts ~debug_dir triage_output.signals
         in
+        let costs = triage_costs @ analysis_costs in
+        log_stage_metrics ~changed_file_count:(List.length file_paths) ~deterministic_signals
+          ~triage_signal_count:(List.length triage_output.signals) ~metrics:analysis_metrics ~costs;
+        Security_artifacts.write_metrics artifacts
+          (metrics_json ~changed_file_count:(List.length file_paths) ~deterministic_signals
+             ~triage_signal_count:(List.length triage_output.signals) ~metrics:analysis_metrics ~costs);
+        Security_artifacts.write_fetch_stats artifacts costs;
+        Security_artifacts.write_debug_json artifacts ~filename:"final_findings.json"
+          (Security_artifacts.final_findings_json findings);
         let observations = build_observations ~triage_output ~file_paths in
+        Security_artifacts.write_debug_json artifacts ~filename:"memory_observations.json"
+          (Security_types.architectural_observations_to_json observations);
         (* Fire the curator asynchronously — not in the critical review path.
          Last-write-wins is acceptable: the brief is a pure architectural
          description over the same repo, so concurrent writes converge. *)
@@ -498,5 +972,5 @@ module Make (AI : Api.Agent_runner) = struct
           with exn ->
             log#error "memory curator async task raised: %s" (Exn.str exn);
             Lwt.return_unit);
-        Lwt.return (findings, triage_costs @ analysis_costs))
+        Lwt.return (findings, costs))
 end

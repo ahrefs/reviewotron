@@ -10,6 +10,7 @@ type vuln_class =
   | Authn
   | Authz
   | Ssrf
+  | Policy_regression
 
 val vuln_class_to_string : vuln_class -> string
 val vuln_class_to_json : vuln_class -> Yojson.Basic.t
@@ -68,6 +69,8 @@ type security_plugin_config = {
   validator_model_tier : model_tier;
   confidence_threshold : confidence;
   memory_max_tokens : int;
+  metrics_artifacts : bool;
+  debug_artifacts : bool;
 }
 
 val security_plugin_config_to_json : security_plugin_config -> Yojson.Basic.t

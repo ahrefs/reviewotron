@@ -8,6 +8,11 @@ type prepare_error =
   | Too_large of int
   | Too_many_files of int
 
+type pr_prepare_error = {
+  error : prepare_error;
+  head_sha : string option;
+}
+
 type prepared_pr_review = {
   number : int;
   job : Review_job.t;
@@ -147,24 +152,25 @@ module Make (SRC : Api.Github_review_source) = struct
     let repo_url = pr_notif.repository.url in
     let number = pr_notif.number in
     let pr = pr_notif.pull_request in
+    let error error = Error { error; head_sha = Some pr.head.sha } in
     log#info "reviewing PR #%d in %s" number pr_notif.repository.full_name;
     let%lwt diff_result = SRC.get_pr_diff ~ctx ~repo_url ~number in
     match diff_result with
     | Error fetch_error ->
       log#error "failed to fetch diff for PR #%d: %s" number (Http_util.error_to_string fetch_error);
-      Lwt.return (Error (Fetch_failed fetch_error))
+      Lwt.return (error (Fetch_failed fetch_error))
     | Ok diff_text ->
     match prepare_diff ~config diff_text with
     | Error Empty ->
       log#info "PR #%d: all files filtered out, nothing to review" number;
-      Lwt.return (Error Empty)
+      Lwt.return (error Empty)
     | Error (Too_large total_lines) ->
       log#info "PR #%d skipped: %d diff lines exceeds limit of %d" number total_lines config.max_diff_lines;
-      Lwt.return (Error (Too_large total_lines))
+      Lwt.return (error (Too_large total_lines))
     | Error (Too_many_files file_count) ->
       log#info "PR #%d skipped: %d files exceeds limit of %d" number file_count config.max_files;
-      Lwt.return (Error (Too_many_files file_count))
-    | Error (Fetch_failed _ as e) -> Lwt.return (Error e)
+      Lwt.return (error (Too_many_files file_count))
+    | Error (Fetch_failed _ as e) -> Lwt.return (error e)
     | Ok (filtered_diff, filtered_text) ->
       let head_sha = pr.head.sha in
       let%lwt file_contents = fetch_key_files ~ctx ~repo_url ~diff:filtered_diff ~ref_:head_sha in
@@ -200,7 +206,7 @@ module Make (SRC : Api.Github_review_source) = struct
       (* [get_pull_request] surfaces a plain string error with no HTTP status to
          classify, so this is a generic (retryable) fetch failure, never the
          too-large case. *)
-      Lwt.return (Error (Fetch_failed (Http_util.Local msg)))
+      Lwt.return (Error { error = Fetch_failed (Http_util.Local msg); head_sha = None })
     | Ok pr ->
       let synthesised : Github_types.pr_notification =
         {

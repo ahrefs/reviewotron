@@ -1,0 +1,30 @@
+{
+  "findings": [
+    {
+      "vuln_class": "policy_regression",
+      "source": {
+        "path": "modules/sudo/manifests/deploy.pp",
+        "line": 3,
+        "description": "deploy sudoers grant with NOPASSWD systemctl"
+      },
+      "sink": {
+        "path": "modules/sudo/manifests/deploy.pp",
+        "line": 3,
+        "description": "deploy user can run systemctl as root without password"
+      },
+      "flow": [
+        {
+          "path": "modules/sudo/manifests/deploy.pp",
+          "line": 3,
+          "description": "sudoers policy grants the deploy user root systemctl capability"
+        }
+      ],
+      "sanitization": "missing",
+      "confidence": "high",
+      "description": "The sudoers change lets the deploy user run /usr/bin/systemctl as root with NOPASSWD and no unit/action allowlist, so the deploy principal now has broad root service-control capability.",
+      "suggested_fix": "Constrain sudoers to an exact systemctl action and unit, or require a password/approval gate for privileged service operations."
+    }
+  ],
+  "files_examined": ["modules/sudo/manifests/deploy.pp"],
+  "notes": "Policy proof: changed sudoers grant directly broadens the deploy principal's root systemctl capability."
+}

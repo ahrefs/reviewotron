@@ -13,6 +13,14 @@ type prepare_error =
   | Too_large of int  (** The filtered diff exceeds [Config_types.max_diff_lines]. *)
   | Too_many_files of int  (** The filtered diff touches more files than [Config_types.max_files]. *)
 
+(** PR preparation failure with the head SHA when it was available.  REVIEW
+    comment triggers have to fetch the PR before they know the SHA, so early
+    fetch failures carry [None]. *)
+type pr_prepare_error = {
+  error : prepare_error;
+  head_sha : string option;
+}
+
 type prepared_pr_review = {
   number : int;
   job : Review_job.t;
@@ -48,7 +56,7 @@ module Make (_ : Api.Github_review_source) : sig
     ctx:Context.t ->
     config:Config_types.config ->
     Github_types.pr_notification ->
-    (prepared_pr_review, prepare_error) result Lwt.t
+    (prepared_pr_review, pr_prepare_error) result Lwt.t
 
   (** Fetch the full PR referenced by an issue_comment webhook and build a
       normalized manual-review job. *)
@@ -56,7 +64,7 @@ module Make (_ : Api.Github_review_source) : sig
     ctx:Context.t ->
     config:Config_types.config ->
     Github_types.issue_comment_notification ->
-    (prepared_pr_review, prepare_error) result Lwt.t
+    (prepared_pr_review, pr_prepare_error) result Lwt.t
 
   (** Build a normalized push review job from a push webhook. *)
   val prepare_push_review :

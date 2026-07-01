@@ -10,6 +10,7 @@ type vuln_class =
   | Authn
   | Authz
   | Ssrf
+  | Policy_regression
 
 let vuln_class_to_string = function
   | Injection -> "injection"
@@ -18,6 +19,7 @@ let vuln_class_to_string = function
   | Authn -> "authn"
   | Authz -> "authz"
   | Ssrf -> "ssrf"
+  | Policy_regression -> "policy_regression"
 
 let vuln_class_to_json vc = `String (vuln_class_to_string vc)
 
@@ -28,10 +30,11 @@ let vuln_class_of_json = function
   | `String "authn" -> Authn
   | `String "authz" -> Authz
   | `String "ssrf" -> Ssrf
+  | `String "policy_regression" -> Policy_regression
   | json -> Melange_json.of_json_error ~json "expected a vuln_class string"
 
 (** All supported vulnerability classes. *)
-let all_vuln_classes = [ Injection; Xss; Command_injection; Authn; Authz; Ssrf ]
+let all_vuln_classes = [ Injection; Xss; Command_injection; Authn; Authz; Ssrf; Policy_regression ]
 
 (* Schema for a variant serialized as one of a fixed set of lowercase strings. *)
 let string_enum_jsonschema ~enum ~description : Yojson.Basic.t =
@@ -133,6 +136,16 @@ type security_plugin_config = {
      [@json.default Medium] [@jsonschema.description "Minimum triage confidence to trigger analysis."]
   memory_max_tokens : int;
      [@json.default 5000] [@jsonschema.description "Target size limit for the repo security memory."]
+  metrics_artifacts : bool;
+     [@json.default false]
+     [@jsonschema.description
+       "Write compact security metrics artifacts (manifest.json, metrics.json, fetch_stats.json) under the per-review \
+        debug directory. Off by default."]
+  debug_artifacts : bool;
+     [@json.default false]
+     [@jsonschema.description
+       "Write full redacted security debug artifacts, including stage inputs and outputs, under the per-review debug \
+        directory. Sensitive and off by default."]
 }
 [@@deriving json, jsonschema] [@@json.allow_extra_fields]
 
@@ -148,6 +161,8 @@ let default_security_plugin_config =
     validator_model_tier = Standard;
     confidence_threshold = Medium;
     memory_max_tokens = 5000;
+    metrics_artifacts = false;
+    debug_artifacts = false;
   }
 
 (** Aggregated review plugin configuration. *)

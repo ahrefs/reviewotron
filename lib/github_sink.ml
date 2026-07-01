@@ -134,28 +134,25 @@ module Make (SNK : Api.Github_review_sink) = struct
     let body = Printf.sprintf "%s\n\n**Reviewed commit:** `%s`" report.body short_sha in
     let review_req = Github_types.{ commit_id = Some job.head_sha; body; event = Comment; comments } in
     let%lwt post_result = SNK.create_pr_review ~ctx ~repo_url:job.repo_key ~number review_req in
-    let%lwt () =
-      match post_result with
-      | Ok created_review ->
-        let%lwt () =
-          match feedback_plan with
-          | Some (store, evidence_root, review_batch_id, _evidence_dir, _comments, inputs, evidence_comments) ->
-            let%lwt () =
-              write_feedback_evidence ~evidence_root ~review_batch_id ~created_at ~repo_url:job.repo_key ~number
-                ~head_sha:job.head_sha ~review_id:created_review.id ~review_body:body ~job ~report
-                ~posted_comments:evidence_comments
-            in
-            record_feedback_targets store ~repo_url:job.repo_key ~number ~head_sha:job.head_sha
-              ~review_id:created_review.id ~review_batch_id ~created_at inputs
-          | None -> Lwt.return_unit
-        in
-        log#info "posted review for PR #%d (%s): %d inline comments" number job.title (List.length comments);
-        Lwt.return_unit
-      | Error msg ->
-        log#error "failed to post review for PR #%d: %s" number msg;
-        Lwt.return_unit
-    in
-    Lwt.return_unit
+    match post_result with
+    | Ok created_review ->
+      let%lwt () =
+        match feedback_plan with
+        | Some (store, evidence_root, review_batch_id, _evidence_dir, _comments, inputs, evidence_comments) ->
+          let%lwt () =
+            write_feedback_evidence ~evidence_root ~review_batch_id ~created_at ~repo_url:job.repo_key ~number
+              ~head_sha:job.head_sha ~review_id:created_review.id ~review_body:body ~job ~report
+              ~posted_comments:evidence_comments
+          in
+          record_feedback_targets store ~repo_url:job.repo_key ~number ~head_sha:job.head_sha
+            ~review_id:created_review.id ~review_batch_id ~created_at inputs
+        | None -> Lwt.return_unit
+      in
+      log#info "posted review for PR #%d (%s): %d inline comments" number job.title (List.length comments);
+      Lwt.return (Ok ())
+    | Error msg ->
+      log#error "failed to post review for PR #%d: %s" number msg;
+      Lwt.return (Error msg)
 
   (** Post an issue comment explaining why a review could not be produced.
       Returns the post result so the caller can decide whether to record the PR

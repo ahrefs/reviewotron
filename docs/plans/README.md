@@ -11,6 +11,7 @@ Reviewotron is an agentic code review bot that listens to GitHub webhooks and ru
 | Plan | Focus | Status |
 |------|-------|--------|
 | [Pluggable Review Architecture](2026-05-25-pluggable-review-architecture.md) | Split source adapters, core review engine, and sink adapters while keeping GitHub behavior working at each stage | Stage 7 complete |
+| [Security Debug, Signals, and Proof Plan](2026-06-22-security-debug-signals-proof-plan.md) | First security-pipeline tranche: opt-in artifacts, deterministic diff signals, and proof-by-construction validation | Draft |
 | [Review Feedback via GitHub Reactions](2026-06-24-review-feedback-reactions.md) | Persist aggregate thumbs-up/thumbs-down feedback for Reviewotron inline PR comments using REST reaction polling | Implemented locally; pending manual GitHub validation |
 
 ### Original Implementation Phases
