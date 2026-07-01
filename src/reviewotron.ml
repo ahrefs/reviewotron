@@ -154,21 +154,22 @@ let check_action secrets_path config_filename state_path feedback_dir event_type
 let collect_feedback_action secrets_path state_path feedback_dir poll_interval_seconds logfile loglevel =
   setup_logging logfile loglevel;
   Mirage_crypto_rng_unix.use_default ();
+  let fail fmt =
+    Printf.ksprintf
+      (fun msg ->
+        log#error "%s" msg;
+        exit 1)
+      fmt
+  in
   Lwt_main.run
     begin match Context.create ~secrets_filepath:secrets_path ~state_filepath:state_path ?feedback_dir () with
-    | Error e ->
-      log#error "failed to initialize feedback collector: %s" e;
-      Lwt.return_unit
+    | Error e -> fail "failed to initialize feedback collector: %s" e
     | Ok ctx ->
     match Context.feedback_store ctx with
-    | None ->
-      log#error "feedback collector requires --state";
-      Lwt.return_unit
+    | None -> fail "feedback collector requires --state"
     | Some store ->
     match validate_poll_interval ~command:"collect-feedback" ~allow_zero:true poll_interval_seconds with
-    | Error e ->
-      log#error "%s" e;
-      Lwt.return_unit
+    | Error e -> fail "%s" e
     | Ok () -> Feedback_collector_remote.collect ~poll_interval_seconds ~ctx ~store ~now:(Ptime_clock.now ()) ()
     end
 

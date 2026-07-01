@@ -320,6 +320,27 @@ let test_context_create_allows_repo_less_when_explicit () =
         (check int) "no repos" 0 (List.length secrets.repos);
         (check (option string)) "api key" (Some "sk-test") secrets.anthropic_api_key)
 
+let test_context_create_reports_feedback_store_error () =
+  let secrets_path = Filename.temp_file "reviewotron_secrets_" ".json" in
+  let state_path = Filename.temp_file "reviewotron_state_" ".json" in
+  let feedback_dir = Filename.temp_file "reviewotron_feedback_dir_" "" in
+  let remove path =
+    match Sys.file_exists path with
+    | true -> Sys.remove path
+    | false -> ()
+  in
+  Fun.protect
+    ~finally:(fun () -> List.iter remove [ secrets_path; state_path; feedback_dir ])
+    (fun () ->
+      write_file secrets_path
+        {|{"repos": [{"url": "https://github.com/org/repo", "gh_token": "tok"}], "anthropic_api_key": "sk-test"}|};
+      write_file state_path {|{"repos": {}}|};
+      match Context.create ~secrets_filepath:secrets_path ~state_filepath:state_path ~feedback_dir () with
+      | Ok _ -> fail "expected invalid feedback dir to be reported"
+      | Error msg ->
+        (check bool) "mentions feedback store" true (contains_sub ~sub:"failed to initialize feedback store" msg);
+        (check bool) "includes setup failure" true (contains_sub ~sub:"expected directory" msg))
+
 let test_context_load_config_file () =
   let tmp_path = Filename.temp_file "reviewotron_config_" ".json" in
   Fun.protect
@@ -4860,6 +4881,8 @@ let () =
           test_case "context create requires repos by default" `Quick test_context_create_requires_repos_by_default;
           test_case "context create allows repo-less when explicit" `Quick
             test_context_create_allows_repo_less_when_explicit;
+          test_case "context create reports feedback store errors" `Quick
+            test_context_create_reports_feedback_store_error;
           test_case "context load config file" `Quick test_context_load_config_file;
           test_case "context load local config defaults when missing" `Quick
             test_context_load_local_config_uses_defaults_when_missing;

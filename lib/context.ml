@@ -49,6 +49,14 @@ let load_secrets ~require_repos ~secrets_filepath =
 
 let load_secrets_file ~filepath = load_secrets ~require_repos:false ~secrets_filepath:filepath
 
+let create_feedback_store ?feedback_dir = function
+  | None -> Ok None
+  | Some state_filepath ->
+  match Feedback_store.create ?feedback_dir ~state_filepath () with
+  | store -> Ok (Some store)
+  | exception exn ->
+    Error (Printf.sprintf "failed to initialize feedback store for state %s: %s" state_filepath (Exn.str exn))
+
 let create ~secrets_filepath ?config_filename ?state_filepath ?feedback_dir ?(require_repos = true) () =
   match load_secrets ~require_repos ~secrets_filepath with
   | Error e -> Error e
@@ -59,10 +67,9 @@ let create ~secrets_filepath ?config_filename ?state_filepath ?feedback_dir ?(re
       | Some path -> State.load ~filepath:path
       | None -> State.create ()
     in
-    let feedback_store =
-      Option.map (fun state_filepath -> Feedback_store.create ?feedback_dir ~state_filepath ()) state_filepath
-    in
-    Ok { config_filename; secrets; repo_configs = Hashtbl.create 16; state; feedback_store }
+    (match create_feedback_store ?feedback_dir state_filepath with
+    | Error e -> Error e
+    | Ok feedback_store -> Ok { config_filename; secrets; repo_configs = Hashtbl.create 16; state; feedback_store })
 
 let find_config ctx ~repo_key = Hashtbl.find_opt ctx.repo_configs repo_key
 
