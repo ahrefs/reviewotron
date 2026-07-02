@@ -279,6 +279,16 @@ let with_failure_details ~reason body =
   | None -> body
   | Some reason -> Printf.sprintf "%s\n\n<details><summary>Details</summary>\n\n```\n%s\n```\n\n</details>" body reason
 
+let cost_plugin_ran ~plugin review_costs =
+  List.exists
+    (fun (cost : Cost_tracking.review_cost) ->
+      String.equal cost.plugin plugin
+      &&
+      match cost.agents with
+      | [] -> false
+      | _ :: _ -> true)
+    review_costs
+
 let review_body ~log_context ~change_label ~general_output ~findings ~unchanged_findings ~anchor_failed_findings
   ~review_costs ~security_error ~(config : Config_types.config) =
   let log_prefix = log_context_prefix (Some log_context) in
@@ -298,12 +308,19 @@ let review_body ~log_context ~change_label ~general_output ~findings ~unchanged_
   in
   let failure_notice reason =
     log#error "%sreview failed for %s: no review output produced" log_prefix change_label;
+    let security_completed =
+      config.review_plugins.security.enabled && (not security_error) && cost_plugin_ran ~plugin:"security" review_costs
+    in
     let notice =
-      match findings with
-      | _ :: _ ->
+      match findings, security_completed with
+      | _ :: _, _ ->
         "\xE2\x9A\xA0\xEF\xB8\x8F **Review partially failed** \xE2\x80\x94 the general code review agent encountered \
-         an error. Security findings (if any) are shown below. You may want to re-trigger the review."
-      | [] ->
+         an error. Findings that completed successfully are shown below. You may want to re-trigger the review."
+      | [], true ->
+        "\xE2\x9A\xA0\xEF\xB8\x8F **General review failed** \xE2\x80\x94 the general code review agent encountered an \
+         error. The security review completed and found no confirmed security findings. Please re-trigger the review \
+         if you need the general review results."
+      | [], false ->
         "\xE2\x9A\xA0\xEF\xB8\x8F **Review failed** \xE2\x80\x94 the code review encountered an error and could not \
          produce results. Please re-trigger the review. If this persists, check the service logs."
     in

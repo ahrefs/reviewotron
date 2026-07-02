@@ -5119,9 +5119,10 @@ let test_pr_general_failure_no_findings () =
   Lwt_main.run (R_test.process_event ctx ~event);
   let write_log = Api_local.get_write_log () in
   (check bool) "review posted despite failure" true (CCString.find ~sub:"[create_pr_review]" write_log >= 0);
-  (check bool) "has failure notice" true (CCString.find ~sub:"Review failed" write_log >= 0);
+  (check bool) "has general failure notice" true (CCString.find ~sub:"General review failed" write_log >= 0);
+  (check bool) "notes security completion" true
+    (CCString.find ~sub:"security review completed and found no confirmed security findings" write_log >= 0);
   (check bool) "has re-trigger message" true (CCString.find ~sub:"re-trigger the review" write_log >= 0);
-  (check bool) "has service logs hint" true (CCString.find ~sub:"check the service logs" write_log >= 0);
   (check bool) "surfaces failure cause in details" true
     (CCString.find ~sub:"<details><summary>Details</summary>" write_log >= 0)
 
