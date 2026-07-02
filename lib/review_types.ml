@@ -12,6 +12,7 @@
     Records ([finding], [review_output]) use [[@@deriving json, jsonschema]]. *)
 
 open Melange_json.Primitives
+open Ppx_deriving_jsonschema_runtime.Primitives.Melange_json
 
 (** {2 Severity} *)
 

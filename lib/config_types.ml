@@ -1,6 +1,7 @@
 (** Configuration types for Reviewotron: per-repo settings, auth, and secrets. *)
 
 open Melange_json.Primitives
+open Ppx_deriving_jsonschema_runtime.Primitives.Melange_json
 
 (** Vulnerability class for security analysis routing. *)
 type vuln_class =

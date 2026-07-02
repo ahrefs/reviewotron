@@ -6,6 +6,7 @@
     [ppx_deriving_jsonschema] — no manual JSON. *)
 
 open Melange_json.Primitives
+open Ppx_deriving_jsonschema_runtime.Primitives.Melange_json
 
 (** {2 get_file_content tool} *)
 

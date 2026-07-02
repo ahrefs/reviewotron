@@ -43,7 +43,7 @@
   (mirage-crypto-rng
    (< 2.1.0))
   (ppx_deriving_jsonschema
-   (>= 0.0.7))
+   (>= 0.0.8))
   ptime
   (ocamlformat
    (= 0.29.0))

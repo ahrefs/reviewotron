@@ -15,6 +15,7 @@
     ([description], [evidence_notes]). *)
 
 open Melange_json.Primitives
+open Ppx_deriving_jsonschema_runtime.Primitives.Melange_json
 
 (** {2 Re-exported enumerations} *)
 
