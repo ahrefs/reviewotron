@@ -283,6 +283,9 @@ let test_llm_provider_usage_metadata_combines_openrouter_costs () =
   (check int) "cache write" 11 usage.cache_write;
   (check (option (float 1e-9))) "total reported cost" (Some 0.52) usage.cost
 
+let test_openrouter_requires_supported_parameters () =
+  (check (option bool)) "require_parameters" (Some true) Llm_provider.anthropic_upstream_prefs.require_parameters
+
 let test_config_review_plugins_defaults () =
   let config = Config_types.config_of_json (Melange_json.of_string {|{}|}) in
   (check bool) "general enabled" true config.review_plugins.general.enabled;
@@ -6094,6 +6097,7 @@ let () =
           test_case "llm_provider normalize model id" `Quick test_llm_provider_normalize;
           test_case "model ids no regression" `Quick test_model_ids_no_regression;
           test_case "llm_provider usage metadata cost" `Quick test_llm_provider_usage_metadata_combines_openrouter_costs;
+          test_case "openrouter requires supported parameters" `Quick test_openrouter_requires_supported_parameters;
           test_case "review_plugins defaults" `Quick test_config_review_plugins_defaults;
           test_case "review_plugins explicit" `Quick test_config_review_plugins_explicit;
           test_case "context create requires repos by default" `Quick test_context_create_requires_repos_by_default;

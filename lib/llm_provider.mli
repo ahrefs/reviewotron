@@ -37,6 +37,12 @@ val thinking_options : t -> budget_tokens:int -> Ai_provider.Provider_options.t
 (** Cache-control marker for the cached input prefix. *)
 val cached_input_options : t -> Ai_provider.Provider_options.t
 
+(** OpenRouter provider routing preferences used by {!language_model}. Exposed
+    for tests and operational introspection: Reviewotron relies on structured
+    output, so OpenRouter must route only to providers that accept every
+    requested parameter. *)
+val anthropic_upstream_prefs : Ai_provider_openrouter.Openrouter_options.provider_prefs
+
 (** Usage read from a step's [provider_metadata]. Carries the cache token counts
     and, when the provider reports it, the actual billed USD [cost] for the
     generation. Costing policy lives in {!Cost_tracking}; this only carries the

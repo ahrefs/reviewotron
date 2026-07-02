@@ -67,7 +67,7 @@ let anthropic_upstream_prefs : Ai_provider_openrouter.Openrouter_options.provide
   {
     order = [ "anthropic" ];
     allow_fallbacks = Some false;
-    require_parameters = None;
+    require_parameters = Some true;
     data_collection = None;
     only = [ "anthropic" ];
     ignore_ = [];
