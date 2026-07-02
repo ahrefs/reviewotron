@@ -73,7 +73,7 @@ let run_pipeline ~ctx ~diff_text ~diff =
   let findings, _costs =
     Lwt_main.run
       (SP.run ~ctx ~repo_url:corpus_repo_url ~config ~diff ~diff_text ~metadata ~log_context:None
-         ~debug_dir:"debug/corpus")
+         ~debug_dir:"debug/corpus" ~memory_dir:"memory/corpus")
   in
   findings
 

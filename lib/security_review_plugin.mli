@@ -80,6 +80,7 @@ module Make (_ : Api.Agent_runner) : sig
     metadata:Review_plugin.review_metadata ->
     log_context:string option ->
     debug_dir:string ->
+    memory_dir:string ->
     (Review_types.finding list * Cost_tracking.agent_cost list) Lwt.t
 
   (** Convert a validated security finding into a review finding, choosing the

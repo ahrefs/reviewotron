@@ -507,7 +507,7 @@ Without `--state`, state is in-memory only and lost on restart. This means revie
 
 ### Security Memory Files
 
-The security pipeline maintains per-repo memory files at `memory/{repo-slug}.md`. These are plain-text markdown files (target ~5000 tokens) that accumulate knowledge about the repo:
+The security pipeline maintains per-repo memory files at `memory/{repo-slug}.md` in in-memory/local mode. In persistent server mode, memory lives beside feedback/debug data; for example, if feedback evidence is under `./var/reviewotron-feedback-evidence/`, memory files go under `./var/memory/{repo-slug}.md`. These are plain-text markdown files (target ~5000 tokens) that accumulate knowledge about the repo:
 
 - Architecture notes (frameworks, DB access patterns, auth middleware)
 - Known safe patterns (parameterized queries, auto-escaping templates)
@@ -516,7 +516,7 @@ The security pipeline maintains per-repo memory files at `memory/{repo-slug}.md`
 
 Memory is injected into every security agent's prompt, reducing redundant file fetching and pattern re-discovery across reviews.
 
-Updates go through a queue file (`memory/{repo-slug}.queue`) for distributed safety — multiple reviewotron instances can append to the queue, and the curator processes it serially.
+The memory curator rewrites the repo brief asynchronously after a review. If two reviews update the same brief concurrently, the last write wins; the brief is intentionally architectural rather than per-finding state.
 
 ### Debug Dumps
 

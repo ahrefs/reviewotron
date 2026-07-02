@@ -956,10 +956,9 @@ module Make (AI : Api.Agent_runner) = struct
       Lwt.return [ cost ]
 
   let run ~ctx ~repo_url ~(config : Config_types.config) ~diff ~diff_text ~(metadata : Review_plugin.review_metadata)
-    ~log_context ~debug_dir =
+    ~log_context ~debug_dir ~memory_dir =
     let log_prefix = log_context_prefix log_context in
     let security_config = config.review_plugins.security in
-    let memory_dir = "memory" in
     let security_memory = Security_memory.load ~log_context ~memory_dir ~repo_url in
     let file_paths = List.map (fun (fd : Diff_parser.file_diff) -> fd.path) diff in
     let artifacts =

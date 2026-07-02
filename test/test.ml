@@ -3504,6 +3504,17 @@ let test_debug_dir_with_feedback_store_uses_feedback_sibling () =
     let expected = Filename.concat (Filename.concat (Filename.dirname paths.evidence_root) "debug") "org-monorepo" in
     (check string) "feedback sibling debug dir" (Filename.concat expected "fb15a13a") dir)
 
+let test_memory_dir_without_feedback_store_uses_relative_memory () =
+  let ctx = Test_helpers.make_test_context () in
+  let dir = Engine_debug_test.memory_dir_for_context ~ctx in
+  (check string) "relative memory dir" "memory" dir
+
+let test_memory_dir_with_feedback_store_uses_feedback_sibling () =
+  with_temp_feedback_store_dir (fun _state_path paths store ->
+    let ctx = Test_helpers.make_test_context ~feedback_store:store () in
+    let dir = Engine_debug_test.memory_dir_for_context ~ctx in
+    (check string) "feedback sibling memory dir" (Filename.concat (Filename.dirname paths.evidence_root) "memory") dir)
+
 let test_review_job_log_context () =
   let context = Review_job.log_context (debug_dir_test_job ()) in
   (check string) "PR log context" "[org-monorepo/#1/fb15a13a]" context;
@@ -6406,6 +6417,9 @@ let () =
           test_case "debug dir defaults to relative debug" `Quick
             test_debug_dir_without_feedback_store_uses_relative_debug;
           test_case "debug dir uses feedback sibling" `Quick test_debug_dir_with_feedback_store_uses_feedback_sibling;
+          test_case "memory dir defaults to relative memory" `Quick
+            test_memory_dir_without_feedback_store_uses_relative_memory;
+          test_case "memory dir uses feedback sibling" `Quick test_memory_dir_with_feedback_store_uses_feedback_sibling;
           test_case "review job log context" `Quick test_review_job_log_context;
           test_case "marker and deterministic ids" `Quick test_feedback_marker_and_id_helpers;
           test_case "target roundtrip and privacy scan" `Quick test_feedback_target_roundtrip_and_privacy;

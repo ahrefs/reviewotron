@@ -41,8 +41,8 @@ type inline_finding = {
     The general plugin is handled separately because its summary becomes the
     review body; every other plugin only emits findings, and they are uniform.
     Adding a findings plugin is: implement its run function (a [Review_plugin.S]
-    plus [~debug_dir]), give it a config slice, and add one entry to the
-    [findings_plugins] list inside {!Make}. *)
+    plus the engine-managed data dirs), give it a config slice, and add one
+    entry to the [findings_plugins] list inside {!Make}. *)
 type findings_plugin = {
   fp_name : string;  (** Plugin name; used for cost attribution and logs. *)
   fp_source : finding_source;  (** How dedup treats this plugin's findings on a line collision. *)
@@ -56,6 +56,7 @@ type findings_plugin = {
     metadata:Review_plugin.review_metadata ->
     log_context:string option ->
     debug_dir:string ->
+    memory_dir:string ->
     (Review_types.finding list * Cost_tracking.agent_cost list) Lwt.t;
 }
 
@@ -346,6 +347,13 @@ module Make (AI : Api.Agent_runner) = struct
       Filename.concat (Filename.dirname paths.evidence_root) "debug"
     | None -> "debug"
 
+  let memory_dir_for_context ~ctx =
+    match Context.feedback_store ctx with
+    | Some store ->
+      let paths = Feedback_store.paths store in
+      Filename.concat (Filename.dirname paths.evidence_root) "memory"
+    | None -> "memory"
+
   let debug_dir_for_job ~ctx (job : Review_job.t) =
     let slug = Security_memory.repo_slug job.repo_key in
     let sha_prefix = String.sub job.head_sha 0 (min 8 (String.length job.head_sha)) in
@@ -366,11 +374,12 @@ module Make (AI : Api.Agent_runner) = struct
     let repo_url = job.Review_job.repo_key in
     let config = job.config in
     let diff = job.filtered_diff in
+    let memory_dir = memory_dir_for_context ~ctx in
     let metadata = metadata_of_job job in
     let plugins_config = config.Config_types.review_plugins in
-    log#info "%splugins starting: general=%b security=%b files=%d diff_bytes=%d debug_dir=%s" log_prefix
+    log#info "%splugins starting: general=%b security=%b files=%d diff_bytes=%d debug_dir=%s memory_dir=%s" log_prefix
       plugins_config.general.enabled plugins_config.security.enabled (List.length diff) (String.length job.diff_text)
-      debug_dir;
+      debug_dir memory_dir;
     let general_promise =
       if plugins_config.general.enabled then begin
         let%lwt result, costs =
@@ -391,7 +400,7 @@ module Make (AI : Api.Agent_runner) = struct
           (fun () ->
             let%lwt findings, costs =
               plugin.fp_run ~ctx ~repo_url ~config ~diff ~diff_text:job.diff_text ~metadata
-                ~log_context:(Some log_context) ~debug_dir
+                ~log_context:(Some log_context) ~debug_dir ~memory_dir
             in
             Lwt.return (plugin, findings, costs, false))
           (fun exn ->

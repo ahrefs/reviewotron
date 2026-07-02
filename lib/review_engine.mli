@@ -111,6 +111,11 @@ module Make (_ : Api.Agent_runner) : sig
       to [debug/] under the current working directory. *)
   val debug_dir_for_job : ctx:Context.t -> Review_job.t -> string
 
+  (** Build the repository-memory directory. In persistent server mode this
+      lives beside feedback/debug files; in in-memory/local mode it falls back
+      to [memory/] under the current working directory. *)
+  val memory_dir_for_context : ctx:Context.t -> string
+
   (** Run all enabled review plugins and collect findings and costs. *)
   val run_plugins : ctx:Context.t -> job:Review_job.t -> debug_dir:string -> plugin_result Lwt.t
 
