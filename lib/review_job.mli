@@ -65,6 +65,9 @@ type t = {
 (** Stable log context prefix for correlating concurrent review logs. *)
 val log_context : t -> string
 
+(** Stable log context prefix for a change before a full {!t} is available. *)
+val log_context_for : repo_key:string -> change_label:string -> head_sha:string -> string
+
 (** SHA-256 of the filtered diff text that is sent to review agents. *)
 val diff_sha256 : t -> string
 

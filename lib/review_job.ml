@@ -110,9 +110,10 @@ type t = {
   source_kind : source_kind;
 }
 
-let log_context job =
-  Printf.sprintf "[%s/%s/%s]" (repo_slug job.repo_key) (compact_change_label job.change_label)
-    (short_display_id job.head_sha)
+let log_context_for ~repo_key ~change_label ~head_sha =
+  Printf.sprintf "[%s/%s/%s]" (repo_slug repo_key) (compact_change_label change_label) (short_display_id head_sha)
+
+let log_context job = log_context_for ~repo_key:job.repo_key ~change_label:job.change_label ~head_sha:job.head_sha
 
 let diff_sha256 job = sha256_hex job.diff_text
 

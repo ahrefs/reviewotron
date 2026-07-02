@@ -2,6 +2,10 @@ open Devkit
 
 let log = Log.from "api_remote"
 
+let log_context_prefix = function
+  | None -> ""
+  | Some context -> context ^ " "
+
 (** {2 HTTP helpers — following monorobot's util.ml pattern} *)
 
 let repo_url_re = Re2.create_exn {|github\.com/([^/]+)/([^/]+)|}
@@ -55,7 +59,7 @@ let resolve_auth ~ctx ~repo_url =
 (* A non-HTTP failure local to request setup (auth, URL parsing). *)
 let local_error message : Http_util.error = Http_util.Local message
 
-let github_request ~ctx ~repo_url ~path ?(accept = "application/json") ?body meth =
+let github_request ~ctx ~repo_url ~path ?(accept = "application/json") ?body ?log_context meth =
   let%lwt auth = resolve_auth ~ctx ~repo_url in
   match auth with
   | Error msg -> Lwt.return (Error (local_error msg))
@@ -65,16 +69,18 @@ let github_request ~ctx ~repo_url ~path ?(accept = "application/json") ?body met
   | Some (owner, repo) ->
     let url = Printf.sprintf "https://api.github.com/repos/%s/%s%s" owner repo path in
     let headers = build_headers ~auth_header ~accept in
-    let label = Printf.sprintf "%s %s" (Web.string_of_http_action meth) url in
+    let label = Printf.sprintf "%s%s %s" (log_context_prefix log_context) (Web.string_of_http_action meth) url in
     Github_retry.with_retry ~label (fun () -> http_request ~headers ?body meth url)
     |> Lwt.map (Result.map_error (Http_util.query_error_msg url))
 
-let github_get ~ctx ~repo_url ~path ?accept () = github_request ~ctx ~repo_url ~path ?accept `GET
+let github_get ~ctx ~repo_url ~path ?accept ?log_context () =
+  github_request ~ctx ~repo_url ~path ?accept ?log_context `GET
 
-let github_post ~ctx ~repo_url ~path ?accept ~body () =
-  github_request ~ctx ~repo_url ~path ?accept ~body:(`Raw ("application/json; charset=utf-8", body)) `POST
+let github_post ~ctx ~repo_url ~path ?accept ?log_context ~body () =
+  github_request ~ctx ~repo_url ~path ?accept ?log_context ~body:(`Raw ("application/json; charset=utf-8", body)) `POST
 
-let github_delete ~ctx ~repo_url ~path ?accept () = github_request ~ctx ~repo_url ~path ?accept `DELETE
+let github_delete ~ctx ~repo_url ~path ?accept ?log_context () =
+  github_request ~ctx ~repo_url ~path ?accept ?log_context `DELETE
 
 (* Flatten a typed-error github result to the string-error result the
    [Api.Github] signature uses, mapping the response body with [f]. *)
@@ -156,9 +162,9 @@ module Github : Api.Github = struct
     let%lwt result = github_get ~ctx ~repo_url ~path () in
     Lwt.return (flatten_result parse_pr_files_json result)
 
-  let get_pr_diff ~ctx ~repo_url ~number =
+  let get_pr_diff ~ctx ~repo_url ~number ?log_context () =
     let path = Printf.sprintf "/pulls/%d" number in
-    github_get ~ctx ~repo_url ~path ~accept:"application/vnd.github.v3.diff" ()
+    github_get ~ctx ~repo_url ~path ~accept:"application/vnd.github.v3.diff" ?log_context ()
 
   let get_pull_request ~ctx ~repo_url ~number =
     let path = Printf.sprintf "/pulls/%d" number in
@@ -169,38 +175,39 @@ module Github : Api.Github = struct
     try Lwt.return (Ok (Github_types.pull_request_of_json (Melange_json.of_string body)))
     with exn -> Lwt.return (Error (Printf.sprintf "failed to parse pull_request response: %s" (Exn.str exn)))
 
-  let get_compare_diff ~ctx ~repo_url ~base ~head =
+  let get_compare_diff ~ctx ~repo_url ~base ~head ?log_context () =
     let path = Printf.sprintf "/compare/%s...%s" (Web.urlencode base) (Web.urlencode head) in
-    github_get ~ctx ~repo_url ~path ~accept:"application/vnd.github.v3.diff" ()
+    github_get ~ctx ~repo_url ~path ~accept:"application/vnd.github.v3.diff" ?log_context ()
 
-  let get_file_content ~ctx ~repo_url ~path:file_path ~ref_ =
+  let get_file_content ~ctx ~repo_url ~path:file_path ~ref_ ?log_context () =
+    let log_prefix = log_context_prefix log_context in
     let path = Printf.sprintf "/contents/%s?ref=%s" file_path (Web.urlencode ref_) in
-    let%lwt result = github_get ~ctx ~repo_url ~path ~accept:"application/vnd.github.v3.raw" () in
+    let%lwt result = github_get ~ctx ~repo_url ~path ~accept:"application/vnd.github.v3.raw" ?log_context () in
     match result with
     | Ok body -> Lwt.return (Ok (Some body))
     | Error e ->
-      log#warn "get_file_content failed for %s (ref %s): %s" file_path ref_ (Http_util.error_to_string e);
+      log#warn "%sget_file_content failed for %s (ref %s): %s" log_prefix file_path ref_ (Http_util.error_to_string e);
       Lwt.return (Ok None)
 
-  let create_pr_review ~ctx ~repo_url ~number review =
+  let create_pr_review ~ctx ~repo_url ~number ?log_context review =
     let path = Printf.sprintf "/pulls/%d/reviews" number in
     let body = Melange_json.to_string (Github_types.create_review_req_to_json review) in
-    let%lwt result = github_post ~ctx ~repo_url ~path ~accept:"application/vnd.github+json" ~body () in
+    let%lwt result = github_post ~ctx ~repo_url ~path ~accept:"application/vnd.github+json" ?log_context ~body () in
     Lwt.return
       (match result with
       | Error e -> Error (Http_util.error_to_string e)
       | Ok body -> parse_created_pr_review body)
 
-  let create_commit_comment ~ctx ~repo_url ~sha comment =
+  let create_commit_comment ~ctx ~repo_url ~sha ?log_context comment =
     let path = Printf.sprintf "/commits/%s/comments" sha in
     let body = Melange_json.to_string (Github_types.commit_comment_req_to_json comment) in
-    let%lwt result = github_post ~ctx ~repo_url ~path ~body () in
+    let%lwt result = github_post ~ctx ~repo_url ~path ?log_context ~body () in
     Lwt.return (ignore_body_result result)
 
-  let create_issue_comment ~ctx ~repo_url ~number comment =
+  let create_issue_comment ~ctx ~repo_url ~number ?log_context comment =
     let path = Printf.sprintf "/issues/%d/comments" number in
     let body = Melange_json.to_string (Github_types.issue_comment_req_to_json comment) in
-    let%lwt result = github_post ~ctx ~repo_url ~path ~body () in
+    let%lwt result = github_post ~ctx ~repo_url ~path ?log_context ~body () in
     Lwt.return (ignore_body_result result)
 
   let list_pr_review_comments ~ctx ~repo_url ~number ~review_id =
@@ -217,9 +224,9 @@ module Github : Api.Github = struct
         ~path:(paginated_path ~page_size:github_page_size ~page path)
         ~accept:"application/vnd.github+json" ())
 
-  let create_reaction ~ctx ~repo_url ~path ~content =
+  let create_reaction ~ctx ~repo_url ~path ~content ?log_context () =
     let body = Melange_json.to_string (Github_types.reaction_req_to_json { content }) in
-    let%lwt result = github_post ~ctx ~repo_url ~path ~body () in
+    let%lwt result = github_post ~ctx ~repo_url ~path ?log_context ~body () in
     match result with
     | Error e -> Lwt.return (Error (Http_util.error_to_string e))
     | Ok body ->
@@ -227,22 +234,22 @@ module Github : Api.Github = struct
     | reaction -> Lwt.return (Ok reaction.id)
     | exception exn -> Lwt.return (Error (Printf.sprintf "failed to parse reaction response: %s" (Exn.str exn)))
 
-  let create_issue_reaction ~ctx ~repo_url ~number ~content =
+  let create_issue_reaction ~ctx ~repo_url ~number ~content ?log_context () =
     let path = Printf.sprintf "/issues/%d/reactions" number in
-    create_reaction ~ctx ~repo_url ~path ~content
+    create_reaction ~ctx ~repo_url ~path ~content ?log_context ()
 
-  let create_issue_comment_reaction ~ctx ~repo_url ~comment_id ~content =
+  let create_issue_comment_reaction ~ctx ~repo_url ~comment_id ~content ?log_context () =
     let path = Printf.sprintf "/issues/comments/%d/reactions" comment_id in
-    create_reaction ~ctx ~repo_url ~path ~content
+    create_reaction ~ctx ~repo_url ~path ~content ?log_context ()
 
-  let delete_issue_reaction ~ctx ~repo_url ~number ~reaction_id =
+  let delete_issue_reaction ~ctx ~repo_url ~number ~reaction_id ?log_context () =
     let path = Printf.sprintf "/issues/%d/reactions/%d" number reaction_id in
-    let%lwt result = github_delete ~ctx ~repo_url ~path ~accept:"application/vnd.github+json" () in
+    let%lwt result = github_delete ~ctx ~repo_url ~path ~accept:"application/vnd.github+json" ?log_context () in
     Lwt.return (ignore_body_result result)
 
-  let delete_issue_comment_reaction ~ctx ~repo_url ~comment_id ~reaction_id =
+  let delete_issue_comment_reaction ~ctx ~repo_url ~comment_id ~reaction_id ?log_context () =
     let path = Printf.sprintf "/issues/comments/%d/reactions/%d" comment_id reaction_id in
-    let%lwt result = github_delete ~ctx ~repo_url ~path ~accept:"application/vnd.github+json" () in
+    let%lwt result = github_delete ~ctx ~repo_url ~path ~accept:"application/vnd.github+json" ?log_context () in
     Lwt.return (ignore_body_result result)
 end
 

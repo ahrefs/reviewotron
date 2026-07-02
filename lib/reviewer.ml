@@ -43,43 +43,60 @@ struct
   let finding_to_comment ~diff finding =
     Option.map Github_sink.review_comment_req_of_comment (Review_engine.finding_to_review_comment ~diff finding)
 
+  let log_context_prefix = function
+    | None -> ""
+    | Some context -> context ^ " "
+
+  let pr_notice_log_context ~repo_url ~number = function
+    | None -> None
+    | Some head_sha ->
+      Some (Review_job.log_context_for ~repo_key:repo_url ~change_label:(Printf.sprintf "PR #%d" number) ~head_sha)
+
+  let push_log_context (push : Github_types.commit_pushed_notification) =
+    Review_job.log_context_for ~repo_key:push.repository.url
+      ~change_label:(Printf.sprintf "push %s" (Review_job.short_display_id push.after))
+      ~head_sha:push.after
+
   (* {2 GitHub emoji reactions}
 
      The review pipeline drops an "eyes" reaction when work starts and clears it
      when work finishes. All reaction failures are logged and swallowed — a
      missing reaction must never abort or fail a review. *)
 
-  let create_reaction ~ctx ~repo_url target ~content =
+  let create_reaction ?log_context ~ctx ~repo_url target ~content =
     match target with
-    | Pull_request number -> RX.create_issue_reaction ~ctx ~repo_url ~number ~content
-    | Issue_comment comment_id -> RX.create_issue_comment_reaction ~ctx ~repo_url ~comment_id ~content
+    | Pull_request number -> RX.create_issue_reaction ~ctx ~repo_url ~number ~content ?log_context ()
+    | Issue_comment comment_id -> RX.create_issue_comment_reaction ~ctx ~repo_url ~comment_id ~content ?log_context ()
 
-  let start_progress_reaction ~ctx ~repo_url = function
+  let start_progress_reaction ?log_context ~ctx ~repo_url = function
     | None -> Lwt.return None
     | Some target ->
-      let%lwt result = create_reaction ~ctx ~repo_url target ~content:"eyes" in
+      let log_prefix = log_context_prefix log_context in
+      let%lwt result = create_reaction ?log_context ~ctx ~repo_url target ~content:"eyes" in
       (match result with
       | Ok reaction_id -> Lwt.return (Some { target; reaction_id })
       | Error msg ->
-        log#warn "failed to add review progress reaction: %s" msg;
+        log#warn "%sfailed to add review progress reaction: %s" log_prefix msg;
         Lwt.return None)
 
-  let remove_progress_reaction ~ctx ~repo_url = function
+  let remove_progress_reaction ?log_context ~ctx ~repo_url = function
     | None -> Lwt.return_unit
     | Some { target; reaction_id } ->
+      let log_prefix = log_context_prefix log_context in
       let%lwt result =
         match target with
-        | Pull_request number -> RX.delete_issue_reaction ~ctx ~repo_url ~number ~reaction_id
-        | Issue_comment comment_id -> RX.delete_issue_comment_reaction ~ctx ~repo_url ~comment_id ~reaction_id
+        | Pull_request number -> RX.delete_issue_reaction ~ctx ~repo_url ~number ~reaction_id ?log_context ()
+        | Issue_comment comment_id ->
+          RX.delete_issue_comment_reaction ~ctx ~repo_url ~comment_id ~reaction_id ?log_context ()
       in
       (match result with
       | Ok () -> Lwt.return_unit
       | Error msg ->
-        log#warn "failed to remove review progress reaction %d: %s" reaction_id msg;
+        log#warn "%sfailed to remove review progress reaction %d: %s" log_prefix reaction_id msg;
         Lwt.return_unit)
 
-  let publish_success_comment ~head_sha ~ctx ~repo_url ~number =
-    Sink.publish_success_comment ~head_sha ~ctx ~repo_url ~number
+  let publish_success_comment ~log_context ~head_sha ~ctx ~repo_url ~number =
+    Sink.publish_success_comment ~log_context ~head_sha ~ctx ~repo_url ~number
 
   (** A report is worth posting as a PR review when it surfaces any inline
       comment, any out-of-diff finding section, a security-plugin error, or a
@@ -130,8 +147,10 @@ struct
 
   let run_prepared_pr_review ?reaction_target ~ctx (prepared : Github_source.prepared_pr_review) =
     let Github_source.{ number; job } = prepared in
+    let log_context = Review_job.log_context job in
+    let log_prefix = log_context ^ " " in
     log_pr_review_identity ~number job;
-    let%lwt progress = start_progress_reaction ~ctx ~repo_url:job.repo_key reaction_target in
+    let%lwt progress = start_progress_reaction ~log_context ~ctx ~repo_url:job.repo_key reaction_target in
     (* The review pipeline can raise (network errors, SDK schema drift, etc.).
        Ensure the progress reaction is cleared even when the pipeline crashes —
        otherwise the "eyes" reaction is orphaned and the author has no signal
@@ -141,19 +160,21 @@ struct
       let%lwt () =
         match report_has_surface report with
         | false ->
-          let%lwt () = remove_progress_reaction ~ctx ~repo_url:job.repo_key progress in
+          let%lwt () = remove_progress_reaction ~log_context ~ctx ~repo_url:job.repo_key progress in
           let%lwt post_result =
-            publish_success_comment ~head_sha:(Some job.head_sha) ~ctx ~repo_url:job.repo_key ~number
+            publish_success_comment ~log_context:(Some log_context) ~head_sha:(Some job.head_sha) ~ctx
+              ~repo_url:job.repo_key ~number
           in
           (match post_result with
           | Ok () ->
             record_pr_reviewed ~ctx ~repo_url:job.repo_key ~number ~head_sha:job.head_sha
               ~review_costs:report.review_costs;
-            log#info "PR #%d (%s): review completed with no findings; not posting a PR review" number job.title
+            log#info "%sPR #%d (%s): review completed with no findings; not posting a PR review" log_prefix number
+              job.title
           | Error _ -> ());
           Lwt.return_unit
         | true ->
-          let%lwt () = remove_progress_reaction ~ctx ~repo_url:job.repo_key progress in
+          let%lwt () = remove_progress_reaction ~log_context ~ctx ~repo_url:job.repo_key progress in
           let%lwt post_result = Sink.publish_pr_review ~ctx ~job ~number report in
           (match post_result with
           | Ok () ->
@@ -162,7 +183,7 @@ struct
             Lwt.return_unit
           | Error msg ->
             let%lwt fallback_result =
-              Sink.publish_failure_comment ~ctx ~repo_url:job.repo_key ~number (Publish_failed msg)
+              Sink.publish_failure_comment ~log_context ~ctx ~repo_url:job.repo_key ~number (Publish_failed msg)
             in
             (match fallback_result with
             | Ok () ->
@@ -173,8 +194,8 @@ struct
       in
       Lwt.return_unit
     with exn ->
-      log#error "review pipeline for PR #%d raised: %s" number (Exn.str exn);
-      let%lwt () = remove_progress_reaction ~ctx ~repo_url:job.repo_key progress in
+      log#error "%sreview pipeline for PR #%d raised: %s" log_prefix number (Exn.str exn);
+      let%lwt () = remove_progress_reaction ~log_context ~ctx ~repo_url:job.repo_key progress in
       Lwt.fail exn
 
   (** Surface a PR-preparation failure to the author instead of silently
@@ -189,8 +210,9 @@ struct
       un-recorded so the next webhook retries. *)
   let handle_pr_prepare_error ~ctx ~repo_url ~number (pr_error : Github_source.pr_prepare_error) =
     let Github_source.{ error; head_sha } = pr_error in
+    let log_context = pr_notice_log_context ~repo_url ~number head_sha in
     let post_then_record_if_delivered failure =
-      let%lwt post_result = Sink.publish_failure_comment ~ctx ~repo_url ~number failure in
+      let%lwt post_result = Sink.publish_failure_comment ?log_context ~ctx ~repo_url ~number failure in
       record_pr_notice_if_delivered ~ctx ~repo_url ~number ~head_sha post_result;
       Lwt.return_unit
     in
@@ -198,7 +220,7 @@ struct
     | Empty ->
       (* Nothing to review after filtering — a successful no-op, not a failure.
          Signal "looked, all good" with a visible PR comment. *)
-      let%lwt post_result = publish_success_comment ~head_sha ~ctx ~repo_url ~number in
+      let%lwt post_result = publish_success_comment ~log_context ~head_sha ~ctx ~repo_url ~number in
       record_pr_notice_if_delivered ~ctx ~repo_url ~number ~head_sha post_result;
       Lwt.return_unit
     | Too_large total_lines ->
@@ -209,7 +231,7 @@ struct
       post_then_record_if_delivered (Too_many_files { actual = file_count; limit = config.max_files })
     | Fetch_failed fetch_error ->
       let failure = Review_failure.classify_fetch_error fetch_error in
-      let%lwt post_result = Sink.publish_failure_comment ~ctx ~repo_url ~number failure in
+      let%lwt post_result = Sink.publish_failure_comment ?log_context ~ctx ~repo_url ~number failure in
       (* A remote-too-large diff is a permanent property of this head SHA, so
          record it once the notice lands.  Any other fetch failure may be
          transient — never record it, so the review is retried. *)
@@ -272,6 +294,8 @@ struct
 
   let handle_push_prepare_error ~ctx ~(config : Config_types.config) (push : Github_types.commit_pushed_notification)
     (error : Github_source.prepare_error) =
+    let log_context = push_log_context push in
+    let log_prefix = log_context ^ " " in
     let record_terminal () =
       record_push_reviewed ~ctx ~repo_url:push.repository.url ~after_sha:push.after;
       Lwt.return_unit
@@ -282,7 +306,7 @@ struct
     in
     match error with
     | Empty ->
-      log#info "push %s completed with empty filtered diff; recording no-op review" push.after;
+      log#info "%spush %s completed with empty filtered diff; recording no-op review" log_prefix push.after;
       record_terminal ()
     | Too_large _ | Too_many_files _ ->
       let reason = prepare_error_reason ~config error in
@@ -317,7 +341,7 @@ struct
       let%lwt plugin_result = Engine.run_plugins ~ctx ~job ~debug_dir in
       let Review_engine.{ general_output; findings; review_costs; security_error; _ } = plugin_result in
       Cost_tracking.log_review_costs ~log_context review_costs;
-      let%lwt () = Sink.post_push_comments ~ctx ~repo_url:job.repo_key ~sha:job.head_sha findings in
+      let%lwt () = Sink.post_push_comments ~log_context ~ctx ~repo_url:job.repo_key ~sha:job.head_sha findings in
       let security_note = String.trim Review_engine.security_error_notice in
       let failure_attachment reason =
         log#error "%sreview failed for push %s: no review output produced" log_prefix push.after;

@@ -91,7 +91,7 @@ module Github : Api.Github = struct
      the real implementation returns (no HTTP status for a missing fixture). *)
   let mock_diff_result path = read_mock_file path |> Result.map_error (fun message -> Http_util.Local message)
 
-  let get_pr_diff ~ctx:_ ~repo_url:_ ~number =
+  let get_pr_diff ~ctx:_ ~repo_url:_ ~number ?log_context:_ () =
     match !next_pr_diff with
     | Some override ->
       next_pr_diff := None;
@@ -108,17 +108,17 @@ module Github : Api.Github = struct
     try Lwt.return (Ok (Github_types.pull_request_of_json (Melange_json.of_string body)))
     with exn -> Lwt.return (Error (Printf.sprintf "failed to parse mock pull_request: %s" (Exn.str exn)))
 
-  let get_compare_diff ~ctx:_ ~repo_url:_ ~base ~head =
+  let get_compare_diff ~ctx:_ ~repo_url:_ ~base ~head ?log_context:_ () =
     let path = Printf.sprintf "mock_api_responses/github/compare_%s_%s.diff" base head in
     Lwt.return (mock_diff_result path)
 
-  let get_file_content ~ctx:_ ~repo_url:_ ~path:file_path ~ref_ =
+  let get_file_content ~ctx:_ ~repo_url:_ ~path:file_path ~ref_ ?log_context:_ () =
     let path = Printf.sprintf "mock_api_responses/github/content_%s_%s" ref_ file_path in
     match read_mock_file path with
     | Ok body -> Lwt.return (Ok (Some body))
     | Error _ -> Lwt.return (Ok None)
 
-  let create_pr_review ~ctx:_ ~repo_url ~number review =
+  let create_pr_review ~ctx:_ ~repo_url ~number ?log_context:_ review =
     match !next_pr_review_result with
     | Some result ->
       next_pr_review_result := None;
@@ -133,14 +133,14 @@ module Github : Api.Github = struct
       Lwt.return
         (Ok { Github_types.id; html_url = Some (Printf.sprintf "%s/pull/%d#pullrequestreview-%d" repo_url number id) })
 
-  let create_commit_comment ~ctx:_ ~repo_url ~sha comment =
+  let create_commit_comment ~ctx:_ ~repo_url ~sha ?log_context:_ comment =
     let json = Melange_json.to_string (Github_types.commit_comment_req_to_json comment) in
     let entry = Printf.sprintf "[create_commit_comment] repo=%s sha=%s\n%s\n" repo_url sha json in
     Buffer.add_string write_log entry;
     log#info "%s" entry;
     Lwt.return (Ok ())
 
-  let create_issue_comment ~ctx:_ ~repo_url ~number comment =
+  let create_issue_comment ~ctx:_ ~repo_url ~number ?log_context:_ comment =
     match !next_issue_comment_result with
     | Some result ->
       next_issue_comment_result := None;
@@ -168,7 +168,7 @@ module Github : Api.Github = struct
     | Some result -> Lwt.return result
     | None -> Lwt.return (Ok [])
 
-  let create_issue_reaction ~ctx:_ ~repo_url ~number ~content =
+  let create_issue_reaction ~ctx:_ ~repo_url ~number ~content ?log_context:_ () =
     let reaction_id = !next_reaction_id in
     next_reaction_id := reaction_id + 1;
     let entry =
@@ -178,7 +178,7 @@ module Github : Api.Github = struct
     log#info "%s" entry;
     Lwt.return (Ok reaction_id)
 
-  let create_issue_comment_reaction ~ctx:_ ~repo_url ~comment_id ~content =
+  let create_issue_comment_reaction ~ctx:_ ~repo_url ~comment_id ~content ?log_context:_ () =
     let reaction_id = !next_reaction_id in
     next_reaction_id := reaction_id + 1;
     let entry =
@@ -189,13 +189,13 @@ module Github : Api.Github = struct
     log#info "%s" entry;
     Lwt.return (Ok reaction_id)
 
-  let delete_issue_reaction ~ctx:_ ~repo_url ~number ~reaction_id =
+  let delete_issue_reaction ~ctx:_ ~repo_url ~number ~reaction_id ?log_context:_ () =
     let entry = Printf.sprintf "[delete_issue_reaction] repo=%s number=%d id=%d\n" repo_url number reaction_id in
     Buffer.add_string write_log entry;
     log#info "%s" entry;
     Lwt.return (Ok ())
 
-  let delete_issue_comment_reaction ~ctx:_ ~repo_url ~comment_id ~reaction_id =
+  let delete_issue_comment_reaction ~ctx:_ ~repo_url ~comment_id ~reaction_id ?log_context:_ () =
     let entry =
       Printf.sprintf "[delete_issue_comment_reaction] repo=%s comment_id=%d id=%d\n" repo_url comment_id reaction_id
     in

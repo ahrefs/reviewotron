@@ -2863,15 +2863,15 @@ module Config_mutating_source = struct
   let get_config = Api_local.Github.get_config
   let get_pr_files = Api_local.Github.get_pr_files
 
-  let get_pr_diff ~ctx ~repo_url ~number =
+  let get_pr_diff ~ctx ~repo_url ~number ?log_context () =
     replace_config ctx repo_url;
-    Api_local.Github.get_pr_diff ~ctx ~repo_url ~number
+    Api_local.Github.get_pr_diff ~ctx ~repo_url ~number ?log_context ()
 
   let get_pull_request = Api_local.Github.get_pull_request
 
-  let get_compare_diff ~ctx ~repo_url ~base ~head =
+  let get_compare_diff ~ctx ~repo_url ~base ~head ?log_context () =
     replace_config ctx repo_url;
-    Api_local.Github.get_compare_diff ~ctx ~repo_url ~base ~head
+    Api_local.Github.get_compare_diff ~ctx ~repo_url ~base ~head ?log_context ()
 
   let get_file_content = Api_local.Github.get_file_content
 end

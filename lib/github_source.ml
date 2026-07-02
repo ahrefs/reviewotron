@@ -2,6 +2,10 @@ open Devkit
 
 let log = Log.from "github_source"
 
+let log_context_prefix = function
+  | None -> ""
+  | Some context -> context ^ " "
+
 type prepare_error =
   | Fetch_failed of Http_util.error
   | Empty
@@ -105,17 +109,19 @@ module Make (SRC : Api.Github_review_source) = struct
      prompt would fail JSON serialization or bloat the request. A dropped file
      becomes [Ok None], which both callers already treat as "unavailable", so
      the review proceeds on the diff and the remaining text files. *)
-  let fetch_text_file ~ctx ~repo_url ~ref_ ~path =
-    match%lwt SRC.get_file_content ~ctx ~repo_url ~path ~ref_ with
+  let fetch_text_file ~log_context ~ctx ~repo_url ~ref_ ~path =
+    let log_prefix = log_context_prefix log_context in
+    match%lwt SRC.get_file_content ~ctx ~repo_url ~path ~ref_ ?log_context () with
     | (Ok None | Error _) as result -> Lwt.return result
     | Ok (Some content) ->
     match Review_job.is_embeddable content with
     | true -> Lwt.return (Ok (Some content))
     | false ->
-      log#warn "skipping %s: not embeddable (binary or too large)" path;
+      log#warn "%sskipping %s: not embeddable (binary or too large)" log_prefix path;
       Lwt.return (Ok None)
 
-  let fetch_key_files ~ctx ~repo_url ~diff ~ref_ =
+  let fetch_key_files ~log_context ~ctx ~repo_url ~diff ~ref_ =
+    let log_prefix = log_context_prefix log_context in
     let paths =
       diff
       |> List.filter (fun (fd : Diff_parser.file_diff) ->
@@ -129,16 +135,17 @@ module Make (SRC : Api.Github_review_source) = struct
     let paths = CCList.take 5 paths in
     Lwt_list.filter_map_p
       (fun path ->
-        let%lwt result = fetch_text_file ~ctx ~repo_url ~path ~ref_ in
+        let%lwt result = fetch_text_file ~log_context ~ctx ~repo_url ~path ~ref_ in
         match result with
         | Ok (Some content) -> Lwt.return (Some (path, content))
         | Ok None -> Lwt.return None
         | Error msg ->
-          log#warn "failed to fetch %s: %s" path msg;
+          log#warn "%sfailed to fetch %s: %s" log_prefix path msg;
           Lwt.return None)
       paths
 
-  let fetch_file_at_ref ~ctx ~repo_url ~ref_ ~path = fetch_text_file ~ctx ~repo_url ~ref_ ~path
+  let fetch_file_at_ref ~log_context ~ctx ~repo_url ~ref_ ~path =
+    fetch_text_file ~log_context ~ctx ~repo_url ~ref_ ~path
 
   let prepare_diff ~config diff_text =
     match Review_engine.prepare_diff ~config diff_text with
@@ -152,36 +159,41 @@ module Make (SRC : Api.Github_review_source) = struct
     let repo_url = pr_notif.repository.url in
     let number = pr_notif.number in
     let pr = pr_notif.pull_request in
+    let change_label = Printf.sprintf "PR #%d" number in
+    let log_context = Review_job.log_context_for ~repo_key:repo_url ~change_label ~head_sha:pr.head.sha in
+    let log_prefix = log_context_prefix (Some log_context) in
     let error error = Error { error; head_sha = Some pr.head.sha } in
-    log#info "reviewing PR #%d in %s" number pr_notif.repository.full_name;
-    let%lwt diff_result = SRC.get_pr_diff ~ctx ~repo_url ~number in
+    log#info "%sreviewing PR #%d in %s" log_prefix number pr_notif.repository.full_name;
+    let%lwt diff_result = SRC.get_pr_diff ~ctx ~repo_url ~number ~log_context () in
     match diff_result with
     | Error fetch_error ->
-      log#error "failed to fetch diff for PR #%d: %s" number (Http_util.error_to_string fetch_error);
+      log#error "%sfailed to fetch diff for PR #%d: %s" log_prefix number (Http_util.error_to_string fetch_error);
       Lwt.return (error (Fetch_failed fetch_error))
     | Ok diff_text ->
     match prepare_diff ~config diff_text with
     | Error Empty ->
-      log#info "PR #%d: all files filtered out, nothing to review" number;
+      log#info "%sPR #%d: all files filtered out, nothing to review" log_prefix number;
       Lwt.return (error Empty)
     | Error (Too_large total_lines) ->
-      log#info "PR #%d skipped: %d diff lines exceeds limit of %d" number total_lines config.max_diff_lines;
+      log#info "%sPR #%d skipped: %d diff lines exceeds limit of %d" log_prefix number total_lines config.max_diff_lines;
       Lwt.return (error (Too_large total_lines))
     | Error (Too_many_files file_count) ->
-      log#info "PR #%d skipped: %d files exceeds limit of %d" number file_count config.max_files;
+      log#info "%sPR #%d skipped: %d files exceeds limit of %d" log_prefix number file_count config.max_files;
       Lwt.return (error (Too_many_files file_count))
     | Error (Fetch_failed _ as e) -> Lwt.return (error e)
     | Ok (filtered_diff, filtered_text) ->
       let head_sha = pr.head.sha in
-      let%lwt file_contents = fetch_key_files ~ctx ~repo_url ~diff:filtered_diff ~ref_:head_sha in
+      let%lwt file_contents =
+        fetch_key_files ~log_context:(Some log_context) ~ctx ~repo_url ~diff:filtered_diff ~ref_:head_sha
+      in
       let description = CCOption.get_or ~default:"" pr.body in
-      let fetch_file = fetch_file_at_ref ~ctx ~repo_url ~ref_:head_sha in
+      let fetch_file = fetch_file_at_ref ~log_context:(Some log_context) ~ctx ~repo_url ~ref_:head_sha in
       let job =
         Review_job.
           {
             repo_key = repo_url;
             change_key = Printf.sprintf "pr/%d/%s" number head_sha;
-            change_label = Printf.sprintf "PR #%d" number;
+            change_label;
             title = pr.title;
             description;
             head_sha;
@@ -225,23 +237,27 @@ module Make (SRC : Api.Github_review_source) = struct
 
   let prepare_push_review ~ctx ~(config : Config_types.config) (push : Github_types.commit_pushed_notification) =
     let repo_url = push.repository.url in
-    log#info "reviewing push to %s in %s" push.ref_ push.repository.full_name;
-    let%lwt diff_result = SRC.get_compare_diff ~ctx ~repo_url ~base:push.before ~head:push.after in
+    let change_label = Printf.sprintf "push %s" (Review_job.short_display_id push.after) in
+    let log_context = Review_job.log_context_for ~repo_key:repo_url ~change_label ~head_sha:push.after in
+    let log_prefix = log_context_prefix (Some log_context) in
+    log#info "%sreviewing push to %s in %s" log_prefix push.ref_ push.repository.full_name;
+    let%lwt diff_result = SRC.get_compare_diff ~ctx ~repo_url ~base:push.before ~head:push.after ~log_context () in
     match diff_result with
     | Error fetch_error ->
-      log#error "failed to fetch compare diff for push %s...%s: %s" push.before push.after
+      log#error "%sfailed to fetch compare diff for push %s...%s: %s" log_prefix push.before push.after
         (Http_util.error_to_string fetch_error);
       Lwt.return (Error (Fetch_failed fetch_error))
     | Ok diff_text ->
     match prepare_diff ~config diff_text with
     | Error Empty ->
-      log#info "push %s skipped: all files ignored" push.after;
+      log#info "%spush %s skipped: all files ignored" log_prefix push.after;
       Lwt.return (Error Empty)
     | Error (Too_large total_lines) ->
-      log#info "push %s skipped: %d diff lines exceeds limit of %d" push.after total_lines config.max_diff_lines;
+      log#info "%spush %s skipped: %d diff lines exceeds limit of %d" log_prefix push.after total_lines
+        config.max_diff_lines;
       Lwt.return (Error (Too_large total_lines))
     | Error (Too_many_files file_count) ->
-      log#info "push %s skipped: %d files exceeds limit of %d" push.after file_count config.max_files;
+      log#info "%spush %s skipped: %d files exceeds limit of %d" log_prefix push.after file_count config.max_files;
       Lwt.return (Error (Too_many_files file_count))
     | Error (Fetch_failed _ as e) -> Lwt.return (Error e)
     | Ok (filtered_diff, filtered_text) ->
@@ -251,13 +267,13 @@ module Make (SRC : Api.Github_review_source) = struct
         |> String.concat "\n"
       in
       let title = Printf.sprintf "Push to %s" push.ref_ in
-      let fetch_file = fetch_file_at_ref ~ctx ~repo_url ~ref_:push.after in
+      let fetch_file = fetch_file_at_ref ~log_context:(Some log_context) ~ctx ~repo_url ~ref_:push.after in
       let job =
         Review_job.
           {
             repo_key = repo_url;
             change_key = push.after;
-            change_label = Printf.sprintf "push %s" (Review_job.short_display_id push.after);
+            change_label;
             title;
             description;
             head_sha = push.after;

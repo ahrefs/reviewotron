@@ -2,6 +2,10 @@ open Devkit
 
 let log = Log.from "github_sink"
 
+let log_context_prefix = function
+  | None -> ""
+  | Some context -> context ^ " "
+
 let github_side_of_review_comment = function
   | Review_comment.Left -> Github_types.Left
   | Review_comment.Right -> Github_types.Right
@@ -85,34 +89,39 @@ let prepare_feedback_targets ~repo_url ~number ~head_sha ~created_at ~evidence_r
 
 module Make (SNK : Api.Github_review_sink) = struct
   let write_feedback_evidence ~evidence_root ~review_batch_id ~created_at ~repo_url ~number ~head_sha ~review_id
-    ~review_body ~job ~report ~posted_comments =
+    ~review_body ~job ~report ~posted_comments ~log_context =
+    let log_prefix = log_context_prefix log_context in
     Lwt.catch
       (fun () ->
         let dir =
           Feedback_evidence.write_bundle ~evidence_root ~review_batch_id ~created_at ~repo_url ~pr_number:number
             ~head_sha ~review_id ~review_body ~job ~report ~posted_comments
         in
-        log#info "wrote feedback evidence for PR #%d review_batch_id=%s dir=%s" number review_batch_id dir;
+        log#info "%swrote feedback evidence for PR #%d review_batch_id=%s dir=%s" log_prefix number review_batch_id dir;
         Lwt.return_unit)
       (fun exn ->
-        log#error "failed to write feedback evidence for PR #%d: %s" number (Exn.str exn);
+        log#error "%sfailed to write feedback evidence for PR #%d: %s" log_prefix number (Exn.str exn);
         Lwt.return_unit)
 
-  let record_feedback_targets store ~repo_url ~number ~head_sha ~review_id ~review_batch_id ~created_at inputs =
+  let record_feedback_targets store ~repo_url ~number ~head_sha ~review_id ~review_batch_id ~created_at ~log_context
+    inputs =
+    let log_prefix = log_context_prefix log_context in
     Lwt.catch
       (fun () ->
         let%lwt () =
           Feedback_store.record_posted_pr_review_targets store ~repo_url ~pr_number:number ~head_sha ~review_id
             ~review_batch_id ~created_at inputs
         in
-        log#info "recorded %d feedback targets for PR #%d review_batch_id=%s" (List.length inputs) number
+        log#info "%srecorded %d feedback targets for PR #%d review_batch_id=%s" log_prefix (List.length inputs) number
           review_batch_id;
         Lwt.return_unit)
       (fun exn ->
-        log#error "failed to record feedback targets for PR #%d: %s" number (Exn.str exn);
+        log#error "%sfailed to record feedback targets for PR #%d: %s" log_prefix number (Exn.str exn);
         Lwt.return_unit)
 
   let publish_pr_review ~ctx ~(job : Review_job.t) ~number (report : Review_engine.report) =
+    let log_context = Some (Review_job.log_context job) in
+    let log_prefix = log_context_prefix log_context in
     let feedback_store = Context.feedback_store ctx in
     let created_at = Ptime_clock.now () in
     let feedback_plan =
@@ -135,7 +144,9 @@ module Make (SNK : Api.Github_review_sink) = struct
     let comments = List.map review_comment_req_of_comment review_comments in
     let body = with_reviewed_commit ~head_sha:job.head_sha report.body in
     let review_req = Github_types.{ commit_id = Some job.head_sha; body; event = Comment; comments } in
-    let%lwt post_result = SNK.create_pr_review ~ctx ~repo_url:job.repo_key ~number review_req in
+    let%lwt post_result =
+      SNK.create_pr_review ~ctx ~repo_url:job.repo_key ~number ~log_context:(Review_job.log_context job) review_req
+    in
     match post_result with
     | Ok created_review ->
       let%lwt () =
@@ -144,48 +155,51 @@ module Make (SNK : Api.Github_review_sink) = struct
           let%lwt () =
             write_feedback_evidence ~evidence_root ~review_batch_id ~created_at ~repo_url:job.repo_key ~number
               ~head_sha:job.head_sha ~review_id:created_review.id ~review_body:body ~job ~report
-              ~posted_comments:evidence_comments
+              ~posted_comments:evidence_comments ~log_context
           in
           record_feedback_targets store ~repo_url:job.repo_key ~number ~head_sha:job.head_sha
-            ~review_id:created_review.id ~review_batch_id ~created_at inputs
+            ~review_id:created_review.id ~review_batch_id ~created_at ~log_context inputs
         | None -> Lwt.return_unit
       in
-      log#info "posted review for PR #%d (%s): %d inline comments" number job.title (List.length comments);
+      log#info "%sposted review for PR #%d (%s): %d inline comments" log_prefix number job.title (List.length comments);
       Lwt.return (Ok ())
     | Error msg ->
-      log#error "failed to post review for PR #%d: %s" number msg;
+      log#error "%sfailed to post review for PR #%d: %s" log_prefix number msg;
       Lwt.return (Error msg)
 
   (** Post an issue comment explaining why a review could not be produced.
       Returns the post result so the caller can decide whether to record the PR
       as reviewed (only a successfully delivered notice should suppress retries). *)
-  let publish_failure_comment ~ctx ~repo_url ~number failure =
+  let publish_failure_comment ?log_context ~ctx ~repo_url ~number failure =
+    let log_prefix = log_context_prefix log_context in
     let body = Review_failure.to_comment failure in
-    let%lwt result = SNK.create_issue_comment ~ctx ~repo_url ~number { body } in
+    let%lwt result = SNK.create_issue_comment ~ctx ~repo_url ~number ?log_context { body } in
     match result with
     | Ok () ->
-      log#info "posted review-failure comment on PR #%d" number;
+      log#info "%sposted review-failure comment on PR #%d" log_prefix number;
       Lwt.return (Ok ())
     | Error msg ->
-      log#error "failed to post review-failure comment on PR #%d: %s" number msg;
+      log#error "%sfailed to post review-failure comment on PR #%d: %s" log_prefix number msg;
       Lwt.return (Error msg)
 
-  let publish_success_comment ~head_sha ~ctx ~repo_url ~number =
+  let publish_success_comment ~log_context ~head_sha ~ctx ~repo_url ~number =
+    let log_prefix = log_context_prefix log_context in
     let body =
       match head_sha with
       | None -> "LGTM :+1:"
       | Some head_sha -> with_reviewed_commit ~head_sha "LGTM :+1:"
     in
-    let%lwt result = SNK.create_issue_comment ~ctx ~repo_url ~number { body } in
+    let%lwt result = SNK.create_issue_comment ~ctx ~repo_url ~number ?log_context { body } in
     match result with
     | Ok () ->
-      log#info "posted quiet-success comment on PR #%d" number;
+      log#info "%sposted quiet-success comment on PR #%d" log_prefix number;
       Lwt.return (Ok ())
     | Error msg ->
-      log#error "failed to post quiet-success comment on PR #%d: %s" number msg;
+      log#error "%sfailed to post quiet-success comment on PR #%d: %s" log_prefix number msg;
       Lwt.return (Error msg)
 
-  let post_push_comments ~ctx ~repo_url ~sha findings =
+  let post_push_comments ?log_context ~ctx ~repo_url ~sha findings =
+    let log_prefix = log_context_prefix log_context in
     Lwt_list.iter_s
       (fun (finding : Review_types.finding) ->
         match finding.severity with
@@ -198,10 +212,10 @@ module Make (SNK : Api.Github_review_sink) = struct
               line = Some finding.line;
             }
           in
-          let%lwt result = SNK.create_commit_comment ~ctx ~repo_url ~sha comment in
+          let%lwt result = SNK.create_commit_comment ~ctx ~repo_url ~sha ?log_context comment in
           (match result with
           | Ok () -> ()
-          | Error msg -> log#error "failed to post commit comment on %s: %s" sha msg);
+          | Error msg -> log#error "%sfailed to post commit comment on %s: %s" log_prefix sha msg);
           Lwt.return_unit
         | Suggestion | Nitpick | Praise | Other _ -> Lwt.return_unit)
       findings
