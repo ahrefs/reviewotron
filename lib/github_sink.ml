@@ -32,6 +32,9 @@ let next_nonce () =
 let with_reviewed_commit ~head_sha body =
   Printf.sprintf "%s\n\n**Reviewed commit:** `%s`" body (Review_job.short_display_id head_sha)
 
+let with_feedback_prompt (comment : Review_comment.t) =
+  { comment with body = Review_format.with_feedback_prompt comment.body }
+
 let with_feedback_marker ~feedback_id (comment : Review_comment.t) =
   { comment with body = Feedback_store.append_marker ~feedback_id comment.body }
 
@@ -43,7 +46,7 @@ let prepare_feedback_targets ~repo_url ~number ~head_sha ~created_at ~evidence_r
   let marked =
     report.Review_engine.inline_findings
     |> List.mapi (fun index (inline : Review_engine.inline_finding) ->
-      let comment = inline.comment in
+      let comment = with_feedback_prompt inline.comment in
       let finding = inline.sourced.finding in
       let feedback_id =
         Feedback_store.make_feedback_id ~review_batch_id ~index ~path:comment.path ~line:comment.line
@@ -104,20 +107,31 @@ module Make (SNK : Api.Github_review_sink) = struct
         Lwt.return_unit)
 
   let record_feedback_targets store ~repo_url ~number ~head_sha ~review_id ~review_batch_id ~created_at ~log_context
-    inputs =
+    ?review_body_target inputs =
     let log_prefix = log_context_prefix log_context in
     Lwt.catch
       (fun () ->
+        let target_count =
+          List.length inputs
+          +
+          match review_body_target with
+          | Some _ -> 1
+          | None -> 0
+        in
         let%lwt () =
           Feedback_store.record_posted_pr_review_targets store ~repo_url ~pr_number:number ~head_sha ~review_id
-            ~review_batch_id ~created_at inputs
+            ~review_batch_id ~created_at ?review_body_target inputs
         in
-        log#info "%srecorded %d feedback targets for PR #%d review_batch_id=%s" log_prefix (List.length inputs) number
+        log#info "%srecorded %d feedback targets for PR #%d review_batch_id=%s" log_prefix target_count number
           review_batch_id;
         Lwt.return_unit)
       (fun exn ->
         log#error "%sfailed to record feedback targets for PR #%d: %s" log_prefix number (Exn.str exn);
         Lwt.return_unit)
+
+  let make_review_body_target ~review_batch_id ~review_node_id ~review_body ~evidence_dir =
+    let feedback_id = Feedback_store.make_review_body_feedback_id ~review_batch_id ~review_node_id ~review_body in
+    Feedback_store.{ feedback_id; review_node_id; review_body; evidence_dir = Some evidence_dir }
 
   let publish_pr_review ~ctx ~(job : Review_job.t) ~number (report : Review_engine.report) =
     let log_context = Some (Review_job.log_context job) in
@@ -125,24 +139,24 @@ module Make (SNK : Api.Github_review_sink) = struct
     let feedback_store = Context.feedback_store ctx in
     let created_at = Ptime_clock.now () in
     let feedback_plan =
-      match feedback_store, report.inline_findings with
-      | Some store, _ :: _ ->
+      match feedback_store with
+      | Some store ->
         let paths = Feedback_store.paths store in
         let review_batch_id, evidence_dir, comments, inputs, evidence_comments =
           prepare_feedback_targets ~repo_url:job.repo_key ~number ~head_sha:job.head_sha ~created_at
             ~evidence_root:paths.evidence_root report
         in
         Some (store, paths.evidence_root, review_batch_id, evidence_dir, comments, inputs, evidence_comments)
-      | Some _, [] | None, _ -> None
+      | None -> None
     in
     let review_comments =
       match feedback_plan with
       | Some (_store, _evidence_root, _review_batch_id, _evidence_dir, comments, _inputs, _evidence_comments) ->
         comments
-      | None -> report.comments
+      | None -> List.map with_feedback_prompt report.comments
     in
     let comments = List.map review_comment_req_of_comment review_comments in
-    let body = with_reviewed_commit ~head_sha:job.head_sha report.body in
+    let body = report.body |> with_reviewed_commit ~head_sha:job.head_sha |> Review_format.with_feedback_prompt in
     let review_req = Github_types.{ commit_id = Some job.head_sha; body; event = Comment; comments } in
     let%lwt post_result =
       SNK.create_pr_review ~ctx ~repo_url:job.repo_key ~number ~log_context:(Review_job.log_context job) review_req
@@ -151,14 +165,24 @@ module Make (SNK : Api.Github_review_sink) = struct
     | Ok created_review ->
       let%lwt () =
         match feedback_plan with
-        | Some (store, evidence_root, review_batch_id, _evidence_dir, _comments, inputs, evidence_comments) ->
+        | Some (store, evidence_root, review_batch_id, evidence_dir, _comments, inputs, evidence_comments) ->
+          let review_body_target =
+            match created_review.Github_types.node_id with
+            | Some review_node_id ->
+              Some (make_review_body_target ~review_batch_id ~review_node_id ~review_body:body ~evidence_dir)
+            | None ->
+              log#warn
+                "%sGitHub create_pr_review response for PR #%d omitted node_id; skipping review-body feedback target"
+                log_prefix number;
+              None
+          in
           let%lwt () =
             write_feedback_evidence ~evidence_root ~review_batch_id ~created_at ~repo_url:job.repo_key ~number
               ~head_sha:job.head_sha ~review_id:created_review.id ~review_body:body ~job ~report
               ~posted_comments:evidence_comments ~log_context
           in
           record_feedback_targets store ~repo_url:job.repo_key ~number ~head_sha:job.head_sha
-            ~review_id:created_review.id ~review_batch_id ~created_at ~log_context inputs
+            ~review_id:created_review.id ~review_batch_id ~created_at ~log_context ?review_body_target inputs
         | None -> Lwt.return_unit
       in
       log#info "%sposted review for PR #%d (%s): %d inline comments" log_prefix number job.title (List.length comments);

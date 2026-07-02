@@ -40,7 +40,7 @@ module Make (FB : Api.Github_feedback) = struct
         log#warn "failed to resolve feedback target %s comment_id: %s" target.feedback_id msg;
         Lwt.return None)
 
-  let collect_target ~ctx ~store ~now target =
+  let collect_inline_target ~ctx ~store ~now (target : Feedback_store.target) =
     Lwt.catch
       (fun () ->
         let%lwt comment_id = resolve_comment_id ~ctx ~store ~now target in
@@ -66,6 +66,38 @@ module Make (FB : Api.Github_feedback) = struct
       (fun exn ->
         log#error "feedback target %s collection raised: %s" target.feedback_id (Exn.str exn);
         Lwt.return_unit)
+
+  let collect_body_target ~ctx ~store ~now (target : Feedback_store.target) =
+    Lwt.catch
+      (fun () ->
+        match target.Feedback_store.review_node_id with
+        | None ->
+          log#warn "feedback body target %s is missing review_node_id" target.feedback_id;
+          Feedback_store.mark_missing store ~now ~feedback_id:target.feedback_id
+        | Some review_node_id ->
+          let%lwt result = FB.get_pr_review_reaction_counts ~ctx ~repo_url:target.repo_url ~review_node_id in
+          (match result with
+          | Ok (Some counts) ->
+            let counts = Feedback_store.counts_of_github_counts counts in
+            log#info "feedback collection: body target %s review_node_id=%s counts +1=%d -1=%d" target.feedback_id
+              review_node_id counts.plus_one counts.minus_one;
+            Feedback_store.update_after_poll store ~now ~feedback_id:target.feedback_id ~counts
+          | Ok None ->
+            log#warn "feedback body target %s review_node_id=%s returned no GraphQL node" target.feedback_id
+              review_node_id;
+            Feedback_store.mark_missing store ~now ~feedback_id:target.feedback_id
+          | Error msg ->
+            log#warn "failed to collect review body reactions for feedback target %s review_node_id=%s: %s"
+              target.feedback_id review_node_id msg;
+            Lwt.return_unit))
+      (fun exn ->
+        log#error "feedback body target %s collection raised: %s" target.feedback_id (Exn.str exn);
+        Lwt.return_unit)
+
+  let collect_target ~ctx ~store ~now (target : Feedback_store.target) =
+    match target.Feedback_store.target_kind with
+    | Feedback_store.Pr_review_comment -> collect_inline_target ~ctx ~store ~now target
+    | Feedback_store.Pr_review_body -> collect_body_target ~ctx ~store ~now target
 
   let collect ?poll_interval_seconds ~ctx ~store ~now () =
     let%lwt targets = Feedback_store.pollable_targets ?poll_interval_seconds store ~now in

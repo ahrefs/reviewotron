@@ -29,7 +29,9 @@ type stop_reason =
   | Comment_missing
   | Api_error
 
-type target_kind = Pr_review_comment
+type target_kind =
+  | Pr_review_comment
+  | Pr_review_body
 
 type target = {
   feedback_id : string;
@@ -42,19 +44,21 @@ type target = {
   target_kind : target_kind;
   review_id : int;
   comment_id : int option;
+  review_node_id : string option;
   created_at : string;
   poll_until : string;
   first_user_interaction_at : string option;
   last_polled_at : string option;
   final_polled_at : string option;
-  path : string;
-  line : int;
+  path : string option;
+  line : int option;
   start_line : int option;
-  severity : string;
-  category : string;
-  confidence : string;
-  finding : Yojson.Basic.t;
-  comment_body_sha256 : string;
+  severity : string option;
+  category : string option;
+  confidence : string option;
+  finding : Yojson.Basic.t option;
+  comment_body_sha256 : string option;
+  review_body_sha256 : string option;
   evidence_dir : string option;
   finding_id : string option;
   finding_source : string option;
@@ -80,6 +84,13 @@ type target_input = {
   plugin_name : string option;
 }
 
+type review_body_target_input = {
+  feedback_id : string;
+  review_node_id : string;
+  review_body : string;
+  evidence_dir : string option;
+}
+
 val derive_paths : ?feedback_dir:string -> state_filepath:string -> unit -> paths
 val create : ?feedback_dir:string -> state_filepath:string -> unit -> t
 val paths : t -> paths
@@ -91,16 +102,20 @@ val add_seconds : Ptime.t -> int -> Ptime.t
 
 val target_status_to_string : target_status -> string
 val stop_reason_to_string : stop_reason -> string
+val target_kind_to_string : target_kind -> string
 val target_to_json : target -> Yojson.Basic.t
 val file_to_json : file -> Yojson.Basic.t
 val file_of_json : Yojson.Basic.t -> file
 
 val zero_counts : reaction_counts
 val counts_of_reactions : Github_types.reaction list -> reaction_counts
+val counts_of_github_counts : Github_types.reaction_counts -> reaction_counts
 
 val make_review_batch_id : repo_url:string -> pr_number:int -> head_sha:string -> now:Ptime.t -> nonce:string -> string
 
 val make_feedback_id : review_batch_id:string -> index:int -> path:string -> line:int -> comment_body:string -> string
+
+val make_review_body_feedback_id : review_batch_id:string -> review_node_id:string -> review_body:string -> string
 
 val make_finding_id :
   review_batch_id:string ->
@@ -122,6 +137,7 @@ val record_posted_pr_review_targets :
   review_id:int ->
   review_batch_id:string ->
   created_at:Ptime.t ->
+  ?review_body_target:review_body_target_input ->
   target_input list ->
   unit Lwt.t
 

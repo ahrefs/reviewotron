@@ -316,6 +316,7 @@ type create_review_req = {
 
 type created_pr_review = {
   id : int;
+  node_id : string option; [@json.option]
   html_url : string option; [@json.option]
 }
 [@@deriving json] [@@json.allow_extra_fields]
@@ -356,6 +357,12 @@ type reaction = {
   content : string;
 }
 [@@deriving json] [@@json.allow_extra_fields]
+
+type reaction_counts = {
+  plus_one : int;
+  minus_one : int;
+}
+[@@deriving json]
 
 type pr_review_comment = {
   id : int;

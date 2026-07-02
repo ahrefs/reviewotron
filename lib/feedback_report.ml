@@ -12,6 +12,7 @@ type totals = {
 type target_summary = {
   feedback_id : string;
   review_batch_id : string;
+  target_kind : string;
   finding_id : string option;
   finding_source : string option;
   plugin_name : string option;
@@ -19,16 +20,19 @@ type target_summary = {
   repo_url : string;
   pr_number : int;
   review_id : int;
+  review_node_id : string option;
   comment_id : int option;
   github_comment_url : string option;
-  path : string;
-  line : int;
-  severity : string;
-  category : string;
-  confidence : string;
+  github_review_url : string option;
+  path : string option;
+  line : int option;
+  severity : string option;
+  category : string option;
+  confidence : string option;
   message : string option;
   routing_outcome : string option;
-  comment_body_sha256 : string;
+  comment_body_sha256 : string option;
+  review_body_sha256 : string option;
   plus_one : int;
   minus_one : int;
   sentiment : string;
@@ -152,7 +156,7 @@ let read_json_file path =
 let read_targets path =
   match read_json_file path with
   | Error _ as error -> error
-  | Ok None -> Ok { Feedback_store.schema = 2; targets = [] }
+  | Ok None -> Ok { Feedback_store.schema = 3; targets = [] }
   | Ok (Some json) ->
   try Ok (Feedback_store.file_of_json json)
   with exn -> Error (Printf.sprintf "failed to decode feedback targets from %s: %s" path (Printexc.to_string exn))
@@ -277,6 +281,11 @@ let github_comment_url ~repo_url ~pr_number comment_id =
   | Some repo_url, Some comment_id -> Some (Printf.sprintf "%s/pull/%d#discussion_r%d" repo_url pr_number comment_id)
   | Some _, None | None, Some _ | None, None -> None
 
+let github_review_url ~repo_url ~pr_number review_id =
+  Option.map
+    (fun repo_url -> Printf.sprintf "%s/pull/%d#pullrequestreview-%d" repo_url pr_number review_id)
+    (html_repo_url repo_url)
+
 let target_summary evidence_findings (target : Feedback_store.target) =
   let finding_evidence =
     match target.finding_id with
@@ -286,13 +295,14 @@ let target_summary evidence_findings (target : Feedback_store.target) =
   let message =
     match bind_option finding_evidence (fun f -> f.message) with
     | Some _ as message -> message
-    | None -> target_message_from_finding_json target.finding
+    | None -> bind_option target.finding target_message_from_finding_json
   in
   let routing_outcome = bind_option finding_evidence (fun f -> f.routing_outcome) in
   let counts = target.last_counts in
   {
     feedback_id = target.feedback_id;
     review_batch_id = target.review_batch_id;
+    target_kind = Feedback_store.target_kind_to_string target.target_kind;
     finding_id = target.finding_id;
     finding_source = target.finding_source;
     plugin_name = target.plugin_name;
@@ -300,8 +310,10 @@ let target_summary evidence_findings (target : Feedback_store.target) =
     repo_url = target.repo_url;
     pr_number = target.pr_number;
     review_id = target.review_id;
+    review_node_id = target.review_node_id;
     comment_id = target.comment_id;
     github_comment_url = github_comment_url ~repo_url:target.repo_url ~pr_number:target.pr_number target.comment_id;
+    github_review_url = github_review_url ~repo_url:target.repo_url ~pr_number:target.pr_number target.review_id;
     path = target.path;
     line = target.line;
     severity = target.severity;
@@ -310,6 +322,7 @@ let target_summary evidence_findings (target : Feedback_store.target) =
     message;
     routing_outcome;
     comment_body_sha256 = target.comment_body_sha256;
+    review_body_sha256 = target.review_body_sha256;
     plus_one = counts.plus_one;
     minus_one = counts.minus_one;
     sentiment = sentiment_of_counts counts;
@@ -337,8 +350,18 @@ let add_summary_totals totals (target : target_summary) =
 let totals_of_target_summaries targets = List.fold_left add_summary_totals empty_totals targets
 
 let compare_targets (a : target_summary) (b : target_summary) =
-  match String.compare a.path b.path with
-  | 0 -> Int.compare a.line b.line
+  match a.path, b.path with
+  | None, None -> String.compare a.feedback_id b.feedback_id
+  | None, Some _ -> -1
+  | Some _, None -> 1
+  | Some a_path, Some b_path ->
+  match String.compare a_path b_path with
+  | 0 ->
+    (match a.line, b.line with
+    | Some a_line, Some b_line -> Int.compare a_line b_line
+    | None, None -> String.compare a.feedback_id b.feedback_id
+    | None, Some _ -> -1
+    | Some _, None -> 1)
   | n -> n
 
 let interaction_warning_marker = "reacted targets have first_user_interaction_at=null"
@@ -524,33 +547,46 @@ let totals_to_json totals =
     ]
 
 let target_to_json (target : target_summary) =
-  `Assoc
+  let common_fields =
     [
       "feedback_id", `String target.feedback_id;
       "review_batch_id", `String target.review_batch_id;
-      string_opt "finding_id" target.finding_id;
-      string_opt "finding_source" target.finding_source;
-      string_opt "plugin_name" target.plugin_name;
+      "target_kind", `String target.target_kind;
       "status", `String target.status;
       "repo_url", `String target.repo_url;
       "pr_number", `Int target.pr_number;
       "review_id", `Int target.review_id;
-      int_opt "comment_id" target.comment_id;
-      string_opt "github_comment_url" target.github_comment_url;
-      "path", `String target.path;
-      "line", `Int target.line;
-      "severity", `String target.severity;
-      "category", `String target.category;
-      "confidence", `String target.confidence;
-      string_opt "message" target.message;
-      string_opt "routing_outcome" target.routing_outcome;
-      "comment_body_sha256", `String target.comment_body_sha256;
+      string_opt "github_review_url" target.github_review_url;
       "plus_one", `Int target.plus_one;
       "minus_one", `Int target.minus_one;
       "sentiment", `String target.sentiment;
       string_opt "last_polled_at" target.last_polled_at;
       string_opt "first_user_interaction_at" target.first_user_interaction_at;
     ]
+  in
+  let target_fields =
+    match target.target_kind with
+    | "pr_review_body" ->
+      [ string_opt "review_node_id" target.review_node_id; string_opt "review_body_sha256" target.review_body_sha256 ]
+    | "pr_review_comment" ->
+      [
+        string_opt "finding_id" target.finding_id;
+        string_opt "finding_source" target.finding_source;
+        string_opt "plugin_name" target.plugin_name;
+        int_opt "comment_id" target.comment_id;
+        string_opt "github_comment_url" target.github_comment_url;
+        string_opt "path" target.path;
+        int_opt "line" target.line;
+        string_opt "severity" target.severity;
+        string_opt "category" target.category;
+        string_opt "confidence" target.confidence;
+        string_opt "message" target.message;
+        string_opt "routing_outcome" target.routing_outcome;
+        string_opt "comment_body_sha256" target.comment_body_sha256;
+      ]
+    | value -> invalid_arg (Printf.sprintf "unknown feedback report target kind: %s" value)
+  in
+  `Assoc (common_fields @ target_fields)
 
 let review_to_json (review : review_summary) =
   `Assoc
@@ -596,10 +632,23 @@ let option_int default = function
   | Some value -> string_of_int value
   | None -> default
 
-let render_target ~include_messages ~max_message_chars buf (target : target_summary) =
-  Printf.bprintf buf "- [%s] `%s` `%s` %s/%s/%s at `%s:%d` (+1=%d -1=%d)\n" target.sentiment target.feedback_id
+let render_body_target buf (target : target_summary) =
+  Printf.bprintf buf "- [%s] `%s` review body (+1=%d -1=%d)\n" target.sentiment target.feedback_id target.plus_one
+    target.minus_one;
+  Printf.bprintf buf "  review_id: %d; review_node_id: %s\n" target.review_id
+    (option_string "unknown" target.review_node_id);
+  (match target.github_review_url with
+  | Some url -> Printf.bprintf buf "  github: %s\n" url
+  | None -> ());
+  Printf.bprintf buf "\n"
+
+let render_inline_target ~include_messages ~max_message_chars buf (target : target_summary) =
+  Printf.bprintf buf "- [%s] `%s` `%s` %s/%s/%s at `%s:%s` (+1=%d -1=%d)\n" target.sentiment target.feedback_id
     (option_string "unknown" target.plugin_name)
-    target.severity target.category target.confidence target.path target.line target.plus_one target.minus_one;
+    (option_string "unknown" target.severity)
+    (option_string "unknown" target.category)
+    (option_string "unknown" target.confidence)
+    (option_string "unknown" target.path) (option_int "unknown" target.line) target.plus_one target.minus_one;
   Printf.bprintf buf "  comment_id: %s; finding_id: %s\n"
     (option_int "unresolved" target.comment_id)
     (option_string "none" target.finding_id);
@@ -610,6 +659,12 @@ let render_target ~include_messages ~max_message_chars buf (target : target_summ
   | true, Some message -> Printf.bprintf buf "  message: %s\n" (shorten max_message_chars message)
   | true, None | false, Some _ | false, None -> ());
   Printf.bprintf buf "\n"
+
+let render_target ~include_messages ~max_message_chars buf (target : target_summary) =
+  match target.target_kind with
+  | "pr_review_body" -> render_body_target buf target
+  | "pr_review_comment" -> render_inline_target ~include_messages ~max_message_chars buf target
+  | value -> invalid_arg (Printf.sprintf "unknown feedback report target kind: %s" value)
 
 let render_review ~include_messages ~max_message_chars buf (review : review_summary) =
   Printf.bprintf buf "## Review `%s`\n\n" review.review_batch_id;

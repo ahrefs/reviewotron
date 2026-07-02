@@ -529,8 +529,14 @@ Security metrics/debug artifacts are separate and opt-in via `review_plugins.sec
 ## Review Feedback
 
 When webhook mode is started with `--state`, Reviewotron also enables feedback
-persistence for inline PR review comments. Each inline finding comment gets a
-hidden marker:
+persistence for GitHub PR review bodies and inline PR review comments. Review
+bodies and inline findings include this prompt:
+
+```markdown
+Was this review helpful? React with :+1: or :-1:.
+```
+
+Each inline finding comment also gets a hidden marker:
 
 ```markdown
 <!-- reviewotron-feedback-id: rvf_... -->
@@ -558,26 +564,27 @@ time, then waits one hour between polls by default; pass
 `--poll-interval-seconds 60` to run the server poller on a minute cadence.
 
 `reviewotron-feedback-targets.json` stores polling state for inline PR review
-comments. `reviewotron-feedback-events.jsonl` stores append-only aggregate
-events such as reaction count changes, comment ID resolution, and target
-finalization.
+comments and top-level PR review bodies. Inline comments are collected through
+GitHub's REST reactions API; review-body reactions are collected through a
+minimal GitHub GraphQL query using the review `node_id`.
+`reviewotron-feedback-events.jsonl` stores append-only aggregate events such as
+reaction count changes, comment ID resolution, and target finalization.
 
-For each successfully posted GitHub PR review that contains Reviewotron inline
-comments, Reviewotron also writes one immutable evidence bundle under
+For each successfully posted GitHub PR review with feedback persistence enabled,
+Reviewotron also writes one immutable evidence bundle under
 `reviewotron-feedback-evidence/<review_batch_id>/`. Target records link each
-feedback ID back to the bundle and finding ID. Bundles contain the reviewed
-filtered diff, the posted review/comment bodies with feedback markers, routed
-findings with plugin-level provenance, review costs, review config, and fetched
-file metadata hashes. They are intended as input for a later feedback-review
-agent/command that correlates GitHub reactions with review context and produces
-improvement recommendations; humans should not need to inspect the JSON files
-manually.
+feedback ID back to the bundle; inline targets also link to a finding ID.
+Bundles contain the reviewed filtered diff, the posted review/comment bodies
+with feedback prompts and inline markers, routed findings with plugin-level
+provenance, review costs, review config, and fetched file metadata hashes. They
+are intended as input for a later feedback-review agent/command that correlates
+GitHub reactions with review context and produces improvement recommendations;
+humans should not need to inspect the JSON files manually.
 
 Privacy rules:
 
 - Only aggregate `+1` and `-1` counts are stored.
-- Evidence bundles are written only for successfully posted GitHub PR reviews
-  with inline Reviewotron comments.
+- Evidence bundles are written only for successfully posted GitHub PR reviews.
 - Raw reaction objects are not stored.
 - Webhook payloads are not stored.
 - Raw prompts, agent transcripts, tool outputs, and unrelated logs are not
@@ -600,9 +607,9 @@ reviewotron collect-feedback --secrets secrets.json --state /path/to/state.json 
 ```
 
 Both the server poller and the one-shot collector are idempotent. They resolve
-missing GitHub review comment IDs from hidden markers, poll reaction counts,
-update target state, and append JSONL events only when counts change or targets
-finalize.
+missing GitHub review comment IDs from hidden markers, poll review-body and
+inline-comment reaction counts, update target state, and append JSONL events
+only when counts change or targets finalize.
 
 After collection, summarize the local feedback store with:
 
@@ -613,9 +620,9 @@ reviewotron feedback-report --state /path/to/state.json --feedback-dir /durable/
 Use `--output json` when feeding the parsed feedback into another tool or a
 future feedback-review agent. The report joins target records, aggregate events,
 and evidence bundles, grouping feedback by posted PR review and preserving the
-feedback ID, finding ID, plugin/source, reaction counts, reviewed PR metadata,
-GitHub discussion URL, and evidence bundle path. For large feedback sets, keep
-investigations bounded with filters such as:
+feedback ID, target kind, inline finding ID/plugin/source when present, reaction
+counts, reviewed PR metadata, GitHub discussion/review URL, and evidence bundle
+path. For large feedback sets, keep investigations bounded with filters such as:
 
 ```bash
 reviewotron feedback-report --state /path/to/state.json --feedback-dir /durable/path \

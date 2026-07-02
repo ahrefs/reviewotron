@@ -4,6 +4,8 @@
 
 let severity_badge sev = Printf.sprintf {|**[%s]**|} (Review_types.severity_to_string sev)
 let category_label cat = Review_types.finding_category_to_string cat
+let feedback_prompt = "Was this review helpful? React with :+1: or :-1:."
+let with_feedback_prompt body = Printf.sprintf "%s\n\n%s" body feedback_prompt
 
 let format_finding_body (finding : Review_types.finding) =
   let header = Printf.sprintf "%s %s" (severity_badge finding.severity) (category_label finding.category) in

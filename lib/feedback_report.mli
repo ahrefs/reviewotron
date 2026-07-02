@@ -14,6 +14,7 @@ type totals = {
 type target_summary = {
   feedback_id : string;
   review_batch_id : string;
+  target_kind : string;
   finding_id : string option;
   finding_source : string option;
   plugin_name : string option;
@@ -21,16 +22,19 @@ type target_summary = {
   repo_url : string;
   pr_number : int;
   review_id : int;
+  review_node_id : string option;
   comment_id : int option;
   github_comment_url : string option;
-  path : string;
-  line : int;
-  severity : string;
-  category : string;
-  confidence : string;
+  github_review_url : string option;
+  path : string option;
+  line : int option;
+  severity : string option;
+  category : string option;
+  confidence : string option;
   message : string option;
   routing_outcome : string option;
-  comment_body_sha256 : string;
+  comment_body_sha256 : string option;
+  review_body_sha256 : string option;
   plus_one : int;
   minus_one : int;
   sentiment : string;

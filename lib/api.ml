@@ -73,6 +73,12 @@ module type Github_feedback = sig
 
   val list_pr_review_comment_reactions :
     ctx:Context.t -> repo_url:string -> comment_id:int -> (Github_types.reaction list, string) result Lwt.t
+
+  val get_pr_review_reaction_counts :
+    ctx:Context.t ->
+    repo_url:string ->
+    review_node_id:string ->
+    (Github_types.reaction_counts option, string) result Lwt.t
 end
 
 (** GitHub-specific emoji reactions on PRs and issue comments. Kept separate

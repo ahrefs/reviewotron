@@ -79,6 +79,18 @@ let github_get ~ctx ~repo_url ~path ?accept ?log_context () =
 let github_post ~ctx ~repo_url ~path ?accept ?log_context ~body () =
   github_request ~ctx ~repo_url ~path ?accept ?log_context ~body:(`Raw ("application/json; charset=utf-8", body)) `POST
 
+let github_graphql_post ~ctx ~repo_url ?log_context ~body () =
+  let%lwt auth = resolve_auth ~ctx ~repo_url in
+  match auth with
+  | Error msg -> Lwt.return (Error (local_error msg))
+  | Ok auth_header ->
+    let url = "https://api.github.com/graphql" in
+    let headers = build_headers ~auth_header ~accept:"application/vnd.github+json" in
+    let label = Printf.sprintf "%sPOST %s" (log_context_prefix log_context) url in
+    Github_retry.with_retry ~label (fun () ->
+      http_request ~headers ~body:(`Raw ("application/json; charset=utf-8", body)) `POST url)
+    |> Lwt.map (Result.map_error (Http_util.query_error_msg url))
+
 let github_delete ~ctx ~repo_url ~path ?accept ?log_context () =
   github_request ~ctx ~repo_url ~path ?accept ?log_context `DELETE
 
@@ -100,6 +112,70 @@ let parse_pr_review_comments body =
 let parse_reactions body =
   try Ok (Melange_json.Primitives.list_of_json Github_types.reaction_of_json (Melange_json.of_string body))
   with exn -> Error (Printf.sprintf "failed to parse reactions response: %s" (Exn.str exn))
+
+let required_field fields name =
+  match List.assoc_opt name fields with
+  | Some json -> json
+  | None -> invalid_arg (Printf.sprintf "missing field %s" name)
+
+let required_string fields name =
+  match required_field fields name with
+  | `String value -> value
+  | json -> Melange_json.of_json_error ~json (Printf.sprintf "expected string field %s" name)
+
+let required_int fields name =
+  match required_field fields name with
+  | `Int value -> value
+  | json -> Melange_json.of_json_error ~json (Printf.sprintf "expected integer field %s" name)
+
+let graphql_errors_message fields =
+  match List.assoc_opt "errors" fields with
+  | None | Some (`List []) -> None
+  | Some (`List errors) -> Some (Yojson.Basic.to_string (`List errors))
+  | Some ((`Assoc _ | `Bool _ | `Float _ | `Int _ | `Null | `String _) as json) -> Some (Yojson.Basic.to_string json)
+
+let zero_github_counts : Github_types.reaction_counts = { plus_one = 0; minus_one = 0 }
+
+let add_github_counts (a : Github_types.reaction_counts) (b : Github_types.reaction_counts) =
+  { Github_types.plus_one = a.plus_one + b.plus_one; minus_one = a.minus_one + b.minus_one }
+
+let reaction_group_counts = function
+  | `Assoc fields ->
+    let content = required_string fields "content" in
+    let total_count =
+      match required_field fields "reactors" with
+      | `Assoc reactors -> required_int reactors "totalCount"
+      | json -> Melange_json.of_json_error ~json "expected reactors object"
+    in
+    (match content with
+    | "THUMBS_UP" -> { zero_github_counts with plus_one = total_count }
+    | "THUMBS_DOWN" -> { zero_github_counts with minus_one = total_count }
+    | "CONFUSED" | "EYES" | "HEART" | "HOORAY" | "LAUGH" | "ROCKET" -> zero_github_counts
+    | _value -> zero_github_counts)
+  | json -> Melange_json.of_json_error ~json "expected reaction group object"
+
+let parse_pr_review_reaction_counts body =
+  try
+    match Melange_json.of_string body with
+    | `Assoc fields ->
+      (match graphql_errors_message fields with
+      | Some errors -> Error (Printf.sprintf "GitHub GraphQL errors: %s" errors)
+      | None ->
+      match List.assoc_opt "data" fields with
+      | Some (`Assoc data_fields) ->
+        (match List.assoc_opt "node" data_fields with
+        | None | Some `Null -> Ok None
+        | Some (`Assoc node_fields) ->
+          (match required_field node_fields "reactionGroups" with
+          | `List groups ->
+            Ok (Some (List.fold_left add_github_counts zero_github_counts (List.map reaction_group_counts groups)))
+          | json -> Melange_json.of_json_error ~json "expected reactionGroups array")
+        | Some ((`Bool _ | `Float _ | `Int _ | `List _ | `String _) as json) ->
+          Melange_json.of_json_error ~json "expected GraphQL node object")
+      | Some json -> Melange_json.of_json_error ~json "expected GraphQL data object"
+      | None -> invalid_arg "missing field data")
+    | json -> Melange_json.of_json_error ~json "expected GraphQL response object"
+  with exn -> Error (Printf.sprintf "failed to parse PR review reaction counts response: %s" (Exn.str exn))
 
 let github_page_size = 100
 
@@ -223,6 +299,32 @@ module Github : Api.Github = struct
       github_get ~ctx ~repo_url
         ~path:(paginated_path ~page_size:github_page_size ~page path)
         ~accept:"application/vnd.github+json" ())
+
+  let get_pr_review_reaction_counts ~ctx ~repo_url ~review_node_id =
+    let query =
+      {|
+query($id: ID!) {
+  node(id: $id) {
+    ... on PullRequestReview {
+      reactionGroups {
+        content
+        reactors {
+          totalCount
+        }
+      }
+    }
+  }
+}
+|}
+    in
+    let body =
+      Melange_json.to_string (`Assoc [ "query", `String query; "variables", `Assoc [ "id", `String review_node_id ] ])
+    in
+    let%lwt result = github_graphql_post ~ctx ~repo_url ~body () in
+    Lwt.return
+      (match result with
+      | Error e -> Error (Http_util.error_to_string e)
+      | Ok body -> parse_pr_review_reaction_counts body)
 
   let create_reaction ~ctx ~repo_url ~path ~content ?log_context () =
     let body = Melange_json.to_string (Github_types.reaction_req_to_json { content }) in

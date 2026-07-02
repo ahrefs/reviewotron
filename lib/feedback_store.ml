@@ -27,7 +27,9 @@ type stop_reason =
   | Comment_missing
   | Api_error
 
-type target_kind = Pr_review_comment
+type target_kind =
+  | Pr_review_comment
+  | Pr_review_body
 
 type target = {
   feedback_id : string;
@@ -40,19 +42,21 @@ type target = {
   target_kind : target_kind;
   review_id : int;
   comment_id : int option;
+  review_node_id : string option;
   created_at : string;
   poll_until : string;
   first_user_interaction_at : string option;
   last_polled_at : string option;
   final_polled_at : string option;
-  path : string;
-  line : int;
+  path : string option;
+  line : int option;
   start_line : int option;
-  severity : string;
-  category : string;
-  confidence : string;
-  finding : Yojson.Basic.t;
-  comment_body_sha256 : string;
+  severity : string option;
+  category : string option;
+  confidence : string option;
+  finding : Yojson.Basic.t option;
+  comment_body_sha256 : string option;
+  review_body_sha256 : string option;
   evidence_dir : string option;
   finding_id : string option;
   finding_source : string option;
@@ -82,7 +86,14 @@ type target_input = {
   plugin_name : string option;
 }
 
-let schema_version = 2
+type review_body_target_input = {
+  feedback_id : string;
+  review_node_id : string;
+  review_body : string;
+  evidence_dir : string option;
+}
+
+let schema_version = 3
 let targets_filename = "reviewotron-feedback-targets.json"
 let events_filename = "reviewotron-feedback-events.jsonl"
 let evidence_dirname = "reviewotron-feedback-evidence"
@@ -179,9 +190,11 @@ let stop_reason_of_json = function
 
 let target_kind_to_string = function
   | Pr_review_comment -> "pr_review_comment"
+  | Pr_review_body -> "pr_review_body"
 
 let target_kind_of_string = function
   | "pr_review_comment" -> Pr_review_comment
+  | "pr_review_body" -> Pr_review_body
   | value -> invalid_arg (Printf.sprintf "unknown feedback target kind: %s" value)
 
 let target_kind_to_json kind = `String (target_kind_to_string kind)
@@ -199,6 +212,9 @@ let make_review_batch_id ~repo_url ~pr_number ~head_sha ~now ~nonce =
 
 let make_feedback_id ~review_batch_id ~index ~path ~line ~comment_body =
   Printf.sprintf "%s\000%d\000%s\000%d\000%s" review_batch_id index path line comment_body |> digest_id ~prefix:"rvf_"
+
+let make_review_body_feedback_id ~review_batch_id ~review_node_id ~review_body =
+  Printf.sprintf "%s\000review_body\000%s\000%s" review_batch_id review_node_id review_body |> digest_id ~prefix:"rvf_"
 
 let make_finding_id ~review_batch_id ~index ~path ~line ~finding_json ~comment_body =
   let finding_sha256 = Yojson.Basic.to_string finding_json |> sha256_hex in
@@ -250,8 +266,12 @@ let reaction_counts_of_json = function
     { plus_one = int_field "plus_one"; minus_one = int_field "minus_one" }
   | json -> Melange_json.of_json_error ~json "expected reaction counts object"
 
+let required_option field = function
+  | Some value -> value
+  | None -> invalid_arg (Printf.sprintf "missing target field %s" field)
+
 let target_to_json (target : target) =
-  `Assoc
+  let common_fields =
     [
       json_string "feedback_id" target.feedback_id;
       json_string "review_batch_id" target.review_batch_id;
@@ -265,26 +285,41 @@ let target_to_json (target : target) =
       json_string "head_sha" target.head_sha;
       "target_kind", target_kind_to_json target.target_kind;
       json_int "review_id" target.review_id;
-      json_int_option "comment_id" target.comment_id;
       json_string "created_at" target.created_at;
       json_string "poll_until" target.poll_until;
       json_string_option "first_user_interaction_at" target.first_user_interaction_at;
       json_string_option "last_polled_at" target.last_polled_at;
       json_string_option "final_polled_at" target.final_polled_at;
-      json_string "path" target.path;
-      json_int "line" target.line;
-      json_int_option "start_line" target.start_line;
-      json_string "severity" target.severity;
-      json_string "category" target.category;
-      json_string "confidence" target.confidence;
-      "finding", target.finding;
-      json_string "comment_body_sha256" target.comment_body_sha256;
       json_string_option "evidence_dir" target.evidence_dir;
-      json_string_option "finding_id" target.finding_id;
-      json_string_option "finding_source" target.finding_source;
-      json_string_option "plugin_name" target.plugin_name;
       "last_counts", reaction_counts_to_json target.last_counts;
     ]
+  in
+  let target_fields =
+    match target.target_kind with
+    | Pr_review_comment ->
+      [
+        json_int_option "comment_id" target.comment_id;
+        json_string "path" (required_option "path" target.path);
+        json_int "line" (required_option "line" target.line);
+        json_int_option "start_line" target.start_line;
+        json_string "severity" (required_option "severity" target.severity);
+        json_string "category" (required_option "category" target.category);
+        json_string "confidence" (required_option "confidence" target.confidence);
+        "finding", required_option "finding" target.finding;
+        json_string "comment_body_sha256" (required_option "comment_body_sha256" target.comment_body_sha256);
+        json_string_option "review_node_id" target.review_node_id;
+        json_string_option "review_body_sha256" target.review_body_sha256;
+        json_string_option "finding_id" target.finding_id;
+        json_string_option "finding_source" target.finding_source;
+        json_string_option "plugin_name" target.plugin_name;
+      ]
+    | Pr_review_body ->
+      [
+        json_string "review_node_id" (required_option "review_node_id" target.review_node_id);
+        json_string "review_body_sha256" (required_option "review_body_sha256" target.review_body_sha256);
+      ]
+  in
+  `Assoc (common_fields @ target_fields)
 
 let required_field fields name =
   match List.assoc_opt name fields with
@@ -315,42 +350,77 @@ let optional_int fields name =
 
 let target_of_json = function
   | `Assoc fields ->
-    {
-      feedback_id = required_string fields "feedback_id";
-      review_batch_id = required_string fields "review_batch_id";
-      status = target_status_of_json (required_field fields "status");
-      stop_reason =
-        (match List.assoc_opt "stop_reason" fields with
-        | None | Some `Null -> None
-        | Some json -> Some (stop_reason_of_json json));
-      repo_url = required_string fields "repo_url";
-      pr_number = required_int fields "pr_number";
-      head_sha = required_string fields "head_sha";
-      target_kind = target_kind_of_json (required_field fields "target_kind");
-      review_id = required_int fields "review_id";
-      comment_id = optional_int fields "comment_id";
-      created_at = required_string fields "created_at";
-      poll_until = required_string fields "poll_until";
-      first_user_interaction_at = optional_string fields "first_user_interaction_at";
-      last_polled_at = optional_string fields "last_polled_at";
-      final_polled_at = optional_string fields "final_polled_at";
-      path = required_string fields "path";
-      line = required_int fields "line";
-      start_line = optional_int fields "start_line";
-      severity = required_string fields "severity";
-      category = required_string fields "category";
-      confidence = required_string fields "confidence";
-      finding =
-        (match List.assoc_opt "finding" fields with
-        | Some json -> json
-        | None -> `Assoc []);
-      comment_body_sha256 = required_string fields "comment_body_sha256";
-      evidence_dir = optional_string fields "evidence_dir";
-      finding_id = optional_string fields "finding_id";
-      finding_source = optional_string fields "finding_source";
-      plugin_name = optional_string fields "plugin_name";
-      last_counts = reaction_counts_of_json (required_field fields "last_counts");
-    }
+    let target_kind =
+      match List.assoc_opt "target_kind" fields with
+      | None -> Pr_review_comment
+      | Some json -> target_kind_of_json json
+    in
+    let common =
+      {
+        feedback_id = required_string fields "feedback_id";
+        review_batch_id = required_string fields "review_batch_id";
+        status = target_status_of_json (required_field fields "status");
+        stop_reason =
+          (match List.assoc_opt "stop_reason" fields with
+          | None | Some `Null -> None
+          | Some json -> Some (stop_reason_of_json json));
+        repo_url = required_string fields "repo_url";
+        pr_number = required_int fields "pr_number";
+        head_sha = required_string fields "head_sha";
+        target_kind;
+        review_id = required_int fields "review_id";
+        comment_id = None;
+        review_node_id = None;
+        created_at = required_string fields "created_at";
+        poll_until = required_string fields "poll_until";
+        first_user_interaction_at = optional_string fields "first_user_interaction_at";
+        last_polled_at = optional_string fields "last_polled_at";
+        final_polled_at = optional_string fields "final_polled_at";
+        path = None;
+        line = None;
+        start_line = None;
+        severity = None;
+        category = None;
+        confidence = None;
+        finding = None;
+        comment_body_sha256 = None;
+        review_body_sha256 = None;
+        evidence_dir = optional_string fields "evidence_dir";
+        finding_id = None;
+        finding_source = None;
+        plugin_name = None;
+        last_counts = reaction_counts_of_json (required_field fields "last_counts");
+      }
+    in
+    (match target_kind with
+    | Pr_review_comment ->
+      {
+        common with
+        comment_id = optional_int fields "comment_id";
+        review_node_id = optional_string fields "review_node_id";
+        path = Some (required_string fields "path");
+        line = Some (required_int fields "line");
+        start_line = optional_int fields "start_line";
+        severity = Some (required_string fields "severity");
+        category = Some (required_string fields "category");
+        confidence = Some (required_string fields "confidence");
+        finding =
+          Some
+            (match List.assoc_opt "finding" fields with
+            | Some json -> json
+            | None -> `Assoc []);
+        comment_body_sha256 = Some (required_string fields "comment_body_sha256");
+        review_body_sha256 = optional_string fields "review_body_sha256";
+        finding_id = optional_string fields "finding_id";
+        finding_source = optional_string fields "finding_source";
+        plugin_name = optional_string fields "plugin_name";
+      }
+    | Pr_review_body ->
+      {
+        common with
+        review_node_id = Some (required_string fields "review_node_id");
+        review_body_sha256 = Some (required_string fields "review_body_sha256");
+      })
   | json -> Melange_json.of_json_error ~json "expected feedback target object"
 
 let file_to_json file = `Assoc [ "schema", `Int file.schema; "targets", `List (List.map target_to_json file.targets) ]
@@ -429,6 +499,9 @@ let counts_of_reactions reactions =
       | _ -> counts)
     zero_counts reactions
 
+let counts_of_github_counts (counts : Github_types.reaction_counts) =
+  { plus_one = counts.plus_one; minus_one = counts.minus_one }
+
 let reaction_counts_changed_event ~feedback_id ~observed_at counts =
   `Assoc
     [
@@ -468,14 +541,20 @@ let target_finalized_event target ~observed_at =
       "minus_one", `Int target.last_counts.minus_one;
     ]
 
-let record_posted_pr_review_targets t ~repo_url ~pr_number ~head_sha ~review_id ~review_batch_id ~created_at inputs =
-  match inputs with
-  | [] -> Lwt.return_unit
-  | _ :: _ ->
+let record_posted_pr_review_targets t ~repo_url ~pr_number ~head_sha ~review_id ~review_batch_id ~created_at
+  ?review_body_target inputs =
+  let has_body_target =
+    match review_body_target with
+    | Some _ -> true
+    | None -> false
+  in
+  match has_body_target, inputs with
+  | false, [] -> Lwt.return_unit
+  | true, [] | false, _ :: _ | true, _ :: _ ->
     with_lock t (fun () ->
       let created_at_string = utc_string created_at in
       let poll_until = add_seconds created_at five_days_seconds |> utc_string in
-      let targets =
+      let inline_targets =
         List.map
           (fun input ->
             let finding_json = Review_types.finding_to_json input.finding in
@@ -490,19 +569,21 @@ let record_posted_pr_review_targets t ~repo_url ~pr_number ~head_sha ~review_id 
               target_kind = Pr_review_comment;
               review_id;
               comment_id = None;
+              review_node_id = None;
               created_at = created_at_string;
               poll_until;
               first_user_interaction_at = None;
               last_polled_at = None;
               final_polled_at = None;
-              path = input.comment.path;
-              line = input.comment.line;
+              path = Some input.comment.path;
+              line = Some input.comment.line;
               start_line = input.comment.start_line;
-              severity = Review_types.severity_to_string input.finding.severity;
-              category = Review_types.finding_category_to_string input.finding.category;
-              confidence = Review_types.confidence_to_string input.finding.confidence;
-              finding = finding_json;
-              comment_body_sha256 = sha256_hex input.comment_body;
+              severity = Some (Review_types.severity_to_string input.finding.severity);
+              category = Some (Review_types.finding_category_to_string input.finding.category);
+              confidence = Some (Review_types.confidence_to_string input.finding.confidence);
+              finding = Some finding_json;
+              comment_body_sha256 = Some (sha256_hex input.comment_body);
+              review_body_sha256 = None;
               evidence_dir = input.evidence_dir;
               finding_id = input.finding_id;
               finding_source = input.finding_source;
@@ -511,6 +592,46 @@ let record_posted_pr_review_targets t ~repo_url ~pr_number ~head_sha ~review_id 
             })
           inputs
       in
+      let body_targets =
+        match review_body_target with
+        | None -> []
+        | Some input ->
+          [
+            {
+              feedback_id = input.feedback_id;
+              review_batch_id;
+              status = Active;
+              stop_reason = None;
+              repo_url;
+              pr_number;
+              head_sha;
+              target_kind = Pr_review_body;
+              review_id;
+              comment_id = None;
+              review_node_id = Some input.review_node_id;
+              created_at = created_at_string;
+              poll_until;
+              first_user_interaction_at = None;
+              last_polled_at = None;
+              final_polled_at = None;
+              path = None;
+              line = None;
+              start_line = None;
+              severity = None;
+              category = None;
+              confidence = None;
+              finding = None;
+              comment_body_sha256 = None;
+              review_body_sha256 = Some (sha256_hex input.review_body);
+              evidence_dir = input.evidence_dir;
+              finding_id = None;
+              finding_source = None;
+              plugin_name = None;
+              last_counts = zero_counts;
+            };
+          ]
+      in
+      let targets = body_targets @ inline_targets in
       t.data <- { t.data with targets = targets @ t.data.targets };
       save_targets_unlocked t)
 

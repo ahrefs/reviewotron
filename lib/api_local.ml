@@ -56,6 +56,7 @@ let reset_next_pr_review_result () = next_pr_review_result := None
 
 let pr_review_comment_results : (int * (Github_types.pr_review_comment list, string) result) list ref = ref []
 let reaction_results : (int * (Github_types.reaction list, string) result) list ref = ref []
+let pr_review_body_reaction_results : (string * (Github_types.reaction_counts option, string) result) list ref = ref []
 
 let set_pr_review_comments ~review_id comments =
   pr_review_comment_results := (review_id, Ok comments) :: List.remove_assoc review_id !pr_review_comment_results
@@ -72,6 +73,22 @@ let set_pr_review_comment_reactions_error ~comment_id message =
   reaction_results := (comment_id, Error message) :: List.remove_assoc comment_id !reaction_results
 
 let reset_pr_review_comment_reactions () = reaction_results := []
+
+let remove_pr_review_body_reaction_result review_node_id =
+  List.filter (fun (candidate, _result) -> not (String.equal candidate review_node_id)) !pr_review_body_reaction_results
+
+let set_pr_review_body_reaction_counts ~review_node_id counts =
+  pr_review_body_reaction_results :=
+    (review_node_id, Ok (Some counts)) :: remove_pr_review_body_reaction_result review_node_id
+
+let set_pr_review_body_reaction_counts_missing ~review_node_id =
+  pr_review_body_reaction_results := (review_node_id, Ok None) :: remove_pr_review_body_reaction_result review_node_id
+
+let set_pr_review_body_reaction_counts_error ~review_node_id message =
+  pr_review_body_reaction_results :=
+    (review_node_id, Error message) :: remove_pr_review_body_reaction_result review_node_id
+
+let reset_pr_review_body_reaction_counts () = pr_review_body_reaction_results := []
 
 let next_reaction_id = ref 1
 let reset_reactions () = next_reaction_id := 1
@@ -131,7 +148,12 @@ module Github : Api.Github = struct
       let id = !next_created_review_id in
       next_created_review_id := id + 1;
       Lwt.return
-        (Ok { Github_types.id; html_url = Some (Printf.sprintf "%s/pull/%d#pullrequestreview-%d" repo_url number id) })
+        (Ok
+           {
+             Github_types.id;
+             node_id = Some (Printf.sprintf "PRR_node_%d" id);
+             html_url = Some (Printf.sprintf "%s/pull/%d#pullrequestreview-%d" repo_url number id);
+           })
 
   let create_commit_comment ~ctx:_ ~repo_url ~sha ?log_context:_ comment =
     let json = Melange_json.to_string (Github_types.commit_comment_req_to_json comment) in
@@ -167,6 +189,14 @@ module Github : Api.Github = struct
     match List.assoc_opt comment_id !reaction_results with
     | Some result -> Lwt.return result
     | None -> Lwt.return (Ok [])
+
+  let get_pr_review_reaction_counts ~ctx:_ ~repo_url ~review_node_id =
+    let entry = Printf.sprintf "[get_pr_review_reaction_counts] repo=%s review_node_id=%s\n" repo_url review_node_id in
+    Buffer.add_string write_log entry;
+    log#info "%s" entry;
+    match List.assoc_opt review_node_id !pr_review_body_reaction_results with
+    | Some result -> Lwt.return result
+    | None -> Lwt.return (Ok (Some { Github_types.plus_one = 0; minus_one = 0 }))
 
   let create_issue_reaction ~ctx:_ ~repo_url ~number ~content ?log_context:_ () =
     let reaction_id = !next_reaction_id in

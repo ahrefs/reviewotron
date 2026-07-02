@@ -8,6 +8,12 @@ val severity_badge : Review_types.severity -> string
 (** Format a finding category as a human-readable label. *)
 val category_label : Review_types.finding_category -> string
 
+(** Prompt appended to GitHub review bodies to encourage reaction feedback. *)
+val feedback_prompt : string
+
+(** Append {!feedback_prompt} to a review body. *)
+val with_feedback_prompt : string -> string
+
 (** Format a finding as a GitHub review comment body with badge, message,
     and optional code suggestion block. *)
 val format_finding_body : Review_types.finding -> string

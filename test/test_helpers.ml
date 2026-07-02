@@ -42,6 +42,7 @@ let reset_test_state () =
   Api_local.set_next_created_review_id 1000;
   Api_local.reset_pr_review_comments ();
   Api_local.reset_pr_review_comment_reactions ();
+  Api_local.reset_pr_review_body_reaction_counts ();
   Api_local.reset_reactions ()
 
 (** Build a minimal repository JSON object. *)

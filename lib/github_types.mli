@@ -274,6 +274,7 @@ val create_review_req_of_json : Yojson.Basic.t -> create_review_req
 
 type created_pr_review = {
   id : int;
+  node_id : string option;
   html_url : string option;
 }
 [@@deriving json]
@@ -296,6 +297,12 @@ type reaction_req = { content : string } [@@deriving json]
 type reaction = {
   id : int;
   content : string;
+}
+[@@deriving json]
+
+type reaction_counts = {
+  plus_one : int;
+  minus_one : int;
 }
 [@@deriving json]
 

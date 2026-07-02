@@ -6,6 +6,27 @@ let read_file path = Std.input_file ~bin:true path
 let read_json path = Melange_json.of_string (read_file path)
 
 let contains_sub ~sub s = CCString.find ~sub s >= 0
+
+let require_some label = function
+  | Some value -> value
+  | None -> fail label
+
+let count_sub ~sub s =
+  let sub_len = String.length sub in
+  let s_len = String.length s in
+  match Int.equal sub_len 0 with
+  | true -> 0
+  | false ->
+    let rec loop i acc =
+      match i + sub_len > s_len with
+      | true -> acc
+      | false ->
+      match String.equal (String.sub s i sub_len) sub with
+      | true -> loop (i + sub_len) (acc + 1)
+      | false -> loop (i + 1) acc
+    in
+    loop 0 0
+
 let reviewed_commit_sub sha = Printf.sprintf "**Reviewed commit:** `%s`" (Review_job.short_display_id sha)
 
 let write_file path contents =
@@ -2368,6 +2389,8 @@ let test_pr_review_e2e () =
   (check bool) "correct PR number" true (contains_sub ~sub:"number=42" write_log);
   (check bool) "deterministic review body" true (contains_sub ~sub:":robot: **REVIEW**" write_log);
   (check bool) "publishes agent summary" true (contains_sub ~sub:"The changes look generally good" write_log);
+  (check bool) "asks for feedback" true (contains_sub ~sub:Review_format.feedback_prompt write_log);
+  (check bool) "asks for review and inline feedback" true (count_sub ~sub:Review_format.feedback_prompt write_log >= 2);
   (check bool) "has comments" true (contains_sub ~sub:"error-handling" write_log)
 
 let test_pr_skipped_when_draft () =
@@ -3530,10 +3553,31 @@ let record_one_feedback_target ?(feedback_id = "rvf_test") ?(review_id = 1000) ?
        ~head_sha:"abc123def456789012345678901234567890abcd" ~review_id ~review_batch_id:"rvb_test" ~created_at [ input ]);
   input
 
+let record_one_body_feedback_target ?(feedback_id = "rvf_body_test") ?(review_id = 1000)
+  ?(review_node_id = "PRR_node_body") ?(created_at = feedback_created_at) store =
+  let input : Feedback_store.review_body_target_input =
+    { feedback_id; review_node_id; review_body = "review body"; evidence_dir = None }
+  in
+  Lwt_main.run
+    (Feedback_store.record_posted_pr_review_targets store ~repo_url:Test_helpers.test_repo_url ~pr_number:42
+       ~head_sha:"abc123def456789012345678901234567890abcd" ~review_id ~review_batch_id:"rvb_body_test" ~created_at
+       ~review_body_target:input []);
+  input
+
 let single_feedback_target store =
   match (Feedback_store.data store).Feedback_store.targets with
   | [ target ] -> target
   | targets -> fail (Printf.sprintf "expected one feedback target, got %d" (List.length targets))
+
+let find_feedback_target ~kind targets =
+  match
+    List.find_opt
+      (fun (target : Feedback_store.target) ->
+        String.equal kind (Feedback_store.target_kind_to_string target.target_kind))
+      targets
+  with
+  | Some target -> target
+  | None -> fail (Printf.sprintf "expected feedback target kind %s" kind)
 
 let feedback_event_lines path =
   match Sys.file_exists path with
@@ -3616,25 +3660,47 @@ let test_feedback_target_roundtrip_and_privacy () =
 
 let remove_json_fields keys fields = List.filter (fun (key, _value) -> not (List.exists (String.equal key) keys)) fields
 
-let test_feedback_target_schema_v1_compatibility_and_v2_fields () =
+let test_feedback_target_schema_compatibility_and_v3_fields () =
   with_temp_feedback_store (fun _state_path _paths store ->
     ignore (record_one_feedback_target store : Feedback_store.target_input);
     let target = single_feedback_target store in
-    let v1_target =
+    let inline_target_without_new_fields =
       match Feedback_store.target_to_json target with
       | `Assoc fields ->
-        `Assoc (remove_json_fields [ "evidence_dir"; "finding_id"; "finding_source"; "plugin_name" ] fields)
+        `Assoc
+          (remove_json_fields
+             [ "evidence_dir"; "finding_id"; "finding_source"; "plugin_name"; "review_node_id"; "review_body_sha256" ]
+             fields)
       | _ -> fail "expected target JSON object"
     in
-    let decoded = Feedback_store.file_of_json (`Assoc [ "schema", `Int 1; "targets", `List [ v1_target ] ]) in
+    let decoded =
+      Feedback_store.file_of_json (`Assoc [ "schema", `Int 1; "targets", `List [ inline_target_without_new_fields ] ])
+    in
     (check int) "v1 target count" 1 (List.length decoded.targets);
     match decoded.targets with
     | [ target ] ->
+      (check string) "v1 target kind" "pr_review_comment" (Feedback_store.target_kind_to_string target.target_kind);
       (check (option string)) "v1 evidence_dir default" None target.evidence_dir;
       (check (option string)) "v1 finding_id default" None target.finding_id;
       (check (option string)) "v1 finding_source default" None target.finding_source;
       (check (option string)) "v1 plugin_name default" None target.plugin_name
     | [] | _ :: _ :: _ -> fail "expected one decoded v1 target");
+  with_temp_feedback_store (fun _state_path _paths store ->
+    ignore (record_one_feedback_target store : Feedback_store.target_input);
+    let target = single_feedback_target store in
+    let v2_target =
+      match Feedback_store.target_to_json target with
+      | `Assoc fields -> `Assoc (remove_json_fields [ "review_node_id"; "review_body_sha256" ] fields)
+      | _ -> fail "expected target JSON object"
+    in
+    let decoded = Feedback_store.file_of_json (`Assoc [ "schema", `Int 2; "targets", `List [ v2_target ] ]) in
+    (check int) "v2 target count" 1 (List.length decoded.targets);
+    match decoded.targets with
+    | [ target ] ->
+      (check string) "v2 target kind" "pr_review_comment" (Feedback_store.target_kind_to_string target.target_kind);
+      (check (option string)) "v2 path" (Some "src/main.ml") target.path;
+      (check (option int)) "v2 line" (Some 14) target.line
+    | [] | _ :: _ :: _ -> fail "expected one decoded v2 target");
   with_temp_feedback_store (fun _state_path _paths store ->
     let input =
       {
@@ -3645,20 +3711,35 @@ let test_feedback_target_schema_v1_compatibility_and_v2_fields () =
         plugin_name = Some "general";
       }
     in
+    let review_body_target : Feedback_store.review_body_target_input =
+      {
+        feedback_id = "rvf_body_schema";
+        review_node_id = "PRR_node_schema";
+        review_body = "review body";
+        evidence_dir = Some "/tmp/reviewotron-feedback-evidence/rvb_schema";
+      }
+    in
     Lwt_main.run
       (Feedback_store.record_posted_pr_review_targets store ~repo_url:Test_helpers.test_repo_url ~pr_number:42
          ~head_sha:"abc123def456789012345678901234567890abcd" ~review_id:1000 ~review_batch_id:"rvb_schema"
-         ~created_at:feedback_created_at [ input ]);
+         ~created_at:feedback_created_at ~review_body_target [ input ]);
     let decoded = Feedback_store.file_of_json (Feedback_store.file_to_json (Feedback_store.data store)) in
-    (check int) "v2 schema" 2 decoded.schema;
-    match decoded.targets with
+    (check int) "v3 schema" 3 decoded.schema;
+    (check int) "v3 target count" 2 (List.length decoded.targets);
+    let inline_target = find_feedback_target ~kind:"pr_review_comment" decoded.targets in
+    let body_target = find_feedback_target ~kind:"pr_review_body" decoded.targets in
+    (check (option string)) "body review node id" (Some "PRR_node_schema") body_target.review_node_id;
+    (check bool) "body hash stored" true (Option.is_some body_target.review_body_sha256);
+    (check (option string))
+      "body evidence dir" (Some "/tmp/reviewotron-feedback-evidence/rvb_schema") body_target.evidence_dir;
+    match [ inline_target ] with
     | [ target ] ->
       (check (option string))
-        "v2 evidence_dir" (Some "/tmp/reviewotron-feedback-evidence/rvb_schema") target.evidence_dir;
-      (check (option string)) "v2 finding_id" (Some "rvfind_schema") target.finding_id;
-      (check (option string)) "v2 finding_source" (Some "general") target.finding_source;
-      (check (option string)) "v2 plugin_name" (Some "general") target.plugin_name
-    | [] | _ :: _ :: _ -> fail "expected one decoded v2 target")
+        "v3 evidence_dir" (Some "/tmp/reviewotron-feedback-evidence/rvb_schema") target.evidence_dir;
+      (check (option string)) "v3 finding_id" (Some "rvfind_schema") target.finding_id;
+      (check (option string)) "v3 finding_source" (Some "general") target.finding_source;
+      (check (option string)) "v3 plugin_name" (Some "general") target.plugin_name
+    | [] | _ :: _ :: _ -> fail "expected one decoded v3 inline target")
 
 let test_feedback_deadline_semantics () =
   with_temp_feedback_store (fun _state_path _paths store ->
@@ -3768,6 +3849,31 @@ let test_api_remote_collect_paginated_list_requests_all_pages () =
     (check (list int)) "items from all pages" [ 1; 2; 3; 4; 5 ] items;
     (check (list int)) "requested pages" [ 1; 2; 3 ] (List.rev !seen_pages)
 
+let test_api_remote_parse_pr_review_reaction_counts () =
+  let body =
+    {|{
+  "data": {
+    "node": {
+      "reactionGroups": [
+        {"content": "THUMBS_UP", "reactors": {"totalCount": 4}},
+        {"content": "THUMBS_DOWN", "reactors": {"totalCount": 2}},
+        {"content": "HEART", "reactors": {"totalCount": 9}}
+      ]
+    }
+  }
+}|}
+  in
+  (match Api_remote.parse_pr_review_reaction_counts body with
+  | Ok (Some counts) ->
+    (check int) "graphql plus one" 4 counts.Github_types.plus_one;
+    (check int) "graphql minus one" 2 counts.minus_one
+  | Ok None -> fail "expected GraphQL counts"
+  | Error msg -> fail (Printf.sprintf "unexpected GraphQL parse error: %s" msg));
+  match Api_remote.parse_pr_review_reaction_counts {|{"data":{"node":null}}|} with
+  | Ok None -> ()
+  | Ok (Some _) -> fail "expected missing GraphQL node"
+  | Error msg -> fail (Printf.sprintf "unexpected null-node parse error: %s" msg)
+
 module Feedback_collector_test = Feedback_collector.Make (Api_local.Github)
 
 let test_feedback_collector_resolves_counts_and_is_idempotent () =
@@ -3848,6 +3954,61 @@ let test_feedback_collector_keeps_active_on_transient_reaction_error () =
     let events_after_error = feedback_event_lines paths.events in
     (check int) "only resolution event is written" 1 (List.length events_after_error))
 
+let test_feedback_collector_collects_body_reaction_counts () =
+  Test_helpers.reset_test_state ();
+  with_temp_feedback_store (fun _state_path paths store ->
+    ignore (record_one_body_feedback_target store : Feedback_store.review_body_target_input);
+    Api_local.set_pr_review_body_reaction_counts ~review_node_id:"PRR_node_body"
+      { Github_types.plus_one = 3; minus_one = 1 };
+    let ctx = Test_helpers.make_test_context () in
+    let now = Feedback_store.add_seconds feedback_created_at (2 * 60 * 60) in
+    Lwt_main.run (Feedback_collector_test.collect ~ctx ~store ~now ());
+    let target = single_feedback_target store in
+    (check int) "body plus one count" 3 target.last_counts.plus_one;
+    (check int) "body minus one count" 1 target.last_counts.minus_one;
+    (check (option string))
+      "body reaction observed as interaction"
+      (Some (Feedback_store.utc_string now))
+      target.first_user_interaction_at;
+    let write_log = Api_local.get_write_log () in
+    (check bool) "body collector uses GraphQL helper" true
+      (contains_sub ~sub:"[get_pr_review_reaction_counts]" write_log);
+    let events_after_collect = feedback_event_lines paths.events in
+    (check int) "body count event" 1 (List.length events_after_collect))
+
+let test_feedback_collector_marks_body_missing_on_null_graphql_node () =
+  Test_helpers.reset_test_state ();
+  with_temp_feedback_store (fun _state_path paths store ->
+    ignore (record_one_body_feedback_target store : Feedback_store.review_body_target_input);
+    Api_local.set_pr_review_body_reaction_counts_missing ~review_node_id:"PRR_node_body";
+    let ctx = Test_helpers.make_test_context () in
+    let now = Feedback_store.add_seconds feedback_created_at (2 * 60 * 60) in
+    Lwt_main.run (Feedback_collector_test.collect ~ctx ~store ~now ());
+    let target = single_feedback_target store in
+    (check string) "body missing status" "missing" (Feedback_store.target_status_to_string target.status);
+    (check (option string))
+      "body missing stop reason" (Some "comment_missing")
+      (Option.map Feedback_store.stop_reason_to_string target.stop_reason);
+    let events = String.concat "\n" (feedback_event_lines paths.events) in
+    (check bool) "body missing finalization event written" true (contains_sub ~sub:"target_finalized" events))
+
+let test_feedback_collector_keeps_body_active_on_graphql_error () =
+  Test_helpers.reset_test_state ();
+  with_temp_feedback_store (fun _state_path paths store ->
+    ignore (record_one_body_feedback_target store : Feedback_store.review_body_target_input);
+    Api_local.set_pr_review_body_reaction_counts_error ~review_node_id:"PRR_node_body" "http 502: bad gateway";
+    let ctx = Test_helpers.make_test_context () in
+    let now = Feedback_store.add_seconds feedback_created_at (2 * 60 * 60) in
+    Lwt_main.run (Feedback_collector_test.collect ~ctx ~store ~now ());
+    let target = single_feedback_target store in
+    (check string) "body status remains active" "active" (Feedback_store.target_status_to_string target.status);
+    (check (option string))
+      "body no stop reason" None
+      (Option.map Feedback_store.stop_reason_to_string target.stop_reason);
+    (check (option string)) "body not marked polled" None target.last_polled_at;
+    let events_after_error = feedback_event_lines paths.events in
+    (check int) "body error writes no events" 0 (List.length events_after_error))
+
 let test_feedback_report_summarizes_targets_and_evidence () =
   with_temp_feedback_store (fun _state_path paths store ->
     let review_batch_id = "rvb_report" in
@@ -3875,7 +4036,15 @@ let test_feedback_report_summarizes_targets_and_evidence () =
     Lwt_main.run
       (Feedback_store.record_posted_pr_review_targets store ~repo_url:Test_helpers.test_repo_url ~pr_number:42
          ~head_sha:"abc123def456789012345678901234567890abcd" ~review_id:1000 ~review_batch_id
-         ~created_at:feedback_created_at [ input_up; input_down ]);
+         ~created_at:feedback_created_at
+         ~review_body_target:
+           {
+             Feedback_store.feedback_id = "rvf_body";
+             review_node_id = "PRR_node_report";
+             review_body = "review body";
+             evidence_dir = Some evidence_dir;
+           }
+         [ input_up; input_down ]);
     Lwt_main.run
       (Feedback_store.resolve_comment_id store ~now:feedback_created_at ~feedback_id:"rvf_up" ~comment_id:91001);
     Lwt_main.run
@@ -3887,6 +4056,9 @@ let test_feedback_report_summarizes_targets_and_evidence () =
     Lwt_main.run
       (Feedback_store.update_after_poll store ~now:poll_time ~feedback_id:"rvf_down"
          ~counts:{ Feedback_store.plus_one = 0; minus_one = 1 });
+    Lwt_main.run
+      (Feedback_store.update_after_poll store ~now:poll_time ~feedback_id:"rvf_body"
+         ~counts:{ Feedback_store.plus_one = 2; minus_one = 0 });
     write_file
       (Filename.concat evidence_dir "manifest.json")
       (Yojson.Basic.to_string
@@ -3927,18 +4099,20 @@ let test_feedback_report_summarizes_targets_and_evidence () =
     match Feedback_report.load paths with
     | Error msg -> fail msg
     | Ok report ->
-      (check int) "report target count" 2 report.totals.target_count;
-      (check int) "report reacted count" 2 report.totals.reacted_count;
-      (check int) "report positive count" 1 report.totals.positive_count;
+      (check int) "report target count" 3 report.totals.target_count;
+      (check int) "report reacted count" 3 report.totals.reacted_count;
+      (check int) "report positive count" 2 report.totals.positive_count;
       (check int) "report negative count" 1 report.totals.negative_count;
-      (check int) "report event count" 4 report.event_count;
+      (check int) "report event count" 5 report.event_count;
       (match report.reviews with
       | [ review ] ->
         (check string) "review batch" review_batch_id review.review_batch_id;
-        (check int) "review targets" 2 (List.length review.targets);
+        (check int) "review targets" 3 (List.length review.targets);
         let markdown = Feedback_report.render_markdown report in
         (check bool) "markdown includes positive target" true (contains_sub ~sub:"rvf_up" markdown);
         (check bool) "markdown includes negative target" true (contains_sub ~sub:"rvf_down" markdown);
+        (check bool) "markdown includes body target" true (contains_sub ~sub:"rvf_body" markdown);
+        (check bool) "markdown renders body target at review level" true (contains_sub ~sub:"review body" markdown);
         (check bool) "markdown includes github comment url" true
           (contains_sub ~sub:"https://github.com/org/monorepo/pull/42#discussion_r91002" markdown);
         (check bool) "markdown includes evidence message" true (contains_sub ~sub:"general finding rejected" markdown);
@@ -3954,7 +4128,40 @@ let test_feedback_report_summarizes_targets_and_evidence () =
         let json = Feedback_report.to_json report in
         let json_text = Yojson.Basic.to_string json in
         (check bool) "json includes sentiment" true (contains_sub ~sub:{|"sentiment":"negative"|} json_text);
-        (check bool) "json includes comment url" true (contains_sub ~sub:{|"github_comment_url"|} json_text)
+        (check bool) "json includes comment url" true (contains_sub ~sub:{|"github_comment_url"|} json_text);
+        (check bool) "json includes body target kind" true
+          (contains_sub ~sub:{|"target_kind":"pr_review_body"|} json_text);
+        let body_target_json =
+          match json with
+          | `Assoc fields ->
+            (match json_list_field fields "reviews" with
+            | [ `Assoc review_fields ] ->
+              json_list_field review_fields "targets"
+              |> List.find_opt (function
+                | `Assoc target_fields ->
+                  (match List.assoc_opt "target_kind" target_fields with
+                  | Some (`String kind) -> String.equal kind "pr_review_body"
+                  | Some (`Assoc _)
+                  | Some (`Bool _)
+                  | Some (`Float _)
+                  | Some (`Int _)
+                  | Some (`List _)
+                  | Some `Null
+                  | None ->
+                    false)
+                | `Bool _ | `Float _ | `Int _ | `List _ | `Null | `String _ -> false)
+            | [ (`Bool _ | `Float _ | `Int _ | `List _ | `Null | `String _) ] -> fail "expected report review object"
+            | [] | _ :: _ :: _ -> fail "expected one report review")
+          | `Bool _ | `Float _ | `Int _ | `List _ | `Null | `String _ -> fail "expected report object"
+        in
+        (match body_target_json with
+        | Some (`Assoc target_fields) ->
+          let has_field name = List.exists (fun (key, _value) -> String.equal key name) target_fields in
+          (check bool) "body target json omits path" false (has_field "path");
+          (check bool) "body target json omits finding_id" false (has_field "finding_id");
+          (check bool) "body target json has review hash" true (has_field "review_body_sha256")
+        | Some (`Bool _) | Some (`Float _) | Some (`Int _) | Some (`List _) | Some `Null | Some (`String _) | None ->
+          fail "expected body target JSON object")
       | [] | _ :: _ :: _ -> fail "expected one review summary"))
 
 let test_feedback_publish_records_targets_and_markers () =
@@ -3981,82 +4188,124 @@ let test_feedback_publish_records_targets_and_markers () =
     let write_log = Api_local.get_write_log () in
     (check bool) "posted marker" true (contains_sub ~sub:"reviewotron-feedback-id" write_log);
     let targets = (Feedback_store.data feedback_store).targets in
-    (check int) "one target per inline comment" 1 (List.length targets);
-    match targets with
-    | [ target ] ->
-      (check int) "created review id stored" 1000 target.review_id;
-      (check (option int)) "comment id unresolved initially" None target.comment_id;
-      (check string) "repo stored" Test_helpers.test_repo_url target.repo_url;
-      (check (option string)) "finding source stored" (Some "general") target.finding_source;
-      (check (option string)) "plugin stored" (Some "general") target.plugin_name;
-      (check bool) "finding id stored" true
-        (match target.finding_id with
-        | Some id -> CCString.prefix ~pre:"rvfind_" id
-        | None -> false);
-      let evidence_dir =
-        match target.evidence_dir with
-        | Some dir -> dir
-        | None -> fail "target missing evidence_dir"
-      in
-      (check string) "evidence dir"
-        (Feedback_evidence.bundle_dir ~evidence_root:paths.evidence_root ~review_batch_id:target.review_batch_id)
-        evidence_dir;
-      let read_bundle_json filename =
-        let path = Filename.concat evidence_dir filename in
-        (check bool) (Printf.sprintf "%s exists" filename) true (Sys.file_exists path);
-        match read_json path with
-        | `Assoc fields -> fields
-        | _ -> fail (Printf.sprintf "expected %s to contain a JSON object" filename)
-      in
-      let manifest = read_bundle_json "manifest.json" in
-      (check string) "manifest batch" target.review_batch_id (json_string_field manifest "review_batch_id");
-      (check int) "manifest review id" 1000 (json_int_field manifest "github_review_id");
-      (check int) "manifest comment count" 1 (json_int_field manifest "comment_count");
-      (check string) "manifest source kind" "github" (json_string_field manifest "source_kind");
-      let filtered_diff_path = Filename.concat evidence_dir "filtered_diff.patch" in
-      (check bool) "filtered diff exists" true (Sys.file_exists filtered_diff_path);
-      (check bool) "filtered diff content" true (contains_sub ~sub:"diff --git" (read_file filtered_diff_path));
-      let posted = read_bundle_json "posted_review.json" in
-      let posted_comments = json_list_field posted "comments" in
-      (match posted_comments with
-      | [ `Assoc comment_fields ] ->
-        (check string) "posted feedback id" target.feedback_id (json_string_field comment_fields "feedback_id");
-        (check (option string))
-          "posted finding id" target.finding_id
-          (Some (json_string_field comment_fields "finding_id"));
-        (check bool) "posted body has marker" true
-          (contains_sub ~sub:"reviewotron-feedback-id" (json_string_field comment_fields "body"));
-        (check string) "posted body hash" target.comment_body_sha256
-          (json_string_field comment_fields "comment_body_sha256")
-      | _ -> fail "expected one posted review comment");
-      let findings = read_bundle_json "findings.json" in
-      (match json_list_field findings "findings" with
-      | [ `Assoc finding_fields ] ->
-        (check string) "finding routing" "inline" (json_string_field finding_fields "routing_outcome");
-        (check string) "finding source" "general" (json_string_field finding_fields "finding_source");
-        (check string) "finding plugin" "general" (json_string_field finding_fields "plugin_name");
-        (check (option string))
-          "finding id linked" target.finding_id
-          (Some (json_string_field finding_fields "finding_id"))
-      | _ -> fail "expected one routed finding");
-      let costs = read_bundle_json "review_costs.json" in
-      (check bool) "costs included" true
-        (match json_list_field costs "review_costs" with
-        | [] -> false
-        | _ :: _ -> true);
-      let config_path = Filename.concat evidence_dir "review_config.json" in
-      let config_text = read_file config_path in
-      (check bool) "top-level prompt redacted" false (contains_sub ~sub:"secret top-level prompt" config_text);
-      (check bool) "nested prompt redacted" false (contains_sub ~sub:"secret nested prompt" config_text);
-      let config = read_bundle_json "review_config.json" in
-      (match List.assoc_opt "auto_review_pr_open" config with
-      | Some (`Bool true) -> ()
-      | Some _ | None -> fail "expected review config to include auto_review_pr_open=true");
-      let fetched_files = read_bundle_json "fetched_files.json" in
-      let fetched_file_keys = json_keys (`Assoc fetched_files) in
-      (check bool) "fetched metadata has no content field" false
-        (List.exists (String.equal "content") fetched_file_keys)
-    | [] | _ :: _ :: _ -> fail "expected one feedback target")
+    (check int) "body plus inline target" 2 (List.length targets);
+    let inline_target = find_feedback_target ~kind:"pr_review_comment" targets in
+    let body_target = find_feedback_target ~kind:"pr_review_body" targets in
+    (check int) "created review id stored" 1000 inline_target.review_id;
+    (check int) "body review id stored" 1000 body_target.review_id;
+    (check (option int)) "comment id unresolved initially" None inline_target.comment_id;
+    (check (option string)) "body review node id" (Some "PRR_node_1000") body_target.review_node_id;
+    (check bool) "body hash stored" true (Option.is_some body_target.review_body_sha256);
+    (check string) "repo stored" Test_helpers.test_repo_url inline_target.repo_url;
+    (check (option string)) "finding source stored" (Some "general") inline_target.finding_source;
+    (check (option string)) "plugin stored" (Some "general") inline_target.plugin_name;
+    (check bool) "finding id stored" true
+      (match inline_target.finding_id with
+      | Some id -> CCString.prefix ~pre:"rvfind_" id
+      | None -> false);
+    let evidence_dir =
+      match inline_target.evidence_dir with
+      | Some dir -> dir
+      | None -> fail "target missing evidence_dir"
+    in
+    (check (option string)) "body evidence dir matches" (Some evidence_dir) body_target.evidence_dir;
+    (check string) "evidence dir"
+      (Feedback_evidence.bundle_dir ~evidence_root:paths.evidence_root ~review_batch_id:inline_target.review_batch_id)
+      evidence_dir;
+    let read_bundle_json filename =
+      let path = Filename.concat evidence_dir filename in
+      (check bool) (Printf.sprintf "%s exists" filename) true (Sys.file_exists path);
+      match read_json path with
+      | `Assoc fields -> fields
+      | _ -> fail (Printf.sprintf "expected %s to contain a JSON object" filename)
+    in
+    let manifest = read_bundle_json "manifest.json" in
+    (check string) "manifest batch" inline_target.review_batch_id (json_string_field manifest "review_batch_id");
+    (check int) "manifest review id" 1000 (json_int_field manifest "github_review_id");
+    (check int) "manifest comment count" 1 (json_int_field manifest "comment_count");
+    (check string) "manifest source kind" "github" (json_string_field manifest "source_kind");
+    let filtered_diff_path = Filename.concat evidence_dir "filtered_diff.patch" in
+    (check bool) "filtered diff exists" true (Sys.file_exists filtered_diff_path);
+    (check bool) "filtered diff content" true (contains_sub ~sub:"diff --git" (read_file filtered_diff_path));
+    let posted = read_bundle_json "posted_review.json" in
+    (check bool) "posted review body asks for feedback" true
+      (contains_sub ~sub:Review_format.feedback_prompt (json_string_field posted "body"));
+    let posted_comments = json_list_field posted "comments" in
+    (match posted_comments with
+    | [ `Assoc comment_fields ] ->
+      (check string) "posted feedback id" inline_target.feedback_id (json_string_field comment_fields "feedback_id");
+      (check (option string))
+        "posted finding id" inline_target.finding_id
+        (Some (json_string_field comment_fields "finding_id"));
+      (check bool) "posted body has marker" true
+        (contains_sub ~sub:"reviewotron-feedback-id" (json_string_field comment_fields "body"));
+      (check bool) "posted body asks for feedback" true
+        (contains_sub ~sub:Review_format.feedback_prompt (json_string_field comment_fields "body"));
+      (check string) "posted body hash"
+        (require_some "inline target missing comment_body_sha256" inline_target.comment_body_sha256)
+        (json_string_field comment_fields "comment_body_sha256")
+    | _ -> fail "expected one posted review comment");
+    let findings = read_bundle_json "findings.json" in
+    (match json_list_field findings "findings" with
+    | [ `Assoc finding_fields ] ->
+      (check string) "finding routing" "inline" (json_string_field finding_fields "routing_outcome");
+      (check string) "finding source" "general" (json_string_field finding_fields "finding_source");
+      (check string) "finding plugin" "general" (json_string_field finding_fields "plugin_name");
+      (check (option string))
+        "finding id linked" inline_target.finding_id
+        (Some (json_string_field finding_fields "finding_id"))
+    | _ -> fail "expected one routed finding");
+    let costs = read_bundle_json "review_costs.json" in
+    (check bool) "costs included" true
+      (match json_list_field costs "review_costs" with
+      | [] -> false
+      | _ :: _ -> true);
+    let config_path = Filename.concat evidence_dir "review_config.json" in
+    let config_text = read_file config_path in
+    (check bool) "top-level prompt redacted" false (contains_sub ~sub:"secret top-level prompt" config_text);
+    (check bool) "nested prompt redacted" false (contains_sub ~sub:"secret nested prompt" config_text);
+    let config = read_bundle_json "review_config.json" in
+    (match List.assoc_opt "auto_review_pr_open" config with
+    | Some (`Bool true) -> ()
+    | Some _ | None -> fail "expected review config to include auto_review_pr_open=true");
+    let fetched_files = read_bundle_json "fetched_files.json" in
+    let fetched_file_keys = json_keys (`Assoc fetched_files) in
+    (check bool) "fetched metadata has no content field" false (List.exists (String.equal "content") fetched_file_keys))
+
+let test_feedback_publish_body_only_records_body_target_and_evidence () =
+  Test_helpers.reset_test_state ();
+  Api_local.set_agent_response_path "mock_api_responses/claude/missing_for_body_only_test.json";
+  with_temp_feedback_store (fun state_path paths feedback_store ->
+    let state = State.create ~filepath:state_path () in
+    let ctx =
+      Test_helpers.make_test_context ~state ~feedback_store ~config:Test_helpers.auto_review_enabled_config ()
+    in
+    let payload = Test_helpers.make_pr_payload () in
+    let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
+    Lwt_main.run (R_test.process_event ctx ~event);
+    let write_log = Api_local.get_write_log () in
+    (check bool) "body-only review posted" true (contains_sub ~sub:"[create_pr_review]" write_log);
+    (check bool) "body-only review asks for feedback" true (contains_sub ~sub:Review_format.feedback_prompt write_log);
+    let targets = (Feedback_store.data feedback_store).targets in
+    (check int) "one body target" 1 (List.length targets);
+    let body_target = find_feedback_target ~kind:"pr_review_body" targets in
+    (check (option string)) "body review node id" (Some "PRR_node_1000") body_target.review_node_id;
+    (check (option int)) "body target has no comment id" None body_target.comment_id;
+    (check (option string)) "body target has no finding id" None body_target.finding_id;
+    let evidence_dir = require_some "body target missing evidence_dir" body_target.evidence_dir in
+    (check string) "body evidence dir"
+      (Feedback_evidence.bundle_dir ~evidence_root:paths.evidence_root ~review_batch_id:body_target.review_batch_id)
+      evidence_dir;
+    let posted =
+      match read_json (Filename.concat evidence_dir "posted_review.json") with
+      | `Assoc fields -> fields
+      | _ -> fail "expected posted_review.json object"
+    in
+    (check bool) "posted review body persisted" true
+      (contains_sub ~sub:Review_format.feedback_prompt (json_string_field posted "body"));
+    match json_list_field posted "comments" with
+    | [] -> ()
+    | _ :: _ -> fail "expected no posted inline comments for body-only feedback")
 
 let test_feedback_publish_failure_records_no_targets () =
   Test_helpers.reset_test_state ();
@@ -4083,7 +4332,9 @@ let test_feedback_quiet_success_records_no_targets () =
     let payload = Test_helpers.make_pr_payload () in
     let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
     Lwt_main.run (R_test.process_event ctx ~event);
+    let write_log = Api_local.get_write_log () in
     (check int) "no inline targets for quiet success" 0 (List.length (Feedback_store.data feedback_store).targets);
+    (check bool) "quiet success omits feedback prompt" false (contains_sub ~sub:Review_format.feedback_prompt write_log);
     (check bool) "no evidence for quiet success" false (Sys.file_exists paths.evidence_root))
 
 let test_feedback_disabled_writes_no_evidence () =
@@ -6154,14 +6405,15 @@ let () =
           test_case "review job log context" `Quick test_review_job_log_context;
           test_case "marker and deterministic ids" `Quick test_feedback_marker_and_id_helpers;
           test_case "target roundtrip and privacy scan" `Quick test_feedback_target_roundtrip_and_privacy;
-          test_case "target schema v1 compatibility and v2 fields" `Quick
-            test_feedback_target_schema_v1_compatibility_and_v2_fields;
+          test_case "target schema compatibility and v3 fields" `Quick
+            test_feedback_target_schema_compatibility_and_v3_fields;
           test_case "deadline semantics" `Quick test_feedback_deadline_semantics;
           test_case "PR close marks final_due" `Quick test_feedback_close_marks_final_due;
           test_case "pollable target selection" `Quick test_feedback_pollable_selection;
           test_case "terminal statuses are not pollable" `Quick test_feedback_status_selection_terminal_values;
           test_case "remote pagination collects all pages" `Quick
             test_api_remote_collect_paginated_list_requests_all_pages;
+          test_case "remote GraphQL review reaction parser" `Quick test_api_remote_parse_pr_review_reaction_counts;
           test_case "collector resolves counts and is idempotent" `Quick
             test_feedback_collector_resolves_counts_and_is_idempotent;
           test_case "collector final-due target closes" `Quick test_feedback_collector_final_due_closes_target;
@@ -6169,8 +6421,16 @@ let () =
             test_feedback_collector_marks_missing_on_review_comment_404;
           test_case "collector keeps active on transient reaction error" `Quick
             test_feedback_collector_keeps_active_on_transient_reaction_error;
+          test_case "collector collects body reaction counts" `Quick
+            test_feedback_collector_collects_body_reaction_counts;
+          test_case "collector marks body missing on null GraphQL node" `Quick
+            test_feedback_collector_marks_body_missing_on_null_graphql_node;
+          test_case "collector keeps body active on GraphQL error" `Quick
+            test_feedback_collector_keeps_body_active_on_graphql_error;
           test_case "report summarizes targets and evidence" `Quick test_feedback_report_summarizes_targets_and_evidence;
           test_case "publish records targets and markers" `Quick test_feedback_publish_records_targets_and_markers;
+          test_case "publish body-only review records body target" `Quick
+            test_feedback_publish_body_only_records_body_target_and_evidence;
           test_case "failed publish records no targets" `Quick test_feedback_publish_failure_records_no_targets;
           test_case "quiet success records no targets" `Quick test_feedback_quiet_success_records_no_targets;
           test_case "feedback disabled writes no evidence" `Quick test_feedback_disabled_writes_no_evidence;
