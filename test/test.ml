@@ -6,6 +6,7 @@ let read_file path = Std.input_file ~bin:true path
 let read_json path = Melange_json.of_string (read_file path)
 
 let contains_sub ~sub s = CCString.find ~sub s >= 0
+let reviewed_commit_sub sha = Printf.sprintf "**Reviewed commit:** `%s`" (Review_job.short_display_id sha)
 
 let write_file path contents =
   let oc = open_out_bin path in
@@ -2447,6 +2448,8 @@ let test_comment_trigger_quiet_success_posts_lgtm_comment () =
   (check bool) "quiet success comment posted to PR" true
     (contains_sub ~sub:"[create_issue_comment] repo=https://github.com/org/monorepo number=42" write_log);
   (check bool) "quiet success comment says LGTM" true (contains_sub ~sub:"LGTM :+1:" write_log);
+  (check bool) "quiet success comment shows reviewed commit" true
+    (contains_sub ~sub:(reviewed_commit_sub "abc123def456789012345678901234567890abcd") write_log);
   (check bool) "no quiet success reaction added" false
     (contains_sub
        ~sub:"[create_issue_comment_reaction] repo=https://github.com/org/monorepo comment_id=9001 content=+1"
@@ -2598,6 +2601,8 @@ let test_pr_all_ignored_paths_posts_lgtm_comment () =
   (check bool) "quiet success comment posted" true
     (contains_sub ~sub:"[create_issue_comment] repo=https://github.com/org/monorepo number=99" write_log);
   (check bool) "quiet success comment says LGTM" true (contains_sub ~sub:"LGTM :+1:" write_log);
+  (check bool) "quiet success comment shows reviewed commit" true
+    (contains_sub ~sub:(reviewed_commit_sub "abc123def456789012345678901234567890abcd") write_log);
   (check bool) "no thumbs-up reaction added" false
     (contains_sub ~sub:"[create_issue_reaction] repo=https://github.com/org/monorepo number=99 content=+1" write_log);
   (check bool) "no failure comment" false (contains_sub ~sub:"couldn't review" write_log);
@@ -2617,6 +2622,8 @@ let test_pr_empty_findings_review () =
   (check bool) "quiet success comment posted" true
     (contains_sub ~sub:"[create_issue_comment] repo=https://github.com/org/monorepo number=42" write_log);
   (check bool) "quiet success comment says LGTM" true (contains_sub ~sub:"LGTM :+1:" write_log);
+  (check bool) "quiet success comment shows reviewed commit" true
+    (contains_sub ~sub:(reviewed_commit_sub "abc123def456789012345678901234567890abcd") write_log);
   (check bool) "no quiet success reaction added" false
     (contains_sub ~sub:"[create_issue_reaction] repo=https://github.com/org/monorepo number=42 content=+1" write_log);
   (check bool) "no PR review when there is nothing to add" false (contains_sub ~sub:"[create_pr_review]" write_log);
@@ -5381,6 +5388,8 @@ let test_pr_empty_diff_posts_lgtm_comment () =
   (check bool) "quiet success comment posted on empty diff" true
     (contains_sub ~sub:"[create_issue_comment] repo=https://github.com/org/monorepo number=42" write_log);
   (check bool) "quiet success comment says LGTM" true (contains_sub ~sub:"LGTM :+1:" write_log);
+  (check bool) "quiet success comment shows reviewed commit" true
+    (contains_sub ~sub:(reviewed_commit_sub "abc123def456789012345678901234567890abcd") write_log);
   (check bool) "no thumbs-up reaction added on empty diff" false
     (contains_sub ~sub:"[create_issue_reaction] repo=https://github.com/org/monorepo number=42 content=+1" write_log);
   (check bool) "no failure comment posted on empty diff" false (contains_sub ~sub:"couldn't review" write_log);

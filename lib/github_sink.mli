@@ -22,7 +22,8 @@ module Make (_ : Api.Github_review_sink) : sig
 
   (** Post the visible acknowledgement used when a PR review completes
       successfully with nothing to report. *)
-  val publish_success_comment : ctx:Context.t -> repo_url:string -> number:int -> (unit, string) result Lwt.t
+  val publish_success_comment :
+    head_sha:string option -> ctx:Context.t -> repo_url:string -> number:int -> (unit, string) result Lwt.t
 
   (** Post commit comments for critical/warning findings from a push review.
       Lower-severity findings are intentionally ignored. *)

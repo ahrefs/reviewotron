@@ -25,6 +25,9 @@ let next_nonce () =
   incr nonce_counter;
   Printf.sprintf "%s:%d" (Lazy.force process_nonce) !nonce_counter
 
+let with_reviewed_commit ~head_sha body =
+  Printf.sprintf "%s\n\n**Reviewed commit:** `%s`" body (Review_job.short_display_id head_sha)
+
 let with_feedback_marker ~feedback_id (comment : Review_comment.t) =
   { comment with body = Feedback_store.append_marker ~feedback_id comment.body }
 
@@ -130,8 +133,7 @@ module Make (SNK : Api.Github_review_sink) = struct
       | None -> report.comments
     in
     let comments = List.map review_comment_req_of_comment review_comments in
-    let short_sha = if String.length job.head_sha >= 7 then String.sub job.head_sha 0 7 else job.head_sha in
-    let body = Printf.sprintf "%s\n\n**Reviewed commit:** `%s`" report.body short_sha in
+    let body = with_reviewed_commit ~head_sha:job.head_sha report.body in
     let review_req = Github_types.{ commit_id = Some job.head_sha; body; event = Comment; comments } in
     let%lwt post_result = SNK.create_pr_review ~ctx ~repo_url:job.repo_key ~number review_req in
     match post_result with
@@ -168,8 +170,12 @@ module Make (SNK : Api.Github_review_sink) = struct
       log#error "failed to post review-failure comment on PR #%d: %s" number msg;
       Lwt.return (Error msg)
 
-  let publish_success_comment ~ctx ~repo_url ~number =
-    let body = "LGTM :+1:" in
+  let publish_success_comment ~head_sha ~ctx ~repo_url ~number =
+    let body =
+      match head_sha with
+      | None -> "LGTM :+1:"
+      | Some head_sha -> with_reviewed_commit ~head_sha "LGTM :+1:"
+    in
     let%lwt result = SNK.create_issue_comment ~ctx ~repo_url ~number { body } in
     match result with
     | Ok () ->

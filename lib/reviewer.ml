@@ -78,7 +78,8 @@ struct
         log#warn "failed to remove review progress reaction %d: %s" reaction_id msg;
         Lwt.return_unit)
 
-  let publish_success_comment ~ctx ~repo_url ~number = Sink.publish_success_comment ~ctx ~repo_url ~number
+  let publish_success_comment ~head_sha ~ctx ~repo_url ~number =
+    Sink.publish_success_comment ~head_sha ~ctx ~repo_url ~number
 
   (** A report is worth posting as a PR review when it surfaces any inline
       comment, any out-of-diff finding section, a security-plugin error, or a
@@ -141,7 +142,9 @@ struct
         match report_has_surface report with
         | false ->
           let%lwt () = remove_progress_reaction ~ctx ~repo_url:job.repo_key progress in
-          let%lwt post_result = publish_success_comment ~ctx ~repo_url:job.repo_key ~number in
+          let%lwt post_result =
+            publish_success_comment ~head_sha:(Some job.head_sha) ~ctx ~repo_url:job.repo_key ~number
+          in
           (match post_result with
           | Ok () ->
             record_pr_reviewed ~ctx ~repo_url:job.repo_key ~number ~head_sha:job.head_sha
@@ -195,7 +198,7 @@ struct
     | Empty ->
       (* Nothing to review after filtering — a successful no-op, not a failure.
          Signal "looked, all good" with a visible PR comment. *)
-      let%lwt post_result = publish_success_comment ~ctx ~repo_url ~number in
+      let%lwt post_result = publish_success_comment ~head_sha ~ctx ~repo_url ~number in
       record_pr_notice_if_delivered ~ctx ~repo_url ~number ~head_sha post_result;
       Lwt.return_unit
     | Too_large total_lines ->
