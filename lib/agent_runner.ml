@@ -104,6 +104,21 @@ let usage_of_result ~provider (result : Ai_core.Generate_text_result.t) =
         r + u.cache_read, w + u.cache_write, Llm_provider.sum_cost cost u.cost)
       (0, 0, None) result.steps
 
+let missing_structured_output_message ~agent_name ~finish_reason ~finalization_failed =
+  let suffix =
+    match finalization_failed with
+    | true -> "; finalization also failed"
+    | false -> ""
+  in
+  match finish_reason with
+  | Ai_provider.Finish_reason.Error ->
+    Printf.sprintf "agent %s: provider/model returned finish_reason=error without structured output%s" agent_name suffix
+  | Ai_provider.Finish_reason.Stop | Ai_provider.Finish_reason.Length | Ai_provider.Finish_reason.Tool_calls
+  | Ai_provider.Finish_reason.Content_filter | Ai_provider.Finish_reason.Other _ | Ai_provider.Finish_reason.Unknown ->
+    Printf.sprintf "agent %s: no structured output returned (finish_reason=%s%s)" agent_name
+      (Ai_provider.Finish_reason.to_string finish_reason)
+      suffix
+
 let default_model_id =
   let open Ai_provider_anthropic.Model_catalog in
   function
@@ -329,20 +344,23 @@ let run_agent ~provider ~model ?tools ?(max_retries = 2) ?debug_dir ?log_context
         match result.finish_reason with
         | Ai_provider.Finish_reason.Tool_calls -> Some "it reached the tool-use budget"
         | Ai_provider.Finish_reason.Length -> Some "it reached the model output length limit"
-        | _ -> None
+        | Ai_provider.Finish_reason.Stop | Ai_provider.Finish_reason.Content_filter | Ai_provider.Finish_reason.Error
+        | Ai_provider.Finish_reason.Other _ | Ai_provider.Finish_reason.Unknown ->
+          None
       in
       (match recoverable_exhaustion with
       | None ->
         let msg =
-          Printf.sprintf "agent %s: no structured output returned (finish_reason=%s)" config.name
-            (Ai_provider.Finish_reason.to_string result.finish_reason)
+          missing_structured_output_message ~agent_name:config.name ~finish_reason:result.finish_reason
+            ~finalization_failed:false
         in
         (match debug_dir with
         | Some dir ->
           (match
              write_debug_dump ~dir ~config ~finish_reason:result.finish_reason ~steps:result.steps ~usage:result.usage
            with
-          | Some filepath -> log#warn "%sagent %s: parse failed, debug dump at %s" log_prefix config.name filepath
+          | Some filepath ->
+            log#warn "%sagent %s: structured output missing, debug dump at %s" log_prefix config.name filepath
           | None -> log#warn "%s%s" log_prefix msg)
         | None -> log#warn "%s%s" log_prefix msg);
         Lwt.return_error msg
@@ -368,16 +386,16 @@ let run_agent ~provider ~model ?tools ?(max_retries = 2) ?debug_dir ?log_context
             Lwt.return_error msg)
         | None ->
           let msg =
-            Printf.sprintf "agent %s: no structured output returned (finish_reason=%s; finalization also failed)"
-              config.name
-              (Ai_provider.Finish_reason.to_string result.finish_reason)
+            missing_structured_output_message ~agent_name:config.name ~finish_reason:result.finish_reason
+              ~finalization_failed:true
           in
           (match debug_dir with
           | Some dir ->
             (match
                write_debug_dump ~dir ~config ~finish_reason:result.finish_reason ~steps:result.steps ~usage:result.usage
              with
-            | Some filepath -> log#warn "%sagent %s: parse failed, debug dump at %s" log_prefix config.name filepath
+            | Some filepath ->
+              log#warn "%sagent %s: structured output missing, debug dump at %s" log_prefix config.name filepath
             | None -> log#warn "%s%s" log_prefix msg)
           | None -> log#warn "%s%s" log_prefix msg);
           Lwt.return_error msg))
