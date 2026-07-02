@@ -5124,7 +5124,7 @@ let test_pr_general_failure_no_findings () =
     (CCString.find ~sub:"security review completed and found no confirmed security findings" write_log >= 0);
   (check bool) "has re-trigger message" true (CCString.find ~sub:"re-trigger the review" write_log >= 0);
   (check bool) "surfaces failure cause in details" true
-    (CCString.find ~sub:"<details><summary>Details</summary>" write_log >= 0)
+    (CCString.find ~sub:"<details open><summary>Details</summary>" write_log >= 0)
 
 let test_pr_general_failure_with_security_findings () =
   Test_helpers.reset_test_state ();
@@ -5425,6 +5425,8 @@ let test_review_failure_comment_mentions_cause () =
     (contains_sub ~sub:"too large" (String.lowercase_ascii remote));
   let publish = Review_failure.to_comment (Publish_failed "http 422: invalid comments") in
   (check bool) "publish failure says review was produced" true (contains_sub ~sub:"produced a review" publish);
+  (check bool) "failure details are open by default" true
+    (contains_sub ~sub:"<details open><summary>Details</summary>" publish);
   (check bool) "publish failure includes raw error" true (contains_sub ~sub:"http 422" publish)
 
 (* Integration tests: drive process_event and assert on the write log. *)

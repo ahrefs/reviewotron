@@ -21,9 +21,9 @@ let classify_fetch_error (error : Http_util.error) =
 
 let prefix = ":robot: **reviewotron** couldn't review this PR."
 
-(** A failure body that quotes the raw error in a collapsed [<details>] block. *)
+(** A failure body that quotes the raw error in an open [<details>] block. *)
 let with_details ~explanation detail =
-  Printf.sprintf "%s\n\n%s\n\n<details><summary>Details</summary>\n\n```\n%s\n```\n\n</details>" prefix explanation
+  Printf.sprintf "%s\n\n%s\n\n<details open><summary>Details</summary>\n\n```\n%s\n```\n\n</details>" prefix explanation
     detail
 
 let to_comment = function

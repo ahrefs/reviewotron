@@ -271,13 +271,14 @@ let render_section ~title ~lead = function
     let bullets = String.concat "\n" (List.map to_bullet fs) in
     Printf.sprintf "\n\n%s\n%s\n%s" title lead bullets
 
-(* Append the raw plugin error in a collapsed [<details>] block, matching the
+(* Append the raw plugin error in an open [<details>] block, matching the
    style of {!Review_failure} comments. Lets the author see the actual cause
    (e.g. a provider 400) without it dominating the notice. *)
 let with_failure_details ~reason body =
   match reason with
   | None -> body
-  | Some reason -> Printf.sprintf "%s\n\n<details><summary>Details</summary>\n\n```\n%s\n```\n\n</details>" body reason
+  | Some reason ->
+    Printf.sprintf "%s\n\n<details open><summary>Details</summary>\n\n```\n%s\n```\n\n</details>" body reason
 
 let cost_plugin_ran ~plugin review_costs =
   List.exists
