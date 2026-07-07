@@ -24,9 +24,8 @@ type right_line = {
   is_addition : bool;
 }
 
-let contains ~sub s = CCString.find ~sub s >= 0
 let lower s = String.lowercase_ascii s
-let lower_contains ~sub s = contains ~sub (lower s)
+let lower_contains ~sub s = String_ext.lower_contains ~sub s
 
 let contains_any needles s = List.exists (fun needle -> lower_contains ~sub:needle s) needles
 

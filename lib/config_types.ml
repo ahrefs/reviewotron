@@ -190,6 +190,11 @@ type config = {
   model : string; [@json.default "claude-sonnet-4-6"] [@jsonschema.description "Model ID for the general review agent."]
   ignored_paths : string list;
      [@json.default []] [@jsonschema.description "Glob patterns (\\* wildcard) for files to exclude from review."]
+  ignore_generated_files : bool;
+     [@json.default true]
+     [@jsonschema.description
+       "Exclude conservatively detected generated files before file and line limits are enforced. Set false to review \
+        generated artifacts."]
   ignored_authors : string list;
      [@json.default []] [@jsonschema.description "Authors whose changes are skipped (webhook mode)."]
   auto_review_pr_open : bool;

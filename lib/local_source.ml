@@ -10,7 +10,7 @@ type prepare_error =
 
 let string_of_prepare_error = function
   | Read_failed msg -> msg
-  | Empty -> "all files were filtered out"
+  | Empty -> "all files were filtered out by ignored path or generated-file filters"
   | Too_large total_lines -> Printf.sprintf "diff has %d lines, which exceeds the configured limit" total_lines
   | Too_many_files file_count -> Printf.sprintf "diff touches %d files, which exceeds the configured limit" file_count
 
@@ -96,7 +96,7 @@ let prepare_diff ~config diff_text =
 let prepare_review_from_text ~root ~repo_key ?change_key ~title ~description ~diff_text ~config () =
   match prepare_diff ~config diff_text with
   | Error error -> Lwt.return (Error error)
-  | Ok (filtered_diff, filtered_text) ->
+  | Ok { Review_engine.filtered_diff; filtered_text } ->
     let digest = digest_change_key filtered_text in
     let change_label =
       match change_key with
