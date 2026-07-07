@@ -33,6 +33,85 @@ let write_file path contents =
   let oc = open_out_bin path in
   Fun.protect ~finally:(fun () -> close_out_noerr oc) (fun () -> output_string oc contents)
 
+let telemetry_lookup bindings name =
+  match List.find_opt (fun (key, _) -> String.equal key name) bindings with
+  | Some (_, value) -> Some value
+  | None -> None
+
+let otel_base_endpoint_var = "OTEL_EXPORTER_OTLP_ENDPOINT"
+let otel_traces_endpoint_var = "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"
+
+let test_telemetry_env_absent_disables () =
+  (check bool) "disabled" false (Telemetry.enabled_of_env (telemetry_lookup []))
+
+let test_telemetry_env_reviewotron_flag_enables () =
+  (check bool) "enabled" true (Telemetry.enabled_of_env (telemetry_lookup [ "REVIEWOTRON_OTEL", "1" ]))
+
+let test_telemetry_env_standard_endpoint_enables () =
+  (check bool) "enabled" true
+    (Telemetry.enabled_of_env (telemetry_lookup [ "OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:4318" ]))
+
+let test_telemetry_env_sdk_disabled_wins () =
+  (check bool) "disabled" false
+    (Telemetry.enabled_of_env
+       (telemetry_lookup
+          [
+            "OTEL_SDK_DISABLED", "true"; "REVIEWOTRON_OTEL", "1"; "OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:4318";
+          ]))
+
+let test_telemetry_env_explicit_false_disables () =
+  (check bool) "disabled" false
+    (Telemetry.enabled_of_env
+       (telemetry_lookup [ "REVIEWOTRON_OTEL", "0"; "OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:4318" ]))
+
+let test_telemetry_blank_traces_endpoint_strips_base_slash () =
+  (check (list (pair string string)))
+    "overrides"
+    [ otel_traces_endpoint_var, "http://collector:4318/v1/traces" ]
+    (Telemetry.endpoint_overrides_of_env
+       (telemetry_lookup [ otel_base_endpoint_var, "http://collector:4318/"; otel_traces_endpoint_var, "" ]))
+
+let test_telemetry_cli_traces_endpoint_overrides_traces_env () =
+  (check (list (pair string string)))
+    "overrides"
+    [ otel_traces_endpoint_var, "http://cli-collector:4318/v1/traces" ]
+    (Telemetry.endpoint_overrides_of_env ~traces_endpoint:"http://cli-collector:4318/v1/traces"
+       (telemetry_lookup [ otel_traces_endpoint_var, "http://env-collector:4318/v1/traces" ]))
+
+let with_env_vars bindings f =
+  let names = List.map fst bindings in
+  let old_values = List.map (fun name -> name, Sys.getenv_opt name) names in
+  Fun.protect
+    ~finally:(fun () ->
+      List.iter
+        (fun (name, value) ->
+          match value with
+          | Some value -> Unix.putenv name value
+          | None -> ExtUnix.All.unsetenv name)
+        old_values)
+    (fun () ->
+      List.iter (fun (name, value) -> Unix.putenv name value) bindings;
+      f ())
+
+let test_telemetry_disabled_setup_smoke () =
+  with_env_vars
+    [ "OTEL_SDK_DISABLED", "true"; "REVIEWOTRON_OTEL", "1" ]
+    (fun () ->
+      let ran = ref false in
+      Lwt_main.run
+        (Telemetry.with_setup ~command:"test" (fun () ->
+           Telemetry.span "reviewotron.test.span" (fun () ->
+             ran := true;
+             Lwt.return_unit)));
+      (check bool) "span body ran" true !ran)
+
+let test_with_env_vars_restores_unset_vars_to_unset () =
+  let var = "REVIEWOTRON_TEST_WAS_UNSET" in
+  ExtUnix.All.unsetenv var;
+  (check bool) "var unset before test" true (Option.is_none (Sys.getenv_opt var));
+  with_env_vars [ var, "x" ] (fun () -> (check (option string)) "var set inside scope" (Some "x") (Sys.getenv_opt var));
+  (check bool) "var restored to unset, not empty string" true (Option.is_none (Sys.getenv_opt var))
+
 (* Default-off auto-review flags mean every test that wants the review pipeline
    to actually run must opt in explicitly. The shared security config fixtures
    below opt into PR-open and PR-sync because the security e2e suite always
@@ -6591,6 +6670,20 @@ let () =
           test_case "provider_options clamps budget to 1024 minimum" `Quick test_provider_options_clamps_below_minimum;
           test_case "general review agent_config enables thinking" `Quick
             test_general_review_agent_config_enables_thinking;
+        ] );
+      ( "telemetry",
+        [
+          test_case "absent env disables tracing" `Quick test_telemetry_env_absent_disables;
+          test_case "REVIEWOTRON_OTEL enables tracing" `Quick test_telemetry_env_reviewotron_flag_enables;
+          test_case "standard endpoint enables tracing" `Quick test_telemetry_env_standard_endpoint_enables;
+          test_case "OTEL_SDK_DISABLED disables tracing" `Quick test_telemetry_env_sdk_disabled_wins;
+          test_case "explicit false disables tracing" `Quick test_telemetry_env_explicit_false_disables;
+          test_case "blank traces endpoint strips base slash" `Quick
+            test_telemetry_blank_traces_endpoint_strips_base_slash;
+          test_case "CLI traces endpoint overrides traces env" `Quick
+            test_telemetry_cli_traces_endpoint_overrides_traces_env;
+          test_case "disabled setup smoke" `Quick test_telemetry_disabled_setup_smoke;
+          test_case "with_env_vars restores unset vars to unset" `Quick test_with_env_vars_restores_unset_vars_to_unset;
         ] );
       ( "prompt_caching",
         [

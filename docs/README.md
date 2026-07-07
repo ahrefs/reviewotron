@@ -524,6 +524,75 @@ When an agent's structured output can't be parsed, a debug dump is saved to the 
 
 Security metrics/debug artifacts are separate and opt-in via `review_plugins.security.metrics_artifacts` and `review_plugins.security.debug_artifacts`. Metrics write compact JSON files under the review debug dir's `security/` subdirectory; full debug artifacts additionally write redacted stage inputs and outputs and should be treated as sensitive.
 
+### OpenTelemetry Traces
+
+OpenTelemetry tracing is off by default in public/local runs. No trace exporter
+is started, and no trace network traffic is emitted unless it is explicitly
+enabled by environment.
+
+Enable local OTLP trace export with:
+
+```bash
+REVIEWOTRON_OTEL=1 reviewotron run --secrets secrets.json
+```
+
+With no endpoint variable set, traces go to the default
+`http://127.0.0.1:4318`. `REVIEWOTRON_OTEL=1` on its own is only correct when a
+node-local OTLP/HTTP collector (agent or sidecar) is listening there — if
+nothing is listening on that address, tracing looks enabled but every span is
+silently dropped. Ahrefs/private deployments without a node-local collector
+must also set an endpoint:
+
+```bash
+REVIEWOTRON_OTEL=1
+OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
+```
+
+`OTEL_EXPORTER_OTLP_ENDPOINT` is a base URL; `/v1/traces` is appended.
+`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` is used verbatim and must include the
+`/v1/traces` path itself:
+
+```bash
+OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:5996/v1/traces
+```
+
+Setting either endpoint variable to a non-empty value enables tracing by
+itself — `REVIEWOTRON_OTEL=1` is not required in that case.
+`REVIEWOTRON_OTEL=0` or `OTEL_SDK_DISABLED=true` still force tracing off even
+when an endpoint is set.
+
+An endpoint variable that is present but empty or whitespace-only (for
+example a templated `OTEL_EXPORTER_OTLP_ENDPOINT=` line with no value
+substituted) is treated as unset for the enable check, but the OTLP client
+would otherwise read it verbatim and export to a broken URL. At startup
+Reviewotron detects this and normalizes the variable to its effective value
+(the default endpoint, or the resolved base plus `/v1/traces`), logging a
+warning when it does. Avoid relying on this: either set a full URL or omit
+the variable entirely.
+
+Export is OTLP over HTTP/protobuf — point endpoint variables at a collector's
+HTTP receiver (4318-style port), not a gRPC-only 4317 endpoint. Span batches
+flush roughly every 2s with retries; export failures are logged to stderr
+(verbosity controlled by `OTEL_LOG_LEVEL`). On graceful shutdown, queued spans
+are flushed, but reviews still in flight when the server stops may produce
+incomplete or missing traces — expected given the fire-and-forget webhook
+design.
+
+Other supported standard variables:
+
+```bash
+OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer%20<token>
+OTEL_RESOURCE_ATTRIBUTES=service.namespace=devtools,deployment.environment=prod
+```
+
+`OTEL_EXPORTER_OTLP_HEADERS` is needed for authenticated backends.
+`OTEL_SDK_DISABLED=true` disables tracing even when `REVIEWOTRON_OTEL=1` is
+set. `OTEL_SERVICE_NAME` is respected; otherwise spans use
+`service.name=reviewotron`.
+
+The existing `/home/user/reviewotron/log/reviewotron.*.json` Vector path remains
+JSON log ingestion only. It is not a trace drain; traces are emitted via OTLP.
+
 ---
 
 ## Review Feedback

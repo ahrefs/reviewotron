@@ -12,6 +12,11 @@ type model_tier =
   | Strong
 [@@deriving json, jsonschema]
 
+let model_tier_to_string = function
+  | Fast -> "fast"
+  | Standard -> "standard"
+  | Strong -> "strong"
+
 type agent_config = {
   name : string;
   system_prompt : string;
@@ -283,7 +288,7 @@ let finalize_after_budget_exhaustion ~log_prefix ~provider ~model ~config ~provi
       (Ai_provider.Provider_error.to_string err);
     Lwt.return None
 
-let run_agent ~provider ~model ?tools ?(max_retries = 2) ?debug_dir ?log_context ~config ~input () =
+let run_agent_untraced ~provider ~model ?tools ?(max_retries = 2) ?debug_dir ?log_context ~config ~input () =
   let log_prefix = log_context_prefix log_context in
   let fail msg =
     log#error "%s%s" log_prefix msg;
@@ -407,3 +412,47 @@ let run_agent ~provider ~model ?tools ?(max_retries = 2) ?debug_dir ?log_context
          err.message)
   | Ai_provider.Provider_error.Provider_error err ->
     fail (Printf.sprintf "agent %s: provider error: %s" config.name (Ai_provider.Provider_error.to_string err))
+
+let add_reported_cost_attr = function
+  | None -> ()
+  | Some cost -> Telemetry.add_attrs [ "gen_ai.usage.reported_cost_usd", `Float cost ]
+
+let run_agent ~provider ~model ?tools ?(max_retries = 2) ?debug_dir ?log_context ~config ~input () =
+  let model_id = Ai_provider.Language_model.model_id model in
+  let thinking_attrs =
+    match config.thinking_budget with
+    | None -> [ "reviewotron.agent.thinking_budget.enabled", `Bool false ]
+    | Some budget ->
+      [
+        "reviewotron.agent.thinking_budget.enabled", `Bool true;
+        "reviewotron.agent.thinking_budget", `Int (clamp_thinking_budget budget);
+      ]
+  in
+  let attrs =
+    [
+      "reviewotron.agent.name", `String config.name;
+      "reviewotron.agent.model_tier", `String (model_tier_to_string config.model_tier);
+      "gen_ai.request.model", `String model_id;
+      "reviewotron.agent.max_steps", `Int config.max_steps;
+    ]
+    @ thinking_attrs
+  in
+  Telemetry.span_result ~error_to_string:Fun.id ~attrs "reviewotron.agent.run" (fun () ->
+    let%lwt result =
+      run_agent_untraced ~provider ~model ?tools ~max_retries ?debug_dir ?log_context ~config ~input ()
+    in
+    (match result with
+    | Ok result ->
+      Telemetry.add_attrs
+        [
+          "reviewotron.agent.steps", `Int result.steps_count;
+          "reviewotron.agent.tool_calls", `Int result.tool_calls_count;
+          "reviewotron.agent.tool_results", `Int result.tool_results_count;
+          "gen_ai.usage.input_tokens", `Int result.usage.input_tokens;
+          "gen_ai.usage.output_tokens", `Int result.usage.output_tokens;
+          "gen_ai.usage.cache_read_input_tokens", `Int result.cache_read_input_tokens;
+          "gen_ai.usage.cache_creation_input_tokens", `Int result.cache_creation_input_tokens;
+        ];
+      add_reported_cost_attr result.reported_cost_usd
+    | Error msg -> Telemetry.add_attrs [ "error.message", `String msg ]);
+    Lwt.return result)
