@@ -128,6 +128,7 @@ let span_attrs ?fetched_files (job : t) =
       "reviewotron.review.trigger", `String (trigger_to_string job.trigger);
       "reviewotron.review.source", `String (source_kind_to_string job.source_kind);
       "reviewotron.review.files", `Int (List.length job.filtered_diff);
+      "reviewotron.review.diff_lines", `Int (Diff_parser.total_lines job.filtered_diff);
       "reviewotron.review.diff_bytes", `Int (String.length job.diff_text);
     ]
   in

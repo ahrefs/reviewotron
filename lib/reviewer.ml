@@ -57,6 +57,30 @@ let prepare_error_to_string = function
 
 let pr_prepare_error_to_string (error : Github_source.pr_prepare_error) = prepare_error_to_string error.error
 
+(* Structured attributes describing why a review was dropped before it ran, so
+   drop rate can be grouped by category and the diff size at rejection can be
+   histogrammed — rather than string-parsing [prepare.reason]. [Too_large]
+   carries a line count and [Too_many_files] a file count: they are different
+   rejection dimensions, so only the relevant size/limit pair is emitted and the
+   other is left unset. *)
+let prepare_error_attrs ~(config : Config_types.config) = function
+  | Github_source.Empty -> [ "reviewotron.prepare.reject_category", `String "empty" ]
+  | Github_source.Fetch_failed _ -> [ "reviewotron.prepare.reject_category", `String "fetch_failed" ]
+  | Github_source.Too_large total_lines ->
+    [
+      "reviewotron.prepare.reject_category", `String "too_large";
+      "reviewotron.prepare.diff_lines", `Int total_lines;
+      "reviewotron.prepare.limit_lines", `Int config.max_diff_lines;
+    ]
+  | Github_source.Too_many_files file_count ->
+    [
+      "reviewotron.prepare.reject_category", `String "too_many_files";
+      "reviewotron.prepare.diff_files", `Int file_count;
+      "reviewotron.prepare.limit_files", `Int config.max_files;
+    ]
+
+let pr_prepare_error_attrs ~config (error : Github_source.pr_prepare_error) = prepare_error_attrs ~config error.error
+
 module Make
     (SRC : Api.Github_review_source)
     (SNK : Api.Github_review_sink)
@@ -183,8 +207,9 @@ struct
   (* Sum the per-plugin estimated costs of a completed review so the run cost is
      queryable as a single span attribute. *)
   let report_cost_usd (report : Review_engine.report) =
-    List.fold_left (fun acc (c : Cost_tracking.review_cost) -> acc +. c.total_estimated_cost_usd) 0.0
-      report.review_costs
+    List.fold_left
+      (fun acc (c : Cost_tracking.review_cost) -> acc +. c.total_estimated_cost_usd)
+      0.0 report.review_costs
 
   (* Stamp the outcome of a PR review onto the ambient [review.pr.execute] span:
      what (if anything) was posted to GitHub, whether the post succeeded, how
@@ -192,7 +217,7 @@ struct
      the run cost. [publish_kind]/[publish_outcome] use fixed string enums so
      they can be grouped in trace queries. *)
   let record_pr_outcome ~publish_kind ~publish_outcome ~published ~inline_comments_posted ~recorded_reviewed ~cost_usd
-      () =
+    () =
     Telemetry.add_attrs
       [
         "reviewotron.review.published", `Bool published;
@@ -207,12 +232,15 @@ struct
      failure are visible and semantically tied to the review submission (rather
      than surfacing only as a generic [reviewotron.http.client] span). *)
   let publish_span ~kind f =
-    Telemetry.span ~attrs:[ "reviewotron.review.publish_kind", `String kind ] "reviewotron.review.publish" (fun () ->
-      let%lwt result = f () in
-      (match result with
-      | Ok () -> ()
-      | Error msg -> Telemetry.set_error msg);
-      Lwt.return result)
+    Telemetry.span
+      ~attrs:[ "reviewotron.review.publish_kind", `String kind ]
+      "reviewotron.review.publish"
+      (fun () ->
+        let%lwt result = f () in
+        (match result with
+        | Ok () -> ()
+        | Error msg -> Telemetry.set_error msg);
+        Lwt.return result)
 
   let run_prepared_pr_review ?reaction_target ~ctx (prepared : Github_source.prepared_pr_review) =
     Telemetry.span
@@ -438,17 +466,16 @@ struct
       let reason = prepare_error_reason ~config error in
       post_push_failure_to_slack ~ctx ~config ~push ~findings:[] ~security_error:false ~reason ()
 
-  let prepare_span ~name ~attrs ~error_to_string f =
+  let prepare_span ~name ~attrs ~error_to_string ?(error_attrs = fun _ -> []) f =
     Telemetry.span ~attrs name (fun () ->
       let%lwt result = f () in
       (match result with
       | Ok _ -> Telemetry.add_attrs [ "reviewotron.prepare.outcome", `String "ok" ]
       | Error error ->
         Telemetry.add_attrs
-          [
-            "reviewotron.prepare.outcome", `String "not_prepared";
-            "reviewotron.prepare.reason", `String (error_to_string error);
-          ]);
+          (("reviewotron.prepare.outcome", `String "not_prepared")
+          :: ("reviewotron.prepare.reason", `String (error_to_string error))
+          :: error_attrs error));
       Lwt.return result)
 
   let review_pr ?reaction_target ~ctx ~config (pr_notif : Github_types.pr_notification) =
@@ -468,7 +495,7 @@ struct
                 "reviewotron.repo_url", `String pr_notif.repository.url;
                 "github.pull_request.number", `Int pr_notif.number;
               ]
-            ~error_to_string:pr_prepare_error_to_string
+            ~error_to_string:pr_prepare_error_to_string ~error_attrs:(pr_prepare_error_attrs ~config)
             (fun () -> Source.prepare_pr_review ~ctx ~config pr_notif)
         with
         | Ok prepared -> run_prepared_pr_review ?reaction_target ~ctx prepared
@@ -492,7 +519,7 @@ struct
                 "github.pull_request.number", `Int n.issue.number;
                 "github.comment.id", `Int n.comment.id;
               ]
-            ~error_to_string:pr_prepare_error_to_string
+            ~error_to_string:pr_prepare_error_to_string ~error_attrs:(pr_prepare_error_attrs ~config)
             (fun () -> Source.prepare_pr_review_from_comment ~ctx ~config n)
         with
         | Ok prepared -> run_prepared_pr_review ?reaction_target ~ctx prepared
