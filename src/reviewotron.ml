@@ -9,6 +9,8 @@ module Feedback_collector_remote = Feedback_collector.Make (Api_remote.Github)
 
 (* entrypoints *)
 
+let run_lwt_command ?root_span ~command f = Lwt_main.run (Telemetry.with_setup ?root_span ~command f)
+
 let setup_logging logfile loglevel =
   Daemon.logfile := logfile;
   Option.may Log.set_loglevels loglevel;
@@ -61,24 +63,22 @@ let run_action addr port secrets_path config_filename state_path feedback_dir po
   Signal.setup_lwt ();
   Daemon.install_signal_handlers ();
   Mirage_crypto_rng_unix.use_default ();
-  Lwt_main.run
-    begin
-      log#info "reviewotron starting";
-      match validate_poll_interval ~command:"run" ~allow_zero:false poll_interval_seconds with
-      | Error e ->
-        log#error "%s" e;
-        Lwt.return_unit
-      | Ok () ->
-      match
-        Context.create ~secrets_filepath:secrets_path ?config_filename ?state_filepath:state_path ?feedback_dir ()
-      with
-      | Error e ->
-        log#error "failed to initialize: %s" e;
-        Lwt.return_unit
-      | Ok ctx ->
-        log#info "loaded secrets, starting HTTP server on %s:%d" addr port;
-        start_server_with_feedback_polling ~ctx ~addr ~port ~poll_interval_seconds
-    end
+  run_lwt_command ~root_span:false ~command:"run" (fun () ->
+    log#info "reviewotron starting";
+    match validate_poll_interval ~command:"run" ~allow_zero:false poll_interval_seconds with
+    | Error e ->
+      log#error "%s" e;
+      Lwt.return_unit
+    | Ok () ->
+    match
+      Context.create ~secrets_filepath:secrets_path ?config_filename ?state_filepath:state_path ?feedback_dir ()
+    with
+    | Error e ->
+      log#error "failed to initialize: %s" e;
+      Lwt.return_unit
+    | Ok ctx ->
+      log#info "loaded secrets, starting HTTP server on %s:%d" addr port;
+      start_server_with_feedback_polling ~ctx ~addr ~port ~poll_interval_seconds)
 
 let check_action secrets_path config_filename state_path feedback_dir event_type payload_file =
   log#info "check mode: event_type=%s, payload=%s" event_type payload_file;
@@ -161,8 +161,8 @@ let collect_feedback_action secrets_path state_path feedback_dir poll_interval_s
         exit 1)
       fmt
   in
-  Lwt_main.run
-    begin match Context.create ~secrets_filepath:secrets_path ~state_filepath:state_path ?feedback_dir () with
+  run_lwt_command ~command:"collect-feedback" (fun () ->
+    match Context.create ~secrets_filepath:secrets_path ~state_filepath:state_path ?feedback_dir () with
     | Error e -> fail "failed to initialize feedback collector: %s" e
     | Ok ctx ->
     match Context.feedback_store ctx with
@@ -170,8 +170,7 @@ let collect_feedback_action secrets_path state_path feedback_dir poll_interval_s
     | Some store ->
     match validate_poll_interval ~command:"collect-feedback" ~allow_zero:true poll_interval_seconds with
     | Error e -> fail "%s" e
-    | Ok () -> Feedback_collector_remote.collect ~poll_interval_seconds ~ctx ~store ~now:(Ptime_clock.now ()) ()
-    end
+    | Ok () -> Feedback_collector_remote.collect ~poll_interval_seconds ~ctx ~store ~now:(Ptime_clock.now ()) ())
 
 type output_format =
   | Markdown
@@ -205,8 +204,14 @@ let render_review_output output report =
   | Markdown -> Local_sink.render_markdown report
   | Json -> Local_sink.render_json report
 
-let run_local_review f =
-  try Lwt_main.run (f ()) with exn -> Error (Printf.sprintf "local review failed: %s" (Exn.str exn))
+let run_local_review_lwt f =
+  Lwt.catch (fun () -> f ()) (fun exn -> Lwt.return (Error (Printf.sprintf "local review failed: %s" (Exn.str exn))))
+
+(* Guard the synchronous portion of a local review command (the Result-building
+   chain and telemetry setup around [Lwt_main.run]) so an unexpected exception
+   becomes the graceful [Error] path via [emit_local_result] instead of a raw
+   crash. The Lwt body has its own [run_local_review_lwt] guard. *)
+let guard_local_review f = try f () with exn -> Error (Printf.sprintf "local review failed: %s" (Exn.str exn))
 
 let log_local_review_error msg =
   match Local_review.is_already_reviewed_message msg with
@@ -356,24 +361,31 @@ let review_diff_action secrets_path api_key_flag openrouter_api_key_flag config_
   root repo_key change_key title base description_file diff_arg inline_config no_security output =
   setup_logging logfile loglevel;
   Mirage_crypto_rng_unix.use_default ();
-  let ( let* ) = Result.bind in
   let result =
-    let* ctx = build_local_context ~secrets_path ~api_key_flag ~openrouter_api_key_flag ~config_filename ~state_path in
-    let root = resolve_local_root root in
-    let repo_key = resolve_repo_key ~root repo_key in
-    let* config = resolve_local_config ~ctx ~root ~inline_config in
-    let config = apply_local_plugin_defaults ~no_security config in
-    Context.set_config ctx ~repo_key config;
-    let* diff_source, default_title = resolve_diff_source ~root ~base diff_arg in
-    let* description = read_description_file description_file in
-    let title = CCOption.get_or ~default:default_title title in
-    match diff_source with
-    | `File diff_path ->
-      run_local_review (fun () ->
-        Review.review_diff_report ~ctx ~root ~repo_key ?change_key ~title ~description ~diff_path ~config ())
-    | `Text diff_text ->
-      run_local_review (fun () ->
-        Review.review_diff_text_report ~ctx ~root ~repo_key ?change_key ~title ~description ~diff_text ~config ())
+    guard_local_review (fun () ->
+      run_lwt_command ~command:"review-diff" (fun () ->
+        let ( let* ) = Result.bind in
+        match
+          let* ctx =
+            build_local_context ~secrets_path ~api_key_flag ~openrouter_api_key_flag ~config_filename ~state_path
+          in
+          let root = resolve_local_root root in
+          let repo_key = resolve_repo_key ~root repo_key in
+          let* config = resolve_local_config ~ctx ~root ~inline_config in
+          let config = apply_local_plugin_defaults ~no_security config in
+          Context.set_config ctx ~repo_key config;
+          let* diff_source, default_title = resolve_diff_source ~root ~base diff_arg in
+          let* description = read_description_file description_file in
+          let title = CCOption.get_or ~default:default_title title in
+          Ok (ctx, root, repo_key, config, diff_source, title, description)
+        with
+        | Error msg -> Lwt.return (Error msg)
+        | Ok (ctx, root, repo_key, config, `File diff_path, title, description) ->
+          run_local_review_lwt (fun () ->
+            Review.review_diff_report ~ctx ~root ~repo_key ?change_key ~title ~description ~diff_path ~config ())
+        | Ok (ctx, root, repo_key, config, `Text diff_text, title, description) ->
+          run_local_review_lwt (fun () ->
+            Review.review_diff_text_report ~ctx ~root ~repo_key ?change_key ~title ~description ~diff_text ~config ())))
   in
   emit_local_result ~output result
 
@@ -381,20 +393,28 @@ let review_path_action secrets_path api_key_flag openrouter_api_key_flag config_
   repo_key change_key title inline_config no_security output path =
   setup_logging logfile loglevel;
   Mirage_crypto_rng_unix.use_default ();
-  let ( let* ) = Result.bind in
   let result =
-    let* ctx = build_local_context ~secrets_path ~api_key_flag ~openrouter_api_key_flag ~config_filename ~state_path in
-    let* ingest = Local_path.ingest path in
-    let root = ingest.Local_path.root in
-    let repo_key = resolve_repo_key ~root repo_key in
-    let* config = resolve_local_config ~ctx ~root ~inline_config in
-    let config = apply_local_plugin_defaults ~no_security config in
-    Context.set_config ctx ~repo_key config;
-    log#info "reviewing %d file(s) under %s" ingest.Local_path.file_count root;
-    let title = CCOption.get_or ~default:ingest.Local_path.title title in
-    run_local_review (fun () ->
-      Review.review_diff_text_report ~ctx ~root ~repo_key ?change_key ~title ~description:""
-        ~diff_text:ingest.Local_path.diff_text ~config ())
+    guard_local_review (fun () ->
+      run_lwt_command ~command:"review-path" (fun () ->
+        let ( let* ) = Result.bind in
+        match
+          let* ctx =
+            build_local_context ~secrets_path ~api_key_flag ~openrouter_api_key_flag ~config_filename ~state_path
+          in
+          let* ingest = Local_path.ingest path in
+          let root = ingest.Local_path.root in
+          let repo_key = resolve_repo_key ~root repo_key in
+          let* config = resolve_local_config ~ctx ~root ~inline_config in
+          let config = apply_local_plugin_defaults ~no_security config in
+          Context.set_config ctx ~repo_key config;
+          log#info "reviewing %d file(s) under %s" ingest.Local_path.file_count root;
+          let title = CCOption.get_or ~default:ingest.Local_path.title title in
+          Ok (ctx, root, repo_key, config, ingest.Local_path.diff_text, title)
+        with
+        | Error msg -> Lwt.return (Error msg)
+        | Ok (ctx, root, repo_key, config, diff_text, title) ->
+          run_local_review_lwt (fun () ->
+            Review.review_diff_text_report ~ctx ~root ~repo_key ?change_key ~title ~description:"" ~diff_text ~config ())))
   in
   emit_local_result ~output result
 

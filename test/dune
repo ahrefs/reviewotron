@@ -11,6 +11,7 @@
   containers
   digestif
   extlib
+  extunix
   lwt
   lwt.unix
   yojson)

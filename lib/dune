@@ -15,6 +15,9 @@
   lwt
   lwt.unix
   melange-json-native
+  opentelemetry
+  opentelemetry-lwt
+  opentelemetry-client-ocurl-lwt
   unix
   mirage-crypto-pk
   ppx_deriving_jsonschema.runtime

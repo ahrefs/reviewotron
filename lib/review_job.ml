@@ -118,3 +118,19 @@ let log_context job = log_context_for ~repo_key:job.repo_key ~change_label:job.c
 let diff_sha256 job = sha256_hex job.diff_text
 
 let config_sha256 job = Config_types.config_to_json job.config |> Yojson.Basic.to_string |> sha256_hex
+
+let span_attrs ?fetched_files (job : t) =
+  let attrs =
+    [
+      "reviewotron.repo_key", `String job.repo_key;
+      "reviewotron.change_label", `String job.change_label;
+      "reviewotron.head_sha", `String job.head_sha;
+      "reviewotron.review.trigger", `String (trigger_to_string job.trigger);
+      "reviewotron.review.source", `String (source_kind_to_string job.source_kind);
+      "reviewotron.review.files", `Int (List.length job.filtered_diff);
+      "reviewotron.review.diff_bytes", `Int (String.length job.diff_text);
+    ]
+  in
+  match fetched_files with
+  | None -> attrs
+  | Some count -> attrs @ [ "reviewotron.review.fetched_files", `Int count ]

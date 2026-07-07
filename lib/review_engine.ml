@@ -387,95 +387,118 @@ module Make (AI : Api.Agent_runner) = struct
       }
 
   let run_plugins ~ctx ~job ~debug_dir =
-    let log_context = Review_job.log_context job in
-    let log_prefix = log_context_prefix (Some log_context) in
-    let repo_url = job.Review_job.repo_key in
-    let config = job.config in
-    let diff = job.filtered_diff in
-    let memory_dir = memory_dir_for_context ~ctx in
-    let metadata = metadata_of_job job in
-    let plugins_config = config.Config_types.review_plugins in
-    log#info "%splugins starting: general=%b security=%b files=%d diff_bytes=%d debug_dir=%s memory_dir=%s" log_prefix
-      plugins_config.general.enabled plugins_config.security.enabled (List.length diff) (String.length job.diff_text)
-      debug_dir memory_dir;
-    let general_promise =
-      if plugins_config.general.enabled then begin
-        let%lwt result, costs =
-          General_plugin.run_review ~ctx ~repo_url ~config ~diff_text:job.diff_text ~metadata ~debug_dir ~log_context ()
+    Telemetry.span
+      ~attrs:(Review_job.span_attrs job ~fetched_files:(List.length job.Review_job.file_contents))
+      "reviewotron.review.plugins"
+      (fun () ->
+        let log_context = Review_job.log_context job in
+        let log_prefix = log_context_prefix (Some log_context) in
+        let repo_url = job.Review_job.repo_key in
+        let config = job.config in
+        let diff = job.filtered_diff in
+        let memory_dir = memory_dir_for_context ~ctx in
+        let metadata = metadata_of_job job in
+        let plugins_config = config.Config_types.review_plugins in
+        log#info "%splugins starting: general=%b security=%b files=%d diff_bytes=%d debug_dir=%s memory_dir=%s"
+          log_prefix plugins_config.general.enabled plugins_config.security.enabled (List.length diff)
+          (String.length job.diff_text) debug_dir memory_dir;
+        let general_promise =
+          Telemetry.span
+            ~attrs:
+              [
+                "reviewotron.plugin.name", `String General_plugin.name;
+                "reviewotron.plugin.enabled", `Bool plugins_config.general.enabled;
+              ]
+            "reviewotron.review.plugin"
+            (fun () ->
+              if plugins_config.general.enabled then begin
+                let%lwt result, costs =
+                  General_plugin.run_review ~ctx ~repo_url ~config ~diff_text:job.diff_text ~metadata ~debug_dir
+                    ~log_context ()
+                in
+                (match result with
+                | Ok _ -> ()
+                | Error msg ->
+                  Telemetry.set_error msg;
+                  log#error "%sgeneral review plugin failed: %s" log_prefix msg);
+                Lwt.return (Some result, costs)
+              end
+              else Lwt.return (None, []))
         in
-        (match result with
-        | Ok _ -> ()
-        | Error msg -> log#error "%sgeneral review plugin failed: %s" log_prefix msg);
-        Lwt.return (Some result, costs)
-      end
-      else Lwt.return (None, [])
-    in
-    let run_findings_plugin (plugin : findings_plugin) =
-      match plugin.fp_enabled config with
-      | false -> Lwt.return (plugin, [], [], false)
-      | true ->
-        Lwt.catch
-          (fun () ->
-            let%lwt findings, costs =
-              plugin.fp_run ~ctx ~repo_url ~config ~diff ~diff_text:job.diff_text ~metadata
-                ~log_context:(Some log_context) ~debug_dir ~memory_dir
-            in
-            Lwt.return (plugin, findings, costs, false))
-          (fun exn ->
-            log#error "%s%s review plugin raised: %s" log_prefix plugin.fp_name (Exn.str exn);
-            Lwt.return (plugin, [], [], true))
-    in
-    let%lwt (general_output, general_costs), findings_results =
-      Lwt.both general_promise (Lwt.all (List.map run_findings_plugin findings_plugins))
-    in
-    (* A findings plugin "errored" if it raised, or if it was enabled yet
+        let run_findings_plugin (plugin : findings_plugin) =
+          let enabled = plugin.fp_enabled config in
+          Telemetry.span
+            ~attrs:[ "reviewotron.plugin.name", `String plugin.fp_name; "reviewotron.plugin.enabled", `Bool enabled ]
+            "reviewotron.review.plugin"
+            (fun () ->
+              match enabled with
+              | false -> Lwt.return (plugin, [], [], false)
+              | true ->
+                Lwt.catch
+                  (fun () ->
+                    let%lwt findings, costs =
+                      plugin.fp_run ~ctx ~repo_url ~config ~diff ~diff_text:job.diff_text ~metadata
+                        ~log_context:(Some log_context) ~debug_dir ~memory_dir
+                    in
+                    Lwt.return (plugin, findings, costs, false))
+                  (fun exn ->
+                    Telemetry.set_error (Exn.str exn);
+                    log#error "%s%s review plugin raised: %s" log_prefix plugin.fp_name (Exn.str exn);
+                    Lwt.return (plugin, [], [], true)))
+        in
+        let%lwt (general_output, general_costs), findings_results =
+          Lwt.both general_promise (Lwt.all (List.map run_findings_plugin findings_plugins))
+        in
+        (* A findings plugin "errored" if it raised, or if it was enabled yet
        produced no cost record (its agents never ran). The security plugin is
        currently the only findings plugin, so this matches the prior
        [security_error] semantics and drives the same failure notice. *)
-    let security_error =
-      List.exists
-        (fun (plugin, _findings, costs, errored) -> errored || (plugin.fp_enabled config && costs = []))
-        findings_results
-    in
-    if security_error then log#warn "%sa findings plugin encountered an error; results may be incomplete" log_prefix;
-    let general_findings =
-      match general_output with
-      | Some (Ok (r : Review_types.review_output)) -> r.findings
-      | Some (Error _) | None -> []
-    in
-    let plugin_findings =
-      List.concat_map
-        (fun (plugin, findings, _costs, _errored) ->
-          List.map (fun finding -> { source = plugin.fp_source; plugin_name = plugin.fp_name; finding }) findings)
-        findings_results
-    in
-    let sourced =
-      List.map (fun finding -> { source = From_general; plugin_name = General_plugin.name; finding }) general_findings
-      @ plugin_findings
-    in
-    let sourced_findings = deduplicate_sourced_findings sourced in
-    let findings = List.map (fun sourced -> sourced.finding) sourced_findings in
-    let plugin_costs =
-      List.map
-        (fun (plugin, _findings, costs, _errored) -> Cost_tracking.aggregate ~plugin:plugin.fp_name costs)
-        findings_results
-    in
-    let review_costs =
-      Cost_tracking.aggregate ~plugin:"general" general_costs :: plugin_costs
-      |> List.filter (fun (rc : Cost_tracking.review_cost) ->
-        match rc.agents with
-        | [] -> false
-        | _ :: _ -> true)
-    in
-    let general_status =
-      match general_output with
-      | Some (Ok _) -> "ok"
-      | Some (Error _) -> "error"
-      | None -> "disabled"
-    in
-    log#info "%splugins complete: findings=%d general=%s findings_plugin_error=%b" log_prefix (List.length findings)
-      general_status security_error;
-    Lwt.return { general_output; findings; sourced_findings; review_costs; security_error }
+        let security_error =
+          List.exists
+            (fun (plugin, _findings, costs, errored) -> errored || (plugin.fp_enabled config && costs = []))
+            findings_results
+        in
+        if security_error then log#warn "%sa findings plugin encountered an error; results may be incomplete" log_prefix;
+        let general_findings =
+          match general_output with
+          | Some (Ok (r : Review_types.review_output)) -> r.findings
+          | Some (Error _) | None -> []
+        in
+        let plugin_findings =
+          List.concat_map
+            (fun (plugin, findings, _costs, _errored) ->
+              List.map (fun finding -> { source = plugin.fp_source; plugin_name = plugin.fp_name; finding }) findings)
+            findings_results
+        in
+        let sourced =
+          List.map
+            (fun finding -> { source = From_general; plugin_name = General_plugin.name; finding })
+            general_findings
+          @ plugin_findings
+        in
+        let sourced_findings = deduplicate_sourced_findings sourced in
+        let findings = List.map (fun sourced -> sourced.finding) sourced_findings in
+        let plugin_costs =
+          List.map
+            (fun (plugin, _findings, costs, _errored) -> Cost_tracking.aggregate ~plugin:plugin.fp_name costs)
+            findings_results
+        in
+        let review_costs =
+          Cost_tracking.aggregate ~plugin:"general" general_costs :: plugin_costs
+          |> List.filter (fun (rc : Cost_tracking.review_cost) ->
+            match rc.agents with
+            | [] -> false
+            | _ :: _ -> true)
+        in
+        let general_status =
+          match general_output with
+          | Some (Ok _) -> "ok"
+          | Some (Error _) -> "error"
+          | None -> "disabled"
+        in
+        log#info "%splugins complete: findings=%d general=%s findings_plugin_error=%b" log_prefix (List.length findings)
+          general_status security_error;
+        Lwt.return { general_output; findings; sourced_findings; review_costs; security_error })
 
   let route_findings ~log_context ~change_label ~filtered_diff findings =
     let log_prefix = log_context_prefix (Some log_context) in
@@ -505,49 +528,62 @@ module Make (AI : Api.Agent_runner) = struct
       ([], [], [], []) findings
 
   let run_review ~ctx ~(job : Review_job.t) =
-    let log_context = Review_job.log_context job in
-    let log_prefix = log_context_prefix (Some log_context) in
-    let debug_dir = debug_dir_for_job ~ctx job in
-    let filtered_diff = job.filtered_diff in
-    log#info "%sreview starting: trigger=%s source=%s files=%d diff_bytes=%d debug_dir=%s" log_prefix
-      (Review_job.trigger_to_string job.trigger)
-      (Review_job.source_kind_to_string job.source_kind)
-      (List.length filtered_diff) (String.length job.diff_text) debug_dir;
-    let%lwt plugin_result = run_plugins ~ctx ~job ~debug_dir in
-    Cost_tracking.log_review_costs ~log_context plugin_result.review_costs;
-    let routed_rev, inline_findings_rev, unchanged_rev, anchor_failed_rev =
-      route_findings ~log_context ~change_label:job.change_label ~filtered_diff plugin_result.sourced_findings
-    in
-    let routed_findings = List.rev routed_rev in
-    let inline_findings = List.rev inline_findings_rev in
-    let comments = List.map (fun inline -> inline.comment) inline_findings in
-    let unchanged_findings = List.rev unchanged_rev in
-    let anchor_failed_findings = List.rev anchor_failed_rev in
-    let body =
-      review_body ~log_context ~change_label:job.change_label ~general_output:plugin_result.general_output
-        ~findings:plugin_result.findings ~unchanged_findings ~anchor_failed_findings
-        ~review_costs:plugin_result.review_costs ~security_error:plugin_result.security_error ~config:job.config
-    in
-    let general_failed =
-      match plugin_result.general_output with
-      | Some (Error _) -> true
-      | Some (Ok _) | None -> false
-    in
-    log#info "%sreview routed: inline=%d unchanged=%d anchor_failed=%d total_findings=%d" log_prefix
-      (List.length inline_findings) (List.length unchanged_findings) (List.length anchor_failed_findings)
-      (List.length plugin_result.findings);
-    Lwt.return
-      {
-        body;
-        comments;
-        inline_findings;
-        findings = plugin_result.findings;
-        sourced_findings = plugin_result.sourced_findings;
-        routed_findings;
-        unchanged_findings;
-        anchor_failed_findings;
-        review_costs = plugin_result.review_costs;
-        security_error = plugin_result.security_error;
-        general_failed;
-      }
+    Telemetry.span
+      ~attrs:(Review_job.span_attrs job ~fetched_files:(List.length job.file_contents))
+      "reviewotron.review.run"
+      (fun () ->
+        let log_context = Review_job.log_context job in
+        let log_prefix = log_context_prefix (Some log_context) in
+        let debug_dir = debug_dir_for_job ~ctx job in
+        let filtered_diff = job.filtered_diff in
+        log#info "%sreview starting: trigger=%s source=%s files=%d diff_bytes=%d debug_dir=%s" log_prefix
+          (Review_job.trigger_to_string job.trigger)
+          (Review_job.source_kind_to_string job.source_kind)
+          (List.length filtered_diff) (String.length job.diff_text) debug_dir;
+        let%lwt plugin_result = run_plugins ~ctx ~job ~debug_dir in
+        Cost_tracking.log_review_costs ~log_context plugin_result.review_costs;
+        let routed_rev, inline_findings_rev, unchanged_rev, anchor_failed_rev =
+          route_findings ~log_context ~change_label:job.change_label ~filtered_diff plugin_result.sourced_findings
+        in
+        let routed_findings = List.rev routed_rev in
+        let inline_findings = List.rev inline_findings_rev in
+        let comments = List.map (fun inline -> inline.comment) inline_findings in
+        let unchanged_findings = List.rev unchanged_rev in
+        let anchor_failed_findings = List.rev anchor_failed_rev in
+        let body =
+          review_body ~log_context ~change_label:job.change_label ~general_output:plugin_result.general_output
+            ~findings:plugin_result.findings ~unchanged_findings ~anchor_failed_findings
+            ~review_costs:plugin_result.review_costs ~security_error:plugin_result.security_error ~config:job.config
+        in
+        let general_failed =
+          match plugin_result.general_output with
+          | Some (Error _) -> true
+          | Some (Ok _) | None -> false
+        in
+        log#info "%sreview routed: inline=%d unchanged=%d anchor_failed=%d total_findings=%d" log_prefix
+          (List.length inline_findings) (List.length unchanged_findings) (List.length anchor_failed_findings)
+          (List.length plugin_result.findings);
+        Telemetry.add_attrs
+          [
+            "reviewotron.review.inline_findings", `Int (List.length inline_findings);
+            "reviewotron.review.unchanged_findings", `Int (List.length unchanged_findings);
+            "reviewotron.review.anchor_failed_findings", `Int (List.length anchor_failed_findings);
+            "reviewotron.review.total_findings", `Int (List.length plugin_result.findings);
+            "reviewotron.review.security_error", `Bool plugin_result.security_error;
+            "reviewotron.review.general_failed", `Bool general_failed;
+          ];
+        Lwt.return
+          {
+            body;
+            comments;
+            inline_findings;
+            findings = plugin_result.findings;
+            sourced_findings = plugin_result.sourced_findings;
+            routed_findings;
+            unchanged_findings;
+            anchor_failed_findings;
+            review_costs = plugin_result.review_costs;
+            security_error = plugin_result.security_error;
+            general_failed;
+          })
 end

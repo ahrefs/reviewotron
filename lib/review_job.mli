@@ -73,3 +73,8 @@ val diff_sha256 : t -> string
 
 (** SHA-256 of the review configuration JSON. *)
 val config_sha256 : t -> string
+
+(** OTel span attributes describing a review job: repo, change identity,
+    trigger/source kind, and diff size. Pass [fetched_files] to additionally
+    report the count of fetched file contents (engine-level spans only). *)
+val span_attrs : ?fetched_files:int -> t -> Opentelemetry.key_value list

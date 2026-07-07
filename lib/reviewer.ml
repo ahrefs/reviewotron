@@ -22,6 +22,41 @@ type progress_reaction = {
   reaction_id : int;
 }
 
+let github_event_kind = function
+  | Github.Pull_request _ -> "pull_request"
+  | Github.Push _ -> "push"
+  | Github.Issue_comment _ -> "issue_comment"
+  | Github.Pull_request_review _ -> "pull_request_review"
+  | Github.Pull_request_review_comment _ -> "pull_request_review_comment"
+  | Github.Unknown kind -> kind
+
+let github_event_action = function
+  | Github.Pull_request n -> Some n.action
+  | Github.Push _ -> None
+  | Github.Issue_comment n -> Some n.action
+  | Github.Pull_request_review n -> Some n.action
+  | Github.Pull_request_review_comment n -> Some n.action
+  | Github.Unknown _ -> None
+
+let github_event_attrs event =
+  let attrs =
+    [
+      "github.event.name", `String (github_event_kind event);
+      "reviewotron.repo_url", `String (Github.repo_url_of_event event);
+    ]
+  in
+  match github_event_action event with
+  | None -> attrs
+  | Some action -> ("github.event.action", `String action) :: attrs
+
+let prepare_error_to_string = function
+  | Github_source.Fetch_failed error -> Printf.sprintf "fetch_failed: %s" (Http_util.error_to_string error)
+  | Github_source.Empty -> "empty"
+  | Github_source.Too_large total_lines -> Printf.sprintf "too_large: %d lines" total_lines
+  | Github_source.Too_many_files file_count -> Printf.sprintf "too_many_files: %d files" file_count
+
+let pr_prepare_error_to_string (error : Github_source.pr_prepare_error) = prepare_error_to_string error.error
+
 module Make
     (SRC : Api.Github_review_source)
     (SNK : Api.Github_review_sink)
@@ -146,57 +181,61 @@ struct
     State.save state
 
   let run_prepared_pr_review ?reaction_target ~ctx (prepared : Github_source.prepared_pr_review) =
-    let Github_source.{ number; job } = prepared in
-    let log_context = Review_job.log_context job in
-    let log_prefix = log_context ^ " " in
-    log_pr_review_identity ~number job;
-    let%lwt progress = start_progress_reaction ~log_context ~ctx ~repo_url:job.repo_key reaction_target in
-    (* The review pipeline can raise (network errors, SDK schema drift, etc.).
+    Telemetry.span
+      ~attrs:(("github.pull_request.number", `Int prepared.number) :: Review_job.span_attrs prepared.job)
+      "reviewotron.review.pr.execute"
+      (fun () ->
+        let Github_source.{ number; job } = prepared in
+        let log_context = Review_job.log_context job in
+        let log_prefix = log_context ^ " " in
+        log_pr_review_identity ~number job;
+        let%lwt progress = start_progress_reaction ~log_context ~ctx ~repo_url:job.repo_key reaction_target in
+        (* The review pipeline can raise (network errors, SDK schema drift, etc.).
        Ensure the progress reaction is cleared even when the pipeline crashes —
        otherwise the "eyes" reaction is orphaned and the author has no signal
        that the bot gave up. *)
-    try%lwt
-      let%lwt report = Engine.run_review ~ctx ~job in
-      let%lwt () =
-        match report_has_surface report with
-        | false ->
-          let%lwt () = remove_progress_reaction ~log_context ~ctx ~repo_url:job.repo_key progress in
-          let%lwt post_result =
-            publish_success_comment ~log_context:(Some log_context) ~head_sha:(Some job.head_sha) ~ctx
-              ~repo_url:job.repo_key ~number
+        try%lwt
+          let%lwt report = Engine.run_review ~ctx ~job in
+          let%lwt () =
+            match report_has_surface report with
+            | false ->
+              let%lwt () = remove_progress_reaction ~log_context ~ctx ~repo_url:job.repo_key progress in
+              let%lwt post_result =
+                publish_success_comment ~log_context:(Some log_context) ~head_sha:(Some job.head_sha) ~ctx
+                  ~repo_url:job.repo_key ~number
+              in
+              (match post_result with
+              | Ok () ->
+                record_pr_reviewed ~ctx ~repo_url:job.repo_key ~number ~head_sha:job.head_sha
+                  ~review_costs:report.review_costs;
+                log#info "%sPR #%d (%s): review completed with no findings; not posting a PR review" log_prefix number
+                  job.title
+              | Error _ -> ());
+              Lwt.return_unit
+            | true ->
+              let%lwt () = remove_progress_reaction ~log_context ~ctx ~repo_url:job.repo_key progress in
+              let%lwt post_result = Sink.publish_pr_review ~ctx ~job ~number report in
+              (match post_result with
+              | Ok () ->
+                record_pr_reviewed ~ctx ~repo_url:job.repo_key ~number ~head_sha:job.head_sha
+                  ~review_costs:report.review_costs;
+                Lwt.return_unit
+              | Error msg ->
+                let%lwt fallback_result =
+                  Sink.publish_failure_comment ~log_context ~ctx ~repo_url:job.repo_key ~number (Publish_failed msg)
+                in
+                (match fallback_result with
+                | Ok () ->
+                  record_pr_reviewed ~ctx ~repo_url:job.repo_key ~number ~head_sha:job.head_sha
+                    ~review_costs:report.review_costs
+                | Error _ -> ());
+                Lwt.return_unit)
           in
-          (match post_result with
-          | Ok () ->
-            record_pr_reviewed ~ctx ~repo_url:job.repo_key ~number ~head_sha:job.head_sha
-              ~review_costs:report.review_costs;
-            log#info "%sPR #%d (%s): review completed with no findings; not posting a PR review" log_prefix number
-              job.title
-          | Error _ -> ());
           Lwt.return_unit
-        | true ->
+        with exn ->
+          log#error "%sreview pipeline for PR #%d raised: %s" log_prefix number (Exn.str exn);
           let%lwt () = remove_progress_reaction ~log_context ~ctx ~repo_url:job.repo_key progress in
-          let%lwt post_result = Sink.publish_pr_review ~ctx ~job ~number report in
-          (match post_result with
-          | Ok () ->
-            record_pr_reviewed ~ctx ~repo_url:job.repo_key ~number ~head_sha:job.head_sha
-              ~review_costs:report.review_costs;
-            Lwt.return_unit
-          | Error msg ->
-            let%lwt fallback_result =
-              Sink.publish_failure_comment ~log_context ~ctx ~repo_url:job.repo_key ~number (Publish_failed msg)
-            in
-            (match fallback_result with
-            | Ok () ->
-              record_pr_reviewed ~ctx ~repo_url:job.repo_key ~number ~head_sha:job.head_sha
-                ~review_costs:report.review_costs
-            | Error _ -> ());
-            Lwt.return_unit)
-      in
-      Lwt.return_unit
-    with exn ->
-      log#error "%sreview pipeline for PR #%d raised: %s" log_prefix number (Exn.str exn);
-      let%lwt () = remove_progress_reaction ~log_context ~ctx ~repo_url:job.repo_key progress in
-      Lwt.fail exn
+          Lwt.fail exn)
 
   (** Surface a PR-preparation failure to the author instead of silently
       dropping it.  An [Empty] diff is a successful no-op (acknowledge with an
@@ -320,53 +359,126 @@ struct
       let reason = prepare_error_reason ~config error in
       post_push_failure_to_slack ~ctx ~config ~push ~findings:[] ~security_error:false ~reason ()
 
+  let prepare_span ~name ~attrs ~error_to_string f =
+    Telemetry.span ~attrs name (fun () ->
+      let%lwt result = f () in
+      (match result with
+      | Ok _ -> Telemetry.add_attrs [ "reviewotron.prepare.outcome", `String "ok" ]
+      | Error error ->
+        Telemetry.add_attrs
+          [
+            "reviewotron.prepare.outcome", `String "not_prepared";
+            "reviewotron.prepare.reason", `String (error_to_string error);
+          ]);
+      Lwt.return result)
+
   let review_pr ?reaction_target ~ctx ~config (pr_notif : Github_types.pr_notification) =
-    match%lwt Source.prepare_pr_review ~ctx ~config pr_notif with
-    | Ok prepared -> run_prepared_pr_review ?reaction_target ~ctx prepared
-    | Error error -> handle_pr_prepare_error ~ctx ~repo_url:pr_notif.repository.url ~number:pr_notif.number error
+    Telemetry.span
+      ~attrs:
+        [
+          "reviewotron.repo_url", `String pr_notif.repository.url;
+          "github.pull_request.number", `Int pr_notif.number;
+          "github.event.action", `String pr_notif.action;
+        ]
+      "reviewotron.review.pr"
+      (fun () ->
+        match%lwt
+          prepare_span ~name:"reviewotron.review.pr.prepare"
+            ~attrs:
+              [
+                "reviewotron.repo_url", `String pr_notif.repository.url;
+                "github.pull_request.number", `Int pr_notif.number;
+              ]
+            ~error_to_string:pr_prepare_error_to_string
+            (fun () -> Source.prepare_pr_review ~ctx ~config pr_notif)
+        with
+        | Ok prepared -> run_prepared_pr_review ?reaction_target ~ctx prepared
+        | Error error -> handle_pr_prepare_error ~ctx ~repo_url:pr_notif.repository.url ~number:pr_notif.number error)
 
   let review_pr_from_comment ?reaction_target ~ctx ~config (n : Github_types.issue_comment_notification) =
-    match%lwt Source.prepare_pr_review_from_comment ~ctx ~config n with
-    | Ok prepared -> run_prepared_pr_review ?reaction_target ~ctx prepared
-    | Error error -> handle_pr_prepare_error ~ctx ~repo_url:n.repository.url ~number:n.issue.number error
+    Telemetry.span
+      ~attrs:
+        [
+          "reviewotron.repo_url", `String n.repository.url;
+          "github.pull_request.number", `Int n.issue.number;
+          "github.comment.id", `Int n.comment.id;
+        ]
+      "reviewotron.review.comment"
+      (fun () ->
+        match%lwt
+          prepare_span ~name:"reviewotron.review.comment.prepare"
+            ~attrs:
+              [
+                "reviewotron.repo_url", `String n.repository.url;
+                "github.pull_request.number", `Int n.issue.number;
+                "github.comment.id", `Int n.comment.id;
+              ]
+            ~error_to_string:pr_prepare_error_to_string
+            (fun () -> Source.prepare_pr_review_from_comment ~ctx ~config n)
+        with
+        | Ok prepared -> run_prepared_pr_review ?reaction_target ~ctx prepared
+        | Error error -> handle_pr_prepare_error ~ctx ~repo_url:n.repository.url ~number:n.issue.number error)
 
   let review_push ~ctx ~config (push : Github_types.commit_pushed_notification) =
-    match%lwt Source.prepare_push_review ~ctx ~config push with
-    | Error error -> handle_push_prepare_error ~ctx ~config push error
-    | Ok prepared ->
-      let Github_source.{ job; push } = prepared in
-      let log_context = Review_job.log_context job in
-      let log_prefix = log_context ^ " " in
-      let debug_dir = Engine.debug_dir_for_job ~ctx job in
-      let%lwt plugin_result = Engine.run_plugins ~ctx ~job ~debug_dir in
-      let Review_engine.{ general_output; findings; review_costs; security_error; _ } = plugin_result in
-      Cost_tracking.log_review_costs ~log_context review_costs;
-      let%lwt () = Sink.post_push_comments ~log_context ~ctx ~repo_url:job.repo_key ~sha:job.head_sha findings in
-      let security_note = String.trim Review_engine.security_error_notice in
-      let failure_attachment reason =
-        log#error "%sreview failed for push %s: no review output produced" log_prefix push.after;
-        push_failure_message ~push ~findings ~security_error ?reason ()
-      in
-      let slack_text, attachment =
-        match general_output with
-        | Some (Ok review) ->
-          let text = Printf.sprintf ":robot_face: *Code Review* for push to `develop` by %s" push.pusher.name in
-          let att =
-            Review_format.format_slack_attachment ~compare_url:push.compare ~pusher_name:push.pusher.name
-              ~num_commits:(List.length push.commits) ~review
-          in
-          let att = if security_error then Slack_types.{ att with text = att.text ^ "\n" ^ security_note } else att in
-          text, att
-        | Some (Error reason) -> failure_attachment (Some reason)
-        | None -> failure_attachment None
-      in
-      let%lwt () =
-        match job.config.slack_channel with
-        | None -> Lwt.return_unit
-        | Some channel -> SL.post_message ~ctx ~channel ~text:slack_text ~attachments:[ attachment ] ()
-      in
-      record_push_reviewed ~ctx ~repo_url:job.repo_key ~after_sha:job.head_sha;
-      Lwt.return_unit
+    Telemetry.span
+      ~attrs:
+        [
+          "reviewotron.repo_url", `String push.repository.url;
+          "github.ref", `String push.ref_;
+          "github.commit.after", `String push.after;
+          "github.push.commits", `Int (List.length push.commits);
+        ]
+      "reviewotron.review.push"
+      (fun () ->
+        match%lwt
+          prepare_span ~name:"reviewotron.review.push.prepare"
+            ~attrs:
+              [
+                "reviewotron.repo_url", `String push.repository.url;
+                "github.ref", `String push.ref_;
+                "github.commit.after", `String push.after;
+              ]
+            ~error_to_string:prepare_error_to_string
+            (fun () -> Source.prepare_push_review ~ctx ~config push)
+        with
+        | Error error -> handle_push_prepare_error ~ctx ~config push error
+        | Ok prepared ->
+          let Github_source.{ job; push } = prepared in
+          Telemetry.span ~attrs:(Review_job.span_attrs job) "reviewotron.review.push.execute" (fun () ->
+            let log_context = Review_job.log_context job in
+            let log_prefix = log_context ^ " " in
+            let debug_dir = Engine.debug_dir_for_job ~ctx job in
+            let%lwt plugin_result = Engine.run_plugins ~ctx ~job ~debug_dir in
+            let Review_engine.{ general_output; findings; review_costs; security_error; _ } = plugin_result in
+            Cost_tracking.log_review_costs ~log_context review_costs;
+            let%lwt () = Sink.post_push_comments ~log_context ~ctx ~repo_url:job.repo_key ~sha:job.head_sha findings in
+            let security_note = String.trim Review_engine.security_error_notice in
+            let failure_attachment reason =
+              log#error "%sreview failed for push %s: no review output produced" log_prefix push.after;
+              push_failure_message ~push ~findings ~security_error ?reason ()
+            in
+            let slack_text, attachment =
+              match general_output with
+              | Some (Ok review) ->
+                let text = Printf.sprintf ":robot_face: *Code Review* for push to `develop` by %s" push.pusher.name in
+                let att =
+                  Review_format.format_slack_attachment ~compare_url:push.compare ~pusher_name:push.pusher.name
+                    ~num_commits:(List.length push.commits) ~review
+                in
+                let att =
+                  if security_error then Slack_types.{ att with text = att.text ^ "\n" ^ security_note } else att
+                in
+                text, att
+              | Some (Error reason) -> failure_attachment (Some reason)
+              | None -> failure_attachment None
+            in
+            let%lwt () =
+              match job.config.slack_channel with
+              | None -> Lwt.return_unit
+              | Some channel -> SL.post_message ~ctx ~channel ~text:slack_text ~attachments:[ attachment ] ()
+            in
+            record_push_reviewed ~ctx ~repo_url:job.repo_key ~after_sha:job.head_sha;
+            Lwt.return_unit))
 
   let event_config ctx event =
     let repo_key = Github.repo_url_of_event event in
@@ -387,44 +499,61 @@ struct
           Lwt.return_unit)
 
   let process_event ctx ~event =
-    let%lwt () = handle_feedback_webhook_event ctx ~event in
-    let%lwt config =
+    Telemetry.span ~attrs:(github_event_attrs event) "reviewotron.github.event" (fun () ->
+      let%lwt () = handle_feedback_webhook_event ctx ~event in
+      let%lwt config =
+        match event with
+        | Github.Unknown _ -> Lwt.return (Context.default_config ())
+        | Github.Pull_request _ | Github.Push _ | Github.Issue_comment _ | Github.Pull_request_review _
+        | Github.Pull_request_review_comment _ ->
+          event_config ctx event
+      in
       match event with
-      | Github.Unknown _ -> Lwt.return (Context.default_config ())
-      | Github.Pull_request _ | Github.Push _ | Github.Issue_comment _ | Github.Pull_request_review _
-      | Github.Pull_request_review_comment _ ->
-        event_config ctx event
-    in
-    match event with
-    | Github.Pull_request pr ->
-      (match Source.pr_skip_reason ~ctx ~config pr with
-      | None -> review_pr ~reaction_target:(Pull_request pr.number) ~ctx ~config pr
-      | Some reason ->
-        log#info "PR #%d skipped: %s" pr.number reason;
-        Lwt.return_unit)
-    | Github.Push push ->
-      (match Source.push_skip_reason ~ctx ~config push with
-      | None -> review_push ~ctx ~config push
-      | Some reason ->
-        log#info "push %s skipped: %s" push.after reason;
-        Lwt.return_unit)
-    | Github.Issue_comment n ->
-      (* Trigger phrase: the comment body, after trimming, must equal
+      | Github.Pull_request pr ->
+        (match Source.pr_skip_reason ~ctx ~config pr with
+        | None ->
+          Telemetry.add_attrs [ "reviewotron.event.outcome", `String "review_started" ];
+          review_pr ~reaction_target:(Pull_request pr.number) ~ctx ~config pr
+        | Some reason ->
+          Telemetry.add_attrs
+            [ "reviewotron.event.outcome", `String "skipped"; "reviewotron.skip.reason", `String reason ];
+          log#info "PR #%d skipped: %s" pr.number reason;
+          Lwt.return_unit)
+      | Github.Push push ->
+        (match Source.push_skip_reason ~ctx ~config push with
+        | None ->
+          Telemetry.add_attrs [ "reviewotron.event.outcome", `String "review_started" ];
+          review_push ~ctx ~config push
+        | Some reason ->
+          Telemetry.add_attrs
+            [ "reviewotron.event.outcome", `String "skipped"; "reviewotron.skip.reason", `String reason ];
+          log#info "push %s skipped: %s" push.after reason;
+          Lwt.return_unit)
+      | Github.Issue_comment n ->
+        (* Trigger phrase: the comment body, after trimming, must equal
          exactly "REVIEW".  Skip silently for any other body — most PR
          comments are conversation, and we don't want to log a skip
          reason for every one of them. *)
-      (match String.equal (String.trim n.comment.body) "REVIEW" with
-      | false -> Lwt.return_unit
-      | true ->
-      match Source.comment_skip_reason ~ctx ~config n with
-      | None ->
-        log#info "REVIEW comment on PR #%d by %s: triggering review" n.issue.number n.sender.login;
-        review_pr_from_comment ~reaction_target:(Issue_comment n.comment.id) ~ctx ~config n
-      | Some reason ->
-        log#info "REVIEW comment on PR #%d skipped: %s" n.issue.number reason;
+        (match String.equal (String.trim n.comment.body) "REVIEW" with
+        | false ->
+          Telemetry.add_attrs [ "reviewotron.event.outcome", `String "ignored" ];
+          Lwt.return_unit
+        | true ->
+        match Source.comment_skip_reason ~ctx ~config n with
+        | None ->
+          Telemetry.add_attrs [ "reviewotron.event.outcome", `String "review_started" ];
+          log#info "REVIEW comment on PR #%d by %s: triggering review" n.issue.number n.sender.login;
+          review_pr_from_comment ~reaction_target:(Issue_comment n.comment.id) ~ctx ~config n
+        | Some reason ->
+          Telemetry.add_attrs
+            [ "reviewotron.event.outcome", `String "skipped"; "reviewotron.skip.reason", `String reason ];
+          log#info "REVIEW comment on PR #%d skipped: %s" n.issue.number reason;
+          Lwt.return_unit)
+      | Github.Unknown kind ->
+        Telemetry.add_attrs [ "reviewotron.event.outcome", `String "ignored" ];
+        log#debug "ignoring unhandled event type: %s" kind;
+        Lwt.return_unit
+      | Github.Pull_request_review _ | Github.Pull_request_review_comment _ ->
+        Telemetry.add_attrs [ "reviewotron.event.outcome", `String "ignored" ];
         Lwt.return_unit)
-    | Github.Unknown kind ->
-      log#debug "ignoring unhandled event type: %s" kind;
-      Lwt.return_unit
-    | Github.Pull_request_review _ | Github.Pull_request_review_comment _ -> Lwt.return_unit
 end

@@ -40,6 +40,9 @@
    (< 2.1.0))
   (ocaml-ai-sdk
    (>= 0.4))
+  opentelemetry
+  opentelemetry-lwt
+  opentelemetry-client-ocurl-lwt
   (mirage-crypto-rng
    (< 2.1.0))
   (ppx_deriving_jsonschema
