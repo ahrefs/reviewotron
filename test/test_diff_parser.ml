@@ -332,13 +332,26 @@ let test_generated_file_path_rules () =
       "api/service_pb2.pyi";
       "ui/Form.designer.cs";
       "models/User.g.cs";
+      "src/schema_gen.ml";
+      "src/api_gen/client.ml";
+      "src/generated_client.ml";
+      "src/gen/client.ml";
     ]
   in
   List.iter
     (fun path -> (check bool) (Printf.sprintf "%s is generated" path) true (is_generated_path path))
     generated_paths;
   let reviewable_paths =
-    [ "package-lock.json"; "yarn.lock"; "src/generated/model.ml"; "dist/app.js"; "vendor/lib.js" ]
+    [
+      "package-lock.json";
+      "yarn.lock";
+      "src/generated/model.ml";
+      "dist/app.js";
+      "vendor/lib.js";
+      "src/general.ml";
+      "src/genetic/client.ml";
+      "src/client_generated.ml";
+    ]
   in
   List.iter
     (fun path -> (check bool) (Printf.sprintf "%s stays reviewable" path) false (is_generated_path path))

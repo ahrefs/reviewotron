@@ -359,6 +359,13 @@ Each repo can have a `.reviewotron.json` file in its root. For GitHub webhooks, 
 | `show_review_cost` | `false` | Append a cost summary footer to PR reviews. |
 | `review_plugins` | (see below) | Per-plugin configuration. |
 
+Generated-file detection is intentionally conservative. It includes exact
+`__generated__` and `gen` path components, path components or file stems ending
+in `_gen`, file stems starting with `generated_`, common generated artifact
+suffixes such as minified assets, `.map` files, and protobuf outputs, and
+generated-file header markers. Broad folders such as `generated/`, `dist/`,
+`build/`, and `vendor/` remain reviewable unless excluded with `ignored_paths`.
+
 ### Plugin Configuration
 
 #### General Plugin

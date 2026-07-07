@@ -177,7 +177,9 @@ let prepare_diff ?log_context ~config diff_text =
   (* Report dropped files once, here where they are computed, regardless of the
      success/failure outcome below. *)
   CCOption.iter
-    (fun detail -> log#info "%sskipped generated file(s): %s" (log_context_prefix log_context) detail)
+    (fun detail ->
+      log#info "%sskipped generated file(s) (%d): %s" (log_context_prefix log_context)
+        (List.length skipped_generated_files) detail)
     (Generated_file.describe_skipped skipped_generated_files);
   match filtered_diff with
   | [] -> Error `Empty

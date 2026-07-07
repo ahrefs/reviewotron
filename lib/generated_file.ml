@@ -1,4 +1,5 @@
 let generated_component = "__generated__"
+let gen_component = "gen"
 
 type skipped_file = {
   path : string;
@@ -39,8 +40,35 @@ let basename_suffixes =
 
 let path_components path = String.split_on_char '/' path
 
-let has_generated_component path =
-  List.exists (fun component -> String.equal component generated_component) (path_components path)
+let directory_components path =
+  match List.rev (path_components path) with
+  | [] -> []
+  | _basename :: dirs_rev -> List.rev dirs_rev
+
+let component_generated_reason component =
+  match component with
+  | component when String.equal component generated_component ->
+    Some (Printf.sprintf "%s path component" generated_component)
+  | component when String.equal component gen_component -> Some (Printf.sprintf "%s path component" gen_component)
+  | component when CCString.suffix ~suf:"_gen" component ->
+    Some (Printf.sprintf "path component %S has _gen suffix" component)
+  | _ -> None
+
+let find_generated_directory_component path = List.find_map component_generated_reason (directory_components path)
+
+let filename_stem basename =
+  match String.rindex_opt basename '.' with
+  | Some i when i > 0 -> String.sub basename 0 i
+  | Some _ | None -> basename
+
+let find_generated_filename_rule path =
+  let basename = Filename.basename path in
+  let stem = filename_stem basename in
+  match () with
+  | () when CCString.prefix ~pre:"generated_" stem ->
+    Some (Printf.sprintf "filename stem %S has generated_ prefix" stem)
+  | () when CCString.suffix ~suf:"_gen" stem -> Some (Printf.sprintf "filename stem %S has _gen suffix" stem)
+  | () -> None
 
 let find_basename_suffix path =
   List.find_opt (fun suffix -> CCString.suffix ~suf:suffix (Filename.basename path)) basename_suffixes
@@ -79,11 +107,19 @@ let find_generated_marker fd =
    file hand-maintained and reviewable, so the stale old_path must not count. *)
 let classify fd =
   let path = fd.Diff_parser.path in
-  match has_generated_component path with
-  | true -> Some { path; reason = Printf.sprintf "%s path component in %s" generated_component path }
-  | false ->
+  match find_generated_directory_component path with
+  | Some reason -> Some { path; reason = Printf.sprintf "%s in %s" reason path }
+  | None ->
+  match find_generated_filename_rule path with
+  | Some reason -> Some { path; reason = Printf.sprintf "%s in %s" reason path }
+  | None ->
   match find_basename_suffix path with
-  | Some suffix -> Some { path; reason = Printf.sprintf "basename %S matches generated artifact suffix %S" path suffix }
+  | Some suffix ->
+    Some
+      {
+        path;
+        reason = Printf.sprintf "basename %S matches generated artifact suffix %S" (Filename.basename path) suffix;
+      }
   | None ->
   match find_generated_marker fd with
   | Some marker -> Some { path = fd.path; reason = Printf.sprintf "generated marker %S in first diff lines" marker }
