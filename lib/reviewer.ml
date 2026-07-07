@@ -180,6 +180,40 @@ struct
     State.record_push_review state ~repo_url ~after_sha;
     State.save state
 
+  (* Sum the per-plugin estimated costs of a completed review so the run cost is
+     queryable as a single span attribute. *)
+  let report_cost_usd (report : Review_engine.report) =
+    List.fold_left (fun acc (c : Cost_tracking.review_cost) -> acc +. c.total_estimated_cost_usd) 0.0
+      report.review_costs
+
+  (* Stamp the outcome of a PR review onto the ambient [review.pr.execute] span:
+     what (if anything) was posted to GitHub, whether the post succeeded, how
+     many inline comments landed, whether the PR was recorded as reviewed, and
+     the run cost. [publish_kind]/[publish_outcome] use fixed string enums so
+     they can be grouped in trace queries. *)
+  let record_pr_outcome ~publish_kind ~publish_outcome ~published ~inline_comments_posted ~recorded_reviewed ~cost_usd
+      () =
+    Telemetry.add_attrs
+      [
+        "reviewotron.review.published", `Bool published;
+        "reviewotron.review.publish_kind", `String publish_kind;
+        "reviewotron.review.publish_outcome", `String publish_outcome;
+        "reviewotron.review.inline_comments_posted", `Int inline_comments_posted;
+        "reviewotron.review.recorded_reviewed", `Bool recorded_reviewed;
+        "reviewotron.review.cost_usd", `Float cost_usd;
+      ]
+
+  (* Wrap a single GitHub publish call in a child span so its latency and
+     failure are visible and semantically tied to the review submission (rather
+     than surfacing only as a generic [reviewotron.http.client] span). *)
+  let publish_span ~kind f =
+    Telemetry.span ~attrs:[ "reviewotron.review.publish_kind", `String kind ] "reviewotron.review.publish" (fun () ->
+      let%lwt result = f () in
+      (match result with
+      | Ok () -> ()
+      | Error msg -> Telemetry.set_error msg);
+      Lwt.return result)
+
   let run_prepared_pr_review ?reaction_target ~ctx (prepared : Github_source.prepared_pr_review) =
     Telemetry.span
       ~attrs:(("github.pull_request.number", `Int prepared.number) :: Review_job.span_attrs prepared.job)
@@ -201,34 +235,49 @@ struct
             | false ->
               let%lwt () = remove_progress_reaction ~log_context ~ctx ~repo_url:job.repo_key progress in
               let%lwt post_result =
-                publish_success_comment ~log_context:(Some log_context) ~head_sha:(Some job.head_sha) ~ctx
-                  ~repo_url:job.repo_key ~number
+                publish_span ~kind:"no_findings_comment" (fun () ->
+                  publish_success_comment ~log_context:(Some log_context) ~head_sha:(Some job.head_sha) ~ctx
+                    ~repo_url:job.repo_key ~number)
               in
               (match post_result with
               | Ok () ->
                 record_pr_reviewed ~ctx ~repo_url:job.repo_key ~number ~head_sha:job.head_sha
                   ~review_costs:report.review_costs;
                 log#info "%sPR #%d (%s): review completed with no findings; not posting a PR review" log_prefix number
-                  job.title
-              | Error _ -> ());
+                  job.title;
+                record_pr_outcome ~publish_kind:"no_findings_comment" ~publish_outcome:"ok" ~published:true
+                  ~inline_comments_posted:0 ~recorded_reviewed:true ~cost_usd:(report_cost_usd report) ()
+              | Error _ ->
+                record_pr_outcome ~publish_kind:"no_findings_comment" ~publish_outcome:"failed" ~published:false
+                  ~inline_comments_posted:0 ~recorded_reviewed:false ~cost_usd:(report_cost_usd report) ());
               Lwt.return_unit
             | true ->
+              let inline_comments = List.length report.comments in
               let%lwt () = remove_progress_reaction ~log_context ~ctx ~repo_url:job.repo_key progress in
-              let%lwt post_result = Sink.publish_pr_review ~ctx ~job ~number report in
+              let%lwt post_result =
+                publish_span ~kind:"pr_review" (fun () -> Sink.publish_pr_review ~ctx ~job ~number report)
+              in
               (match post_result with
               | Ok () ->
                 record_pr_reviewed ~ctx ~repo_url:job.repo_key ~number ~head_sha:job.head_sha
                   ~review_costs:report.review_costs;
+                record_pr_outcome ~publish_kind:"pr_review" ~publish_outcome:"ok" ~published:true
+                  ~inline_comments_posted:inline_comments ~recorded_reviewed:true ~cost_usd:(report_cost_usd report) ();
                 Lwt.return_unit
               | Error msg ->
                 let%lwt fallback_result =
-                  Sink.publish_failure_comment ~log_context ~ctx ~repo_url:job.repo_key ~number (Publish_failed msg)
+                  publish_span ~kind:"failure_comment" (fun () ->
+                    Sink.publish_failure_comment ~log_context ~ctx ~repo_url:job.repo_key ~number (Publish_failed msg))
                 in
                 (match fallback_result with
                 | Ok () ->
                   record_pr_reviewed ~ctx ~repo_url:job.repo_key ~number ~head_sha:job.head_sha
-                    ~review_costs:report.review_costs
-                | Error _ -> ());
+                    ~review_costs:report.review_costs;
+                  record_pr_outcome ~publish_kind:"failure_comment" ~publish_outcome:"fallback_ok" ~published:true
+                    ~inline_comments_posted:0 ~recorded_reviewed:true ~cost_usd:(report_cost_usd report) ()
+                | Error _ ->
+                  record_pr_outcome ~publish_kind:"failure_comment" ~publish_outcome:"failed" ~published:false
+                    ~inline_comments_posted:0 ~recorded_reviewed:false ~cost_usd:(report_cost_usd report) ());
                 Lwt.return_unit)
           in
           Lwt.return_unit
@@ -250,33 +299,63 @@ struct
   let handle_pr_prepare_error ~ctx ~repo_url ~number (pr_error : Github_source.pr_prepare_error) =
     let Github_source.{ error; head_sha } = pr_error in
     let log_context = pr_notice_log_context ~repo_url ~number head_sha in
-    let post_then_record_if_delivered failure =
-      let%lwt post_result = Sink.publish_failure_comment ?log_context ~ctx ~repo_url ~number failure in
+    (* No agents run on the prepare-failure path, so the review cost is zero and
+       no inline comments are posted; [publish_kind] records which notice this
+       outcome produced. *)
+    let record_notice_outcome ~publish_kind post_result recorded_reviewed =
+      let published, publish_outcome =
+        match post_result with
+        | Ok () -> true, "ok"
+        | Error _ -> false, "failed"
+      in
+      record_pr_outcome ~publish_kind ~publish_outcome ~published ~inline_comments_posted:0 ~recorded_reviewed
+        ~cost_usd:0.0 ()
+    in
+    let post_then_record_if_delivered ~publish_kind failure =
+      let%lwt post_result =
+        publish_span ~kind:publish_kind (fun () ->
+          Sink.publish_failure_comment ?log_context ~ctx ~repo_url ~number failure)
+      in
       record_pr_notice_if_delivered ~ctx ~repo_url ~number ~head_sha post_result;
+      record_notice_outcome ~publish_kind post_result (Result.is_ok post_result);
       Lwt.return_unit
     in
     match error with
     | Empty ->
       (* Nothing to review after filtering — a successful no-op, not a failure.
          Signal "looked, all good" with a visible PR comment. *)
-      let%lwt post_result = publish_success_comment ~log_context ~head_sha ~ctx ~repo_url ~number in
+      let%lwt post_result =
+        publish_span ~kind:"empty_comment" (fun () ->
+          publish_success_comment ~log_context ~head_sha ~ctx ~repo_url ~number)
+      in
       record_pr_notice_if_delivered ~ctx ~repo_url ~number ~head_sha post_result;
+      record_notice_outcome ~publish_kind:"empty_comment" post_result (Result.is_ok post_result);
       Lwt.return_unit
     | Too_large total_lines ->
       let config = Context.get_config ctx ~repo_key:repo_url in
-      post_then_record_if_delivered (Too_many_lines { actual = total_lines; limit = config.max_diff_lines })
+      post_then_record_if_delivered ~publish_kind:"too_large_comment"
+        (Too_many_lines { actual = total_lines; limit = config.max_diff_lines })
     | Too_many_files file_count ->
       let config = Context.get_config ctx ~repo_key:repo_url in
-      post_then_record_if_delivered (Too_many_files { actual = file_count; limit = config.max_files })
+      post_then_record_if_delivered ~publish_kind:"too_many_files_comment"
+        (Too_many_files { actual = file_count; limit = config.max_files })
     | Fetch_failed fetch_error ->
       let failure = Review_failure.classify_fetch_error fetch_error in
-      let%lwt post_result = Sink.publish_failure_comment ?log_context ~ctx ~repo_url ~number failure in
+      let%lwt post_result =
+        publish_span ~kind:"fetch_failed_comment" (fun () ->
+          Sink.publish_failure_comment ?log_context ~ctx ~repo_url ~number failure)
+      in
       (* A remote-too-large diff is a permanent property of this head SHA, so
          record it once the notice lands.  Any other fetch failure may be
          transient — never record it, so the review is retried. *)
-      (match failure with
-      | Diff_too_large_remote _ -> record_pr_notice_if_delivered ~ctx ~repo_url ~number ~head_sha post_result
-      | Fetch_failed _ | Too_many_lines _ | Too_many_files _ | Publish_failed _ -> ());
+      let recorded_reviewed =
+        match failure with
+        | Diff_too_large_remote _ ->
+          record_pr_notice_if_delivered ~ctx ~repo_url ~number ~head_sha post_result;
+          Result.is_ok post_result
+        | Fetch_failed _ | Too_many_lines _ | Too_many_files _ | Publish_failed _ -> false
+      in
+      record_notice_outcome ~publish_kind:"fetch_failed_comment" post_result recorded_reviewed;
       Lwt.return_unit
 
   let prepare_error_reason ~(config : Config_types.config) (error : Github_source.prepare_error) =
