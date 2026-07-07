@@ -307,6 +307,7 @@ Each repo can have a `.reviewotron.json` file in its root. For GitHub webhooks, 
   "max_tokens_per_review": 100000,
   "model": "claude-sonnet-4-6",
   "ignored_paths": ["*.test.js", "vendor/"],
+  "ignore_generated_files": true,
   "ignored_authors": ["dependabot[bot]"],
   "auto_review_pr_open": false,
   "auto_review_pr_sync": false,
@@ -342,10 +343,11 @@ Each repo can have a `.reviewotron.json` file in its root. For GitHub webhooks, 
 | Field | Default | Description |
 |-------|---------|-------------|
 | `max_diff_lines` | `2000` | Maximum total diff lines to review. PRs exceeding this are skipped. |
-| `max_files` | `50` | Maximum files (currently used for informational purposes). |
+| `max_files` | `50` | Maximum files to review after ignored/generated files are removed. |
 | `max_tokens_per_review` | `100000` | Token budget hint for the review agent. |
 | `model` | `claude-sonnet-4-6` | Model ID for the general review agent. |
 | `ignored_paths` | `[]` | Glob patterns for files to exclude from review. Supports `*` and `**` wildcards. |
+| `ignore_generated_files` | `true` | Exclude conservatively detected generated files before `max_files` and `max_diff_lines` are enforced. Set to `false` to review generated artifacts. |
 | `ignored_authors` | `[]` | GitHub usernames whose PRs/pushes should be skipped. |
 | `auto_review_pr_open` | `false` | Review PRs when they are opened, reopened, or marked ready. |
 | `auto_review_pr_sync` | `false` | Review PRs when new commits are pushed to them. |
@@ -356,6 +358,13 @@ Each repo can have a `.reviewotron.json` file in its root. For GitHub webhooks, 
 | `slack_channel` | `null` | Slack channel for push review notifications. Requires `slack_access_token` in secrets. |
 | `show_review_cost` | `false` | Append a cost summary footer to PR reviews. |
 | `review_plugins` | (see below) | Per-plugin configuration. |
+
+Generated-file detection is intentionally conservative. It includes exact
+`__generated__` and `gen` path components, path components or file stems ending
+in `_gen`, file stems starting with `generated_`, common generated artifact
+suffixes such as minified assets, `.map` files, and protobuf outputs, and
+generated-file header markers. Broad folders such as `generated/`, `dist/`,
+`build/`, and `vendor/` remain reviewable unless excluded with `ignored_paths`.
 
 ### Plugin Configuration
 
@@ -410,8 +419,8 @@ Reviewotron skips events in these cases:
 - **Non-reviewable actions** — PR closed, edited, or other non-code-change actions
 - **Draft PRs** — skipped until marked ready
 - **Already reviewed** — same PR + head SHA (or same push after SHA) already processed
-- **Empty diff** — all files filtered by `ignored_paths`
-- **Diff too large** — exceeds `max_diff_lines`
+- **Empty diff** — all files filtered by `ignored_paths` or generated-file detection
+- **Diff too large** — exceeds `max_diff_lines` after ignored/generated files are removed
 - **Non-develop pushes** — only `refs/heads/develop` is reviewed
 
 ---
@@ -971,7 +980,7 @@ The pricing table is a single record in the codebase (`lib/cost_tracking.ml`) �
 
 ### Diff Size
 
-PRs with more than `max_diff_lines` (default 2000) total diff lines are **skipped entirely**. There is no partial review — it's all or nothing. For large PRs, consider breaking them into smaller ones.
+PRs with more than `max_diff_lines` (default 2000) total diff lines after ignored/generated files are removed are **skipped entirely**. There is no partial review — it's all or nothing. For large PRs, consider breaking them into smaller ones.
 
 ### Push Reviews
 

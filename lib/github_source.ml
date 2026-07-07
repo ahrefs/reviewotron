@@ -147,13 +147,6 @@ module Make (SRC : Api.Github_review_source) = struct
   let fetch_file_at_ref ~log_context ~ctx ~repo_url ~ref_ ~path =
     fetch_text_file ~log_context ~ctx ~repo_url ~ref_ ~path
 
-  let prepare_diff ~config diff_text =
-    match Review_engine.prepare_diff ~config diff_text with
-    | Ok prepared -> Ok prepared
-    | Error `Empty -> Error Empty
-    | Error (`Too_large total_lines) -> Error (Too_large total_lines)
-    | Error (`Too_many_files file_count) -> Error (Too_many_files file_count)
-
   let prepare_pr_review_with_trigger ?(trigger = Review_job.Pull_request) ~ctx ~(config : Config_types.config)
     (pr_notif : Github_types.pr_notification) =
     let repo_url = pr_notif.repository.url in
@@ -170,18 +163,18 @@ module Make (SRC : Api.Github_review_source) = struct
       log#error "%sfailed to fetch diff for PR #%d: %s" log_prefix number (Http_util.error_to_string fetch_error);
       Lwt.return (error (Fetch_failed fetch_error))
     | Ok diff_text ->
-    match prepare_diff ~config diff_text with
-    | Error Empty ->
-      log#info "%sPR #%d: all files filtered out, nothing to review" log_prefix number;
+    match Review_engine.prepare_diff ~log_context ~config diff_text with
+    | Error `Empty ->
+      log#info "%sPR #%d: all files filtered out by ignored path or generated-file filters, nothing to review"
+        log_prefix number;
       Lwt.return (error Empty)
-    | Error (Too_large total_lines) ->
+    | Error (`Too_large total_lines) ->
       log#info "%sPR #%d skipped: %d diff lines exceeds limit of %d" log_prefix number total_lines config.max_diff_lines;
       Lwt.return (error (Too_large total_lines))
-    | Error (Too_many_files file_count) ->
+    | Error (`Too_many_files file_count) ->
       log#info "%sPR #%d skipped: %d files exceeds limit of %d" log_prefix number file_count config.max_files;
       Lwt.return (error (Too_many_files file_count))
-    | Error (Fetch_failed _ as e) -> Lwt.return (error e)
-    | Ok (filtered_diff, filtered_text) ->
+    | Ok { Review_engine.filtered_diff; filtered_text } ->
       let head_sha = pr.head.sha in
       let%lwt file_contents =
         fetch_key_files ~log_context:(Some log_context) ~ctx ~repo_url ~diff:filtered_diff ~ref_:head_sha
@@ -248,19 +241,19 @@ module Make (SRC : Api.Github_review_source) = struct
         (Http_util.error_to_string fetch_error);
       Lwt.return (Error (Fetch_failed fetch_error))
     | Ok diff_text ->
-    match prepare_diff ~config diff_text with
-    | Error Empty ->
-      log#info "%spush %s skipped: all files ignored" log_prefix push.after;
+    match Review_engine.prepare_diff ~log_context ~config diff_text with
+    | Error `Empty ->
+      log#info "%spush %s skipped: all files filtered out by ignored path or generated-file filters" log_prefix
+        push.after;
       Lwt.return (Error Empty)
-    | Error (Too_large total_lines) ->
+    | Error (`Too_large total_lines) ->
       log#info "%spush %s skipped: %d diff lines exceeds limit of %d" log_prefix push.after total_lines
         config.max_diff_lines;
       Lwt.return (Error (Too_large total_lines))
-    | Error (Too_many_files file_count) ->
+    | Error (`Too_many_files file_count) ->
       log#info "%spush %s skipped: %d files exceeds limit of %d" log_prefix push.after file_count config.max_files;
       Lwt.return (Error (Too_many_files file_count))
-    | Error (Fetch_failed _ as e) -> Lwt.return (Error e)
-    | Ok (filtered_diff, filtered_text) ->
+    | Ok { Review_engine.filtered_diff; filtered_text } ->
       let description =
         push.commits
         |> List.map (fun (c : Github_types.commit) -> Printf.sprintf "- %s" c.message)

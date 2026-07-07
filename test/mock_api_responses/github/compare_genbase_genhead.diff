@@ -1,0 +1,28 @@
+diff --git a/src/main.ml b/src/main.ml
+index 1234567..abcdefg 100644
+--- a/src/main.ml
++++ b/src/main.ml
+@@ -10,7 +10,10 @@ let main () =
+   let config = load_config () in
+-  let old_value = 42 in
+-  process old_value
++  let new_value = 100 in
++  let result = process new_value in
++  log_result result;
++  print_endline "done";
++  result
+diff --git a/src/__generated__/client.ml b/src/__generated__/client.ml
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/src/__generated__/client.ml
+@@ -0,0 +1,2 @@
++(* @generated *)
++let endpoint = "/v1/generated"
+diff --git a/assets/app.min.js b/assets/app.min.js
+new file mode 100644
+index 0000000..2222222
+--- /dev/null
++++ b/assets/app.min.js
+@@ -0,0 +1 @@
++function min(){return 1}

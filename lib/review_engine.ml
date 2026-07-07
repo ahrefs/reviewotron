@@ -160,9 +160,27 @@ type prepare_diff_error =
   | `Too_many_files of int
   ]
 
-let prepare_diff ~config diff_text =
+type prepared_diff = {
+  filtered_diff : Diff_parser.file_diff list;
+  filtered_text : string;
+}
+
+let filter_generated_files ~(config : Config_types.config) filtered_diff =
+  match config.ignore_generated_files with
+  | true -> Generated_file.filter filtered_diff
+  | false -> filtered_diff, []
+
+let prepare_diff ?log_context ~config diff_text =
   let parsed_diff = Diff_parser.parse diff_text in
-  let filtered_diff = Diff_parser.filter_paths parsed_diff ~ignored:config.Config_types.ignored_paths in
+  let ignored_path_filtered_diff = Diff_parser.filter_paths parsed_diff ~ignored:config.Config_types.ignored_paths in
+  let filtered_diff, skipped_generated_files = filter_generated_files ~config ignored_path_filtered_diff in
+  (* Report dropped files once, here where they are computed, regardless of the
+     success/failure outcome below. *)
+  CCOption.iter
+    (fun detail ->
+      log#info "%sskipped generated file(s) (%d): %s" (log_context_prefix log_context)
+        (List.length skipped_generated_files) detail)
+    (Generated_file.describe_skipped skipped_generated_files);
   match filtered_diff with
   | [] -> Error `Empty
   | _ when List.compare_length_with filtered_diff config.max_files > 0 ->
@@ -172,7 +190,7 @@ let prepare_diff ~config diff_text =
        file-count check so an over-[max_files] diff isn't fully traversed. *)
     let total_lines = Diff_parser.total_lines filtered_diff in
     if total_lines > config.max_diff_lines then Error (`Too_large total_lines)
-    else Ok (filtered_diff, Diff_parser.to_string_annotated filtered_diff)
+    else Ok { filtered_diff; filtered_text = Diff_parser.to_string_annotated filtered_diff }
 
 let valid_multiline_range ?log_context fd (finding : Review_types.finding) ~resolved_line =
   let log_prefix = log_context_prefix log_context in

@@ -380,12 +380,14 @@ let test_config_review_plugins_defaults () =
   (check int) "memory_max_tokens" 5000 config.review_plugins.security.memory_max_tokens;
   (check bool) "metrics_artifacts default off" false config.review_plugins.security.metrics_artifacts;
   (check bool) "debug_artifacts default off" false config.review_plugins.security.debug_artifacts;
-  (check bool) "show_review_cost" false config.show_review_cost
+  (check bool) "show_review_cost" false config.show_review_cost;
+  (check bool) "ignore_generated_files default on" true config.ignore_generated_files
 
 let test_config_review_plugins_explicit () =
   let json =
     {|{
     "show_review_cost": true,
+    "ignore_generated_files": false,
     "review_plugins": {
       "general": { "enabled": false },
       "security": {
@@ -403,6 +405,7 @@ let test_config_review_plugins_explicit () =
   in
   let config = Config_types.config_of_json (Melange_json.of_string json) in
   (check bool) "show_review_cost" true config.show_review_cost;
+  (check bool) "ignore_generated_files explicit off" false config.ignore_generated_files;
   (check bool) "general disabled" false config.review_plugins.general.enabled;
   (check bool) "security enabled" true config.review_plugins.security.enabled;
   (check int) "vuln_classes count" 2 (List.length config.review_plugins.security.vuln_classes);
@@ -2756,6 +2759,52 @@ let test_pr_large_diff_posts_comment () =
   (check bool) "failure comment posted" true (contains_sub ~sub:"[create_issue_comment]" write_log);
   (check bool) "no review attempted" false (contains_sub ~sub:"[create_pr_review]" write_log)
 
+let generated_filter_diff_text =
+  String.concat "\n"
+    [
+      "diff --git a/src/main.ml b/src/main.ml";
+      "index 1234567..abcdefg 100644";
+      "--- a/src/main.ml";
+      "+++ b/src/main.ml";
+      "@@ -10,7 +10,10 @@ let main () =";
+      "   let config = load_config () in";
+      "-  let old_value = 42 in";
+      "-  process old_value";
+      "+  let new_value = 100 in";
+      "+  let result = process new_value in";
+      "+  log_result result;";
+      "+  print_endline \"done\";";
+      "+  result";
+      "diff --git a/src/__generated__/client.ml b/src/__generated__/client.ml";
+      "new file mode 100644";
+      "index 0000000..1111111";
+      "--- /dev/null";
+      "+++ b/src/__generated__/client.ml";
+      "@@ -0,0 +1,2 @@";
+      "+(* @generated *)";
+      "+let endpoint = \"/v1/generated\"";
+      "diff --git a/assets/app.min.js b/assets/app.min.js";
+      "new file mode 100644";
+      "index 0000000..2222222";
+      "--- /dev/null";
+      "+++ b/assets/app.min.js";
+      "@@ -0,0 +1 @@";
+      "+function min(){return 1}";
+    ]
+
+let test_pr_generated_files_filtered_before_file_limit () =
+  Test_helpers.reset_test_state ();
+  Api_local.set_next_pr_diff generated_filter_diff_text;
+  let config = Config_types.config_of_json (Melange_json.of_string {|{"auto_review_pr_open": true, "max_files": 1}|}) in
+  let ctx = Test_helpers.make_test_context ~config () in
+  let payload = Test_helpers.make_pr_payload () in
+  let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let write_log = Api_local.get_write_log () in
+  (check bool) "normal PR review attempted" true (contains_sub ~sub:"[create_pr_review]" write_log);
+  (check bool) "file-limit failure not posted" false (contains_sub ~sub:"diff touches" write_log);
+  (check bool) "generated path absent from review payload" false (contains_sub ~sub:"__generated__" write_log)
+
 (** {2 Push review tests} *)
 
 let test_push_review_e2e () =
@@ -3058,11 +3107,18 @@ let with_local_root f =
   let tmp_dir = Filename.temp_dir "reviewotron_local_" "_test" in
   let src_dir = Filename.concat tmp_dir "src" in
   let main_path = Filename.concat src_dir "main.ml" in
+  let rec remove_tree path =
+    match Unix.lstat path with
+    | exception Unix.Unix_error _ -> ()
+    | st ->
+    match st.Unix.st_kind with
+    | Unix.S_DIR ->
+      Sys.readdir path |> Array.iter (fun name -> remove_tree (Filename.concat path name));
+      Unix.rmdir path
+    | Unix.S_REG | Unix.S_LNK | Unix.S_CHR | Unix.S_BLK | Unix.S_FIFO | Unix.S_SOCK -> Sys.remove path
+  in
   Fun.protect
-    ~finally:(fun () ->
-      (try Sys.remove main_path with Sys_error _ -> ());
-      (try Unix.rmdir src_dir with Unix.Unix_error _ -> ());
-      try Unix.rmdir tmp_dir with Unix.Unix_error _ -> ())
+    ~finally:(fun () -> remove_tree tmp_dir)
     (fun () ->
       Unix.mkdir src_dir 0o755;
       write_file main_path "let main () =\n  print_endline \"local\"\n";
@@ -3196,6 +3252,34 @@ let test_local_source_default_change_key_uses_filtered_diff () =
       (not (String.equal without_b.change_key without_a.change_key));
     (check bool) "head sha changes with filters" true (not (String.equal without_b.head_sha without_a.head_sha))
   | Error error, _ | _, Error error -> fail (Local_source.string_of_prepare_error error)
+
+let test_local_review_path_filters_generated_before_limits () =
+  with_local_root (fun root ->
+    let src_generated_dir = Filename.concat (Filename.concat root "src") "__generated__" in
+    let assets_dir = Filename.concat root "assets" in
+    Unix.mkdir src_generated_dir 0o755;
+    Unix.mkdir assets_dir 0o755;
+    write_file (Filename.concat src_generated_dir "client.ml") "(* @generated *)\nlet endpoint = \"/v1\"\n";
+    write_file (Filename.concat assets_dir "app.min.js") "function min(){return 1}\n";
+    match Local_path.ingest root with
+    | Error msg -> fail msg
+    | Ok ingest ->
+      (check int) "ingest sees source plus generated files" 3 ingest.Local_path.file_count;
+      let config = Config_types.config_of_json (Melange_json.of_string {|{"max_files": 1}|}) in
+      let result =
+        Lwt_main.run
+          (Local_source.prepare_review_from_text ~root ~repo_key:"local/repo" ~title:ingest.title ~description:""
+             ~diff_text:ingest.diff_text ~config ())
+      in
+      (match result with
+      | Error error -> fail (Local_source.string_of_prepare_error error)
+      | Ok job ->
+        (check int) "only source remains" 1 (List.length job.filtered_diff);
+        (match job.filtered_diff with
+        | [ fd ] -> (check string) "source path remains" "src/main.ml" fd.Diff_parser.path
+        | [] | _ :: _ :: _ -> fail "expected exactly one filtered file");
+        (check bool) "generated path absent from annotated diff" false (contains_sub ~sub:"__generated__" job.diff_text);
+        (check bool) "minified artifact absent from annotated diff" false (contains_sub ~sub:"app.min.js" job.diff_text)))
 
 let test_local_review_diff_returns_markdown () =
   Test_helpers.reset_test_state ();
@@ -5305,6 +5389,22 @@ let test_push_prepare_failure_posts_slack () =
     (check string) "duplicate terminal failure skipped" "" (Api_local.get_write_log ());
     (check int) "duplicate terminal failure sends no Slack" 0 (List.length (Api_local.get_slack_messages ()))
 
+let test_push_generated_files_do_not_trigger_prepare_failure_slack () =
+  Test_helpers.reset_test_state ();
+  let config =
+    Config_types.config_of_json
+      (Melange_json.of_string {|{"review_pushes_to_develop": true, "slack_channel": "dev-reviews", "max_files": 1}|})
+  in
+  let ctx = Test_helpers.make_test_context ~config () in
+  let payload = Test_helpers.make_push_payload ~before:"genbase" ~after:"genhead" () in
+  let event = Test_helpers.parse_event_exn ~event_type:"push" ~body:payload in
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let write_log = Api_local.get_write_log () in
+  (check bool) "push review posted commit comment" true (contains_sub ~sub:"[create_commit_comment]" write_log);
+  (check bool) "slack message sent" true (contains_sub ~sub:"[slack]" write_log);
+  (check bool) "no prepare failure slack" false (contains_sub ~sub:"Code Review Failed" write_log);
+  (check bool) "file-limit reason absent" false (contains_sub ~sub:"diff touches" write_log)
+
 let test_push_empty_prepare_no_slack () =
   Test_helpers.reset_test_state ();
   let config =
@@ -6438,6 +6538,8 @@ let () =
           test_case "PR with all ignored paths posts LGTM comment" `Quick test_pr_all_ignored_paths_posts_lgtm_comment;
           test_case "PR with empty findings posts LGTM comment" `Quick test_pr_empty_findings_review;
           test_case "large PR over max_diff_lines posts comment" `Quick test_pr_large_diff_posts_comment;
+          test_case "generated files filtered before PR file limit" `Quick
+            test_pr_generated_files_filtered_before_file_limit;
         ] );
       ( "push_review",
         [
@@ -6473,6 +6575,8 @@ let () =
           test_case "source reports fetch read errors" `Quick test_local_source_reports_fetch_read_errors;
           test_case "source default change key uses filtered diff" `Quick
             test_local_source_default_change_key_uses_filtered_diff;
+          test_case "review path filters generated before limits" `Quick
+            test_local_review_path_filters_generated_before_limits;
           test_case "review diff returns markdown" `Quick test_local_review_diff_returns_markdown;
           test_case "review generated diff text returns markdown" `Quick test_local_review_diff_text_returns_markdown;
           test_case "security-only empty review is success" `Quick test_local_review_security_only_empty_is_success;
@@ -6609,6 +6713,8 @@ let () =
           test_case "push review posts comments on general failure with findings" `Quick
             test_push_general_failure_with_findings;
           test_case "push prepare failure posts Slack" `Quick test_push_prepare_failure_posts_slack;
+          test_case "generated files do not trigger push prepare failure Slack" `Quick
+            test_push_generated_files_do_not_trigger_prepare_failure_slack;
           test_case "push empty prepare is quiet" `Quick test_push_empty_prepare_no_slack;
         ] );
       ( "security_failure_notice",

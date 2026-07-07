@@ -107,9 +107,9 @@ let trace_contains_site ~path ~line trace =
   let site = Printf.sprintf "%s:%d" path line in
   List.exists (fun step -> CCString.find ~sub:site step >= 0) trace
 
-let contains_sub ~sub s = CCString.find ~sub s >= 0
+let contains_sub ~sub s = String_ext.contains_sub ~sub s
 
-let lower_contains ~sub s = contains_sub ~sub (String.lowercase_ascii s)
+let lower_contains ~sub s = String_ext.lower_contains ~sub s
 
 let text_contains_any needles text = List.exists (fun sub -> lower_contains ~sub text) needles
 

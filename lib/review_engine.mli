@@ -51,10 +51,18 @@ type prepare_diff_error =
   | `Too_many_files of int
   ]
 
-(** Parse a raw diff, filter ignored paths, and annotate the remaining diff for
-    agent consumption. *)
+type prepared_diff = {
+  filtered_diff : Diff_parser.file_diff list;
+  filtered_text : string;
+}
+
+(** Parse a raw diff, filter ignored paths and generated files, then annotate
+    the remaining diff for agent consumption. Generated-file filtering runs
+    before file and line limits when [Config_types.ignore_generated_files] is
+    enabled, and any skipped files are logged (prefixed with [log_context] when
+    given). *)
 val prepare_diff :
-  config:Config_types.config -> string -> (Diff_parser.file_diff list * string, prepare_diff_error) result
+  ?log_context:string -> config:Config_types.config -> string -> (prepared_diff, prepare_diff_error) result
 
 (** Where a finding goes when the engine tries to turn it into an inline review
     comment. *)
