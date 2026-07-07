@@ -38,6 +38,9 @@ let telemetry_lookup bindings name =
   | Some (_, value) -> Some value
   | None -> None
 
+let otel_base_endpoint_var = "OTEL_EXPORTER_OTLP_ENDPOINT"
+let otel_traces_endpoint_var = "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"
+
 let test_telemetry_env_absent_disables () =
   (check bool) "disabled" false (Telemetry.enabled_of_env (telemetry_lookup []))
 
@@ -60,6 +63,20 @@ let test_telemetry_env_explicit_false_disables () =
   (check bool) "disabled" false
     (Telemetry.enabled_of_env
        (telemetry_lookup [ "REVIEWOTRON_OTEL", "0"; "OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:4318" ]))
+
+let test_telemetry_blank_traces_endpoint_strips_base_slash () =
+  (check (list (pair string string)))
+    "overrides"
+    [ otel_traces_endpoint_var, "http://collector:4318/v1/traces" ]
+    (Telemetry.endpoint_overrides_of_env
+       (telemetry_lookup [ otel_base_endpoint_var, "http://collector:4318/"; otel_traces_endpoint_var, "" ]))
+
+let test_telemetry_cli_traces_endpoint_overrides_traces_env () =
+  (check (list (pair string string)))
+    "overrides"
+    [ otel_traces_endpoint_var, "http://cli-collector:4318/v1/traces" ]
+    (Telemetry.endpoint_overrides_of_env ~traces_endpoint:"http://cli-collector:4318/v1/traces"
+       (telemetry_lookup [ otel_traces_endpoint_var, "http://env-collector:4318/v1/traces" ]))
 
 let with_env_vars bindings f =
   let names = List.map fst bindings in
@@ -6661,6 +6678,10 @@ let () =
           test_case "standard endpoint enables tracing" `Quick test_telemetry_env_standard_endpoint_enables;
           test_case "OTEL_SDK_DISABLED disables tracing" `Quick test_telemetry_env_sdk_disabled_wins;
           test_case "explicit false disables tracing" `Quick test_telemetry_env_explicit_false_disables;
+          test_case "blank traces endpoint strips base slash" `Quick
+            test_telemetry_blank_traces_endpoint_strips_base_slash;
+          test_case "CLI traces endpoint overrides traces env" `Quick
+            test_telemetry_cli_traces_endpoint_overrides_traces_env;
           test_case "disabled setup smoke" `Quick test_telemetry_disabled_setup_smoke;
           test_case "with_env_vars restores unset vars to unset" `Quick test_with_env_vars_restores_unset_vars_to_unset;
         ] );

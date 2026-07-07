@@ -24,12 +24,19 @@ val enabled : ?traces_endpoint:string -> unit -> bool
     drops every trace. [Unix.putenv name ""] cannot unset a variable, so the fix
     is to overwrite each blank variable with the value the app intends: a blank
     base endpoint becomes the default endpoint, and a blank traces endpoint
-    becomes the resolved base with ["/v1/traces"] appended.
+    becomes the resolved base, stripped of trailing slashes, with
+    ["/v1/traces"] appended.
+
+    When [traces_endpoint] is provided and
+    [OTEL_EXPORTER_OTLP_TRACES_ENDPOINT] already exists, the traces variable is
+    overwritten with that explicit endpoint so the
+    [--otel-traces-endpoint] flag wins over the environment before the OTLP
+    client reads it.
 
     Returns the [(name, value)] pairs the caller should re-export; the empty list
     means nothing needs fixing. Pure and testable without touching the process
     environment. *)
-val endpoint_overrides_of_env : env -> (string * string) list
+val endpoint_overrides_of_env : ?traces_endpoint:string -> env -> (string * string) list
 
 (** Initialize the OTLP exporter around a command body when tracing is enabled.
 

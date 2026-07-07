@@ -24,6 +24,15 @@ let env_bool lookup name = Stdlib.Option.bind (lookup name) parse_bool
 
 let env_nonempty lookup name = Stdlib.Option.bind (lookup name) nonempty
 
+let strip_trailing_slashes value =
+  let rec loop len =
+    match len with
+    | 0 -> 0
+    | len when Char.equal value.[len - 1] '/' -> loop (len - 1)
+    | len -> len
+  in
+  String.sub value 0 (loop (String.length value))
+
 let is_some = function
   | Some _ -> true
   | None -> false
@@ -35,7 +44,11 @@ let endpoint_env_set lookup =
    [Unix.putenv name ""] cannot unset it, and the OTLP client reads such a var
    verbatim (base endpoint yields base "" -> "/v1/traces"; a blank traces
    endpoint is used as-is), so every export POSTs to an invalid URL. We repair
-   this by re-exporting the intended value. *)
+   this by re-exporting the intended value.
+
+   The OTLP client also reads [OTEL_EXPORTER_OTLP_TRACES_ENDPOINT] before its
+   [~url_traces] argument, so a CLI traces endpoint must be re-exported over an
+   existing traces env var before config construction. *)
 let is_blank lookup name =
   match lookup name with
   | None -> false
@@ -48,10 +61,10 @@ let is_blank lookup name =
    value, before handing the environment to the OTLP client. Returns the
    (name, value) pairs the caller should [Unix.putenv]; an empty list means the
    environment is already sane. Testable without touching the process env. *)
-let endpoint_overrides_of_env lookup =
+let endpoint_overrides_of_env ?traces_endpoint lookup =
   let resolved_base =
     match env_nonempty lookup base_endpoint_var with
-    | Some base -> base
+    | Some base -> strip_trailing_slashes base
     | None -> default_otlp_endpoint
   in
   let base_override =
@@ -60,18 +73,31 @@ let endpoint_overrides_of_env lookup =
     | false -> []
   in
   let traces_override =
+    match traces_endpoint with
+    | Some endpoint ->
+      (match lookup traces_endpoint_var with
+      | Some _ -> [ traces_endpoint_var, endpoint ]
+      | None -> [])
+    | None ->
     match is_blank lookup traces_endpoint_var with
     | true -> [ traces_endpoint_var, resolved_base ^ "/v1/traces" ]
     | false -> []
   in
   base_override @ traces_override
 
-let apply_endpoint_overrides () =
+let apply_endpoint_overrides ?traces_endpoint () =
+  let put_with_blank_log name value =
+    log#warn "%s is set but blank; normalizing to %s so traces are exported" name value;
+    Unix.putenv name value
+  in
   List.iter
     (fun (name, value) ->
-      log#warn "%s is set but blank; normalizing to %s so traces are exported" name value;
-      Unix.putenv name value)
-    (endpoint_overrides_of_env Sys.getenv_opt)
+      match traces_endpoint with
+      | Some endpoint when String.equal name traces_endpoint_var && String.equal value endpoint ->
+        Unix.putenv name value
+      | Some _ -> put_with_blank_log name value
+      | None -> put_with_blank_log name value)
+    (endpoint_overrides_of_env ?traces_endpoint Sys.getenv_opt)
 
 (* An explicit [--otel-traces-endpoint] flag is treated like an endpoint
    environment variable being set: it enables tracing on its own, but
@@ -150,9 +176,13 @@ let setup_resource_attrs ~command =
    flag (passed verbatim as [~url_traces]) wins over any environment variable;
    otherwise fall back to env-based resolution, defaulting the base URL to
    loopback when no endpoint variable is set. *)
+let config_with_traces_endpoint endpoint =
+  let config = Opentelemetry_client_ocurl_lwt.Config.make ~url_traces:endpoint () in
+  { config with Opentelemetry_client.Exporter_config.url_traces = endpoint }
+
 let config ?traces_endpoint () =
   match traces_endpoint with
-  | Some endpoint -> Opentelemetry_client_ocurl_lwt.Config.make ~url_traces:endpoint ()
+  | Some endpoint -> config_with_traces_endpoint endpoint
   | None ->
   match endpoint_env_set Sys.getenv_opt with
   | true -> Opentelemetry_client_ocurl_lwt.Config.make ()
@@ -202,7 +232,7 @@ let with_setup ?(root_span = true) ?traces_endpoint ~command f =
        flushes and reraises), so this must not wrap [f]'s execution. *)
   match
     setup_resource_attrs ~command;
-    apply_endpoint_overrides ();
+    apply_endpoint_overrides ?traces_endpoint ();
     config ?traces_endpoint ()
   with
   | exception exn ->
