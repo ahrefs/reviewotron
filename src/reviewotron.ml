@@ -9,7 +9,8 @@ module Feedback_collector_remote = Feedback_collector.Make (Api_remote.Github)
 
 (* entrypoints *)
 
-let run_lwt_command ?root_span ~command f = Lwt_main.run (Telemetry.with_setup ?root_span ~command f)
+let run_lwt_command ?root_span ?otel_traces_endpoint ~command f =
+  Lwt_main.run (Telemetry.with_setup ?root_span ?traces_endpoint:otel_traces_endpoint ~command f)
 
 let setup_logging logfile loglevel =
   Daemon.logfile := logfile;
@@ -58,12 +59,13 @@ let start_server_with_feedback_polling ~ctx ~addr ~port ~poll_interval_seconds =
         Lwt.cancel poller;
         Lwt.return_unit)
 
-let run_action addr port secrets_path config_filename state_path feedback_dir poll_interval_seconds logfile loglevel =
+let run_action addr port secrets_path config_filename state_path feedback_dir poll_interval_seconds logfile loglevel
+  otel_traces_endpoint =
   setup_logging logfile loglevel;
   Signal.setup_lwt ();
   Daemon.install_signal_handlers ();
   Mirage_crypto_rng_unix.use_default ();
-  run_lwt_command ~root_span:false ~command:"run" (fun () ->
+  run_lwt_command ~root_span:false ?otel_traces_endpoint ~command:"run" (fun () ->
     log#info "reviewotron starting";
     match validate_poll_interval ~command:"run" ~allow_zero:false poll_interval_seconds with
     | Error e ->
@@ -499,6 +501,15 @@ let loglevel =
   let doc = "Log level, e.g. debug, info, warn, error." in
   Arg.(value & opt (some string) None & info [ "loglevel" ] ~docv:"LOGLEVEL" ~doc)
 
+let otel_traces_endpoint =
+  let doc =
+    "OTLP traces endpoint URL (used verbatim, must include the path, e.g. $(b,http://127.0.0.1:5996/v1/traces)). \
+     Enables tracing and takes precedence over OTEL_EXPORTER_OTLP_TRACES_ENDPOINT / OTEL_EXPORTER_OTLP_ENDPOINT. When \
+     omitted, the endpoint is read from those environment variables. $(b,OTEL_SDK_DISABLED=true) still disables \
+     tracing."
+  in
+  Arg.(value & opt (some string) None & info [ "otel-traces-endpoint" ] ~docv:"URL" ~doc)
+
 let event_type =
   let doc = "GitHub event type (e.g. pull_request, push)." in
   Arg.(required & opt (some string) None & info [ "event-type" ] ~docv:"EVENT_TYPE" ~doc)
@@ -598,7 +609,8 @@ let run_cmd =
       $ feedback_dir
       $ feedback_poll_interval_seconds
       $ logfile
-      $ loglevel)
+      $ loglevel
+      $ otel_traces_endpoint)
   in
   Cmd.v info term
 

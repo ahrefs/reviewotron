@@ -73,7 +73,11 @@ let apply_endpoint_overrides () =
       Unix.putenv name value)
     (endpoint_overrides_of_env Sys.getenv_opt)
 
-let enabled_of_env lookup =
+(* An explicit [--otel-traces-endpoint] flag is treated like an endpoint
+   environment variable being set: it enables tracing on its own, but
+   [OTEL_SDK_DISABLED=true] and [REVIEWOTRON_OTEL=0|off] still override it so an
+   operator can force telemetry off without removing the flag. *)
+let enabled_of_env ?traces_endpoint lookup =
   let sdk_disabled =
     match env_bool lookup "OTEL_SDK_DISABLED" with
     | Some true -> true
@@ -83,9 +87,9 @@ let enabled_of_env lookup =
   | true, _ -> false
   | false, Some true -> true
   | false, Some false -> false
-  | false, None -> endpoint_env_set lookup
+  | false, None -> is_some traces_endpoint || endpoint_env_set lookup
 
-let enabled () = enabled_of_env Sys.getenv_opt
+let enabled ?traces_endpoint () = enabled_of_env ?traces_endpoint Sys.getenv_opt
 
 let tracer = Opentelemetry.Sdk.get_tracer ~name:"reviewotron" ~__MODULE__ ()
 
@@ -142,7 +146,14 @@ let setup_resource_attrs ~command =
     resource_command := Some command;
     Opentelemetry.Globals.add_global_attribute "reviewotron.command" (`String command)
 
-let config () =
+(* Precedence for the traces endpoint: the explicit [--otel-traces-endpoint]
+   flag (passed verbatim as [~url_traces]) wins over any environment variable;
+   otherwise fall back to env-based resolution, defaulting the base URL to
+   loopback when no endpoint variable is set. *)
+let config ?traces_endpoint () =
+  match traces_endpoint with
+  | Some endpoint -> Opentelemetry_client_ocurl_lwt.Config.make ~url_traces:endpoint ()
+  | None ->
   match endpoint_env_set Sys.getenv_opt with
   | true -> Opentelemetry_client_ocurl_lwt.Config.make ()
   | false -> Opentelemetry_client_ocurl_lwt.Config.make ~url:default_otlp_endpoint ()
@@ -180,8 +191,8 @@ let with_command_span ~root_span ~command f =
   | false -> f ()
   | true -> span ~attrs:[ "reviewotron.command", `String command ] "reviewotron.command" f
 
-let with_setup ?(root_span = true) ~command f =
-  match enabled () with
+let with_setup ?(root_span = true) ?traces_endpoint ~command f =
+  match enabled ?traces_endpoint () with
   | false -> f ()
   | true ->
   (* Telemetry initialization must never crash the app. Environment
@@ -192,7 +203,7 @@ let with_setup ?(root_span = true) ~command f =
   match
     setup_resource_attrs ~command;
     apply_endpoint_overrides ();
-    config ()
+    config ?traces_endpoint ()
   with
   | exception exn ->
     log#error "telemetry setup failed, running untraced: %s" (Printexc.to_string exn);

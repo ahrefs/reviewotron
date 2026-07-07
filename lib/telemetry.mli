@@ -8,10 +8,12 @@ type env = string -> string option
 
     [REVIEWOTRON_OTEL=1|true|yes|on] enables tracing, standard OTLP endpoint
     variables enable tracing, and [REVIEWOTRON_OTEL=0|false|no|off] or
-    [OTEL_SDK_DISABLED=true] disables it. *)
-val enabled_of_env : env -> bool
+    [OTEL_SDK_DISABLED=true] disables it. A [~traces_endpoint] (from the
+    [--otel-traces-endpoint] flag) enables tracing like an endpoint variable
+    would, but [REVIEWOTRON_OTEL=0]/[OTEL_SDK_DISABLED=true] still override it. *)
+val enabled_of_env : ?traces_endpoint:string -> env -> bool
 
-val enabled : unit -> bool
+val enabled : ?traces_endpoint:string -> unit -> bool
 
 (** Decide which OTLP endpoint environment variables must be re-exported before
     the exporter reads them.
@@ -38,10 +40,15 @@ val endpoint_overrides_of_env : env -> (string * string) list
     The [reviewotron.command] global attribute is set regardless, so spans stay
     tagged with the command name.
 
+    [traces_endpoint] (from the [--otel-traces-endpoint] flag) sets the OTLP
+    traces URL verbatim, taking precedence over [OTEL_EXPORTER_OTLP_ENDPOINT] /
+    [OTEL_EXPORTER_OTLP_TRACES_ENDPOINT]; when absent the endpoint is resolved
+    from those variables (defaulting to loopback).
+
     Telemetry initialization never crashes the caller: an exception while
     normalizing the environment or installing the exporter is logged and [f]
     runs untraced. *)
-val with_setup : ?root_span:bool -> command:string -> (unit -> 'a Lwt.t) -> 'a Lwt.t
+val with_setup : ?root_span:bool -> ?traces_endpoint:string -> command:string -> (unit -> 'a Lwt.t) -> 'a Lwt.t
 
 val span :
   ?kind:Opentelemetry.Span.kind -> ?attrs:Opentelemetry.key_value list -> string -> (unit -> 'a Lwt.t) -> 'a Lwt.t
