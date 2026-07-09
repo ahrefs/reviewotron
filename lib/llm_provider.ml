@@ -31,6 +31,8 @@ let api_key_exn key = CCOption.get_exn_or __LOC__ (normalize_key key)
    [anthropic/] prefix. Keep the mappings explicit for known Claude aliases so
    the OpenRouter path calls the same underlying Claude model family/version. *)
 let normalize_anthropic_model_for_openrouter = function
+  | "claude-sonnet-5" | "anthropic/claude-sonnet-5" -> "anthropic/claude-sonnet-5"
+  | "claude-opus-4-8" | "anthropic/claude-opus-4-8" -> "anthropic/claude-opus-4.8"
   | "claude-opus-4-7" | "anthropic/claude-opus-4-7" -> "anthropic/claude-opus-4.7"
   | "claude-opus-4-6" | "anthropic/claude-opus-4-6" -> "anthropic/claude-opus-4.6"
   | "claude-sonnet-4-6" | "anthropic/claude-sonnet-4-6" -> "anthropic/claude-sonnet-4.6"

@@ -340,7 +340,7 @@ let test_model_ids_no_regression () =
   in
   expect Agent_runner.Fast ~anthropic_id:"claude-haiku-4-5-20251001" ~openrouter_id:"anthropic/claude-haiku-4.5";
   expect Agent_runner.Standard ~anthropic_id:"claude-sonnet-5" ~openrouter_id:"anthropic/claude-sonnet-5";
-  expect Agent_runner.Strong ~anthropic_id:"claude-opus-4-8" ~openrouter_id:"anthropic/claude-opus-4-8";
+  expect Agent_runner.Strong ~anthropic_id:"claude-opus-4-8" ~openrouter_id:"anthropic/claude-opus-4.8";
   (* config.model default flows through the same normalization *)
   (check string) "config.model default on OR" "anthropic/claude-sonnet-4.6"
     (Llm_provider.normalize_model_id Llm_provider.Openrouter "claude-sonnet-4-6")

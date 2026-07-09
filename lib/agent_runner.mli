@@ -97,7 +97,7 @@ val cached_input_provider_options : Llm_provider.t -> Ai_provider.Provider_optio
       option encoding and usage parsing.  [model] must have been built for this
       same provider (see {!Llm_provider.language_model}).
     @param model Language model instance (create via provider, e.g.
-      [Ai_provider_anthropic.language_model ~model:"claude-sonnet-4-6" ()])
+      [Ai_provider_anthropic.language_model ~model:"claude-sonnet-5" ()])
     @param tools Named tool definitions for context expansion
     @param max_retries Per-call retry count (default 2)
     @param debug_dir Directory for debug dumps on parse failure
