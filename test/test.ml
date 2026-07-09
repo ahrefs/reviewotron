@@ -1267,6 +1267,72 @@ let test_mock_claude_response () =
   (check bool) "has summary" true (String.length review.summary > 0);
   (check bool) "has assessment" true (String.length review.overall_assessment > 0)
 
+let test_scout_output_parse_two_leads () =
+  let scout = Review_types.scout_output_of_json (read_json "mock_api_responses/scout/leads_two.json") in
+  (check int) "leads count" 2 (List.length scout.leads);
+  (check string) "skip note" "test-only churn in test/fixtures skipped" scout.skip_note;
+  match scout.leads with
+  | [ first; second ] ->
+    (check string) "first path" "lib/session.ml" first.path;
+    (check int) "first line" 42 first.line;
+    (check (option int)) "first end_line" None first.end_line;
+    (check string) "first hypothesis"
+      "The session token is no longer validated before use after this refactor; check whether callers can now pass an \
+       expired token through."
+      first.hypothesis;
+    (check string) "first category" "bug" (Review_types.finding_category_to_string first.category);
+    (check string) "first confidence" "high" (Review_types.confidence_to_string first.confidence);
+    (check string) "second path" "lib/retry.ml" second.path;
+    (check int) "second line" 88 second.line;
+    (check (option int)) "second end_line" (Some 95) second.end_line;
+    (check string) "second category" "performance" (Review_types.finding_category_to_string second.category);
+    (check string) "second confidence" "medium" (Review_types.confidence_to_string second.confidence)
+  | _ -> fail "expected exactly two leads"
+
+let test_scout_output_parse_empty_leads () =
+  let scout = Review_types.scout_output_of_json (read_json "mock_api_responses/scout/leads_empty.json") in
+  (check int) "leads count" 0 (List.length scout.leads);
+  (check string) "skip note empty" "" scout.skip_note
+
+let test_scout_output_parse_overflow_leads () =
+  let scout = Review_types.scout_output_of_json (read_json "mock_api_responses/scout/leads_overflow.json") in
+  (check int) "leads count" 12 (List.length scout.leads)
+
+let test_scout_output_roundtrip () =
+  let scout : Review_types.scout_output =
+    {
+      leads =
+        [
+          {
+            path = "lib/foo.ml";
+            line = 10;
+            end_line = Some 15;
+            hypothesis = "Guard removed on the error branch.";
+            category = Review_types.Bug;
+            confidence = Review_types.High;
+          };
+        ];
+      skip_note = "nothing skipped";
+    }
+  in
+  let json_str = Melange_json.to_string (Review_types.scout_output_to_json scout) in
+  let parsed = Review_types.scout_output_of_json (Melange_json.of_string json_str) in
+  (check int) "roundtrip leads count" 1 (List.length parsed.leads);
+  (check string) "roundtrip skip_note" "nothing skipped" parsed.skip_note;
+  let lead = List.hd parsed.leads in
+  (check string) "roundtrip path" "lib/foo.ml" lead.path;
+  (check int) "roundtrip line" 10 lead.line;
+  (check (option int)) "roundtrip end_line" (Some 15) lead.end_line;
+  (check string) "roundtrip hypothesis" "Guard removed on the error branch." lead.hypothesis;
+  (check string) "roundtrip category" "bug" (Review_types.finding_category_to_string lead.category);
+  (check string) "roundtrip confidence" "high" (Review_types.confidence_to_string lead.confidence)
+
+let test_scout_output_jsonschema_has_properties () =
+  (check bool) "schema has properties" true
+    (match Review_types.scout_output_jsonschema with
+    | `Assoc fields -> List.exists (fun (k, _) -> String.equal k "properties") fields
+    | _ -> false)
+
 (** {2 Security types tests} *)
 
 let roundtrip to_json of_json v =
@@ -6448,6 +6514,11 @@ let () =
         [
           test_case "review output roundtrip" `Quick test_review_output_roundtrip;
           test_case "mock claude response" `Quick test_mock_claude_response;
+          test_case "scout output parse two leads" `Quick test_scout_output_parse_two_leads;
+          test_case "scout output parse empty leads" `Quick test_scout_output_parse_empty_leads;
+          test_case "scout output parse overflow leads" `Quick test_scout_output_parse_overflow_leads;
+          test_case "scout output roundtrip" `Quick test_scout_output_roundtrip;
+          test_case "scout output jsonschema has properties" `Quick test_scout_output_jsonschema_has_properties;
         ] );
       ( "security_types",
         [

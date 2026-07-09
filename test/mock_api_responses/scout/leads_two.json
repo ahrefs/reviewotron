@@ -1,0 +1,21 @@
+{
+  "leads": [
+    {
+      "path": "lib/session.ml",
+      "line": 42,
+      "end_line": null,
+      "hypothesis": "The session token is no longer validated before use after this refactor; check whether callers can now pass an expired token through.",
+      "category": "bug",
+      "confidence": "high"
+    },
+    {
+      "path": "lib/retry.ml",
+      "line": 88,
+      "end_line": 95,
+      "hypothesis": "The retry loop's backoff was removed but the caller still assumes exponential delay; verify the new loop can't busy-spin on a persistent failure.",
+      "category": "performance",
+      "confidence": "medium"
+    }
+  ],
+  "skip_note": "test-only churn in test/fixtures skipped"
+}

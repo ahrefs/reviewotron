@@ -219,3 +219,36 @@ type review_output = {
   overall_assessment : string; [@json.default ""] [@jsonschema.description "Brief overall quality assessment"]
 }
 [@@deriving json, jsonschema] [@@json.allow_extra_fields]
+
+(** {2 Scout lead} *)
+
+type scout_lead = {
+  path : string; [@jsonschema.description "File path relative to repo root"]
+  line : int;
+     [@jsonschema.description
+       "Line number (1-based) in the new version of the file, copied verbatim from the annotated diff's left-column \
+        line numbers — never estimated."]
+  end_line : int option;
+     [@json.option]
+     [@jsonschema.description "Last line of a multi-line anchor for the lead. Leave null for single-line leads."]
+  hypothesis : string;
+     [@jsonschema.description
+       "What might be wrong and why it's worth a deep look. Must name a concrete, checkable hypothesis."]
+  category : finding_category;
+     [@jsonschema.description
+       "Category: bug, security, performance, style, logic, error-handling, naming, documentation"]
+  confidence : confidence;
+     [@jsonschema.description
+       "Confidence the lead deserves deep review, not that it's a confirmed defect: high, medium, or low."]
+}
+[@@deriving json, jsonschema] [@@json.allow_extra_fields]
+
+(** {2 Scout output} *)
+
+type scout_output = {
+  leads : scout_lead list; [@jsonschema.description "Investigation leads for the deep reviewer, ordered by confidence"]
+  skip_note : string;
+     [@jsonschema.description
+       "One line on what the scout deliberately skipped and why. Empty string if nothing was skipped."]
+}
+[@@deriving json, jsonschema] [@@json.allow_extra_fields]
