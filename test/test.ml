@@ -1333,6 +1333,96 @@ let test_scout_output_jsonschema_has_properties () =
     | `Assoc fields -> List.exists (fun (k, _) -> String.equal k "properties") fields
     | _ -> false)
 
+(** {2 General scout agent tests} *)
+
+let scout_lead ~path ~line ~confidence : Review_types.scout_lead =
+  { path; line; end_line = None; hypothesis = "hypothesis"; category = Review_types.Bug; confidence }
+
+let test_general_scout_cap_leads_truncates () =
+  let leads =
+    [
+      scout_lead ~path:"a.ml" ~line:1 ~confidence:High;
+      scout_lead ~path:"b.ml" ~line:2 ~confidence:Low;
+      scout_lead ~path:"c.ml" ~line:3 ~confidence:High;
+      scout_lead ~path:"d.ml" ~line:4 ~confidence:Medium;
+      scout_lead ~path:"e.ml" ~line:5 ~confidence:Low;
+      scout_lead ~path:"f.ml" ~line:6 ~confidence:Medium;
+      scout_lead ~path:"g.ml" ~line:7 ~confidence:High;
+      scout_lead ~path:"h.ml" ~line:8 ~confidence:Medium;
+      scout_lead ~path:"i.ml" ~line:9 ~confidence:Low;
+      scout_lead ~path:"j.ml" ~line:10 ~confidence:Medium;
+      scout_lead ~path:"k.ml" ~line:11 ~confidence:Low;
+      scout_lead ~path:"l.ml" ~line:12 ~confidence:Low;
+    ]
+  in
+  let capped = General_scout_agent.cap_leads ~max_leads:10 leads in
+  (check int) "capped to max_leads" 10 (List.length capped);
+  (* Highest-confidence first, relative order preserved within each band.
+     Highs (a, c, g), then Mediums (d, f, h, j), then Lows (b, e, i) — the two
+     lowest-confidence lows (k, l) are dropped. *)
+  let paths = List.map (fun (l : Review_types.scout_lead) -> l.path) capped in
+  (check (list string))
+    "kept highest-confidence, stable within band"
+    [ "a.ml"; "c.ml"; "g.ml"; "d.ml"; "f.ml"; "h.ml"; "j.ml"; "b.ml"; "e.ml"; "i.ml" ]
+    paths
+
+let test_general_scout_cap_leads_identity () =
+  let leads =
+    [
+      scout_lead ~path:"a.ml" ~line:1 ~confidence:Low;
+      scout_lead ~path:"b.ml" ~line:2 ~confidence:High;
+      scout_lead ~path:"c.ml" ~line:3 ~confidence:Medium;
+    ]
+  in
+  let capped = General_scout_agent.cap_leads ~max_leads:10 leads in
+  (check int) "identity length" 3 (List.length capped);
+  (* Fewer than max_leads: still stable-sorted by confidence, none dropped. *)
+  let paths = List.map (fun (l : Review_types.scout_lead) -> l.path) capped in
+  (check (list string)) "all kept, confidence-sorted" [ "b.ml"; "c.ml"; "a.ml" ] paths
+
+let test_general_scout_build_input_order () =
+  let input =
+    General_scout_agent.build_input ~diff_text:"THE_DIFF_BODY" ~change_title:"THE_TITLE"
+      ~change_description:"THE_DESCRIPTION" ()
+  in
+  (* First index at which [needle] occurs in [input]; -1 if absent. *)
+  let idx needle =
+    let n = String.length needle
+    and h = String.length input in
+    let rec scan i =
+      match i > h - n with
+      | true -> -1
+      | false ->
+      match String.equal (String.sub input i n) needle with
+      | true -> i
+      | false -> scan (i + 1)
+    in
+    scan 0
+  in
+  let i_title = idx "THE_TITLE" in
+  let i_desc = idx "THE_DESCRIPTION" in
+  let i_explainer = idx "## Diff Format" in
+  let i_diff = idx "THE_DIFF_BODY" in
+  (check bool) "contains title" true (Devkit.Stre.exists input "THE_TITLE");
+  (check bool) "contains description" true (Devkit.Stre.exists input "THE_DESCRIPTION");
+  (check bool) "contains explainer" true (Devkit.Stre.exists input "## Diff Format");
+  (check bool) "contains diff" true (Devkit.Stre.exists input "THE_DIFF_BODY");
+  (check bool) "title before description" true (i_title < i_desc);
+  (check bool) "description before explainer" true (i_desc < i_explainer);
+  (check bool) "explainer before diff" true (i_explainer < i_diff);
+  (check bool) "no file contents section" false (Devkit.Stre.exists input "File Contents")
+
+let test_general_scout_config_security_covered () =
+  let cfg = General_scout_agent.config ~model_tier:Standard ~security_covered_elsewhere:true in
+  (check string) "name" "general_scout" cfg.name;
+  (check int) "max_steps" 1 cfg.max_steps;
+  (check bool) "suppresses security leads" true (Devkit.Stre.exists cfg.system_prompt "do not duplicate it")
+
+let test_general_scout_config_security_not_covered () =
+  let cfg = General_scout_agent.config ~model_tier:Standard ~security_covered_elsewhere:false in
+  (check string) "name" "general_scout" cfg.name;
+  (check bool) "allows security leads" true (Devkit.Stre.exists cfg.system_prompt "category \"security\"")
+
 (** {2 Security types tests} *)
 
 let roundtrip to_json of_json v =
@@ -6578,6 +6668,14 @@ let () =
           test_case "output schema valid" `Quick test_triage_agent_output_schema_valid;
           test_case "build input with deterministic signals" `Quick
             test_triage_agent_build_input_with_deterministic_signals;
+        ] );
+      ( "general_scout_agent",
+        [
+          test_case "cap_leads truncates keeping highest confidence" `Quick test_general_scout_cap_leads_truncates;
+          test_case "cap_leads under max is identity length" `Quick test_general_scout_cap_leads_identity;
+          test_case "build input section order" `Quick test_general_scout_build_input_order;
+          test_case "config security covered elsewhere" `Quick test_general_scout_config_security_covered;
+          test_case "config security not covered" `Quick test_general_scout_config_security_not_covered;
         ] );
       ( "security_plugin",
         [
