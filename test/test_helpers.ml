@@ -36,6 +36,7 @@ let reset_test_state () =
   Api_local.clear_slack_messages ();
   Api_local.reset_agent_response_path ();
   Api_local.clear_agent_response_map ();
+  Api_local.clear_recorded_agent_inputs ();
   Api_local.reset_next_pr_diff ();
   Api_local.reset_next_issue_comment_result ();
   Api_local.reset_next_pr_review_result ();

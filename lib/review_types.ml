@@ -248,6 +248,7 @@ type scout_lead = {
 type scout_output = {
   leads : scout_lead list; [@jsonschema.description "Investigation leads for the deep reviewer, ordered by confidence"]
   skip_note : string;
+     [@json.default ""]
      [@jsonschema.description
        "One line on what the scout deliberately skipped and why. Empty string if nothing was skipped."]
 }

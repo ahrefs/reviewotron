@@ -451,6 +451,36 @@ let test_config_general_scout_explicit () =
   (check int) "max_leads explicit" 5 config.review_plugins.general.max_leads;
   (check (option string)) "model explicit override" (Some "explicit-model") config.model
 
+(* All three tests below drive the TOP-LEVEL [Config_types.config_of_json]
+   entrypoint (the real config-load path), not [general_plugin_config_of_json]
+   in isolation. [config_of_json] → [review_plugins_config_of_json] →
+   [general_plugin_config_of_json], so a green result here proves validation
+   fires on the nested path the pipeline actually uses. *)
+
+(* Assert that parsing [json] through the top-level config decoder raises
+   [Melange_json.Of_json_error] with a message naming [max_leads]. Matches the
+   exact exception the derived decoders raise via [Melange_json.of_json_error];
+   no broad catch-all. *)
+let expect_max_leads_rejected ~label json =
+  match Config_types.config_of_json (Melange_json.of_string json) with
+  | (_ : Config_types.config) -> Alcotest.failf "%s: expected max_leads to be rejected" label
+  | exception Melange_json.Of_json_error (Json_error msg) ->
+    (check bool) (label ^ ": message names max_leads") true (CCString.find ~sub:"max_leads" msg >= 0)
+
+let test_config_max_leads_zero_rejected () =
+  expect_max_leads_rejected ~label:"max_leads = 0" {|{ "review_plugins": { "general": { "max_leads": 0 } } }|}
+
+let test_config_max_leads_negative_rejected () =
+  expect_max_leads_rejected ~label:"max_leads = -3" {|{ "review_plugins": { "general": { "max_leads": -3 } } }|}
+
+let test_config_max_leads_valid_and_default_ok () =
+  let one =
+    Config_types.config_of_json (Melange_json.of_string {|{ "review_plugins": { "general": { "max_leads": 1 } } }|})
+  in
+  (check int) "max_leads = 1 accepted" 1 one.review_plugins.general.max_leads;
+  let omitted = Config_types.config_of_json (Melange_json.of_string {|{ "review_plugins": { "general": {} } }|}) in
+  (check int) "omitted max_leads defaults to 10" 10 omitted.review_plugins.general.max_leads
+
 let test_context_create_requires_repos_by_default () =
   let tmp_path = Filename.temp_file "reviewotron_secrets_" ".json" in
   Fun.protect
@@ -1327,6 +1357,29 @@ let test_scout_output_roundtrip () =
   (check string) "roundtrip category" "bug" (Review_types.finding_category_to_string lead.category);
   (check string) "roundtrip confidence" "high" (Review_types.confidence_to_string lead.confidence)
 
+let test_scout_output_parse_missing_skip_note_defaults_empty () =
+  let json : Yojson.Basic.t =
+    `Assoc
+      [
+        ( "leads",
+          `List
+            [
+              `Assoc
+                [
+                  "path", `String "lib/session.ml";
+                  "line", `Int 42;
+                  "end_line", `Null;
+                  "hypothesis", `String "The session token is no longer validated before use after this refactor.";
+                  "category", `String "bug";
+                  "confidence", `String "high";
+                ];
+            ] );
+      ]
+  in
+  let scout = Review_types.scout_output_of_json json in
+  (check int) "leads count" 1 (List.length scout.leads);
+  (check string) "skip_note defaults to empty when absent" "" scout.skip_note
+
 let test_scout_output_jsonschema_has_properties () =
   (check bool) "schema has properties" true
     (match Review_types.scout_output_jsonschema with
@@ -1481,6 +1534,44 @@ let test_general_deep_reviewer_build_input_dedups_paths () =
   let rest_start = first + String.length "UNIQUE_A_BODY" in
   let rest = String.sub input rest_start (String.length input - rest_start) in
   (check bool) "contents included once" false (Devkit.Stre.exists rest "UNIQUE_A_BODY")
+
+let test_general_deep_reviewer_build_input_prefixed_lead_paths () =
+  (* Scout leads copy paths verbatim from git-style diff headers, so they may
+     carry an [a/] or [b/] prefix, while file_contents keys are bare paths.
+     The match must be prefix-tolerant; the emitted header must still show the
+     actual bare file_contents key. *)
+  let leads =
+    [
+      deep_lead ~path:"b/lib/foo.ml" ~line:1 ~confidence:High; deep_lead ~path:"a/lib/baz.ml" ~line:2 ~confidence:Medium;
+    ]
+  in
+  let file_contents =
+    [ "lib/foo.ml", "CONTENTS_OF_FOO"; "lib/baz.ml", "CONTENTS_OF_BAZ"; "lib/qux.ml", "CONTENTS_OF_QUX" ]
+  in
+  let input =
+    General_deep_reviewer_agent.build_input ~leads ~diff_text:"THE_DIFF_BODY" ~change_title:"THE_TITLE"
+      ~change_description:"THE_DESCRIPTION" ~file_contents ()
+  in
+  (* This is the assertion that fails on the old exact-match code: a lead path
+     of "b/lib/foo.ml" never equals the bare key "lib/foo.ml", so the contents
+     section is dropped and this substring is absent. *)
+  (check bool) "b/-prefixed lead matches bare key" true (Devkit.Stre.exists input "CONTENTS_OF_FOO");
+  (check bool) "a/-prefixed lead matches bare key" true (Devkit.Stre.exists input "CONTENTS_OF_BAZ");
+  (check bool) "unreferenced file excluded" false (Devkit.Stre.exists input "CONTENTS_OF_QUX");
+  (* Display shows the actual bare file_contents key, not the prefixed lead form. *)
+  (check bool) "header shows bare path" true (Devkit.Stre.exists input "### File: lib/foo.ml");
+  (check bool) "header does not show prefixed path" false (Devkit.Stre.exists input "### File: b/lib/foo.ml")
+
+let test_general_deep_reviewer_build_input_bare_lead_paths () =
+  (* No regression: a bare lead path still matches a bare file_contents key. *)
+  let leads = [ deep_lead ~path:"lib/bar.ml" ~line:1 ~confidence:High ] in
+  let file_contents = [ "lib/bar.ml", "CONTENTS_OF_BAR" ] in
+  let input =
+    General_deep_reviewer_agent.build_input ~leads ~diff_text:"diff" ~change_title:"t" ~change_description:"d"
+      ~file_contents ()
+  in
+  (check bool) "bare lead matches bare key" true (Devkit.Stre.exists input "CONTENTS_OF_BAR");
+  (check bool) "header shows bare path" true (Devkit.Stre.exists input "### File: lib/bar.ml")
 
 let test_general_deep_reviewer_config_default () =
   let cfg = General_deep_reviewer_agent.config ~model_tier:Strong ~system_prompt_override:None in
@@ -6665,9 +6756,14 @@ let test_general_pipeline_early_exit_on_no_leads () =
 
 let test_general_pipeline_caps_leads () =
   Test_helpers.reset_test_state ();
-  (* 12 leads with max_leads = 10.  [Api_local] does not record agent inputs,
-     so the truncation itself is asserted by [cap_leads] unit tests; here we
-     confirm the capped pipeline still completes end-to-end. *)
+  (* 12 leads with max_leads = 10. [Api_local] records the input handed to
+     each mocked agent, so we assert the truncation directly on the deep
+     reviewer's recorded input: [General_deep_reviewer_agent.build_input]
+     renders each kept lead as a "### L<index>" heading (0-indexed via
+     [List.iteri] over the post-cap list), so 10 kept leads means the input
+     must contain "### L9" (the 10th kept lead) and must not contain
+     "### L10" or "### L11" (which would only appear if capping failed to
+     drop any leads). *)
   Api_local.set_agent_response_map
     [
       "general_scout", "mock_api_responses/scout/leads_overflow.json";
@@ -6675,12 +6771,19 @@ let test_general_pipeline_caps_leads () =
       "general_validator", "mock_api_responses/deep_review/validator_confirmed_one.json";
     ];
   let result, costs = run_pipeline_plugin ~config:scout_enabled_config in
+  let deep_input = Api_local.recorded_agent_input "general_deep_review" in
   Test_helpers.reset_test_state ();
   (match result with
   | Error msg -> fail msg
   | Ok review -> (check int) "overflow leads still produce a confirmed finding" 1 (List.length review.findings));
   (check bool) "scout cost present" true (has_cost "general_scout" costs);
-  (check bool) "deep review cost present" true (has_cost "general_deep_review" costs)
+  (check bool) "deep review cost present" true (has_cost "general_deep_review" costs);
+  match deep_input with
+  | None -> fail "expected deep reviewer input to be recorded"
+  | Some input ->
+    (check bool) "deep input contains the 10th kept lead" true (CCString.mem ~sub:"### L9" input);
+    (check bool) "deep input does not contain an 11th lead" false (CCString.mem ~sub:"### L10" input);
+    (check bool) "deep input does not contain a 12th lead" false (CCString.mem ~sub:"### L11" input)
 
 let test_general_pipeline_legacy_fallback () =
   Test_helpers.reset_test_state ();
@@ -6757,6 +6860,9 @@ let () =
           test_case "review_plugins explicit" `Quick test_config_review_plugins_explicit;
           test_case "general scout config defaults" `Quick test_config_general_scout_defaults;
           test_case "general scout config explicit" `Quick test_config_general_scout_explicit;
+          test_case "max_leads = 0 rejected" `Quick test_config_max_leads_zero_rejected;
+          test_case "max_leads negative rejected" `Quick test_config_max_leads_negative_rejected;
+          test_case "max_leads valid and default ok" `Quick test_config_max_leads_valid_and_default_ok;
           test_case "context create requires repos by default" `Quick test_context_create_requires_repos_by_default;
           test_case "context create allows repo-less when explicit" `Quick
             test_context_create_allows_repo_less_when_explicit;
@@ -6863,6 +6969,8 @@ let () =
           test_case "scout output parse two leads" `Quick test_scout_output_parse_two_leads;
           test_case "scout output parse empty leads" `Quick test_scout_output_parse_empty_leads;
           test_case "scout output parse overflow leads" `Quick test_scout_output_parse_overflow_leads;
+          test_case "scout output parse missing skip_note defaults empty" `Quick
+            test_scout_output_parse_missing_skip_note_defaults_empty;
           test_case "scout output roundtrip" `Quick test_scout_output_roundtrip;
           test_case "scout output jsonschema has properties" `Quick test_scout_output_jsonschema_has_properties;
         ] );
@@ -6938,6 +7046,9 @@ let () =
           test_case "build input filters to lead paths and orders diff last" `Quick
             test_general_deep_reviewer_build_input_filters_and_orders;
           test_case "build input dedups duplicate lead paths" `Quick test_general_deep_reviewer_build_input_dedups_paths;
+          test_case "build input matches prefixed lead paths to bare keys" `Quick
+            test_general_deep_reviewer_build_input_prefixed_lead_paths;
+          test_case "build input matches bare lead paths" `Quick test_general_deep_reviewer_build_input_bare_lead_paths;
           test_case "config default normative prompt" `Quick test_general_deep_reviewer_config_default;
           test_case "config override replaces prompt" `Quick test_general_deep_reviewer_config_override;
         ] );

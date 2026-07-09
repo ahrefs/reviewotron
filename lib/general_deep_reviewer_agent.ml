@@ -53,7 +53,9 @@ column or a file's numbered content, never estimated. No markdown fences, no
 prose outside the JSON.|}
 
 (* Sized for a single-shot batched verification with a private reasoning
-   channel; moved here from the legacy single-pass review constant. *)
+   channel.  Independent of [General_review_plugin.general_review_thinking_budget]
+   (the legacy single-pass path keeps its own copy); the two happen to share the
+   value 4096 today but are tuned separately. *)
 let deep_reviewer_thinking_budget = 4096
 
 let config ~model_tier ~system_prompt_override : Agent_runner.agent_config =
@@ -94,12 +96,26 @@ let format_file_content buf (path, content) =
   in
   Printf.bprintf buf "### File: %s\n```%s\n%s\n```\n" path ext content
 
+(* Scout leads copy [path] verbatim from the annotated diff's git-style file
+   headers ([diff --git a/… b/…], [--- a/…], [+++ b/…]), so a lead path may
+   carry a single leading [a/] or [b/] segment.  [file_contents] keys are the
+   bare repo-relative paths.  Strip at most one such prefix so the match lines
+   up; a bare path is returned unchanged. *)
+let normalize_path path =
+  match CCString.chop_prefix ~pre:"a/" path with
+  | Some rest -> rest
+  | None ->
+  match CCString.chop_prefix ~pre:"b/" path with
+  | Some rest -> rest
+  | None -> path
+
 (* Contents of ONLY the files a lead points at, in [file_contents] order, each
    path emitted once even when several leads (or duplicate [file_contents]
-   entries) reference it. *)
+   entries) reference it.  Matching is prefix-tolerant (see {!normalize_path});
+   the emitted section still shows the actual [file_contents] key. *)
 let relevant_file_contents ~leads ~file_contents =
-  let lead_paths = List.map (fun (l : Review_types.scout_lead) -> l.path) leads in
-  let referenced path = List.exists (String.equal path) lead_paths in
+  let lead_paths = List.map (fun (l : Review_types.scout_lead) -> normalize_path l.path) leads in
+  let referenced path = List.exists (String.equal (normalize_path path)) lead_paths in
   let seen = Hashtbl.create 16 in
   List.filter
     (fun (path, _content) ->
