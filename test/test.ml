@@ -2719,6 +2719,15 @@ module R_test =
 
 let test_pr_review_e2e () =
   Test_helpers.reset_test_state ();
+  (* Scout pipeline is on by default: route the scout to leads and the deep
+     reviewer to the same review fixture the legacy single-pass agent used, so
+     the downstream filter/validator behavior (and these assertions) are
+     unchanged. *)
+  Api_local.set_agent_response_map
+    [
+      "general_scout", "mock_api_responses/scout/leads_two.json";
+      "general_deep_review", "mock_api_responses/claude/review_response.json";
+    ];
   let ctx = Test_helpers.make_test_context ~config:Test_helpers.auto_review_enabled_config () in
   let payload = read_file "mock_payloads/pr_opened.json" in
   let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
@@ -2786,6 +2795,11 @@ let comment_trigger_config = Config_types.config_of_json (Melange_json.of_string
 
 let test_comment_trigger_reviews_pr () =
   Test_helpers.reset_test_state ();
+  Api_local.set_agent_response_map
+    [
+      "general_scout", "mock_api_responses/scout/leads_two.json";
+      "general_deep_review", "mock_api_responses/claude/review_response.json";
+    ];
   let ctx = Test_helpers.make_test_context ~config:comment_trigger_config () in
   let payload = Test_helpers.make_issue_comment_payload () in
   let event = Test_helpers.parse_event_exn ~event_type:"issue_comment" ~body:payload in
@@ -2802,6 +2816,9 @@ let test_comment_trigger_reviews_pr () =
 let test_comment_trigger_quiet_success_posts_lgtm_comment () =
   Test_helpers.reset_test_state ();
   Api_local.set_agent_response_path "mock_api_responses/claude/empty_findings_response.json";
+  (* Empty scout leads early-exit the general pipeline with zero findings,
+     reproducing the legacy empty-findings quiet success. *)
+  Api_local.set_agent_response_map [ "general_scout", "mock_api_responses/scout/leads_empty.json" ];
   let ctx = Test_helpers.make_test_context ~config:comment_trigger_config () in
   let payload = Test_helpers.make_issue_comment_payload () in
   let event = Test_helpers.parse_event_exn ~event_type:"issue_comment" ~body:payload in
@@ -2979,6 +2996,9 @@ let test_pr_all_ignored_paths_posts_lgtm_comment () =
 let test_pr_empty_findings_review () =
   Test_helpers.reset_test_state ();
   Api_local.set_agent_response_path "mock_api_responses/claude/empty_findings_response.json";
+  (* Empty scout leads early-exit the general pipeline with zero findings,
+     reproducing the legacy empty-findings quiet success. *)
+  Api_local.set_agent_response_map [ "general_scout", "mock_api_responses/scout/leads_empty.json" ];
   let ctx = Test_helpers.make_test_context ~config:Test_helpers.auto_review_enabled_config () in
   let payload = read_file "mock_payloads/pr_opened.json" in
   let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
@@ -3070,6 +3090,13 @@ let test_pr_generated_files_filtered_before_file_limit () =
 let test_push_review_e2e () =
   Test_helpers.reset_test_state ();
   Api_local.set_agent_response_path "mock_api_responses/claude/push_review_response.json";
+  (* Deep reviewer reuses the legacy push review fixture; the unmapped
+     validator keeps selecting its push fixture from the fallback path. *)
+  Api_local.set_agent_response_map
+    [
+      "general_scout", "mock_api_responses/scout/leads_two.json";
+      "general_deep_review", "mock_api_responses/claude/push_review_response.json";
+    ];
   let config =
     Config_types.config_of_json
       (Melange_json.of_string {|{"review_pushes_to_develop": true, "slack_channel": "dev-reviews"}|})
@@ -3138,6 +3165,11 @@ let test_duplicate_pr_prevention () =
 let test_duplicate_push_prevention () =
   Test_helpers.reset_test_state ();
   Api_local.set_agent_response_path "mock_api_responses/claude/push_review_response.json";
+  Api_local.set_agent_response_map
+    [
+      "general_scout", "mock_api_responses/scout/leads_two.json";
+      "general_deep_review", "mock_api_responses/claude/push_review_response.json";
+    ];
   let state = State.create () in
   let config =
     Config_types.config_of_json
@@ -3241,6 +3273,7 @@ module Capturing_agent_runner = struct
     let output =
       match config.Agent_runner.name with
       | "general_validator" -> validator_output_for_review_fixture ()
+      | "general_scout" -> Melange_json.of_string (read_file "mock_api_responses/scout/leads_two.json")
       | _ -> Melange_json.of_string (read_file "mock_api_responses/claude/review_response.json")
     in
     let usage : Ai_provider.Usage.t = { input_tokens = 0; output_tokens = 0; total_tokens = None } in
@@ -3543,6 +3576,11 @@ let test_local_review_path_filters_generated_before_limits () =
 
 let test_local_review_diff_returns_markdown () =
   Test_helpers.reset_test_state ();
+  Api_local.set_agent_response_map
+    [
+      "general_scout", "mock_api_responses/scout/leads_two.json";
+      "general_deep_review", "mock_api_responses/claude/review_response.json";
+    ];
   let state = State.create () in
   let ctx = Test_helpers.make_test_context ~state () in
   let config = Context.default_config () in
@@ -3563,6 +3601,11 @@ let test_local_review_diff_returns_markdown () =
 
 let test_local_review_diff_text_returns_markdown () =
   Test_helpers.reset_test_state ();
+  Api_local.set_agent_response_map
+    [
+      "general_scout", "mock_api_responses/scout/leads_two.json";
+      "general_deep_review", "mock_api_responses/claude/review_response.json";
+    ];
   let ctx = Test_helpers.make_test_context () in
   let config = Context.default_config () in
   let diff_text = read_file "mock_api_responses/github/pr_42.diff" in
@@ -3691,10 +3734,10 @@ let test_local_review_skips_duplicate_change () =
   (match second with
   | Error msg -> (check bool) "duplicate skipped" true (CCString.find ~sub:"already reviewed" msg >= 0)
   | Ok _markdown -> fail "duplicate local review should be skipped");
-  (* Count all agent calls (general_review + general_validator): the
-     duplicate second review must not run, so exactly two agent calls are
-     expected from the single successful review. *)
-  (check int) "agent calls" 2 (List.length (Capturing_agent_runner.get_model_ids ()))
+  (* Count all agent calls (general_scout + general_deep_review +
+     general_validator): the duplicate second review must not run, so exactly
+     three agent calls are expected from the single successful review. *)
+  (check int) "agent calls" 3 (List.length (Capturing_agent_runner.get_model_ids ()))
 
 let test_github_review_uses_captured_config_for_plugins () =
   Test_helpers.reset_test_state ();
@@ -4604,6 +4647,11 @@ let test_feedback_report_summarizes_targets_and_evidence () =
 
 let test_feedback_publish_records_targets_and_markers () =
   Test_helpers.reset_test_state ();
+  Api_local.set_agent_response_map
+    [
+      "general_scout", "mock_api_responses/scout/leads_two.json";
+      "general_deep_review", "mock_api_responses/claude/review_response.json";
+    ];
   with_temp_feedback_store (fun state_path paths feedback_store ->
     let config =
       Config_types.config_of_json
@@ -4762,6 +4810,7 @@ let test_feedback_publish_failure_records_no_targets () =
 let test_feedback_quiet_success_records_no_targets () =
   Test_helpers.reset_test_state ();
   Api_local.set_agent_response_path "mock_api_responses/claude/empty_findings_response.json";
+  Api_local.set_agent_response_map [ "general_scout", "mock_api_responses/scout/leads_empty.json" ];
   with_temp_feedback_store (fun state_path paths feedback_store ->
     let state = State.create ~filepath:state_path () in
     let ctx =
@@ -5429,6 +5478,8 @@ let test_security_e2e_vulnerable () =
   Api_local.set_agent_response_map
     [
       "general_review", "mock_api_responses/claude/review_response.json";
+      "general_scout", "mock_api_responses/scout/leads_two.json";
+      "general_deep_review", "mock_api_responses/claude/review_response.json";
       "security_triage", "mock_api_responses/security/triage_injection.json";
       "security_analysis_injection", "mock_api_responses/security/analysis_injection.json";
       "security_validator", "mock_api_responses/security/validator_confirmed.json";
@@ -5451,6 +5502,8 @@ let test_security_e2e_safe () =
   Api_local.set_agent_response_map
     [
       "general_review", "mock_api_responses/claude/review_response.json";
+      "general_scout", "mock_api_responses/scout/leads_two.json";
+      "general_deep_review", "mock_api_responses/claude/review_response.json";
       "security_triage", "mock_api_responses/security/triage_safe.json";
     ];
   let ctx = Test_helpers.make_test_context ~config:security_enabled_config () in
@@ -5486,6 +5539,8 @@ let test_security_e2e_rejected () =
   Api_local.set_agent_response_map
     [
       "general_review", "mock_api_responses/claude/review_response.json";
+      "general_scout", "mock_api_responses/scout/leads_two.json";
+      "general_deep_review", "mock_api_responses/claude/review_response.json";
       "security_triage", "mock_api_responses/security/triage_injection.json";
       "security_analysis_injection", "mock_api_responses/security/analysis_injection.json";
       "security_validator", "mock_api_responses/security/validator_rejected.json";
@@ -5529,6 +5584,11 @@ let test_security_e2e_triage_empty_skip_reason () =
 
 let test_security_e2e_disabled () =
   Test_helpers.reset_test_state ();
+  Api_local.set_agent_response_map
+    [
+      "general_scout", "mock_api_responses/scout/leads_two.json";
+      "general_deep_review", "mock_api_responses/claude/review_response.json";
+    ];
   let config =
     Config_types.config_of_json
       (Melange_json.of_string {|{"auto_review_pr_open": true, "review_plugins": {"security": {"enabled": false}}}|})
@@ -5668,6 +5728,11 @@ let test_push_prepare_failure_posts_slack () =
 
 let test_push_generated_files_do_not_trigger_prepare_failure_slack () =
   Test_helpers.reset_test_state ();
+  Api_local.set_agent_response_map
+    [
+      "general_scout", "mock_api_responses/scout/leads_two.json";
+      "general_deep_review", "mock_api_responses/claude/review_response.json";
+    ];
   let config =
     Config_types.config_of_json
       (Melange_json.of_string {|{"review_pushes_to_develop": true, "slack_channel": "dev-reviews", "max_files": 1}|})
@@ -5713,6 +5778,8 @@ let test_pr_security_failure_notice () =
   Api_local.set_agent_response_map
     [
       "general_review", "mock_api_responses/claude/review_response.json";
+      "general_scout", "mock_api_responses/scout/leads_two.json";
+      "general_deep_review", "mock_api_responses/claude/review_response.json";
       "security_triage", "mock_api_responses/nonexistent_security_triage.json";
     ];
   let ctx = Test_helpers.make_test_context ~config:security_enabled_config () in
@@ -6083,6 +6150,7 @@ let test_pr_review_post_failure_retries_when_fallback_fails () =
 let test_pr_quiet_success_comment_failure_retries () =
   Test_helpers.reset_test_state ();
   Api_local.set_agent_response_path "mock_api_responses/claude/empty_findings_response.json";
+  Api_local.set_agent_response_map [ "general_scout", "mock_api_responses/scout/leads_empty.json" ];
   Api_local.set_next_issue_comment_error "missing Issues write permission";
   let state = State.create () in
   let ctx = Test_helpers.make_test_context ~state ~config:Test_helpers.auto_review_enabled_config () in
@@ -6413,13 +6481,21 @@ let review_output_with_findings findings =
 
 let validator_output_with_results results = Review_types.validator_output_to_json { results }
 
+(* These tests exercise the legacy single-pass [general_review] agent directly,
+   so they run with the scout pipeline disabled.  The scout -> deep reviewer
+   path has its own dedicated integration tests ([test_general_pipeline_*]). *)
+let general_plugin_legacy_config =
+  Config_types.config_of_json
+    (Melange_json.of_string
+       {|{"auto_review_pr_open": true, "auto_review_pr_sync": true, "review_pushes_to_develop": true, "review_plugins": {"general": {"scout_enabled": false}}}|})
+
 let run_general_plugin_with_outputs outputs =
   Test_helpers.reset_test_state ();
   General_plugin_agent_runner.set_outputs outputs;
-  let ctx = Test_helpers.make_test_context ~config:Test_helpers.auto_review_enabled_config () in
+  let ctx = Test_helpers.make_test_context ~config:general_plugin_legacy_config () in
   Lwt_main.run
-    (General_plugin_test.run_review ~ctx ~repo_url:"https://github.com/org/repo"
-       ~config:Test_helpers.auto_review_enabled_config ~diff_text:"diff" ~metadata:general_plugin_metadata ())
+    (General_plugin_test.run_review ~ctx ~repo_url:"https://github.com/org/repo" ~config:general_plugin_legacy_config
+       ~diff_text:"diff" ~metadata:general_plugin_metadata ())
 
 let test_general_review_filters_low_value_and_validates () =
   let result, costs =
@@ -6513,6 +6589,115 @@ let test_general_review_parse_failure_is_error () =
   match result with
   | Ok _ -> fail "expected review parse failure to propagate"
   | Error msg -> (check bool) "review parse failure surfaced" true (contains_sub ~sub:"parse general review" msg)
+
+(* Integration tests for the scout -> deep reviewer -> validator pipeline.
+   Backed by [Api_local.Agent_runner] so unmapped agent names fall back to the
+   default response path — an omitted deep-review/validator entry therefore
+   surfaces as a wrong finding/cost count if the pipeline calls a stage it
+   should have skipped. *)
+module General_pipeline_test = General_review_plugin.Make (Api_local.Agent_runner)
+
+let pipeline_metadata : Review_plugin.review_metadata =
+  {
+    change_title = "Refactor session validation";
+    change_description = "Simplify validate_session and the retry loop.";
+    file_contents =
+      [
+        "lib/session.ml", "let validate_session token = Hashtbl.mem sessions token.id";
+        "lib/retry.ml", "let retry () = ()";
+      ];
+    fetch_file = (fun ~path:_ -> Lwt.return (Ok None));
+  }
+
+let scout_enabled_config =
+  Config_types.config_of_json
+    (Melange_json.of_string {|{"review_plugins": {"general": {"scout_enabled": true, "max_leads": 10}}}|})
+
+let scout_disabled_config =
+  Config_types.config_of_json (Melange_json.of_string {|{"review_plugins": {"general": {"scout_enabled": false}}}|})
+
+let run_pipeline_plugin ~config =
+  let ctx = Test_helpers.make_test_context ~config () in
+  Lwt_main.run
+    (General_pipeline_test.run_review ~ctx ~repo_url:"https://github.com/org/repo" ~config ~diff_text:"diff"
+       ~metadata:pipeline_metadata ())
+
+let has_cost name costs = List.exists (fun (c : Cost_tracking.agent_cost) -> String.equal c.agent_name name) costs
+
+let test_general_pipeline_full_flow () =
+  Test_helpers.reset_test_state ();
+  Api_local.set_agent_response_map
+    [
+      "general_scout", "mock_api_responses/scout/leads_two.json";
+      "general_deep_review", "mock_api_responses/deep_review/confirmed_one.json";
+      "general_validator", "mock_api_responses/deep_review/validator_confirmed_one.json";
+    ];
+  let result, costs = run_pipeline_plugin ~config:scout_enabled_config in
+  Test_helpers.reset_test_state ();
+  (match result with
+  | Error msg -> fail msg
+  | Ok review ->
+    (check int) "one confirmed finding" 1 (List.length review.findings);
+    (match review.findings with
+    | [ finding ] -> (check string) "confirmed lead finding kept" "lib/session.ml" finding.path
+    | [] | _ :: _ :: _ -> fail "expected exactly one confirmed finding"));
+  (check bool) "at least three cost entries" true (List.compare_length_with costs 3 >= 0);
+  (check bool) "scout cost present" true (has_cost "general_scout" costs);
+  (check bool) "deep review cost present" true (has_cost "general_deep_review" costs);
+  (check bool) "validator cost present" true (has_cost "general_validator" costs)
+
+let test_general_pipeline_early_exit_on_no_leads () =
+  Test_helpers.reset_test_state ();
+  (* Map ONLY the scout: if the deep reviewer or validator wrongly run, they
+     fall back to the default review response and the assertions below fail. *)
+  Api_local.set_agent_response_map [ "general_scout", "mock_api_responses/scout/leads_empty.json" ];
+  let result, costs = run_pipeline_plugin ~config:scout_enabled_config in
+  Test_helpers.reset_test_state ();
+  (match result with
+  | Error msg -> fail msg
+  | Ok review ->
+    (check int) "no findings on empty scout" 0 (List.length review.findings);
+    (check string) "early-exit summary" "Scout found no investigation leads." review.summary);
+  (check int) "exactly one cost entry" 1 (List.length costs);
+  (check bool) "only scout cost recorded" true (has_cost "general_scout" costs);
+  (check bool) "deep review never ran" false (has_cost "general_deep_review" costs);
+  (check bool) "validator never ran" false (has_cost "general_validator" costs)
+
+let test_general_pipeline_caps_leads () =
+  Test_helpers.reset_test_state ();
+  (* 12 leads with max_leads = 10.  [Api_local] does not record agent inputs,
+     so the truncation itself is asserted by [cap_leads] unit tests; here we
+     confirm the capped pipeline still completes end-to-end. *)
+  Api_local.set_agent_response_map
+    [
+      "general_scout", "mock_api_responses/scout/leads_overflow.json";
+      "general_deep_review", "mock_api_responses/deep_review/confirmed_one.json";
+      "general_validator", "mock_api_responses/deep_review/validator_confirmed_one.json";
+    ];
+  let result, costs = run_pipeline_plugin ~config:scout_enabled_config in
+  Test_helpers.reset_test_state ();
+  (match result with
+  | Error msg -> fail msg
+  | Ok review -> (check int) "overflow leads still produce a confirmed finding" 1 (List.length review.findings));
+  (check bool) "scout cost present" true (has_cost "general_scout" costs);
+  (check bool) "deep review cost present" true (has_cost "general_deep_review" costs)
+
+let test_general_pipeline_legacy_fallback () =
+  Test_helpers.reset_test_state ();
+  (* scout_enabled = false routes to the legacy single-pass review, which maps
+     only [general_review] + [general_validator]. *)
+  Api_local.set_agent_response_map
+    [
+      "general_review", "mock_api_responses/claude/review_response.json";
+      "general_validator", "mock_api_responses/deep_review/validator_confirmed_one.json";
+    ];
+  let result, costs = run_pipeline_plugin ~config:scout_disabled_config in
+  Test_helpers.reset_test_state ();
+  (match result with
+  | Error msg -> fail msg
+  | Ok review -> (check int) "legacy single-pass confirms one finding" 1 (List.length review.findings));
+  (check bool) "legacy review cost present" true (has_cost "general_review" costs);
+  (check bool) "scout never ran on legacy path" false (has_cost "general_scout" costs)
 
 let test_provider_options_clamps_below_minimum () =
   (* Anthropic requires budget_tokens >= 1024.  When a caller asks for less,
@@ -6807,6 +6992,10 @@ let () =
           test_case "validator failure propagates" `Quick test_general_review_validator_failure_is_error;
           test_case "validator parse failure propagates" `Quick test_general_review_validator_parse_failure_is_error;
           test_case "review parse failure propagates" `Quick test_general_review_parse_failure_is_error;
+          test_case "pipeline full flow scout deep validator" `Quick test_general_pipeline_full_flow;
+          test_case "pipeline early exit on no leads" `Quick test_general_pipeline_early_exit_on_no_leads;
+          test_case "pipeline caps leads and completes" `Quick test_general_pipeline_caps_leads;
+          test_case "pipeline legacy fallback when scout disabled" `Quick test_general_pipeline_legacy_fallback;
         ] );
       ( "reviewer_e2e",
         [
