@@ -113,6 +113,18 @@ type general_plugin_config = {
   enabled : bool; [@json.default true] [@jsonschema.description "Run the general LLM code review (default true)."]
   system_prompt_override : string option;
      [@json.option] [@jsonschema.description "Replace the general review system prompt entirely."]
+  scout_enabled : bool;
+     [@json.default true]
+     [@jsonschema.description
+       "Run the scout → deep-reviewer pipeline (default true). When false, fall back to the legacy single-pass general \
+        review."]
+  scout_model_tier : model_tier;
+     [@json.default Standard] [@jsonschema.description "Model tier for the general scout agent."]
+  deep_reviewer_model_tier : model_tier;
+     [@json.default Strong] [@jsonschema.description "Model tier for the general deep-reviewer agent."]
+  max_leads : int;
+     [@json.default 10]
+     [@jsonschema.description "Maximum investigation leads passed from the scout to the deep reviewer."]
 }
 [@@deriving json, jsonschema] [@@json.allow_extra_fields]
 
@@ -150,7 +162,15 @@ type security_plugin_config = {
 }
 [@@deriving json, jsonschema] [@@json.allow_extra_fields]
 
-let default_general_plugin_config = { enabled = true; system_prompt_override = None }
+let default_general_plugin_config =
+  {
+    enabled = true;
+    system_prompt_override = None;
+    scout_enabled = true;
+    scout_model_tier = Standard;
+    deep_reviewer_model_tier = Strong;
+    max_leads = 10;
+  }
 
 let default_security_plugin_config =
   {
@@ -187,7 +207,10 @@ type config = {
      [@json.default 50] [@jsonschema.description "Maximum number of files to review (raise for whole-folder reviews)."]
   max_tokens_per_review : int;
      [@json.default 100000] [@jsonschema.description "Token budget hint for the review agent."]
-  model : string; [@json.default "claude-sonnet-4-6"] [@jsonschema.description "Model ID for the general review agent."]
+  model : string option;
+     [@json.option]
+     [@jsonschema.description
+       "Explicit model ID override for the general deep reviewer. When absent, deep_reviewer_model_tier decides."]
   ignored_paths : string list;
      [@json.default []] [@jsonschema.description "Glob patterns (\\* wildcard) for files to exclude from review."]
   ignore_generated_files : bool;

@@ -418,6 +418,39 @@ let test_config_review_plugins_explicit () =
   (check bool) "metrics_artifacts" true config.review_plugins.security.metrics_artifacts;
   (check bool) "debug_artifacts" true config.review_plugins.security.debug_artifacts
 
+let test_config_general_scout_defaults () =
+  let config = Config_types.config_of_json (Melange_json.of_string {|{}|}) in
+  (check bool) "scout_enabled default on" true config.review_plugins.general.scout_enabled;
+  (check string) "scout_model_tier default standard" "standard"
+    (Config_types.model_tier_to_string config.review_plugins.general.scout_model_tier);
+  (check string) "deep_reviewer_model_tier default strong" "strong"
+    (Config_types.model_tier_to_string config.review_plugins.general.deep_reviewer_model_tier);
+  (check int) "max_leads default" 10 config.review_plugins.general.max_leads;
+  (check (option string)) "model absent by default" None config.model
+
+let test_config_general_scout_explicit () =
+  let json =
+    {|{
+    "model": "explicit-model",
+    "review_plugins": {
+      "general": {
+        "scout_enabled": false,
+        "scout_model_tier": "fast",
+        "deep_reviewer_model_tier": "standard",
+        "max_leads": 5
+      }
+    }
+  }|}
+  in
+  let config = Config_types.config_of_json (Melange_json.of_string json) in
+  (check bool) "scout_enabled explicit off" false config.review_plugins.general.scout_enabled;
+  (check string) "scout_model_tier explicit fast" "fast"
+    (Config_types.model_tier_to_string config.review_plugins.general.scout_model_tier);
+  (check string) "deep_reviewer_model_tier explicit standard" "standard"
+    (Config_types.model_tier_to_string config.review_plugins.general.deep_reviewer_model_tier);
+  (check int) "max_leads explicit" 5 config.review_plugins.general.max_leads;
+  (check (option string)) "model explicit override" (Some "explicit-model") config.model
+
 let test_context_create_requires_repos_by_default () =
   let tmp_path = Filename.temp_file "reviewotron_secrets_" ".json" in
   Fun.protect
@@ -3431,9 +3464,10 @@ let test_local_review_skips_duplicate_change () =
   (match second with
   | Error msg -> (check bool) "duplicate skipped" true (CCString.find ~sub:"already reviewed" msg >= 0)
   | Ok _markdown -> fail "duplicate local review should be skipped");
-  (* Count only model-carrying (general_review) calls: the duplicate second
-     review must not run, so exactly one review agent call is expected. *)
-  (check int) "agent calls" 1 (List.length (List.filter_map Fun.id (Capturing_agent_runner.get_model_ids ())))
+  (* Count all agent calls (general_review + general_validator): the
+     duplicate second review must not run, so exactly two agent calls are
+     expected from the single successful review. *)
+  (check int) "agent calls" 2 (List.length (Capturing_agent_runner.get_model_ids ()))
 
 let test_github_review_uses_captured_config_for_plugins () =
   Test_helpers.reset_test_state ();
@@ -6309,6 +6343,8 @@ let () =
           test_case "openrouter requires supported parameters" `Quick test_openrouter_requires_supported_parameters;
           test_case "review_plugins defaults" `Quick test_config_review_plugins_defaults;
           test_case "review_plugins explicit" `Quick test_config_review_plugins_explicit;
+          test_case "general scout config defaults" `Quick test_config_general_scout_defaults;
+          test_case "general scout config explicit" `Quick test_config_general_scout_explicit;
           test_case "context create requires repos by default" `Quick test_context_create_requires_repos_by_default;
           test_case "context create allows repo-less when explicit" `Quick
             test_context_create_allows_repo_less_when_explicit;

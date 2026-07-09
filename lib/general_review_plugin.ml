@@ -139,7 +139,7 @@ module Make (AI : Api.Agent_runner) = struct
     let input = Review_prompt.build_user_message ~diff:diff_text ~change_title ~change_description ~file_contents () in
     let agent_config = build_agent_config ~system_prompt:system in
     let%lwt result =
-      AI.run ~ctx ~repo_url ~model_id:config.model ?debug_dir ?log_context ~config:agent_config ~input ()
+      AI.run ~ctx ~repo_url ?model_id:config.model ?debug_dir ?log_context ~config:agent_config ~input ()
     in
     match result with
     | Error _ as e -> Lwt.return (e, [])

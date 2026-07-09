@@ -53,6 +53,10 @@ val model_tier_of_json : Yojson.Basic.t -> model_tier
 type general_plugin_config = {
   enabled : bool;
   system_prompt_override : string option;
+  scout_enabled : bool;
+  scout_model_tier : model_tier;
+  deep_reviewer_model_tier : model_tier;
+  max_leads : int;
 }
 
 val general_plugin_config_to_json : general_plugin_config -> Yojson.Basic.t
@@ -93,7 +97,7 @@ type config = {
   max_diff_lines : int;
   max_files : int;
   max_tokens_per_review : int;
-  model : string;
+  model : string option;
   ignored_paths : string list;
   ignore_generated_files : bool;
   ignored_authors : string list;
