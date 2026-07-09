@@ -1423,6 +1423,77 @@ let test_general_scout_config_security_not_covered () =
   (check string) "name" "general_scout" cfg.name;
   (check bool) "allows security leads" true (Devkit.Stre.exists cfg.system_prompt "category \"security\"")
 
+(** {2 General deep reviewer agent tests} *)
+
+(* First index at which [needle] occurs in [haystack]; -1 if absent. *)
+let substr_index haystack needle =
+  let n = String.length needle
+  and h = String.length haystack in
+  let rec scan i =
+    match i > h - n with
+    | true -> -1
+    | false ->
+    match String.equal (String.sub haystack i n) needle with
+    | true -> i
+    | false -> scan (i + 1)
+  in
+  scan 0
+
+let deep_lead ~path ~line ~confidence : Review_types.scout_lead =
+  { path; line; end_line = None; hypothesis = "hypothesis"; category = Review_types.Bug; confidence }
+
+let test_general_deep_reviewer_build_input_filters_and_orders () =
+  let leads = [ deep_lead ~path:"a.ml" ~line:1 ~confidence:High; deep_lead ~path:"b.ml" ~line:2 ~confidence:Medium ] in
+  let file_contents = [ "a.ml", "CONTENTS_OF_A"; "b.ml", "CONTENTS_OF_B"; "c.ml", "CONTENTS_OF_C" ] in
+  let input =
+    General_deep_reviewer_agent.build_input ~leads ~diff_text:"THE_DIFF_BODY" ~change_title:"THE_TITLE"
+      ~change_description:"THE_DESCRIPTION" ~file_contents ()
+  in
+  (check bool) "includes file A contents" true (Devkit.Stre.exists input "CONTENTS_OF_A");
+  (check bool) "includes file B contents" true (Devkit.Stre.exists input "CONTENTS_OF_B");
+  (check bool) "excludes file C contents" false (Devkit.Stre.exists input "CONTENTS_OF_C");
+  (check bool) "leads section header" true (Devkit.Stre.exists input "## Investigation Leads");
+  (check bool) "lead numbered L0" true (Devkit.Stre.exists input "L0");
+  (check bool) "lead numbered L1" true (Devkit.Stre.exists input "L1");
+  let i_leads = substr_index input "## Investigation Leads" in
+  let i_change = substr_index input "## Change" in
+  let i_files = substr_index input "## Relevant File Contents" in
+  let i_a = substr_index input "CONTENTS_OF_A" in
+  let i_diff = substr_index input "THE_DIFF_BODY" in
+  (check bool) "leads before change" true (i_leads < i_change);
+  (check bool) "change before file contents" true (i_change < i_files);
+  (check bool) "file contents before diff" true (i_a < i_diff);
+  (* Diff is the final section, after file contents and the explainer. *)
+  let i_diff_header = substr_index input "## Diff\n" in
+  (check bool) "file contents before diff header" true (i_files < i_diff_header);
+  (check bool) "diff header after file A contents" true (i_a < i_diff_header)
+
+let test_general_deep_reviewer_build_input_dedups_paths () =
+  let leads = [ deep_lead ~path:"a.ml" ~line:1 ~confidence:High; deep_lead ~path:"a.ml" ~line:9 ~confidence:Medium ] in
+  let file_contents = [ "a.ml", "UNIQUE_A_BODY" ] in
+  let input =
+    General_deep_reviewer_agent.build_input ~leads ~diff_text:"diff" ~change_title:"t" ~change_description:"d"
+      ~file_contents ()
+  in
+  (* Duplicate-path leads must include the file's contents exactly once. *)
+  let first = substr_index input "UNIQUE_A_BODY" in
+  (check bool) "contents present" true (first >= 0);
+  let rest_start = first + String.length "UNIQUE_A_BODY" in
+  let rest = String.sub input rest_start (String.length input - rest_start) in
+  (check bool) "contents included once" false (Devkit.Stre.exists rest "UNIQUE_A_BODY")
+
+let test_general_deep_reviewer_config_default () =
+  let cfg = General_deep_reviewer_agent.config ~model_tier:Strong ~system_prompt_override:None in
+  (check string) "name" "general_deep_review" cfg.name;
+  (check int) "max_steps" 1 cfg.max_steps;
+  (check (option int)) "thinking budget" (Some 4096) cfg.thinking_budget;
+  (check bool) "uses normative prompt" true (Devkit.Stre.exists cfg.system_prompt "deep code reviewer")
+
+let test_general_deep_reviewer_config_override () =
+  let cfg = General_deep_reviewer_agent.config ~model_tier:Strong ~system_prompt_override:(Some "X") in
+  (check string) "name" "general_deep_review" cfg.name;
+  (check string) "override replaces prompt wholesale" "X" cfg.system_prompt
+
 (** {2 Security types tests} *)
 
 let roundtrip to_json of_json v =
@@ -6676,6 +6747,14 @@ let () =
           test_case "build input section order" `Quick test_general_scout_build_input_order;
           test_case "config security covered elsewhere" `Quick test_general_scout_config_security_covered;
           test_case "config security not covered" `Quick test_general_scout_config_security_not_covered;
+        ] );
+      ( "general_deep_reviewer_agent",
+        [
+          test_case "build input filters to lead paths and orders diff last" `Quick
+            test_general_deep_reviewer_build_input_filters_and_orders;
+          test_case "build input dedups duplicate lead paths" `Quick test_general_deep_reviewer_build_input_dedups_paths;
+          test_case "config default normative prompt" `Quick test_general_deep_reviewer_config_default;
+          test_case "config override replaces prompt" `Quick test_general_deep_reviewer_config_override;
         ] );
       ( "security_plugin",
         [
