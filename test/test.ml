@@ -3779,6 +3779,20 @@ let test_feedback_paths_from_state () =
   (check string) "events sibling" "/tmp/reviewotron/reviewotron-feedback-events.jsonl" paths.events;
   (check string) "evidence sibling" "/tmp/reviewotron/reviewotron-feedback-evidence" paths.evidence_root
 
+let test_feedback_paths_are_absolute () =
+  (* A relative --feedback-dir (e.g. "./var/") must be resolved to an absolute path so the
+     evidence_dir recorded on each target stays valid regardless of the process working directory
+     when the report is later run. *)
+  let paths = Feedback_store.derive_paths ~state_filepath:"state.json" ~feedback_dir:"./var" () in
+  let cwd = Sys.getcwd () in
+  (check bool) "targets path is absolute" true (Filename.is_relative paths.targets |> not);
+  (check string) "targets resolved under cwd"
+    (Filename.concat (Filename.concat cwd "var") "reviewotron-feedback-targets.json")
+    paths.targets;
+  (check string) "evidence resolved under cwd"
+    (Filename.concat (Filename.concat cwd "var") "reviewotron-feedback-evidence")
+    paths.evidence_root
+
 let test_feedback_paths_from_custom_dir () =
   let paths =
     Feedback_store.derive_paths ~state_filepath:"/tmp/reviewotron/state.json"
@@ -4114,6 +4128,28 @@ let test_feedback_collector_marks_missing_on_review_comment_404 () =
     let events = String.concat "\n" (feedback_event_lines paths.events) in
     (check bool) "missing finalization event written" true (contains_sub ~sub:"target_finalized" events))
 
+let test_feedback_collector_marks_missing_on_integration_403 () =
+  Test_helpers.reset_test_state ();
+  with_temp_feedback_store (fun _state_path paths store ->
+    ignore (record_one_feedback_target store : Feedback_store.target_input);
+    Lwt_main.run
+      (Feedback_store.resolve_comment_id store ~now:feedback_created_at ~feedback_id:"rvf_test" ~comment_id:90004);
+    (* A deleted PR review comment reached via a GitHub App installation token returns
+       403 "Resource not accessible by integration", not 404. Treat it as missing. *)
+    Api_local.set_pr_review_comment_reactions_error ~comment_id:90004
+      "http 403: error while querying https://api.github.com/repos/o/r/pulls/comments/90004/reactions: \
+       {\"message\":\"Resource not accessible by integration\",\"status\":\"403\"}";
+    let ctx = Test_helpers.make_test_context () in
+    let now = Feedback_store.add_seconds feedback_created_at (2 * 60 * 60) in
+    Lwt_main.run (Feedback_collector_test.collect ~ctx ~store ~now ());
+    let target = single_feedback_target store in
+    (check string) "missing status" "missing" (Feedback_store.target_status_to_string target.status);
+    (check (option string))
+      "missing stop reason" (Some "comment_missing")
+      (Option.map Feedback_store.stop_reason_to_string target.stop_reason);
+    let events = String.concat "\n" (feedback_event_lines paths.events) in
+    (check bool) "missing finalization event written" true (contains_sub ~sub:"target_finalized" events))
+
 let test_feedback_collector_keeps_active_on_transient_reaction_error () =
   Test_helpers.reset_test_state ();
   with_temp_feedback_store (fun _state_path paths store ->
@@ -4339,6 +4375,70 @@ let test_feedback_report_summarizes_targets_and_evidence () =
           (check bool) "body target json has review hash" true (has_field "review_body_sha256")
         | Some (`Bool _) | Some (`Float _) | Some (`Int _) | Some (`List _) | Some `Null | Some (`String _) | None ->
           fail "expected body target JSON object")
+      | [] | _ :: _ :: _ -> fail "expected one review summary"))
+
+(* Regression: a target may carry a stale [evidence_dir] (e.g. a CWD-relative path written by a
+   Reviewotron process whose working directory differs from where the report is later run). The
+   report must still find the bundle under the current [evidence_root]/[review_batch_id] rather than
+   reporting the manifest and findings as missing. *)
+let test_feedback_report_resolves_evidence_when_stored_dir_is_stale () =
+  with_temp_feedback_store (fun _state_path paths store ->
+    let review_batch_id = "rvb_stale_dir" in
+    let real_evidence_dir = Feedback_evidence.bundle_dir ~evidence_root:paths.evidence_root ~review_batch_id in
+    Unix.mkdir paths.evidence_root 0o700;
+    Unix.mkdir real_evidence_dir 0o700;
+    let stale_evidence_dir = Filename.concat "./does-not-exist/reviewotron-feedback-evidence" review_batch_id in
+    let input_up =
+      {
+        (feedback_input ~feedback_id:"rvf_stale" ~line:10 ()) with
+        evidence_dir = Some stale_evidence_dir;
+        finding_id = Some "rvfind_stale";
+        finding_source = Some "security";
+        plugin_name = Some "security";
+      }
+    in
+    Lwt_main.run
+      (Feedback_store.record_posted_pr_review_targets store ~repo_url:Test_helpers.test_repo_url ~pr_number:42
+         ~head_sha:"abc123def456789012345678901234567890abcd" ~review_id:1000 ~review_batch_id
+         ~created_at:feedback_created_at [ input_up ]);
+    Lwt_main.run
+      (Feedback_store.resolve_comment_id store ~now:feedback_created_at ~feedback_id:"rvf_stale" ~comment_id:91003);
+    write_file
+      (Filename.concat real_evidence_dir "manifest.json")
+      (Yojson.Basic.to_string
+         (`Assoc
+            [
+              "review_batch_id", `String review_batch_id;
+              "repo_url", `String Test_helpers.test_repo_url;
+              "pr_number", `Int 42;
+              "head_sha", `String "abc123def456789012345678901234567890abcd";
+              "github_review_id", `Int 1000;
+            ]));
+    write_file
+      (Filename.concat real_evidence_dir "findings.json")
+      (Yojson.Basic.to_string
+         (`Assoc
+            [
+              ( "findings",
+                `List
+                  [
+                    `Assoc
+                      [
+                        "finding_id", `String "rvfind_stale";
+                        "routing_outcome", `String "inline";
+                        "finding", `Assoc [ "message", `String "recovered from real bundle" ];
+                      ];
+                  ] );
+            ]));
+    match Feedback_report.load paths with
+    | Error msg -> fail msg
+    | Ok report ->
+      (check (list string)) "no missing-evidence warnings" [] report.warnings;
+      (match report.reviews with
+      | [ review ] ->
+        (check string) "evidence dir resolved to real bundle" real_evidence_dir review.evidence_dir;
+        let markdown = Feedback_report.render_markdown report in
+        (check bool) "evidence message recovered" true (contains_sub ~sub:"recovered from real bundle" markdown)
       | [] | _ :: _ :: _ -> fail "expected one review summary"))
 
 let test_feedback_publish_records_targets_and_markers () =
@@ -6599,6 +6699,7 @@ let () =
       ( "feedback",
         [
           test_case "paths derive from state" `Quick test_feedback_paths_from_state;
+          test_case "paths are absolute" `Quick test_feedback_paths_are_absolute;
           test_case "paths derive from custom feedback dir" `Quick test_feedback_paths_from_custom_dir;
           test_case "debug dir defaults to relative debug" `Quick
             test_debug_dir_without_feedback_store_uses_relative_debug;
@@ -6623,6 +6724,8 @@ let () =
           test_case "collector final-due target closes" `Quick test_feedback_collector_final_due_closes_target;
           test_case "collector marks missing on review comment 404" `Quick
             test_feedback_collector_marks_missing_on_review_comment_404;
+          test_case "collector marks missing on integration 403" `Quick
+            test_feedback_collector_marks_missing_on_integration_403;
           test_case "collector keeps active on transient reaction error" `Quick
             test_feedback_collector_keeps_active_on_transient_reaction_error;
           test_case "collector collects body reaction counts" `Quick
@@ -6632,6 +6735,8 @@ let () =
           test_case "collector keeps body active on GraphQL error" `Quick
             test_feedback_collector_keeps_body_active_on_graphql_error;
           test_case "report summarizes targets and evidence" `Quick test_feedback_report_summarizes_targets_and_evidence;
+          test_case "report resolves evidence when stored dir is stale" `Quick
+            test_feedback_report_resolves_evidence_when_stored_dir_is_stale;
           test_case "publish records targets and markers" `Quick test_feedback_publish_records_targets_and_markers;
           test_case "publish body-only review records body target" `Quick
             test_feedback_publish_body_only_records_body_target_and_evidence;
