@@ -54,8 +54,8 @@ type agent_result = {
     Uses {!Ai_provider_anthropic.Model_catalog} to resolve correct model IDs.
 
     - [Fast] → [Claude_haiku_4_5]
-    - [Standard] → [Claude_sonnet_4_6]
-    - [Strong] → [Claude_opus_4_6] *)
+    - [Standard] → [claude-sonnet-5]
+    - [Strong] → [claude-opus-4-8] *)
 val default_model_id : model_tier -> string
 
 (** Write a debug dump of agent output when structured parsing fails.

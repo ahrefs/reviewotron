@@ -128,8 +128,8 @@ let default_model_id =
   let open Ai_provider_anthropic.Model_catalog in
   function
   | Fast -> to_model_id Claude_haiku_4_5
-  | Standard -> to_model_id Claude_sonnet_4_6
-  | Strong -> to_model_id Claude_opus_4_6
+  | Standard -> "claude-sonnet-5"
+  | Strong -> "claude-opus-4-8"
 
 (** Recursively create a directory path, like [mkdir -p].
     Silently succeeds if the directory already exists. *)

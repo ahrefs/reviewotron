@@ -339,8 +339,8 @@ let test_model_ids_no_regression () =
       (Llm_provider.normalize_model_id Llm_provider.Openrouter (Agent_runner.default_model_id tier))
   in
   expect Agent_runner.Fast ~anthropic_id:"claude-haiku-4-5-20251001" ~openrouter_id:"anthropic/claude-haiku-4.5";
-  expect Agent_runner.Standard ~anthropic_id:"claude-sonnet-4-6" ~openrouter_id:"anthropic/claude-sonnet-4.6";
-  expect Agent_runner.Strong ~anthropic_id:"claude-opus-4-6" ~openrouter_id:"anthropic/claude-opus-4.6";
+  expect Agent_runner.Standard ~anthropic_id:"claude-sonnet-5" ~openrouter_id:"anthropic/claude-sonnet-5";
+  expect Agent_runner.Strong ~anthropic_id:"claude-opus-4-8" ~openrouter_id:"anthropic/claude-opus-4-8";
   (* config.model default flows through the same normalization *)
   (check string) "config.model default on OR" "anthropic/claude-sonnet-4.6"
     (Llm_provider.normalize_model_id Llm_provider.Openrouter "claude-sonnet-4-6")
@@ -4719,6 +4719,22 @@ let test_estimate_cost_opus () =
   (* 100k * 5/1M + 10k * 25/1M = 0.50 + 0.25 = 0.75 *)
   (check (float 1e-6)) "opus 100k in + 10k out" 0.75 cost
 
+let test_estimate_cost_default_tier_models () =
+  (* Regression guard: the Standard/Strong tier defaults (Agent_runner.default_model_id)
+     must resolve to non-zero pricing, or cost tracking silently reports $0. *)
+  let cost_sonnet_5 =
+    Cost_tracking.estimate_cost ~model_id:"claude-sonnet-5" ~input_tokens:1_000_000 ~output_tokens:1_000_000
+      ~cache_read_input_tokens:0 ~cache_creation_input_tokens:0
+  in
+  (* Sonnet 5: $3/M input, $15/M output -> 3.0 + 15.0 = 18.0 *)
+  (check (float 1e-6)) "sonnet-5 1M in + 1M out" 18.0 cost_sonnet_5;
+  let cost_opus_4_8 =
+    Cost_tracking.estimate_cost ~model_id:"claude-opus-4-8" ~input_tokens:100_000 ~output_tokens:10_000
+      ~cache_read_input_tokens:0 ~cache_creation_input_tokens:0
+  in
+  (* Opus 4.8: $5/M input, $25/M output -> 100k*5/1M + 10k*25/1M = 0.50 + 0.25 = 0.75 *)
+  (check (float 1e-6)) "opus-4-8 100k in + 10k out" 0.75 cost_opus_4_8
+
 let test_estimate_cost_unknown_model () =
   let cost =
     Cost_tracking.estimate_cost ~model_id:"gpt-4o-unknown" ~input_tokens:1000 ~output_tokens:1000
@@ -6656,6 +6672,7 @@ let () =
           test_case "estimate cost openrouter sonnet" `Quick test_estimate_cost_openrouter_sonnet;
           test_case "estimate cost haiku" `Quick test_estimate_cost_haiku;
           test_case "estimate cost opus" `Quick test_estimate_cost_opus;
+          test_case "estimate cost default tier models" `Quick test_estimate_cost_default_tier_models;
           test_case "estimate cost unknown model" `Quick test_estimate_cost_unknown_model;
           test_case "estimate cost with cache" `Quick test_estimate_cost_with_cache;
           test_case "of_agent_result" `Quick test_of_agent_result;
