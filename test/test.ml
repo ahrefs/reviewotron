@@ -1573,6 +1573,18 @@ let test_general_deep_reviewer_build_input_bare_lead_paths () =
   (check bool) "bare lead matches bare key" true (Devkit.Stre.exists input "CONTENTS_OF_BAR");
   (check bool) "header shows bare path" true (Devkit.Stre.exists input "### File: lib/bar.ml")
 
+let test_general_deep_reviewer_build_input_a_dir_key_not_overstripped () =
+  (* Repo with a top-level "a" dir: lead "b/a/foo.ml" strips to "a/foo.ml",
+     which must match the bare key "a/foo.ml".  Normalizing the key too would
+     strip it to "foo.ml" and drop the file's contents. *)
+  let leads = [ deep_lead ~path:"b/a/foo.ml" ~line:1 ~confidence:High ] in
+  let file_contents = [ "a/foo.ml", "CONTENTS_OF_A_FOO" ] in
+  let input =
+    General_deep_reviewer_agent.build_input ~leads ~diff_text:"diff" ~change_title:"t" ~change_description:"d"
+      ~file_contents ()
+  in
+  (check bool) "lead b/a/foo.ml matches key a/foo.ml" true (Devkit.Stre.exists input "CONTENTS_OF_A_FOO")
+
 let test_general_deep_reviewer_config_default () =
   let cfg = General_deep_reviewer_agent.config ~model_tier:Strong ~system_prompt_override:None in
   (check string) "name" "general_deep_review" cfg.name;
@@ -7132,6 +7144,8 @@ let () =
           test_case "build input matches prefixed lead paths to bare keys" `Quick
             test_general_deep_reviewer_build_input_prefixed_lead_paths;
           test_case "build input matches bare lead paths" `Quick test_general_deep_reviewer_build_input_bare_lead_paths;
+          test_case "build input does not over-strip a/ directory keys" `Quick
+            test_general_deep_reviewer_build_input_a_dir_key_not_overstripped;
           test_case "config default normative prompt" `Quick test_general_deep_reviewer_config_default;
           test_case "config override replaces prompt" `Quick test_general_deep_reviewer_config_override;
         ] );

@@ -98,10 +98,12 @@ let format_file_content buf (path, content) =
 
 (* Scout leads copy [path] verbatim from the annotated diff's git-style file
    headers ([diff --git a/… b/…], [--- a/…], [+++ b/…]), so a lead path may
-   carry a single leading [a/] or [b/] segment.  [file_contents] keys are the
-   bare repo-relative paths.  Strip at most one such prefix so the match lines
-   up; a bare path is returned unchanged. *)
-let normalize_path path =
+   carry a single leading [a/] or [b/] segment.  Strip at most one such prefix
+   so it lines up with the bare [file_contents] keys; a bare path is returned
+   unchanged.  Only lead paths are normalized — [file_contents] keys are
+   already bare repo-relative paths, and stripping them too would mangle a repo
+   whose top-level directory is literally named [a] or [b]. *)
+let normalize_lead_path path =
   match CCString.chop_prefix ~pre:"a/" path with
   | Some rest -> rest
   | None ->
@@ -111,11 +113,12 @@ let normalize_path path =
 
 (* Contents of ONLY the files a lead points at, in [file_contents] order, each
    path emitted once even when several leads (or duplicate [file_contents]
-   entries) reference it.  Matching is prefix-tolerant (see {!normalize_path});
-   the emitted section still shows the actual [file_contents] key. *)
+   entries) reference it.  Only the diff-derived lead paths are prefix-stripped
+   (see {!normalize_lead_path}); the [file_contents] key is matched as-is, and
+   the emitted section shows that actual key. *)
 let relevant_file_contents ~leads ~file_contents =
-  let lead_paths = List.map (fun (l : Review_types.scout_lead) -> normalize_path l.path) leads in
-  let referenced path = List.exists (String.equal (normalize_path path)) lead_paths in
+  let lead_paths = List.map (fun (l : Review_types.scout_lead) -> normalize_lead_path l.path) leads in
+  let referenced path = List.exists (String.equal path) lead_paths in
   let seen = Hashtbl.create 16 in
   List.filter
     (fun (path, _content) ->
