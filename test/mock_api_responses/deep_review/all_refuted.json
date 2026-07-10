@@ -1,0 +1,5 @@
+{
+  "summary": "L0 lib/session.ml:42 — refuted: token expiry still checked by caller wrapper.\nL1 lib/retry.ml:88 — refuted: backoff preserved by the shared retry helper.",
+  "findings": [],
+  "overall_assessment": "All investigation leads were refuted; nothing actionable for the author."
+}

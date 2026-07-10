@@ -2833,10 +2833,65 @@ let test_pr_review_e2e () =
   (check bool) "correct repo" true (contains_sub ~sub:"repo=https://github.com/org/monorepo" write_log);
   (check bool) "correct PR number" true (contains_sub ~sub:"number=42" write_log);
   (check bool) "deterministic review body" true (contains_sub ~sub:":robot: **REVIEW**" write_log);
-  (check bool) "publishes agent summary" true (contains_sub ~sub:"The changes look generally good" write_log);
+  (* The internal summary trace must never leak into the consumer body. *)
+  (check bool) "summary not published" false (contains_sub ~sub:"The changes look generally good" write_log);
   (check bool) "asks for feedback" true (contains_sub ~sub:Review_format.feedback_prompt write_log);
   (check bool) "asks for review and inline feedback" true (count_sub ~sub:Review_format.feedback_prompt write_log >= 2);
   (check bool) "has comments" true (contains_sub ~sub:"error-handling" write_log)
+
+(* Regression: when findings exist alongside a non-empty summary trace, the
+   body must be the plain header (findings render separately) — never the
+   summary trace, and never under a "Minor:" heading. *)
+let test_pr_review_findings_present_no_summary_leak () =
+  Test_helpers.reset_test_state ();
+  Api_local.set_agent_response_map
+    [
+      "general_scout", "mock_api_responses/scout/leads_two.json";
+      "general_deep_review", "mock_api_responses/deep_review/finding_with_trace_summary.json";
+    ];
+  let ctx = Test_helpers.make_test_context ~config:Test_helpers.auto_review_enabled_config () in
+  let payload = read_file "mock_payloads/pr_opened.json" in
+  let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let write_log = Api_local.get_write_log () in
+  (check bool) "review body present" true (contains_sub ~sub:":robot: **REVIEW**" write_log);
+  (check bool) "the finding still renders" true (contains_sub ~sub:"error-handling" write_log);
+  (check bool) "no Minor heading" false (contains_sub ~sub:"Minor:" write_log);
+  (check bool) "summary trace not leaked" false (contains_sub ~sub:"refuted" write_log);
+  (check bool) "no LGTM when findings exist" false (contains_sub ~sub:"LGTM :+1:" write_log)
+
+(* Regression: [format_slack_attachment] must not put the internal summary
+   trace into the Slack attachment text. *)
+let test_slack_attachment_omits_summary_trace () =
+  let review : Review_types.review_output =
+    {
+      summary = "L0 lib/session.ml:42 — refuted: token expiry still checked by caller wrapper.";
+      findings =
+        [
+          {
+            path = "lib/session.ml";
+            line = 42;
+            end_line = None;
+            severity = Review_types.Warning;
+            category = Review_types.Bug;
+            message = "example";
+            failure_scenario = "";
+            evidence_snippet = "";
+            why_now = "";
+            confidence = Review_types.High;
+            suggested_fix = None;
+          };
+        ];
+      overall_assessment = "";
+    }
+  in
+  let att =
+    Review_format.format_slack_attachment ~compare_url:"https://example.com/compare" ~pusher_name:"alice" ~num_commits:2
+      ~review
+  in
+  (check bool) "attachment text omits summary trace" false (contains_sub ~sub:"refuted" att.Slack_types.text);
+  (check bool) "attachment text omits full summary" false
+    (contains_sub ~sub:"token expiry still checked" att.Slack_types.text)
 
 let test_pr_skipped_when_draft () =
   Test_helpers.reset_test_state ();
@@ -3684,7 +3739,7 @@ let test_local_review_diff_returns_markdown () =
   match result with
   | Error msg -> fail msg
   | Ok markdown ->
-    (check bool) "has summary" true (CCString.find ~sub:"The changes look generally good" markdown >= 0);
+    (check bool) "summary not leaked" false (CCString.find ~sub:"The changes look generally good" markdown >= 0);
     (check bool) "has inline comments section" true (CCString.find ~sub:"### Inline comments" markdown >= 0);
     (check bool) "has local inline location" true (CCString.find ~sub:"src/main.ml:14" markdown >= 0);
     (check bool) "records generic change review" true
@@ -3708,8 +3763,36 @@ let test_local_review_diff_text_returns_markdown () =
   match result with
   | Error msg -> fail msg
   | Ok markdown ->
-    (check bool) "has summary" true (CCString.find ~sub:"The changes look generally good" markdown >= 0);
+    (check bool) "summary not leaked" false (CCString.find ~sub:"The changes look generally good" markdown >= 0);
     (check bool) "has inline comments section" true (CCString.find ~sub:"### Inline comments" markdown >= 0)
+
+(* Regression: the deep reviewer's [summary] is an internal audit trace (one
+   line per lead, e.g. "L0 ... refuted: ..."). When every lead is refuted the
+   review is clean, so the consumer body must be the LGTM form — not a "Minor:"
+   dump of the refutation trace. The local-review markdown surfaces
+   [review_body] directly, so it exercises the zero-findings arm. *)
+let test_local_review_all_refuted_shows_lgtm_not_summary () =
+  Test_helpers.reset_test_state ();
+  Api_local.set_agent_response_map
+    [
+      "general_scout", "mock_api_responses/scout/leads_two.json";
+      "general_deep_review", "mock_api_responses/deep_review/all_refuted.json";
+    ];
+  let ctx = Test_helpers.make_test_context () in
+  let config = Context.default_config () in
+  let diff_text = read_file "mock_api_responses/github/pr_42.diff" in
+  let result =
+    Lwt_main.run
+      (Local_review_test.review_diff_text ~ctx ~root:"." ~repo_key:"local/repo" ~change_key:"all-refuted"
+         ~title:"All refuted" ~description:"Local description" ~diff_text ~config ())
+  in
+  match result with
+  | Error msg -> fail msg
+  | Ok markdown ->
+    (check bool) "clean review shows LGTM" true (CCString.find ~sub:"LGTM :+1:" markdown >= 0);
+    (check bool) "no Minor heading" false (CCString.find ~sub:"Minor:" markdown >= 0);
+    (check bool) "refutation trace not leaked" false (CCString.find ~sub:"refuted" markdown >= 0);
+    (check bool) "lead marker not leaked" false (CCString.find ~sub:"L0 lib/session.ml" markdown >= 0)
 
 let test_local_review_security_only_empty_is_success () =
   Test_helpers.reset_test_state ();
@@ -7111,6 +7194,8 @@ let () =
       ( "reviewer_e2e",
         [
           test_case "PR review end-to-end" `Quick test_pr_review_e2e;
+          test_case "findings present without summary leak" `Quick test_pr_review_findings_present_no_summary_leak;
+          test_case "slack attachment omits summary trace" `Quick test_slack_attachment_omits_summary_trace;
           test_case "draft PR skipped" `Quick test_pr_skipped_when_draft;
           test_case "draft PR reviewed when review_draft_prs is enabled" `Quick
             test_pr_reviewed_when_draft_and_flag_enabled;
@@ -7179,6 +7264,8 @@ let () =
             test_local_review_path_filters_generated_before_limits;
           test_case "review diff returns markdown" `Quick test_local_review_diff_returns_markdown;
           test_case "review generated diff text returns markdown" `Quick test_local_review_diff_text_returns_markdown;
+          test_case "all-refuted local review shows LGTM not summary" `Quick
+            test_local_review_all_refuted_shows_lgtm_not_summary;
           test_case "security-only empty review is success" `Quick test_local_review_security_only_empty_is_success;
           test_case "policy sudo regression produces finding" `Quick test_local_review_policy_regression_sudo_vulnerable;
           test_case "policy sudo scoped safe produces no finding" `Quick
