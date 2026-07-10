@@ -247,9 +247,15 @@ let totals_of_targets targets =
     empty_totals targets
 
 let evidence_dir_for (paths : Feedback_store.paths) review_batch_id targets =
+  (* A target's stored [evidence_dir] may be stale: it can be a CWD-relative path recorded by a
+     Reviewotron process whose working directory differed from where the report now runs, or point
+     at a moved bundle root. Trust it only when it exists on disk; otherwise derive the location
+     from the report's current [evidence_root] and the batch id, which is where bundles always live
+     relative to the configured feedback directory. *)
+  let derived = Feedback_evidence.bundle_dir ~evidence_root:paths.evidence_root ~review_batch_id in
   match List.find_map (fun (target : Feedback_store.target) -> target.evidence_dir) targets with
-  | Some dir -> dir
-  | None -> Feedback_evidence.bundle_dir ~evidence_root:paths.evidence_root ~review_batch_id
+  | Some dir when Sys.file_exists dir -> dir
+  | Some _ | None -> derived
 
 let target_message_from_finding_json json = string_field "message" json
 

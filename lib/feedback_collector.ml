@@ -4,6 +4,17 @@ let log = Log.from "feedback_collector"
 
 let is_not_found_error msg = CCString.find ~sub:"http 404" (String.lowercase_ascii msg) >= 0
 
+(* A PR review comment that has been deleted (commonly by a force-push or rebase of the PR head)
+   returns 404 to a user token, but 403 "Resource not accessible by integration" to a GitHub App
+   installation token. Treat that specific 403 as a missing comment so the target is finalized
+   instead of being re-polled indefinitely. Match the exact message so genuine permission failures
+   are not silently swallowed. *)
+let is_deleted_comment_error msg =
+  let msg = String.lowercase_ascii msg in
+  CCString.find ~sub:"http 403" msg >= 0 && CCString.find ~sub:"resource not accessible by integration" msg >= 0
+
+let is_missing_comment_error msg = is_not_found_error msg || is_deleted_comment_error msg
+
 module Make (FB : Api.Github_feedback) = struct
   let marker_matches (target : Feedback_store.target) (comment : Github_types.pr_review_comment) =
     match Feedback_store.extract_marker comment.Github_types.body with
@@ -31,9 +42,10 @@ module Make (FB : Api.Github_feedback) = struct
           let%lwt () = Feedback_store.mark_missing store ~now ~feedback_id:target.feedback_id in
           Lwt.return None)
       | Error msg ->
-      match is_not_found_error msg with
+      match is_missing_comment_error msg with
       | true ->
-        log#warn "feedback target %s review comments returned not found" target.feedback_id;
+        log#warn "feedback target %s review comments no longer accessible (treating as missing): %s" target.feedback_id
+          msg;
         let%lwt () = Feedback_store.mark_missing store ~now ~feedback_id:target.feedback_id in
         Lwt.return None
       | false ->
@@ -55,9 +67,10 @@ module Make (FB : Api.Github_feedback) = struct
               counts.plus_one counts.minus_one;
             Feedback_store.update_after_poll store ~now ~feedback_id:target.feedback_id ~counts
           | Error msg ->
-          match is_not_found_error msg with
+          match is_missing_comment_error msg with
           | true ->
-            log#warn "feedback target %s comment %d returned not found" target.feedback_id comment_id;
+            log#warn "feedback target %s comment %d no longer accessible (treating as missing): %s" target.feedback_id
+              comment_id msg;
             Feedback_store.mark_missing store ~now ~feedback_id:target.feedback_id
           | false ->
             log#warn "failed to collect reactions for feedback target %s comment %d: %s" target.feedback_id comment_id
