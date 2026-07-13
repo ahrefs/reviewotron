@@ -395,8 +395,8 @@ generated-file header markers. Broad folders such as `generated/`, `dist/`,
 | Tier | Model | Typical Use |
 |------|-------|-------------|
 | `"fast"` | `claude-haiku-4-5-20251001` | Triage, memory curator |
-| `"standard"` | `claude-sonnet-4-6` | Analysis agents, validator, general review |
-| `"strong"` | `claude-opus-4-6` | Reserved for complex codebases |
+| `"standard"` | `claude-sonnet-5` | Analysis agents, validator, general review |
+| `"strong"` | `claude-opus-4-8` | Reserved for complex codebases |
 
 #### Vulnerability Classes
 
