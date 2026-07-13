@@ -95,6 +95,7 @@ type config = {
   max_tokens_per_review : int;
   model : string;
   ignored_paths : string list;
+  ignored_file_regexes : string list;
   ignore_generated_files : bool;
   ignored_authors : string list;
   auto_review_pr_open : bool;

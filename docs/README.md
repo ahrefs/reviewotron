@@ -307,6 +307,7 @@ Each repo can have a `.reviewotron.json` file in its root. For GitHub webhooks, 
   "max_tokens_per_review": 100000,
   "model": "claude-sonnet-4-6",
   "ignored_paths": ["*.test.js", "vendor/"],
+  "ignored_file_regexes": ["^snapshots/.*\\.golden$"],
   "ignore_generated_files": true,
   "ignored_authors": ["dependabot[bot]"],
   "auto_review_pr_open": false,
@@ -343,10 +344,11 @@ Each repo can have a `.reviewotron.json` file in its root. For GitHub webhooks, 
 | Field | Default | Description |
 |-------|---------|-------------|
 | `max_diff_lines` | `2000` | Maximum total diff lines to review. PRs exceeding this are skipped. |
-| `max_files` | `50` | Maximum files to review after ignored/generated files are removed. |
+| `max_files` | `50` | Maximum files to review after ignored, custom-regex, and generated files are removed. |
 | `max_tokens_per_review` | `100000` | Token budget hint for the review agent. |
 | `model` | `claude-sonnet-4-6` | Model ID for the general review agent. |
 | `ignored_paths` | `[]` | Glob patterns for files to exclude from review. Supports `*` and `**` wildcards. |
+| `ignored_file_regexes` | `[]` | Regular expressions matched against repository-relative file paths to exclude from review. |
 | `ignore_generated_files` | `true` | Exclude conservatively detected generated files before `max_files` and `max_diff_lines` are enforced. Set to `false` to review generated artifacts. |
 | `ignored_authors` | `[]` | GitHub usernames whose PRs/pushes should be skipped. |
 | `auto_review_pr_open` | `false` | Review PRs when they are opened, reopened, or marked ready. |
@@ -364,7 +366,8 @@ Generated-file detection is intentionally conservative. It includes exact
 in `_gen`, file stems starting with `generated_`, common generated artifact
 suffixes such as minified assets, `.map` files, and protobuf outputs, and
 generated-file header markers. Broad folders such as `generated/`, `dist/`,
-`build/`, and `vendor/` remain reviewable unless excluded with `ignored_paths`.
+`build/`, and `vendor/` remain reviewable unless excluded with `ignored_paths` or
+`ignored_file_regexes`.
 
 ### Plugin Configuration
 
@@ -419,8 +422,8 @@ Reviewotron skips events in these cases:
 - **Non-reviewable actions** — PR closed, edited, or other non-code-change actions
 - **Draft PRs** — skipped until marked ready
 - **Already reviewed** — same PR + head SHA (or same push after SHA) already processed
-- **Empty diff** — all files filtered by `ignored_paths` or generated-file detection
-- **Diff too large** — exceeds `max_diff_lines` after ignored/generated files are removed
+- **Empty diff** — all files filtered by `ignored_paths`, `ignored_file_regexes`, or generated-file detection
+- **Diff too large** — exceeds `max_diff_lines` after ignored, custom-regex, and generated files are removed
 - **Non-develop pushes** — only `refs/heads/develop` is reviewed
 
 ---

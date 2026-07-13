@@ -381,12 +381,14 @@ let test_config_review_plugins_defaults () =
   (check bool) "metrics_artifacts default off" false config.review_plugins.security.metrics_artifacts;
   (check bool) "debug_artifacts default off" false config.review_plugins.security.debug_artifacts;
   (check bool) "show_review_cost" false config.show_review_cost;
+  (check int) "ignored_file_regexes default empty" 0 (List.length config.ignored_file_regexes);
   (check bool) "ignore_generated_files default on" true config.ignore_generated_files
 
 let test_config_review_plugins_explicit () =
   let json =
     {|{
     "show_review_cost": true,
+    "ignored_file_regexes": ["^snapshots/.*\\.golden$"],
     "ignore_generated_files": false,
     "review_plugins": {
       "general": { "enabled": false },
@@ -405,6 +407,7 @@ let test_config_review_plugins_explicit () =
   in
   let config = Config_types.config_of_json (Melange_json.of_string json) in
   (check bool) "show_review_cost" true config.show_review_cost;
+  (check (list string)) "ignored_file_regexes explicit" [ "^snapshots/.*\\.golden$" ] config.ignored_file_regexes;
   (check bool) "ignore_generated_files explicit off" false config.ignore_generated_files;
   (check bool) "general disabled" false config.review_plugins.general.enabled;
   (check bool) "security enabled" true config.review_plugins.security.enabled;
@@ -417,6 +420,12 @@ let test_config_review_plugins_explicit () =
   (check int) "memory_max_tokens" 10000 config.review_plugins.security.memory_max_tokens;
   (check bool) "metrics_artifacts" true config.review_plugins.security.metrics_artifacts;
   (check bool) "debug_artifacts" true config.review_plugins.security.debug_artifacts
+
+let test_config_rejects_invalid_ignored_file_regex () =
+  match Config_types.config_of_json (Melange_json.of_string {|{"ignored_file_regexes":["["]}|}) with
+  | (_ : Config_types.config) -> fail "expected invalid ignored_file_regexes to be rejected"
+  | exception Melange_json.Of_json_error (Melange_json.Json_error msg) ->
+    (check bool) "error names ignored_file_regexes" true (contains_sub ~sub:"ignored_file_regexes" msg)
 
 let test_context_create_requires_repos_by_default () =
   let tmp_path = Filename.temp_file "reviewotron_secrets_" ".json" in
@@ -6293,6 +6302,7 @@ let () =
           test_case "openrouter requires supported parameters" `Quick test_openrouter_requires_supported_parameters;
           test_case "review_plugins defaults" `Quick test_config_review_plugins_defaults;
           test_case "review_plugins explicit" `Quick test_config_review_plugins_explicit;
+          test_case "invalid ignored file regex rejected" `Quick test_config_rejects_invalid_ignored_file_regex;
           test_case "context create requires repos by default" `Quick test_context_create_requires_repos_by_default;
           test_case "context create allows repo-less when explicit" `Quick
             test_context_create_allows_repo_less_when_explicit;
