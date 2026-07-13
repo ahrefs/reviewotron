@@ -467,7 +467,11 @@ module Make (AI : Api.Agent_runner) = struct
     let model_tier = agent_model_tier security_config.Config_types.analysis_model_tier in
     let agent_config =
       let base = Analysis_agent.config ~vuln_class ~model_tier ~language_hints in
-      { base with max_steps = analysis_step_budget ~vuln_class ~triage_signals }
+      {
+        base with
+        max_steps = analysis_step_budget ~vuln_class ~triage_signals;
+        effort = security_config.analysis_effort;
+      }
     in
     log#info "%sanalysis agent %s: using max_steps=%d for %d triage signal(s)" log_prefix vc_name agent_config.max_steps
       (List.length triage_signals);

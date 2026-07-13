@@ -186,7 +186,15 @@ let rec require_proof_field = function
 let output_schema = require_proof_field Security_types.validator_output_jsonschema
 
 let config ~model_tier : Agent_runner.agent_config =
-  { name = "security_validator"; system_prompt; model_tier; output_schema; max_steps = 12; thinking_budget = None }
+  {
+    name = "security_validator";
+    system_prompt;
+    model_tier;
+    output_schema;
+    max_steps = 12;
+    thinking_budget = None;
+    effort = None;
+  }
 
 let build_input ~diff_text ~candidate_findings () =
   let buf = Buffer.create (String.length diff_text + 1024) in

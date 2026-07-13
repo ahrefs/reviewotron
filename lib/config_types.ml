@@ -108,6 +108,41 @@ let model_tier_jsonschema =
     ~enum:(List.map model_tier_to_string all_model_tiers)
     ~description:"Model tier: fast (Haiku), standard (Sonnet), or strong (Opus)."
 
+(** OpenRouter reasoning-effort levels supported by the installed SDK.
+
+    [Max] is intentionally absent: ocaml-ai-sdk 0.4 cannot encode it yet.
+    Direct Anthropic support will use its own native [output_config] path once
+    the SDK exposes that field. *)
+module Effort = struct
+  type t =
+    | Low
+    | Medium
+    | High
+    | Xhigh
+
+  let to_string = function
+    | Low -> "low"
+    | Medium -> "medium"
+    | High -> "high"
+    | Xhigh -> "xhigh"
+
+  let t_to_json effort = `String (to_string effort)
+
+  let to_json = t_to_json
+
+  let t_of_json = function
+    | `String "low" -> Low
+    | `String "medium" -> Medium
+    | `String "high" -> High
+    | `String "xhigh" -> Xhigh
+    | json -> Melange_json.of_json_error ~json "expected an effort string"
+
+  let of_json = t_of_json
+
+  let t_jsonschema =
+    string_enum_jsonschema ~enum:[ "low"; "medium"; "high"; "xhigh" ] ~description:"OpenRouter reasoning effort level."
+end
+
 (** Configuration for the general review plugin.
 
     The raw [@@deriving json] codec lives inside {!General_plugin_config_codec}
@@ -183,6 +218,11 @@ type security_plugin_config = {
   triage_model_tier : model_tier; [@json.default Fast] [@jsonschema.description "Model tier for the triage agent."]
   analysis_model_tier : model_tier;
      [@json.default Standard] [@jsonschema.description "Model tier for per-class analysis agents."]
+  analysis_effort : Effort.t option;
+     [@json.option]
+     [@jsonschema.description
+       "OpenRouter reasoning effort for per-class analysis agents. Unset keeps the provider default; direct Anthropic \
+        calls cannot encode this until ocaml-ai-sdk adds native effort support."]
   validator_model_tier : model_tier;
      [@json.default Standard] [@jsonschema.description "Model tier for the adversarial validator."]
   confidence_threshold : confidence;
@@ -219,6 +259,7 @@ let default_security_plugin_config =
     always_analyze_vuln_classes = [];
     triage_model_tier = Fast;
     analysis_model_tier = Standard;
+    analysis_effort = None;
     validator_model_tier = Standard;
     confidence_threshold = Medium;
     memory_max_tokens = 5000;

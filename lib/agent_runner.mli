@@ -27,6 +27,11 @@ type agent_config = {
           model a private reasoning channel that does not leak into structured
           output.  [None] keeps the agent single-pass; sub-1024 values are
           clamped to the Anthropic minimum. *)
+  effort : Config_types.Effort.t option;
+    (** OpenRouter reasoning effort. [None] preserves the provider default.
+        The direct Anthropic path logs a warning and uses its provider default
+        until ocaml-ai-sdk exposes typed native [output_config.effort] support.
+        Mutually exclusive with [thinking_budget]. *)
 }
 
 (** Result of a successful agent run. *)

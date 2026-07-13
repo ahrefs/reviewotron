@@ -377,6 +377,7 @@ let test_config_review_plugins_defaults () =
        config.review_plugins.security.vuln_classes);
   (check int) "always_analyze_vuln_classes default empty" 0
     (List.length config.review_plugins.security.always_analyze_vuln_classes);
+  (check bool) "analysis_effort default unset" true (Option.is_none config.review_plugins.security.analysis_effort);
   (check int) "memory_max_tokens" 5000 config.review_plugins.security.memory_max_tokens;
   (check bool) "metrics_artifacts default off" false config.review_plugins.security.metrics_artifacts;
   (check bool) "debug_artifacts default off" false config.review_plugins.security.debug_artifacts;
@@ -395,6 +396,7 @@ let test_config_review_plugins_explicit () =
         "vuln_classes": ["injection", "xss"],
         "always_analyze_vuln_classes": ["xss"],
         "triage_model_tier": "standard",
+        "analysis_effort": "medium",
         "confidence_threshold": "high",
         "memory_max_tokens": 10000,
         "metrics_artifacts": true,
@@ -414,6 +416,9 @@ let test_config_review_plugins_explicit () =
        (Security_review_plugin.vuln_class_equal Config_types.Policy_regression)
        config.review_plugins.security.vuln_classes);
   (check int) "always_analyze count" 1 (List.length config.review_plugins.security.always_analyze_vuln_classes);
+  (match config.review_plugins.security.analysis_effort with
+  | Some Config_types.Effort.Medium -> ()
+  | Some Config_types.Effort.Low | Some High | Some Xhigh | None -> fail "expected medium analysis effort");
   (check int) "memory_max_tokens" 10000 config.review_plugins.security.memory_max_tokens;
   (check bool) "metrics_artifacts" true config.review_plugins.security.metrics_artifacts;
   (check bool) "debug_artifacts" true config.review_plugins.security.debug_artifacts
@@ -562,6 +567,7 @@ let test_security_plugin_config_roundtrip () =
       always_analyze_vuln_classes = [ Xss ];
       triage_model_tier = Fast;
       analysis_model_tier = Standard;
+      analysis_effort = Some Config_types.Effort.Medium;
       validator_model_tier = Strong;
       confidence_threshold = High;
       memory_max_tokens = 3000;
@@ -578,6 +584,9 @@ let test_security_plugin_config_roundtrip () =
   (check bool) "metrics_artifacts" true parsed.metrics_artifacts;
   (check bool) "debug_artifacts" false parsed.debug_artifacts;
   (check string) "confidence" "high" (Config_types.confidence_to_string parsed.confidence_threshold);
+  (match parsed.analysis_effort with
+  | Some Config_types.Effort.Medium -> ()
+  | Some Config_types.Effort.Low | Some High | Some Xhigh | None -> fail "expected medium analysis effort");
   (check string) "validator tier" "strong" (Config_types.model_tier_to_string parsed.validator_model_tier)
 
 (** {2 Review prompt tests} *)
@@ -2572,6 +2581,10 @@ let test_security_agent_model_tier () =
     | Strong -> true
     | Fast | Standard -> false)
 
+let test_security_standard_tier_uses_sonnet_5 () =
+  let tier = Security_review_plugin.agent_model_tier Config_types.default_security_plugin_config.analysis_model_tier in
+  (check string) "security standard tier" "claude-sonnet-5" (Agent_runner.default_model_id tier)
+
 let test_security_analysis_step_budget () =
   let high_authn = make_triage_signal ~vuln_class:Authn ~confidence:High in
   let medium_authn = make_triage_signal ~vuln_class:Authn ~confidence:Medium in
@@ -2719,6 +2732,12 @@ let test_analysis_agent_prompt_contains_methodology () =
   (check bool) "sanitization evaluation" true (Devkit.Stre.exists cfg.system_prompt "Sanitization Evaluation");
   (check bool) "get_file_content tool" true (Devkit.Stre.exists cfg.system_prompt "get_file_content");
   (check bool) "policy proof model" true (Devkit.Stre.exists cfg.system_prompt "policy/control state")
+
+let test_analysis_agent_prompt_fetch_economy () =
+  let cfg = Analysis_agent.config ~vuln_class:Injection ~model_tier:Standard ~language_hints:[] in
+  (check bool) "requires concrete hypothesis" true (Devkit.Stre.exists cfg.system_prompt "concrete hypothesis");
+  (check bool) "forbids speculative fetches" true (Devkit.Stre.exists cfg.system_prompt "speculatively.");
+  (check bool) "prefers conclusion" true (Devkit.Stre.exists cfg.system_prompt "supported conclusion")
 
 let test_analysis_agent_prompt_contains_class_section () =
   let injection = Analysis_agent.config ~vuln_class:Injection ~model_tier:Standard ~language_hints:[] in
@@ -6387,6 +6406,7 @@ let test_write_debug_dump () =
       output_schema = `Assoc [];
       max_steps = 3;
       thinking_budget = None;
+      effort = None;
     }
   in
   let step0 : Ai_core.Generate_text_result.step =
@@ -6567,7 +6587,7 @@ let test_messages_of_steps_multi_turn_ordering () =
     that go on the wire.  Tests interrogate the pure helper that builds the
     provider_options so we don't need a live network call. *)
 
-let mk_agent_config ?thinking_budget () : Agent_runner.agent_config =
+let mk_agent_config ?thinking_budget ?effort () : Agent_runner.agent_config =
   {
     name = "test_agent";
     system_prompt = "be a test";
@@ -6575,6 +6595,7 @@ let mk_agent_config ?thinking_budget () : Agent_runner.agent_config =
     output_schema = `Assoc [];
     max_steps = 1;
     thinking_budget;
+    effort;
   }
 
 let test_provider_options_empty_when_no_thinking_budget () =
@@ -6594,6 +6615,18 @@ let test_provider_options_carries_thinking_when_set () =
   | Some t ->
     (check bool) "thinking enabled" true t.enabled;
     (check int) "thinking budget matches" 4096 (Ai_provider_anthropic.Thinking.to_int t.budget_tokens)
+
+let test_provider_options_carries_openrouter_medium_effort () =
+  let cfg = mk_agent_config ~effort:Config_types.Effort.Medium () in
+  let po = Agent_runner.build_provider_options ~provider:Llm_provider.Openrouter cfg in
+  let open Ai_provider_openrouter.Openrouter_options in
+  match of_provider_options po with
+  | None -> fail "expected OpenRouter options to be present"
+  | Some { reasoning = Some ({ enabled = Some true; exclude = None; budget = Effort Medium } as reasoning); _ } ->
+    (match reasoning_config_to_json reasoning with
+    | `Assoc fields -> (check string) "serialized effort" "medium" (json_string_field fields "effort")
+    | _ -> fail "expected OpenRouter reasoning JSON object")
+  | Some _ -> fail "expected OpenRouter reasoning.effort=medium"
 
 (** The general review agent must opt into Anthropic extended thinking.
     This is what gives the model a real reasoning channel instead of leaking
@@ -7164,6 +7197,7 @@ let () =
             test_security_should_analyze_high_threshold_restricted;
           test_case "should analyze low threshold" `Quick test_security_should_analyze_low_threshold;
           test_case "agent model tier conversion" `Quick test_security_agent_model_tier;
+          test_case "standard tier uses Sonnet 5" `Quick test_security_standard_tier_uses_sonnet_5;
           test_case "analysis step budget" `Quick test_security_analysis_step_budget;
         ] );
       ( "triage_corpus",
@@ -7182,6 +7216,7 @@ let () =
           test_case "config per class" `Quick test_analysis_agent_config_per_class;
           test_case "config model tier" `Quick test_analysis_agent_config_model_tier;
           test_case "prompt methodology" `Quick test_analysis_agent_prompt_contains_methodology;
+          test_case "prompt fetch economy" `Quick test_analysis_agent_prompt_fetch_economy;
           test_case "prompt class section" `Quick test_analysis_agent_prompt_contains_class_section;
           test_case "language hints" `Quick test_analysis_agent_language_hints;
           test_case "build input minimal" `Quick test_analysis_agent_build_input_minimal;
@@ -7475,6 +7510,8 @@ let () =
             test_provider_options_empty_when_no_thinking_budget;
           test_case "provider_options carries thinking config when set" `Quick
             test_provider_options_carries_thinking_when_set;
+          test_case "provider_options carries OpenRouter medium effort" `Quick
+            test_provider_options_carries_openrouter_medium_effort;
           test_case "provider_options clamps budget to 1024 minimum" `Quick test_provider_options_clamps_below_minimum;
           test_case "general review agent_config enables thinking" `Quick
             test_general_review_agent_config_enables_thinking;

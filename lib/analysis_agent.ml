@@ -105,6 +105,11 @@ You have access to `get_file_content` to fetch any file from the repository. Use
 - You need to check a function's implementation to determine if it sanitizes input
 - You need to verify framework configuration (e.g., template auto-escaping settings)
 
+### Fetch Economy
+
+Fetch a file only when you cannot assess a concrete hypothesis from the diff and already-fetched context. Do not fetch
+speculatively. Prefer a supported conclusion, including no finding, over gathering more context.
+
 ### Fetched File Format
 
 Files returned by `get_file_content` are presented with the same left-column line-number gutter as the annotated diff, prefixed by a `# File: <path>` header. Example:
@@ -769,6 +774,7 @@ let config ~vuln_class ~model_tier ~language_hints : Agent_runner.agent_config =
     output_schema = Security_types.analysis_output_jsonschema;
     max_steps = 15;
     thinking_budget = None;
+    effort = None;
   }
 
 let append_regions buf regions =

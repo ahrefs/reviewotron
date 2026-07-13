@@ -68,6 +68,7 @@ let config : Agent_runner.agent_config =
     output_schema = Review_types.validator_output_jsonschema;
     max_steps = 1;
     thinking_budget = None;
+    effort = None;
   }
 
 let confidence_name = Review_types.confidence_to_string

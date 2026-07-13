@@ -18,6 +18,7 @@ let build_agent_config ~system_prompt : Agent_runner.agent_config =
     output_schema = Review_types.review_output_jsonschema;
     max_steps = 1;
     thinking_budget = Some general_review_thinking_budget;
+    effort = None;
   }
 
 let low_value_inline (f : Review_types.finding) =

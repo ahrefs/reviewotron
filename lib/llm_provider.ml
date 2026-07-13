@@ -135,6 +135,25 @@ let thinking_options provider ~budget_tokens =
     let opts = { Ai_provider_openrouter.Openrouter_options.default with reasoning = Some reasoning } in
     Ai_provider_openrouter.Openrouter_options.to_provider_options opts
 
+let openrouter_effort = function
+  | Config_types.Effort.Low -> Ai_provider_openrouter.Openrouter_options.Low
+  | Medium -> Medium
+  | High -> High
+  | Xhigh -> Xhigh
+
+(* OpenRouter maps [reasoning.effort] to Anthropic [output_config.effort] for
+   Claude 4.6+ models.  The direct Anthropic SDK path cannot encode effort
+   until its typed [output_config] grows that field. *)
+let effort_options provider ~effort =
+  match provider with
+  | Anthropic -> Ai_provider.Provider_options.empty
+  | Openrouter ->
+    let reasoning : Ai_provider_openrouter.Openrouter_options.reasoning_config =
+      { enabled = Some true; exclude = None; budget = Effort (openrouter_effort effort) }
+    in
+    let opts = { Ai_provider_openrouter.Openrouter_options.default with reasoning = Some reasoning } in
+    Ai_provider_openrouter.Openrouter_options.to_provider_options opts
+
 let cached_input_options provider =
   match provider with
   | Anthropic ->

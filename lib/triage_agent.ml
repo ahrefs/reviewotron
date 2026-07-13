@@ -119,6 +119,7 @@ let config ~model_tier : Agent_runner.agent_config =
     output_schema = Security_types.triage_output_jsonschema;
     max_steps = 1;
     thinking_budget = None;
+    effort = None;
   }
 
 let max_exact_deterministic_signals = 12

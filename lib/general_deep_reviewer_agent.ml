@@ -66,6 +66,7 @@ let config ~model_tier ~system_prompt_override : Agent_runner.agent_config =
     output_schema = Review_types.review_output_jsonschema;
     max_steps = 1;
     thinking_budget = Some deep_reviewer_thinking_budget;
+    effort = None;
   }
 
 let confidence_name = Review_types.confidence_to_string
