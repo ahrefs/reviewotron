@@ -41,3 +41,8 @@ val default_skip_dirs : string list
     Returns [Error _] when [path] does not exist, is neither a file nor a
     directory, or yields no embeddable files. *)
 val ingest : string -> (t, string) result
+
+(** Synthesize added-file diffs for the supplied Git-relative paths. Paths that
+    are hidden, skipped directories, symlinks, binary, or oversized are
+    ignored using the same filters as {!ingest}. *)
+val added_files_diff : root:string -> paths:string list -> string

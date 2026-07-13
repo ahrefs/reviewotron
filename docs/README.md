@@ -99,11 +99,10 @@ Manual `REVIEW` comments bypass the dedup that protects the automatic flow from 
 
 ## Agent Helper Mode
 
-Reviewotron ships as a single self-contained binary that another agent can call
-to review code on demand — for example, an app-building agent reviewing the
-project it just generated before publishing, then re-running after each change.
-Nothing has to be deployed alongside the binary: the API key comes from the
-environment and the review configuration is passed inline.
+Reviewotron ships as a binary built for the supported nspawn userspace and its
+runtime libraries. Another agent can call it to review code on demand — for
+example, an app-building agent reviewing the project it just generated before
+publishing, then re-running after each change.
 
 ### Key points
 
@@ -111,9 +110,10 @@ environment and the review configuration is passed inline.
   else the `ANTHROPIC_API_KEY` environment variable, else a `--secrets` file if
   you choose to provide one (in that order). A `secrets.json` is *not* read
   unless you pass `--secrets` explicitly.
-- **Configurable on the fly.** Pass configuration inline with `--config '<json>'`
-  (the same schema as `.reviewotron.json`; omitted fields fall back to defaults).
-  Precedence: `--config` > a config file under `--root`/`PATH` > built-in defaults.
+- **Configurable in layers.** Local CLI reviews merge built-in defaults, the
+  user-global config, `.reviewotron.json`, `.reviewotron.local.json`, and
+  `--config` in that order. Explicit behavior flags such as `--no-security`
+  have the final say.
 - **Self-describing config.** `reviewotron config-help` prints the config JSON
   Schema (field names, types, enum domains, descriptions) so an agent can
   discover the available knobs before deciding what to pass via `--config`.
@@ -128,6 +128,13 @@ environment and the review configuration is passed inline.
   | Folder (Git or not) | `review-path DIR` | Every file under a directory, as newly-added code |
   | Diff / delta | `review-diff --diff -` | A unified diff on stdin (or `--diff FILE`, or a generated Git working-tree diff) |
 
+The short form `reviewotron .` is the recommended local entry point. It uses
+Git delta mode for a directory inside a worktree, path mode for a single file,
+and path mode outside Git. A clean Git worktree returns `no changes to review`.
+The Git delta includes staged and unstaged tracked changes, deletions, renames,
+and non-ignored untracked files. Untracked files are synthesized as added-file
+diffs and still pass the existing hidden, generated, binary, and size filters.
+
 ### Output contract
 
 With `--output json`:
@@ -141,10 +148,14 @@ go to stderr; only the JSON object is written to stdout.
 
 ### Examples
 
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+reviewotron . --output json
+```
+
 Review a finished app folder (raise the size limits for whole-project reviews):
 
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-...
 reviewotron review-path ./my-app \
   --config '{"max_files": 500, "max_diff_lines": 50000}' \
   --output json
@@ -207,6 +218,16 @@ make test         # Run tests
 make fmt          # Format code
 make clean        # Clean build artifacts
 ```
+
+Install the executable without `sudo`:
+
+```bash
+make install
+PREFIX="$HOME/.local" make install
+```
+
+Users already working in the project opam switch can use `opam install .`
+instead. The initial binary workflow targets the current nspawn userspace.
 
 ### Secrets File
 
@@ -296,7 +317,24 @@ curl http://localhost:1338/ping
 
 ## Configuration
 
-Each repo can have a `.reviewotron.json` file in its root. For GitHub webhooks, this is fetched from the repo via the GitHub Contents API on each event. For local `review-diff`, the same file is loaded from the local review root. If the file doesn't exist, defaults are used.
+Each repo can have a `.reviewotron.json` file in its root. For GitHub webhooks,
+this is fetched from the repo via the GitHub Contents API on each event. Local
+CLI reviews additionally load these optional files, from lowest to highest
+precedence:
+
+```text
+~/.config/reviewotron/.reviewotron.json
+$XDG_CONFIG_HOME/reviewotron/.reviewotron.json
+./.reviewotron.json
+./.reviewotron.local.json
+--config '{...}'
+```
+
+When both global locations exist, `$XDG_CONFIG_HOME` wins. Objects merge
+recursively, while scalar values and arrays are replaced. Missing files are
+ignored; an existing invalid file fails the local review. The local file is
+useful for uncommitted developer-specific settings and should not be added to
+version control. Webhook/server commands do not read the user-global files.
 
 ### Full Configuration Reference
 
@@ -715,6 +753,30 @@ exact finding in `findings.json` or `posted_review.json`, and `comment_id` or
 
 ## CLI Usage
 
+### `reviewotron [PATH]` — Smart Local Review
+
+```bash
+reviewotron
+reviewotron .
+reviewotron ./src/file.ml
+reviewotron --mode auto .
+reviewotron --mode diff .
+reviewotron --mode path .
+```
+
+With no path, `PATH` defaults to `.`. In `auto` mode a directory inside a Git
+worktree reviews the Git delta; a single file or a path outside Git uses path
+mode. `--mode diff` requires Git, while `--mode path` reviews the selected file
+or directory as newly added code. A Git directory with no changes exits with
+`no changes to review`; if no base ref can be inferred, pass `--base` or use
+`--mode path`.
+
+The smart command accepts the local review options documented below, including
+`--root`, `--base`, `--config`, `--output`, and `--no-security`. It is also the
+command used by `.claude/skills/reviewotron/SKILL.md`: the skill locates an
+installed binary, falls back to `dune exec` in this checkout, and summarizes
+the JSON response without duplicating configuration logic.
+
 ### `reviewotron run` — Start the Webhook Server
 
 ```
@@ -752,9 +814,9 @@ Parses and displays a GitHub webhook payload without starting the server or perf
 reviewotron review-diff [OPTIONS]
 ```
 
-Runs the same core review engine against a local unified diff and prints the final review to stdout. Logs go to stderr unless `--logfile` is set. The diff can be a file (`--diff FILE`), stdin (`--diff -`), or — when `--diff` is omitted — a Git diff generated from the merge-base of `HEAD` and the inferred base ref, including working-tree changes. This path does not fetch or publish through GitHub; local file-content expansion uses `--root`.
+Runs the same core review engine against a local unified diff and prints the final review to stdout. Logs go to stderr unless `--logfile` is set. The diff can be a file (`--diff FILE`), stdin (`--diff -`), or — when `--diff` is omitted — a Git diff generated from the merge-base of `HEAD` and the inferred base ref, including staged, unstaged, and non-ignored untracked changes. This path does not fetch or publish through GitHub; local file-content expansion uses `--root`.
 
-The Anthropic API key is resolved from `--anthropic-api-key`, then the `ANTHROPIC_API_KEY` environment variable, then a `--secrets` file if one is given — no secrets file is required. Configuration is resolved from `--config` (inline JSON), then `.reviewotron.json` under `--root`, then defaults. See [Agent Helper Mode](#agent-helper-mode).
+The Anthropic API key is resolved from `--anthropic-api-key`, then the `ANTHROPIC_API_KEY` environment variable, then a `--secrets` file if one is given — no secrets file is required. Configuration uses the layered local CLI precedence described in [Configuration](#configuration). See [Agent Helper Mode](#agent-helper-mode).
 
 | Option | Default | Description |
 |--------|---------|-------------|
@@ -1014,6 +1076,13 @@ If no `gh_hook_secret` is configured for a repo, webhook signature validation is
 ### Duplicate Prevention
 
 Duplicate review prevention relies on the state file. Without `--state`, or after a server restart with in-memory-only state, the same PR/push may be reviewed again.
+
+### Supported Local Runtime
+
+The `make install` binary is currently intended for the supported nspawn
+userspace and its runtime libraries. Cross-platform binaries and static
+linking are not part of this phase. Publishing a packaged GitHub Release is
+handled separately by `scripts/release.sh` from that environment.
 
 ### Concurrent Reviews
 

@@ -163,3 +163,10 @@ let diff_against_base_with ~run_git ~root ~base =
   | Ok merge_base -> run_git ~cwd:root [ "diff"; merge_base ]
 
 let diff_against_base ~root ~base = diff_against_base_with ~run_git ~root ~base
+
+let untracked_files_with ~run_git ~root =
+  match run_git ~cwd:root [ "ls-files"; "--others"; "--exclude-standard"; "-z" ] with
+  | Error msg -> Error (Printf.sprintf "could not discover untracked files: %s" msg)
+  | Ok output -> Ok (String.split_on_char '\000' output |> List.filter (fun path -> not (String.equal path "")))
+
+let untracked_files ~root = untracked_files_with ~run_git ~root

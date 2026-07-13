@@ -35,3 +35,8 @@ val infer_base : root:string -> explicit:string option -> (string, string) resul
 val diff_against_base_with : run_git:run_git -> root:string -> base:string -> (string, string) result
 
 val diff_against_base : root:string -> base:string -> (string, string) result
+
+(** Return non-ignored untracked paths relative to the worktree root. *)
+val untracked_files_with : run_git:run_git -> root:string -> (string list, string) result
+
+val untracked_files : root:string -> (string list, string) result

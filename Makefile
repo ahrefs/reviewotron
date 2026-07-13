@@ -1,4 +1,8 @@
-.PHONY: all build clean start default fmt test dev
+.PHONY: all build clean start default fmt test dev install cli-smoke install-smoke
+
+PREFIX ?= $(HOME)/.local
+BINDIR ?= $(PREFIX)/bin
+BINARY ?= $(BINDIR)/reviewotron
 
 default: build
 
@@ -19,8 +23,20 @@ watch:
 release:
 	dune build --profile=release src/reviewotron.exe
 
+install:
+	dune build --profile=release src/reviewotron.exe
+	mkdir -p "$(BINDIR)"
+	install -m 755 _build/default/src/reviewotron.exe "$(BINARY)"
+
 test:
 	dune runtest
+	$(MAKE) cli-smoke
+
+cli-smoke:
+	sh test/cli_smoke.sh
+
+install-smoke:
+	prefix=$$(mktemp -d); trap 'rm -rf "$$prefix"' EXIT; $(MAKE) install PREFIX="$$prefix"; PATH="$$prefix/bin:$$PATH" reviewotron --help >/dev/null
 
 test_promote:
 	dune runtest --auto-promote
