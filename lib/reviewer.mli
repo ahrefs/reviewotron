@@ -7,6 +7,14 @@ type finding_source = Review_engine.finding_source =
   | From_general
   | From_security
 
+type review_command =
+  | Current
+  | Commit of string
+
+(** Parse a manual [REVIEW] command.  A commit argument must be a 7--40
+    character hexadecimal SHA; malformed commands return [None]. *)
+val parse_review_command : string -> review_command option
+
 (** Deduplicate findings across plugins.  Two passes:
     1. exact [(path, line)] collisions → security-plugin finding wins; otherwise
        higher severity wins.

@@ -15,6 +15,16 @@ module type Github_review_source = sig
     unit ->
     (string, Http_util.error) result Lwt.t
 
+  val get_pr_commit_shas : ctx:Context.t -> repo_url:string -> number:int -> (string list, string) result Lwt.t
+
+  val get_commit_diff :
+    ctx:Context.t ->
+    repo_url:string ->
+    commit:string ->
+    ?log_context:string ->
+    unit ->
+    (string, Http_util.error) result Lwt.t
+
   val get_pull_request :
     ctx:Context.t -> repo_url:string -> number:int -> (Github_types.pull_request, string) result Lwt.t
 

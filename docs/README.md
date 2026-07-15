@@ -74,9 +74,9 @@ GitHub Webhook (POST /github)
 | `pull_request` (opened, reopened, ready_for_review) | PR opened, reopened, or marked ready | `auto_review_pr_open` | GitHub PR review with inline comments when there is something to report |
 | `pull_request` (synchronize) | New commits pushed to a PR | `auto_review_pr_sync` | GitHub PR review with inline comments when there is something to report |
 | `push` (to `refs/heads/develop`) | Code pushed to develop | `review_pushes_to_develop` | Commit comments + Slack message |
-| `issue_comment` (created, on a PR, body equals `REVIEW`) | Manual trigger via PR comment | `auto_review_on_comment` | GitHub PR review with inline comments when there is something to report |
+| `issue_comment` (created, on a PR, body is `REVIEW` or `REVIEW <sha>`) | Manual trigger via PR comment | `auto_review_on_comment` | GitHub PR review with inline comments when there is something to report |
 
-The `REVIEW` trigger is exact-match: the comment body must equal the literal string `REVIEW` after trimming whitespace. Anything else (including `REVIEW please` or quoted text) is ignored silently. The bot must have the `pull_request` GitHub App permission and the **Issue comment** webhook event subscribed.
+`REVIEW` reviews the current PR head. `REVIEW <sha>` reviews only that commit's patch; 7--40 character hexadecimal short SHAs are accepted when they identify exactly one commit in the PR. The target must belong to the PR. Malformed commands are ignored; unrelated or ambiguous targets receive an explanatory PR comment. Historical reviews can become outdated if later commits modify the same lines. The bot must have the `pull_request` GitHub App permission and the **Issue comment** webhook event subscribed.
 
 For PR reviews, Reviewotron adds an `eyes` reaction while a review is running. On automatic PR events the reaction is attached to the PR; on manual `REVIEW` comments it is attached to the trigger comment. The `eyes` reaction is removed before posting a review. If the review runs to completion with no findings, no PR review is posted and Reviewotron posts a PR comment saying `LGTM :+1:`. If every changed file is excluded before review, Reviewotron posts an explicit skip notice instead; that is not an approval.
 
@@ -394,7 +394,7 @@ version control. Webhook/server commands do not read the user-global files.
 | `auto_review_pr_open` | `false` | Review PRs when they are opened, reopened, or marked ready. |
 | `auto_review_pr_sync` | `false` | Review PRs when new commits are pushed to them. |
 | `review_pushes_to_develop` | `false` | Review pushes to the `develop` branch. |
-| `auto_review_on_comment` | `false` | Review when someone posts a top-level PR comment whose body is exactly `REVIEW` (after trimming). Requires the GitHub App to subscribe to **Issue comment** events. |
+| `auto_review_on_comment` | `false` | Review when someone posts a top-level PR comment whose body is `REVIEW` or `REVIEW <sha>` (after trimming). Requires the GitHub App to subscribe to **Issue comment** events. |
 | `review_draft_prs` | `false` | Include draft PRs in automatic reviews. By default drafts are skipped regardless of `auto_review_pr_open` / `auto_review_pr_sync`. |
 | `system_prompt_override` | `null` | Replace the default general review system prompt entirely. |
 | `slack_channel` | `null` | Slack channel for push review notifications. Requires `slack_access_token` in secrets. |

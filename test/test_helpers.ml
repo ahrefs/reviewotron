@@ -37,7 +37,10 @@ let reset_test_state () =
   Api_local.reset_agent_response_path ();
   Api_local.clear_agent_response_map ();
   Api_local.clear_recorded_agent_inputs ();
+  Api_local.clear_recorded_file_refs ();
   Api_local.reset_next_pr_diff ();
+  Api_local.reset_pr_commit_shas ();
+  Api_local.reset_commit_diffs ();
   Api_local.reset_next_issue_comment_result ();
   Api_local.reset_next_pr_review_result ();
   Api_local.set_next_created_review_id 1000;

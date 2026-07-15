@@ -123,6 +123,19 @@ let required_string fields name =
   | `String value -> value
   | json -> Melange_json.of_json_error ~json (Printf.sprintf "expected string field %s" name)
 
+let parse_pr_commit_shas_json body =
+  try
+    match Melange_json.of_string body with
+    | `List commits ->
+      Ok
+        (List.map
+           (function
+             | `Assoc fields -> required_string fields "sha"
+             | json -> Melange_json.of_json_error ~json "expected commit object")
+           commits)
+    | json -> Melange_json.of_json_error ~json "expected commit array"
+  with exn -> Error (Printf.sprintf "failed to parse PR commits response: %s" (Exn.str exn))
+
 let required_int fields name =
   match required_field fields name with
   | `Int value -> value
@@ -241,6 +254,15 @@ module Github : Api.Github = struct
   let get_pr_diff ~ctx ~repo_url ~number ?log_context () =
     let path = Printf.sprintf "/pulls/%d" number in
     github_get ~ctx ~repo_url ~path ~accept:"application/vnd.github.v3.diff" ?log_context ()
+
+  let get_pr_commit_shas ~ctx ~repo_url ~number =
+    let path = Printf.sprintf "/pulls/%d/commits" number in
+    collect_paginated_list ~page_size:github_page_size ~parse:parse_pr_commit_shas_json ~fetch_page:(fun page ->
+      github_get ~ctx ~repo_url ~path:(paginated_path ~page_size:github_page_size ~page path) ())
+
+  let get_commit_diff ~ctx ~repo_url ~commit ?log_context () =
+    let path = Printf.sprintf "/commits/%s" (Web.urlencode commit) in
+    github_get ~ctx ~repo_url ~path ~accept:"application/vnd.github.diff" ?log_context ()
 
   let get_pull_request ~ctx ~repo_url ~number =
     let path = Printf.sprintf "/pulls/%d" number in

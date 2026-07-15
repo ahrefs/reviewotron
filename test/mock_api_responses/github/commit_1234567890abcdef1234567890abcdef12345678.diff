@@ -1,0 +1,9 @@
+diff --git a/src/main.ml b/src/main.ml
+index 1111111..2222222 100644
+--- a/src/main.ml
++++ b/src/main.ml
+@@ -10,2 +10,3 @@ let main () =
+   let config = load_config () in
+-  let current_value = 42 in
++  let targeted_value = 100 in
++  let commit_specific_marker = "target-only" in
