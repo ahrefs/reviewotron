@@ -298,6 +298,11 @@ let test_filter_paths () =
   let fd = hd_exn "filtered" filtered in
   (check string) "kept src/main.ml" "src/main.ml" fd.path
 
+let test_filter_paths_matches_exact_literals () =
+  let diffs = Diff_parser.parse single_hunk_diff in
+  let filtered = Diff_parser.filter_paths diffs ~ignored:[ "foo.ml" ] in
+  (check int) "exact literal excludes matching path" 0 (List.length filtered)
+
 let test_filter_paths_supports_globstar () =
   let added_diff path =
     String.concat "\n"
@@ -804,6 +809,7 @@ let () =
       ( "filtering",
         [
           test_case "filter paths" `Quick test_filter_paths;
+          test_case "filter paths matches exact literals" `Quick test_filter_paths_matches_exact_literals;
           test_case "filter paths supports globstar" `Quick test_filter_paths_supports_globstar;
         ] );
       ( "generated_file",

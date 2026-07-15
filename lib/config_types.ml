@@ -108,13 +108,100 @@ let model_tier_jsonschema =
     ~enum:(List.map model_tier_to_string all_model_tiers)
     ~description:"Model tier: fast (Haiku), standard (Sonnet), or strong (Opus)."
 
-(** Configuration for the general review plugin. *)
-type general_plugin_config = {
-  enabled : bool; [@json.default true] [@jsonschema.description "Run the general LLM code review (default true)."]
+(** OpenRouter reasoning-effort levels supported by the installed SDK.
+
+    [Max] is intentionally absent: ocaml-ai-sdk 0.4 cannot encode it yet.
+    Direct Anthropic support will use its own native [output_config] path once
+    the SDK exposes that field. *)
+module Effort = struct
+  type t =
+    | Low
+    | Medium
+    | High
+    | Xhigh
+
+  let to_string = function
+    | Low -> "low"
+    | Medium -> "medium"
+    | High -> "high"
+    | Xhigh -> "xhigh"
+
+  let t_to_json effort = `String (to_string effort)
+
+  let to_json = t_to_json
+
+  let t_of_json = function
+    | `String "low" -> Low
+    | `String "medium" -> Medium
+    | `String "high" -> High
+    | `String "xhigh" -> Xhigh
+    | json -> Melange_json.of_json_error ~json "expected an effort string"
+
+  let of_json = t_of_json
+
+  let t_jsonschema =
+    string_enum_jsonschema ~enum:[ "low"; "medium"; "high"; "xhigh" ] ~description:"OpenRouter reasoning effort level."
+end
+
+(** Configuration for the general review plugin.
+
+    The raw [@@deriving json] codec lives inside {!General_plugin_config_codec}
+    so that the top-level [general_plugin_config_of_json] below can wrap it with
+    validation. This ordering matters: {!review_plugins_config} (defined further
+    down) is itself derived, and its generated decoder resolves the field
+    decoder by the name [general_plugin_config_of_json] via ordinary name
+    resolution at that point in the file. Because the validating wrapper is
+    defined BEFORE {!review_plugins_config}, every real load path
+    ([config_of_json] → [review_plugins_config_of_json] →
+    [general_plugin_config_of_json]) goes through the validation. *)
+module General_plugin_config_codec = struct
+  type t = {
+    enabled : bool; [@json.default true] [@jsonschema.description "Run the general LLM code review (default true)."]
+    system_prompt_override : string option;
+       [@json.option] [@jsonschema.description "Replace the general review system prompt entirely."]
+    scout_enabled : bool;
+       [@json.default true]
+       [@jsonschema.description
+         "Run the scout → deep-reviewer pipeline (default true). When false, fall back to the legacy single-pass \
+          general review."]
+    scout_model_tier : model_tier;
+       [@json.default Standard] [@jsonschema.description "Model tier for the general scout agent."]
+    deep_reviewer_model_tier : model_tier;
+       [@json.default Strong] [@jsonschema.description "Model tier for the general deep-reviewer agent."]
+    max_leads : int;
+       [@json.default 10]
+       [@jsonschema.description "Maximum investigation leads passed from the scout to the deep reviewer."]
+  }
+  [@@deriving json, jsonschema] [@@json.allow_extra_fields]
+end
+
+type general_plugin_config = General_plugin_config_codec.t = {
+  enabled : bool;
   system_prompt_override : string option;
-     [@json.option] [@jsonschema.description "Replace the general review system prompt entirely."]
+  scout_enabled : bool;
+  scout_model_tier : model_tier;
+  deep_reviewer_model_tier : model_tier;
+  max_leads : int;
 }
-[@@deriving json, jsonschema] [@@json.allow_extra_fields]
+
+let general_plugin_config_to_json = General_plugin_config_codec.to_json
+let general_plugin_config_jsonschema = General_plugin_config_codec.t_jsonschema
+
+(** Decode a {!general_plugin_config}, rejecting an out-of-range [max_leads].
+    [max_leads] caps the investigation leads handed from the scout to the deep
+    reviewer; a value below 1 is nonsensical: [0] silently disables the entire
+    deep pass (the pipeline reads an empty lead list as "scout found nothing"),
+    and a negative value silently defeats the cap. We fail fast at parse time
+    rather than clamp, using the same [Melange_json.of_json_error] idiom the
+    derived decoders use so the failure propagates on the normal config-load
+    error channel. *)
+let general_plugin_config_of_json (json : Yojson.Basic.t) : general_plugin_config =
+  let cfg = General_plugin_config_codec.of_json json in
+  match cfg.max_leads with
+  | n when n < 1 ->
+    Melange_json.of_json_error ~json
+      (Printf.sprintf "max_leads must be >= 1 (got %d): 0 disables the deep review pass and negatives defeat the cap" n)
+  | _ -> cfg
 
 (** Configuration for the security review plugin. *)
 type security_plugin_config = {
@@ -131,6 +218,11 @@ type security_plugin_config = {
   triage_model_tier : model_tier; [@json.default Fast] [@jsonschema.description "Model tier for the triage agent."]
   analysis_model_tier : model_tier;
      [@json.default Standard] [@jsonschema.description "Model tier for per-class analysis agents."]
+  analysis_effort : Effort.t option;
+     [@json.option]
+     [@jsonschema.description
+       "OpenRouter reasoning effort for per-class analysis agents. Defaults to medium; set null to keep the provider \
+        default. Direct Anthropic calls cannot encode this until ocaml-ai-sdk adds native effort support."]
   validator_model_tier : model_tier;
      [@json.default Standard] [@jsonschema.description "Model tier for the adversarial validator."]
   confidence_threshold : confidence;
@@ -150,7 +242,15 @@ type security_plugin_config = {
 }
 [@@deriving json, jsonschema] [@@json.allow_extra_fields]
 
-let default_general_plugin_config = { enabled = true; system_prompt_override = None }
+let default_general_plugin_config =
+  {
+    enabled = true;
+    system_prompt_override = None;
+    scout_enabled = true;
+    scout_model_tier = Standard;
+    deep_reviewer_model_tier = Strong;
+    max_leads = 10;
+  }
 
 let default_security_plugin_config =
   {
@@ -159,6 +259,7 @@ let default_security_plugin_config =
     always_analyze_vuln_classes = [];
     triage_model_tier = Fast;
     analysis_model_tier = Standard;
+    analysis_effort = Some Effort.Medium;
     validator_model_tier = Standard;
     confidence_threshold = Medium;
     memory_max_tokens = 5000;
@@ -189,8 +290,10 @@ module Config_codec = struct
        [@jsonschema.description "Maximum number of files to review (raise for whole-folder reviews)."]
     max_tokens_per_review : int;
        [@json.default 100000] [@jsonschema.description "Token budget hint for the review agent."]
-    model : string;
-       [@json.default "claude-sonnet-4-6"] [@jsonschema.description "Model ID for the general review agent."]
+    model : string option;
+       [@json.option]
+       [@jsonschema.description
+         "Explicit model ID override for the general deep reviewer. When absent, deep_reviewer_model_tier decides."]
     ignored_paths : string list;
        [@json.default []] [@jsonschema.description "Glob patterns (\\* wildcard) for files to exclude from review."]
     ignored_file_regexes : string list;
@@ -230,7 +333,7 @@ type config = Config_codec.t = {
   max_diff_lines : int;
   max_files : int;
   max_tokens_per_review : int;
-  model : string;
+  model : string option;
   ignored_paths : string list;
   ignored_file_regexes : string list;
   ignore_generated_files : bool;

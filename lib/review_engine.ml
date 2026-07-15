@@ -346,10 +346,15 @@ let review_body ~log_context ~change_label ~general_output ~findings ~unchanged_
   in
   let body =
     match general_output with
-    | Some (Ok review) ->
-      (match String.trim review.Review_types.summary with
-      | "" -> ":robot: **REVIEW**"
-      | summary -> Printf.sprintf ":robot: **REVIEW**\n\nMinor:\n%s" summary)
+    | Some (Ok _review) ->
+      (* [review.summary] is an internal audit trace (one line per lead) and
+         must never be shown to consumers. The consumer body is driven purely
+         by whether the review produced findings: findings render separately
+         (inline comments + the unchanged/anchor sections), so here we only
+         emit the header, or an LGTM when the whole review is clean. *)
+      (match findings with
+      | [] -> ":robot: **REVIEW**\n\nLGTM :+1:"
+      | _ :: _ -> ":robot: **REVIEW**")
     | Some (Error reason) -> failure_notice (Some reason)
     | None ->
     match config.review_plugins.general.enabled with

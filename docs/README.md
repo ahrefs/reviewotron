@@ -329,6 +329,7 @@ Each repo can have a `.reviewotron.json` file in its root. For GitHub webhooks, 
       "always_analyze_vuln_classes": [],
       "triage_model_tier": "fast",
       "analysis_model_tier": "standard",
+      "analysis_effort": "medium",
       "validator_model_tier": "standard",
       "confidence_threshold": "medium",
       "memory_max_tokens": 5000,
@@ -387,6 +388,7 @@ generated-file header markers. Broad folders such as `generated/`, `dist/`,
 | `always_analyze_vuln_classes` | `[]` | Vulnerability classes that bypass `confidence_threshold`. Classes listed here are implicitly enabled even if absent from `vuln_classes`. Use sparingly for high-risk repos or temporarily while tuning recall. |
 | `triage_model_tier` | `"fast"` | Model tier for the triage agent. |
 | `analysis_model_tier` | `"standard"` | Model tier for per-class analysis agents. |
+| `analysis_effort` | `"medium"` | OpenRouter-only analysis effort: `"low"`, `"medium"`, `"high"`, or `"xhigh"`. Set to `null` for the provider default. |
 | `validator_model_tier` | `"standard"` | Model tier for the adversarial validator. |
 | `confidence_threshold` | `"medium"` | Minimum triage confidence to trigger analysis for enabled classes. `"high"` = only high-confidence signals. `"medium"` = high + medium. `"low"` = all signals. |
 | `memory_max_tokens` | `5000` | Target size limit for the repo's security memory file. |
@@ -398,8 +400,8 @@ generated-file header markers. Broad folders such as `generated/`, `dist/`,
 | Tier | Model | Typical Use |
 |------|-------|-------------|
 | `"fast"` | `claude-haiku-4-5-20251001` | Triage, memory curator |
-| `"standard"` | `claude-sonnet-4-6` | Analysis agents, validator, general review |
-| `"strong"` | `claude-opus-4-6` | Reserved for complex codebases |
+| `"standard"` | `claude-sonnet-5` | Analysis agents, validator, general review |
+| `"strong"` | `claude-opus-4-8` | Reserved for complex codebases |
 
 #### Vulnerability Classes
 

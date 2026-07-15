@@ -193,7 +193,10 @@ let glob_to_re pattern =
     | false -> index
   in
   let rec skip_literal index =
-    match index < pattern_length && Char.equal pattern.[index] '*' with
+    match index >= pattern_length with
+    | true -> pattern_length
+    | false ->
+    match Char.equal pattern.[index] '*' with
     | true -> index
     | false -> skip_literal (index + 1)
   in

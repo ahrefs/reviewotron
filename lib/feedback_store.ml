@@ -114,12 +114,29 @@ let rec ensure_dir path =
     if not (String.equal parent path) then ensure_dir parent;
     Unix.mkdir path 0o700
 
+(* Resolve to an absolute path so the evidence_dir recorded on each target remains valid regardless
+   of the working directory of a later process (e.g. the feedback-report command). A relative
+   --feedback-dir would otherwise be interpreted against whatever CWD each invocation happens to
+   have. *)
+let absolute_dir dir =
+  match Filename.is_relative dir with
+  | false -> dir
+  | true ->
+    (* Drop a leading "./" so the resolved path does not carry a "/./" segment. *)
+    let dir =
+      match CCString.chop_prefix ~pre:"./" dir with
+      | Some rest -> rest
+      | None -> dir
+    in
+    Filename.concat (Sys.getcwd ()) dir
+
 let derive_paths ?feedback_dir ~state_filepath () =
   let dir =
     match feedback_dir with
     | Some dir -> dir
     | None -> Filename.dirname state_filepath
   in
+  let dir = absolute_dir dir in
   {
     targets = Filename.concat dir targets_filename;
     events = Filename.concat dir events_filename;

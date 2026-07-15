@@ -27,6 +27,11 @@ type agent_config = {
           model a private reasoning channel that does not leak into structured
           output.  [None] keeps the agent single-pass; sub-1024 values are
           clamped to the Anthropic minimum. *)
+  effort : Config_types.Effort.t option;
+    (** OpenRouter reasoning effort. [None] preserves the provider default.
+        The direct Anthropic path logs a warning and uses its provider default
+        until ocaml-ai-sdk exposes typed native [output_config.effort] support.
+        Mutually exclusive with [thinking_budget]. *)
 }
 
 (** Result of a successful agent run. *)
@@ -54,8 +59,8 @@ type agent_result = {
     Uses {!Ai_provider_anthropic.Model_catalog} to resolve correct model IDs.
 
     - [Fast] → [Claude_haiku_4_5]
-    - [Standard] → [Claude_sonnet_4_6]
-    - [Strong] → [Claude_opus_4_6] *)
+    - [Standard] → [claude-sonnet-5]
+    - [Strong] → [claude-opus-4-8] *)
 val default_model_id : model_tier -> string
 
 (** Write a debug dump of agent output when structured parsing fails.
@@ -97,7 +102,7 @@ val cached_input_provider_options : Llm_provider.t -> Ai_provider.Provider_optio
       option encoding and usage parsing.  [model] must have been built for this
       same provider (see {!Llm_provider.language_model}).
     @param model Language model instance (create via provider, e.g.
-      [Ai_provider_anthropic.language_model ~model:"claude-sonnet-4-6" ()])
+      [Ai_provider_anthropic.language_model ~model:"claude-sonnet-5" ()])
     @param tools Named tool definitions for context expansion
     @param max_retries Per-call retry count (default 2)
     @param debug_dir Directory for debug dumps on parse failure
