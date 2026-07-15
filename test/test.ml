@@ -3054,7 +3054,12 @@ let test_comment_trigger_rejects_unrelated_target () =
   Lwt_main.run (R_test.process_event ctx ~event);
   let write_log = Api_local.get_write_log () in
   (check bool) "invalid target comment posted" true (contains_sub ~sub:"[create_issue_comment]" write_log);
-  (check bool) "invalid target explains PR membership" true (contains_sub ~sub:"does not belong to this PR" write_log);
+  (check bool) "invalid target explains that GitHub did not return the commit" true
+    (contains_sub ~sub:"was not found in the list of commits returned by GitHub's API" write_log);
+  (check bool) "invalid target asks to verify the SHA" true
+    (contains_sub ~sub:"check that the commit SHA is correct" write_log);
+  (check bool) "invalid target explains GitHub's 250-commit limit" true
+    (contains_sub ~sub:"only returns the last 250" write_log);
   (check bool) "invalid target does not start a PR review" false (contains_sub ~sub:"[create_pr_review]" write_log);
   (check (option string)) "invalid target does not run an agent" None (Api_local.recorded_agent_input "general_scout");
   (check bool) "invalid target is not recorded" false

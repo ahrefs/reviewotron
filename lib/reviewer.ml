@@ -112,6 +112,14 @@ let prepare_error_attrs ~(config : Config_types.config) = function
 
 let pr_prepare_error_attrs ~config (error : Github_source.pr_prepare_error) = prepare_error_attrs ~config error.error
 
+let target_commit_not_found_message requested =
+  Printf.sprintf
+    "The commit `%s` was not found in the list of commits returned by GitHub's API for this PR. Please check that the \
+     commit SHA is correct and that the commit belongs to this PR. If the PR contains more than 250 commits, GitHub \
+     only returns the last 250 through this endpoint, so the requested commit must be among those 250; older commits \
+     cannot be fetched here."
+    requested
+
 module Make
     (SRC : Api.Github_review_source)
     (SNK : Api.Github_review_sink)
@@ -386,8 +394,7 @@ struct
       Lwt.return_unit
     in
     match error with
-    | Target_commit_not_in_pr requested ->
-      post_invalid_target (Printf.sprintf "The requested commit `%s` does not belong to this PR." requested)
+    | Target_commit_not_in_pr requested -> post_invalid_target (target_commit_not_found_message requested)
     | Ambiguous_target_commit requested ->
       post_invalid_target
         (Printf.sprintf "The abbreviated commit `%s` matches multiple commits in this PR; use a longer SHA." requested)
@@ -430,8 +437,7 @@ struct
 
   let prepare_error_reason ~(config : Config_types.config) (error : Github_source.prepare_error) =
     match error with
-    | Target_commit_not_in_pr requested ->
-      Printf.sprintf "The requested commit `%s` does not belong to this PR." requested
+    | Target_commit_not_in_pr requested -> target_commit_not_found_message requested
     | Ambiguous_target_commit requested ->
       Printf.sprintf "The abbreviated commit `%s` matches multiple commits in this PR; use a longer SHA." requested
     | Empty ->
