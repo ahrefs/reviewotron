@@ -105,6 +105,7 @@ let config ~model_tier ~security_covered_elsewhere : Agent_runner.agent_config =
     output_schema = Review_types.scout_output_jsonschema;
     max_steps = 1;
     thinking_budget = Some scout_thinking_budget;
+    effort = None;
   }
 
 let build_input ~diff_text ~change_title ~change_description () =

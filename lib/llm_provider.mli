@@ -34,6 +34,11 @@ val normalize_model_id : t -> string -> string
 (** Extended-thinking / reasoning options carrying [budget_tokens]. *)
 val thinking_options : t -> budget_tokens:int -> Ai_provider.Provider_options.t
 
+(** OpenRouter reasoning-effort options. On the direct Anthropic path this
+    returns empty options because ocaml-ai-sdk 0.4 cannot encode native
+    [output_config.effort] yet. *)
+val effort_options : t -> effort:Config_types.Effort.t -> Ai_provider.Provider_options.t
+
 (** Cache-control marker for the cached input prefix. *)
 val cached_input_options : t -> Ai_provider.Provider_options.t
 
