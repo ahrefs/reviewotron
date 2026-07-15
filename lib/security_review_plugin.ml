@@ -959,6 +959,7 @@ module Make (AI : Api.Agent_runner) = struct
     ~log_context ~debug_dir ~memory_dir =
     let log_prefix = log_context_prefix log_context in
     let security_config = config.review_plugins.security in
+    let agent_debug_dir = if config.debug_artifacts then Some debug_dir else None in
     let security_memory = Security_memory.load ~log_context ~memory_dir ~repo_url in
     let file_paths = List.map (fun (fd : Diff_parser.file_diff) -> fd.path) diff in
     let artifacts =
@@ -977,7 +978,7 @@ module Make (AI : Api.Agent_runner) = struct
       (`List (List.map Security_types.candidate_signal_to_json deterministic_signals));
     let%lwt triage_result, triage_costs =
       run_triage ~ctx ~repo_url ~security_config ~diff_text ~file_paths ~deterministic_signals ~artifacts
-        ?security_memory ~debug_dir ?log_context ()
+        ?security_memory ?debug_dir:agent_debug_dir ?log_context ()
     in
     match triage_result with
     | None ->
@@ -1018,7 +1019,8 @@ module Make (AI : Api.Agent_runner) = struct
       | None ->
         let%lwt findings, analysis_costs, analysis_metrics =
           run_analysis ~ctx ~repo_url ~fetch_file:metadata.fetch_file ~security_config ~diff ~diff_text ~file_paths
-            ~language_hints:triage_output.language_hints ~artifacts ~debug_dir ?log_context triage_output.signals
+            ~language_hints:triage_output.language_hints ~artifacts ?debug_dir:agent_debug_dir ?log_context
+            triage_output.signals
         in
         let costs = triage_costs @ analysis_costs in
         log_stage_metrics ~log_context ~changed_file_count:(List.length file_paths) ~deterministic_signals
@@ -1038,7 +1040,8 @@ module Make (AI : Api.Agent_runner) = struct
         Lwt.async (fun () ->
           try%lwt
             let%lwt costs =
-              curate_memory ~ctx ~repo_url ~memory_dir ~security_config ~observations ~debug_dir ?log_context ()
+              curate_memory ~ctx ~repo_url ~memory_dir ~security_config ~observations ?debug_dir:agent_debug_dir
+                ?log_context ()
             in
             ignore (costs : Cost_tracking.agent_cost list);
             Lwt.return_unit

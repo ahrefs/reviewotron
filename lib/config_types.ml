@@ -212,6 +212,10 @@ type config = {
   slack_channel : string option;
      [@json.option] [@jsonschema.description "Slack channel for push review notifications (webhook mode)."]
   show_review_cost : bool; [@json.default false] [@jsonschema.description "Append a cost summary footer to the review."]
+  debug_artifacts : bool;
+     [@json.default false]
+     [@jsonschema.description
+       "Write raw agent output dumps when structured output cannot be parsed. Sensitive and off by default."]
   review_plugins : review_plugins_config;
      [@json.default default_review_plugins_config] [@jsonschema.description "Per-plugin configuration."]
 }

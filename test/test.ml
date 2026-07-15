@@ -425,12 +425,14 @@ let test_config_review_plugins_defaults () =
   (check bool) "metrics_artifacts default off" false config.review_plugins.security.metrics_artifacts;
   (check bool) "debug_artifacts default off" false config.review_plugins.security.debug_artifacts;
   (check bool) "show_review_cost" false config.show_review_cost;
+  (check bool) "agent debug_artifacts default off" false config.debug_artifacts;
   (check bool) "ignore_generated_files default on" true config.ignore_generated_files
 
 let test_config_review_plugins_explicit () =
   let json =
     {|{
     "show_review_cost": true,
+    "debug_artifacts": true,
     "ignore_generated_files": false,
     "review_plugins": {
       "general": { "enabled": false },
@@ -449,6 +451,7 @@ let test_config_review_plugins_explicit () =
   in
   let config = Config_types.config_of_json (Melange_json.of_string json) in
   (check bool) "show_review_cost" true config.show_review_cost;
+  (check bool) "agent debug_artifacts" true config.debug_artifacts;
   (check bool) "ignore_generated_files explicit off" false config.ignore_generated_files;
   (check bool) "general disabled" false config.review_plugins.general.enabled;
   (check bool) "security enabled" true config.review_plugins.security.enabled;
@@ -6228,9 +6231,13 @@ let test_general_review_agent_config_enables_thinking () =
 
 module General_plugin_agent_runner = struct
   let outputs : (string * Yojson.Basic.t) list ref = ref []
+  let debug_dirs : string option list ref = ref []
   let set_outputs entries = outputs := entries
+  let reset_debug_dirs () = debug_dirs := []
+  let get_debug_dirs () = List.rev !debug_dirs
 
-  let run ~ctx:_ ~repo_url:_ ?model_id:_ ?tools:_ ?debug_dir:_ ?log_context:_ ~config ~input:_ () =
+  let run ~ctx:_ ~repo_url:_ ?model_id:_ ?tools:_ ?debug_dir ?log_context:_ ~config ~input:_ () =
+    debug_dirs := debug_dir :: !debug_dirs;
     match List.assoc_opt config.Agent_runner.name !outputs with
     | None -> Lwt.return (Error (Printf.sprintf "missing mock output for %s" config.Agent_runner.name))
     | Some output ->
@@ -6289,11 +6296,38 @@ let validator_output_with_results results = Review_types.validator_output_to_jso
 
 let run_general_plugin_with_outputs outputs =
   Test_helpers.reset_test_state ();
+  General_plugin_agent_runner.reset_debug_dirs ();
   General_plugin_agent_runner.set_outputs outputs;
   let ctx = Test_helpers.make_test_context ~config:Test_helpers.auto_review_enabled_config () in
   Lwt_main.run
     (General_plugin_test.run_review ~ctx ~repo_url:"https://github.com/org/repo"
        ~config:Test_helpers.auto_review_enabled_config ~diff_text:"diff" ~metadata:general_plugin_metadata ())
+
+let test_general_agent_debug_dumps_are_opt_in () =
+  let outputs =
+    [
+      "general_review", read_json "mock_api_responses/claude/review_response.json";
+      "general_validator", validator_echoes_damaged_confirmed_finding;
+    ]
+  in
+  let run ~debug_artifacts =
+    Test_helpers.reset_test_state ();
+    General_plugin_agent_runner.reset_debug_dirs ();
+    General_plugin_agent_runner.set_outputs outputs;
+    let config = { Test_helpers.auto_review_enabled_config with debug_artifacts } in
+    let ctx = Test_helpers.make_test_context ~config () in
+    let _result, _costs =
+      Lwt_main.run
+        (General_plugin_test.run_review ~ctx ~repo_url:"https://github.com/org/repo" ~config ~diff_text:"diff"
+           ~metadata:general_plugin_metadata ~debug_dir:"debug-test" ())
+    in
+    General_plugin_agent_runner.get_debug_dirs ()
+  in
+  (check (list (option string))) "debug dumps disabled" [ None; None ] (run ~debug_artifacts:false);
+  (check (list (option string)))
+    "debug dumps enabled"
+    [ Some "debug-test"; Some "debug-test" ]
+    (run ~debug_artifacts:true)
 
 let test_general_review_filters_low_value_and_validates () =
   let result, costs =
@@ -6652,6 +6686,7 @@ let () =
         ] );
       ( "general_review_plugin",
         [
+          test_case "agent debug dumps are opt-in" `Quick test_general_agent_debug_dumps_are_opt_in;
           test_case "filters low-value candidates and validates" `Quick
             test_general_review_filters_low_value_and_validates;
           test_case "validator rejection drops finding" `Quick test_general_review_validator_rejection_drops_finding;

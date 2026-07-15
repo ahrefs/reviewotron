@@ -133,6 +133,7 @@ module Make (AI : Api.Agent_runner) = struct
 
   let run_review ~ctx ~repo_url ~(config : Config_types.config) ~diff_text ~metadata ?debug_dir ?log_context () =
     let log_prefix = log_context_prefix log_context in
+    let debug_dir = if config.debug_artifacts then debug_dir else None in
     let security_covered_elsewhere = config.review_plugins.security.enabled in
     let system = Review_prompt.system_prompt ?override:config.system_prompt_override ~security_covered_elsewhere () in
     let Review_plugin.{ change_title; change_description; file_contents; _ } = metadata in

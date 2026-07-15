@@ -355,6 +355,7 @@ version control. Webhook/server commands do not read the user-global files.
   "system_prompt_override": null,
   "slack_channel": "#code-reviews",
   "show_review_cost": false,
+  "debug_artifacts": false,
   "review_plugins": {
     "general": {
       "enabled": true,
@@ -395,6 +396,7 @@ version control. Webhook/server commands do not read the user-global files.
 | `system_prompt_override` | `null` | Replace the default general review system prompt entirely. |
 | `slack_channel` | `null` | Slack channel for push review notifications. Requires `slack_access_token` in secrets. |
 | `show_review_cost` | `false` | Append a cost summary footer to PR reviews. |
+| `debug_artifacts` | `false` | Write raw agent output dumps when structured output cannot be parsed. Sensitive and opt-in. |
 | `review_plugins` | (see below) | Per-plugin configuration. |
 
 Generated-file detection is intentionally conservative. It includes exact
@@ -571,9 +573,21 @@ The memory curator rewrites the repo brief asynchronously after a review. If two
 
 ### Debug Dumps
 
-When an agent's structured output can't be parsed, a debug dump is saved to the review debug dir. In local mode this is under `$XDG_STATE_HOME/reviewotron/debug/{repo-slug}/{sha-prefix}/`, or `~/.local/state/reviewotron/debug/{repo-slug}/{sha-prefix}/` when `XDG_STATE_HOME` is unset. In persistent server mode it uses a sibling root next to feedback evidence; for example, if feedback evidence is under `./var/reviewotron-feedback-evidence/`, debug dumps go under `./var/debug/{repo-slug}/{sha-prefix}/`. These contain the raw agent output for diagnosing prompt or parsing issues.
+Raw agent debug dumps are disabled by default. Set the top-level `debug_artifacts`
+configuration field to `true` when diagnosing a structured-output failure:
 
-Security metrics/debug artifacts are separate and opt-in via `review_plugins.security.metrics_artifacts` and `review_plugins.security.debug_artifacts`. Metrics write compact JSON files under the review debug dir's `security/` subdirectory; full debug artifacts additionally write redacted stage inputs and outputs and should be treated as sensitive.
+```bash
+reviewotron . --config '{"debug_artifacts": true}'
+```
+
+When enabled, dumps are written under `$XDG_STATE_HOME/reviewotron/debug/{repo-slug}/{sha-prefix}/`, or `~/.local/state/reviewotron/debug/{repo-slug}/{sha-prefix}/` when `XDG_STATE_HOME` is unset. In persistent server mode they use a sibling root next to feedback evidence; for example, if feedback evidence is under `./var/reviewotron-feedback-evidence/`, debug dumps go under `./var/debug/{repo-slug}/{sha-prefix}/`. These contain raw agent output and should be treated as sensitive.
+
+Security metrics/debug artifacts are separate and opt-in via
+`review_plugins.security.metrics_artifacts` and
+`review_plugins.security.debug_artifacts`. Metrics write compact JSON files
+under the review debug dir's `security/` subdirectory; full security artifacts
+additionally write redacted stage inputs and outputs and should be treated as
+sensitive.
 
 ### OpenTelemetry Traces
 
@@ -1125,7 +1139,13 @@ Multiple reviews can run concurrently (events are processed via `Lwt.async`). Th
 
 ### Debug dumps
 
-When an agent produces output that can't be parsed as structured JSON, a debug dump is saved to the review debug dir. In local mode, look under `$XDG_STATE_HOME/reviewotron/debug/{repo-slug}/{sha-prefix}/`, or `~/.local/state/reviewotron/debug/{repo-slug}/{sha-prefix}/`; in persistent server mode, look under the sibling root next to the feedback evidence root, for example `./var/debug/{repo-slug}/{sha-prefix}/`. Look here when you see `"failed to parse ... output"` in the logs.
+When an agent produces output that can't be parsed as structured JSON and
+`debug_artifacts` is enabled, look under
+`$XDG_STATE_HOME/reviewotron/debug/{repo-slug}/{sha-prefix}/`, or
+`~/.local/state/reviewotron/debug/{repo-slug}/{sha-prefix}/`; in persistent
+server mode, look under the sibling root next to the feedback evidence root,
+for example `./var/debug/{repo-slug}/{sha-prefix}/`. Without that opt-in,
+the log reports the failure without writing the transcript.
 
 ---
 

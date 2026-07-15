@@ -105,6 +105,7 @@ type config = {
   system_prompt_override : string option;
   slack_channel : string option;
   show_review_cost : bool;
+  debug_artifacts : bool;
   review_plugins : review_plugins_config;
 }
 [@@deriving json]
