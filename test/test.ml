@@ -27,7 +27,8 @@ let count_sub ~sub s =
     in
     loop 0 0
 
-let reviewed_commit_sub sha = Printf.sprintf "**Reviewed commit:** `%s`" (Review_job.short_display_id sha)
+let reviewed_commit_sub sha =
+  Printf.sprintf "**Reviewed code up until commit:** `%s`" (Review_job.short_display_id sha)
 
 let write_file path contents =
   let oc = open_out_bin path in

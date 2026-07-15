@@ -30,7 +30,7 @@ let next_nonce () =
   Printf.sprintf "%s:%d" (Lazy.force process_nonce) !nonce_counter
 
 let with_reviewed_commit ~head_sha body =
-  Printf.sprintf "%s\n\n**Reviewed commit:** `%s`" body (Review_job.short_display_id head_sha)
+  Printf.sprintf "%s\n\n**Reviewed code up until commit:** `%s`" body (Review_job.short_display_id head_sha)
 
 let with_feedback_prompt (comment : Review_comment.t) =
   { comment with body = Review_format.with_feedback_prompt comment.body }
