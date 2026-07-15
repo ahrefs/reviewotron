@@ -427,6 +427,17 @@ let test_config_rejects_invalid_ignored_file_regex () =
   | exception Melange_json.Of_json_error (Melange_json.Json_error msg) ->
     (check bool) "error names ignored_file_regexes" true (contains_sub ~sub:"ignored_file_regexes" msg)
 
+let test_config_rejects_broad_ignored_file_regex () =
+  List.iter
+    (fun pattern ->
+      match
+        Config_types.config_of_json (Melange_json.of_string (Printf.sprintf {|{"ignored_file_regexes":[%S]}|} pattern))
+      with
+      | (_ : Config_types.config) -> fail (Printf.sprintf "expected broad ignored_file_regex %S to be rejected" pattern)
+      | exception Melange_json.Of_json_error (Melange_json.Json_error msg) ->
+        (check bool) "error names ignored_file_regexes" true (contains_sub ~sub:"ignored_file_regexes" msg))
+    [ ".*"; ".+"; "^.*$"; "^.+$"; "^" ]
+
 let test_context_create_requires_repos_by_default () =
   let tmp_path = Filename.temp_file "reviewotron_secrets_" ".json" in
   Fun.protect
@@ -2702,7 +2713,7 @@ let test_pr_synchronize_review () =
   let write_log = Api_local.get_write_log () in
   (check bool) "review posted on synchronize" true (CCString.find ~sub:"[create_pr_review]" write_log >= 0)
 
-let test_pr_all_ignored_paths_posts_lgtm_comment () =
+let test_pr_all_ignored_paths_posts_skip_comment () =
   Test_helpers.reset_test_state ();
   let config =
     Config_types.config_of_json
@@ -2714,15 +2725,17 @@ let test_pr_all_ignored_paths_posts_lgtm_comment () =
   let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
   Lwt_main.run (R_test.process_event ctx ~event);
   let write_log = Api_local.get_write_log () in
-  (* Nothing to review is a successful no-op: LGTM comment, no review. *)
-  (check bool) "quiet success comment posted" true
+  (* Nothing to review is a skip, not an approval. *)
+  (check bool) "skip comment posted" true
     (contains_sub ~sub:"[create_issue_comment] repo=https://github.com/org/monorepo number=99" write_log);
-  (check bool) "quiet success comment says LGTM" true (contains_sub ~sub:"LGTM :+1:" write_log);
-  (check bool) "quiet success comment shows reviewed commit" true
+  (check bool) "skip comment explains no code was reviewed" true
+    (contains_sub ~sub:"no code was analyzed or approved" write_log);
+  (check bool) "skip comment does not say LGTM" false (contains_sub ~sub:"LGTM :+1:" write_log);
+  (check bool) "skip comment shows reviewed commit" true
     (contains_sub ~sub:(reviewed_commit_sub "abc123def456789012345678901234567890abcd") write_log);
   (check bool) "no thumbs-up reaction added" false
     (contains_sub ~sub:"[create_issue_reaction] repo=https://github.com/org/monorepo number=99 content=+1" write_log);
-  (check bool) "no failure comment" false (contains_sub ~sub:"couldn't review" write_log);
+  (check bool) "skip comment identifies the skip" true (contains_sub ~sub:"skipped this review" write_log);
   (check bool) "no review attempted" false (contains_sub ~sub:"[create_pr_review]" write_log)
 
 let test_pr_empty_findings_review () =
@@ -5414,7 +5427,7 @@ let test_push_generated_files_do_not_trigger_prepare_failure_slack () =
   (check bool) "no prepare failure slack" false (contains_sub ~sub:"Code Review Failed" write_log);
   (check bool) "file-limit reason absent" false (contains_sub ~sub:"diff touches" write_log)
 
-let test_push_empty_prepare_no_slack () =
+let test_push_empty_prepare_posts_skip_slack () =
   Test_helpers.reset_test_state ();
   let config =
     Config_types.config_of_json
@@ -5425,8 +5438,20 @@ let test_push_empty_prepare_no_slack () =
   let payload = read_file "mock_payloads/push_develop.json" in
   let event = Test_helpers.parse_event_exn ~event_type:"push" ~body:payload in
   Lwt_main.run (R_test.process_event ctx ~event);
-  (check string) "empty push diff is a quiet no-op" "" (Api_local.get_write_log ());
-  (check int) "empty push diff sends no Slack" 0 (List.length (Api_local.get_slack_messages ()));
+  let write_log = Api_local.get_write_log () in
+  (check bool) "empty push diff logs a skip" true (contains_sub ~sub:"Code Review Skipped" write_log);
+  let slack_msgs = Api_local.get_slack_messages () in
+  (check int) "empty push diff sends one Slack skip" 1 (List.length slack_msgs);
+  (match slack_msgs with
+  | [] -> fail "expected a Slack skip message"
+  | (_channel, text, attachments) :: _ ->
+    (check bool) "Slack text identifies skip" true (contains_sub ~sub:"Code Review Skipped" text);
+    (match attachments with
+    | None -> fail "expected a Slack skip attachment"
+    | Some [] -> fail "expected a Slack skip attachment"
+    | Some (attachment :: _) ->
+      (check bool) "Slack attachment explains skip" true
+        (contains_sub ~sub:"no code was analyzed or approved" attachment.Slack_types.text)));
   match event with
   | Github.Push push ->
     (check bool) "empty push diff recorded in state" true
@@ -5572,7 +5597,7 @@ let test_with_retry_exhausts_attempts () =
     serve the diff) or an internal limit (diff exceeds [max_diff_lines] /
     [max_files]), reviewotron posts an issue comment to the PR explaining why,
     instead of silently logging and returning.  "All files filtered out" is
-    treated as a successful (empty) review: an LGTM issue comment. *)
+    treated as an explicit skip, not an LGTM approval. *)
 
 (* Unit tests for the pure classification / formatting helpers. *)
 let test_review_failure_classify_too_large () =
@@ -5581,14 +5606,14 @@ let test_review_failure_classify_too_large () =
   let error : Http_util.error = Http_util.Status (406, "the diff exceeded the maximum number of files (300)") in
   match Review_failure.classify_fetch_error error with
   | Diff_too_large_remote _ -> ()
-  | Fetch_failed _ | Too_many_lines _ | Too_many_files _ | Publish_failed _ ->
+  | No_reviewable_files | Fetch_failed _ | Too_many_lines _ | Too_many_files _ | Publish_failed _ ->
     Alcotest.fail "expected Diff_too_large_remote for a 406 response"
 
 let test_review_failure_classify_generic () =
   let error : Http_util.error = Http_util.Status (503, "service unavailable") in
   match Review_failure.classify_fetch_error error with
   | Fetch_failed _ -> ()
-  | Diff_too_large_remote _ | Too_many_lines _ | Too_many_files _ | Publish_failed _ ->
+  | No_reviewable_files | Diff_too_large_remote _ | Too_many_lines _ | Too_many_files _ | Publish_failed _ ->
     Alcotest.fail "expected Fetch_failed for a non-406 status"
 
 let test_review_failure_classify_transport_error () =
@@ -5597,7 +5622,7 @@ let test_review_failure_classify_transport_error () =
   let error : Http_util.error = Http_util.Transport Curl.CURLE_COULDNT_CONNECT in
   match Review_failure.classify_fetch_error error with
   | Fetch_failed _ -> ()
-  | Diff_too_large_remote _ | Too_many_lines _ | Too_many_files _ | Publish_failed _ ->
+  | No_reviewable_files | Diff_too_large_remote _ | Too_many_lines _ | Too_many_files _ | Publish_failed _ ->
     Alcotest.fail "expected Fetch_failed for a transport error with no status"
 
 let test_review_failure_comment_mentions_cause () =
@@ -5615,7 +5640,10 @@ let test_review_failure_comment_mentions_cause () =
   (check bool) "publish failure says review was produced" true (contains_sub ~sub:"produced a review" publish);
   (check bool) "failure details are open by default" true
     (contains_sub ~sub:"<details open><summary>Details</summary>" publish);
-  (check bool) "publish failure includes raw error" true (contains_sub ~sub:"http 422" publish)
+  (check bool) "publish failure includes raw error" true (contains_sub ~sub:"http 422" publish);
+  let skipped = Review_failure.to_comment No_reviewable_files in
+  (check bool) "skip comment identifies skipped review" true (contains_sub ~sub:"skipped this review" skipped);
+  (check bool) "skip comment denies approval" true (contains_sub ~sub:"no code was analyzed or approved" skipped)
 
 (* Integration tests: drive process_event and assert on the write log. *)
 let check_same_pr_webhook_deduped ~ctx ~event =
@@ -5833,7 +5861,7 @@ let test_pr_quiet_success_comment_failure_retries () =
     (contains_sub ~sub:"[create_issue_comment]" retry_log);
   check_pr_reviewed_state ~ctx ~event true
 
-let test_pr_empty_diff_posts_lgtm_comment () =
+let test_pr_empty_diff_posts_skip_comment () =
   Test_helpers.reset_test_state ();
   Api_local.set_next_pr_diff "";
   let ctx = Test_helpers.make_test_context ~config:Test_helpers.auto_review_enabled_config () in
@@ -5841,16 +5869,37 @@ let test_pr_empty_diff_posts_lgtm_comment () =
   let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
   Lwt_main.run (R_test.process_event ctx ~event);
   let write_log = Api_local.get_write_log () in
-  (check bool) "quiet success comment posted on empty diff" true
+  (check bool) "skip comment posted on empty diff" true
     (contains_sub ~sub:"[create_issue_comment] repo=https://github.com/org/monorepo number=42" write_log);
-  (check bool) "quiet success comment says LGTM" true (contains_sub ~sub:"LGTM :+1:" write_log);
-  (check bool) "quiet success comment shows reviewed commit" true
+  (check bool) "skip comment explains no code was reviewed" true
+    (contains_sub ~sub:"no code was analyzed or approved" write_log);
+  (check bool) "skip comment does not say LGTM" false (contains_sub ~sub:"LGTM :+1:" write_log);
+  (check bool) "skip comment shows reviewed commit" true
     (contains_sub ~sub:(reviewed_commit_sub "abc123def456789012345678901234567890abcd") write_log);
   (check bool) "no thumbs-up reaction added on empty diff" false
     (contains_sub ~sub:"[create_issue_reaction] repo=https://github.com/org/monorepo number=42 content=+1" write_log);
-  (check bool) "no failure comment posted on empty diff" false (contains_sub ~sub:"couldn't review" write_log);
+  (check bool) "skip comment identifies the skip" true (contains_sub ~sub:"skipped this review" write_log);
   (check bool) "no review attempted on empty diff" false (contains_sub ~sub:"[create_pr_review]" write_log);
   check_same_pr_webhook_deduped ~ctx ~event
+
+let test_pr_empty_diff_skip_comment_failure_retries () =
+  Test_helpers.reset_test_state ();
+  Api_local.set_next_pr_diff "";
+  Api_local.set_next_issue_comment_error "missing Issues write permission";
+  let state = State.create () in
+  let ctx = Test_helpers.make_test_context ~state ~config:Test_helpers.auto_review_enabled_config () in
+  let payload = Test_helpers.make_pr_payload () in
+  let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let write_log = Api_local.get_write_log () in
+  (check bool) "failed skip comment not logged as posted" false (contains_sub ~sub:"[create_issue_comment]" write_log);
+  check_pr_reviewed_state ~ctx ~event false;
+  Api_local.clear_write_log ();
+  Api_local.set_next_pr_diff "";
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let retry_log = Api_local.get_write_log () in
+  (check bool) "same PR webhook retries skip comment" true (contains_sub ~sub:"[create_issue_comment]" retry_log);
+  check_pr_reviewed_state ~ctx ~event true
 
 (** {2 Debug dump tests} *)
 
@@ -6303,6 +6352,7 @@ let () =
           test_case "review_plugins defaults" `Quick test_config_review_plugins_defaults;
           test_case "review_plugins explicit" `Quick test_config_review_plugins_explicit;
           test_case "invalid ignored file regex rejected" `Quick test_config_rejects_invalid_ignored_file_regex;
+          test_case "broad ignored file regex rejected" `Quick test_config_rejects_broad_ignored_file_regex;
           test_case "context create requires repos by default" `Quick test_context_create_requires_repos_by_default;
           test_case "context create allows repo-less when explicit" `Quick
             test_context_create_allows_repo_less_when_explicit;
@@ -6545,7 +6595,7 @@ let () =
       ( "pr_edge_cases",
         [
           test_case "PR synchronize triggers review" `Quick test_pr_synchronize_review;
-          test_case "PR with all ignored paths posts LGTM comment" `Quick test_pr_all_ignored_paths_posts_lgtm_comment;
+          test_case "PR with all ignored paths posts skip comment" `Quick test_pr_all_ignored_paths_posts_skip_comment;
           test_case "PR with empty findings posts LGTM comment" `Quick test_pr_empty_findings_review;
           test_case "large PR over max_diff_lines posts comment" `Quick test_pr_large_diff_posts_comment;
           test_case "generated files filtered before PR file limit" `Quick
@@ -6725,7 +6775,7 @@ let () =
           test_case "push prepare failure posts Slack" `Quick test_push_prepare_failure_posts_slack;
           test_case "generated files do not trigger push prepare failure Slack" `Quick
             test_push_generated_files_do_not_trigger_prepare_failure_slack;
-          test_case "push empty prepare is quiet" `Quick test_push_empty_prepare_no_slack;
+          test_case "push empty prepare posts skip Slack" `Quick test_push_empty_prepare_posts_skip_slack;
         ] );
       ( "security_failure_notice",
         [
@@ -6764,7 +6814,9 @@ let () =
           test_case "PR review publish failure retries when fallback fails" `Quick
             test_pr_review_post_failure_retries_when_fallback_fails;
           test_case "PR quiet success retries when comment fails" `Quick test_pr_quiet_success_comment_failure_retries;
-          test_case "PR with empty diff posts LGTM comment" `Quick test_pr_empty_diff_posts_lgtm_comment;
+          test_case "PR with empty diff posts skip comment" `Quick test_pr_empty_diff_posts_skip_comment;
+          test_case "PR empty-diff skip retries when comment fails" `Quick
+            test_pr_empty_diff_skip_comment_failure_retries;
         ] );
       "debug_dump", [ test_case "write debug dump creates file with expected content" `Quick test_write_debug_dump ];
       ( "budget_recovery",

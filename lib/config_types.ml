@@ -249,15 +249,28 @@ type config = Config_codec.t = {
 let config_to_json = Config_codec.to_json
 let config_jsonschema = Config_codec.t_jsonschema
 
+(* ponytail: this deliberately uses a small set of representative paths rather
+   than attempting regex-language equivalence; expand the probes if a bypass
+   is found before introducing a regex AST dependency. *)
+let ignored_file_regex_probe_paths = [ "a"; "a/b"; "src/main.ml"; "src/security.ml"; ".github/workflows/review.yml" ]
+
+let regex_matches_all_probe_paths regex = List.for_all (Re2.matches regex) ignored_file_regex_probe_paths
+
+let validate_ignored_file_regex ~json pattern =
+  match Re2.create pattern with
+  | Error _ ->
+    Melange_json.of_json_error ~json (Printf.sprintf "invalid ignored_file_regexes regular expression %S" pattern)
+  | Ok regex when regex_matches_all_probe_paths regex ->
+    Melange_json.of_json_error ~json
+      (Printf.sprintf
+         "ignored_file_regexes regular expression %S matches every path probe; narrow it or use ignored_paths for \
+          explicit exclusions"
+         pattern)
+  | Ok _ -> ()
+
 let config_of_json (json : Yojson.Basic.t) : config =
   let config = Config_codec.of_json json in
-  List.iter
-    (fun pattern ->
-      match Re2.create pattern with
-      | Ok _ -> ()
-      | Error _ ->
-        Melange_json.of_json_error ~json (Printf.sprintf "invalid ignored_file_regexes regular expression %S" pattern))
-    config.ignored_file_regexes;
+  List.iter (validate_ignored_file_regex ~json) config.ignored_file_regexes;
   config
 
 let config_help_json () = Yojson.Basic.pretty_to_string config_jsonschema

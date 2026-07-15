@@ -78,7 +78,7 @@ GitHub Webhook (POST /github)
 
 The `REVIEW` trigger is exact-match: the comment body must equal the literal string `REVIEW` after trimming whitespace. Anything else (including `REVIEW please` or quoted text) is ignored silently. The bot must have the `pull_request` GitHub App permission and the **Issue comment** webhook event subscribed.
 
-For PR reviews, Reviewotron adds an `eyes` reaction while a review is running. On automatic PR events the reaction is attached to the PR; on manual `REVIEW` comments it is attached to the trigger comment. The `eyes` reaction is removed before posting a review. If the review completes with no findings and no failure notice, no PR review is posted and Reviewotron posts a PR comment saying `LGTM :+1:`.
+For PR reviews, Reviewotron adds an `eyes` reaction while a review is running. On automatic PR events the reaction is attached to the PR; on manual `REVIEW` comments it is attached to the trigger comment. The `eyes` reaction is removed before posting a review. If the review runs to completion with no findings, no PR review is posted and Reviewotron posts a PR comment saying `LGTM :+1:`. If every changed file is excluded before review, Reviewotron posts an explicit skip notice instead; that is not an approval.
 
 Events are processed asynchronously — the webhook returns `200 accepted` immediately, and the review runs in the background.
 
@@ -306,7 +306,7 @@ Each repo can have a `.reviewotron.json` file in its root. For GitHub webhooks, 
   "max_files": 50,
   "max_tokens_per_review": 100000,
   "model": "claude-sonnet-4-6",
-  "ignored_paths": ["*.test.js", "vendor/"],
+  "ignored_paths": ["*.test.js", "vendor/**"],
   "ignored_file_regexes": ["^snapshots/.*\\.golden$"],
   "ignore_generated_files": true,
   "ignored_authors": ["dependabot[bot]"],
@@ -348,7 +348,7 @@ Each repo can have a `.reviewotron.json` file in its root. For GitHub webhooks, 
 | `max_tokens_per_review` | `100000` | Token budget hint for the review agent. |
 | `model` | `claude-sonnet-4-6` | Model ID for the general review agent. |
 | `ignored_paths` | `[]` | Glob patterns for files to exclude from review. Supports `*` and `**` wildcards. |
-| `ignored_file_regexes` | `[]` | Regular expressions matched against repository-relative file paths to exclude from review. |
+| `ignored_file_regexes` | `[]` | Regular expressions matched against repository-relative file paths to exclude from review. Catch-all patterns are rejected; use explicit `ignored_paths` entries when you intentionally want to exclude a complete set of files. |
 | `ignore_generated_files` | `true` | Exclude conservatively detected generated files before `max_files` and `max_diff_lines` are enforced. Set to `false` to review generated artifacts. |
 | `ignored_authors` | `[]` | GitHub usernames whose PRs/pushes should be skipped. |
 | `auto_review_pr_open` | `false` | Review PRs when they are opened, reopened, or marked ready. |
@@ -422,7 +422,7 @@ Reviewotron skips events in these cases:
 - **Non-reviewable actions** — PR closed, edited, or other non-code-change actions
 - **Draft PRs** — skipped until marked ready
 - **Already reviewed** — same PR + head SHA (or same push after SHA) already processed
-- **Empty diff** — all files filtered by `ignored_paths`, `ignored_file_regexes`, or generated-file detection
+- **Empty diff** — all files filtered by `ignored_paths`, `ignored_file_regexes`, or generated-file detection; Reviewotron posts a skip notice, not `LGTM`
 - **Diff too large** — exceeds `max_diff_lines` after ignored, custom-regex, and generated files are removed
 - **Non-develop pushes** — only `refs/heads/develop` is reviewed
 

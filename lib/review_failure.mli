@@ -1,15 +1,17 @@
 (** Why a PR review could not be produced, and how to explain it on the PR.
 
     These are the cases where reviewotron gives up before posting a review and
-    instead leaves the author an issue comment with context: GitHub refused to
-    serve the diff (external limit), the diff is larger than reviewotron's own
-    limits (internal limit), or GitHub rejected the review publication. *)
+    instead leaves the author an issue comment with context: all files may have
+    been excluded (explicit skip), GitHub may have refused to serve the diff
+    (external limit), the diff may exceed reviewotron's own limits (internal
+    limit), or GitHub may have rejected the review publication. *)
 
 type t =
   | Diff_too_large_remote of string
     (** GitHub refused to serve the diff because it is too large (HTTP 406 /
           [too_large]).  Carries the raw error for the comment detail. *)
   | Fetch_failed of string  (** Any other diff-fetch failure.  Carries the raw error. *)
+  | No_reviewable_files  (** Every changed file was excluded before review. *)
   | Too_many_lines of {
       actual : int;
       limit : int;
