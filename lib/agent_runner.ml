@@ -46,13 +46,10 @@ let build_provider_options ~provider (config : agent_config) : Ai_provider.Provi
    the marked block, so a single ephemeral breakpoint on the input is enough
    to amortize the system prompt and tool schemas too.
 
-   TODO: ocaml-ai-sdk 0.3 exposes [Anthropic_options.cache_control] but does
-   NOT serialize it into the request (anthropic_model.ml never reads the
-   field, and anthropic_api.make_request_body has no top-level
-   [cache_control] parameter), and it serializes [system] as a plain string
-   so the system prompt cannot carry its own breakpoint.  When we bump the
-   SDK, revisit this: if the top-level "automatic caching" shortcut or a
-   block-form system field has landed, prefer that and drop this helper. *)
+   ocaml-ai-sdk 0.5 now serializes provider cache-control options through the
+   high-level generation API.  Keep this explicit breakpoint because it
+   covers the stable user input while preserving the same prefix across the
+   agent's follow-up turns. *)
 let cached_input_provider_options provider = Llm_provider.cached_input_options provider
 
 type agent_result = {
@@ -412,6 +409,7 @@ let run_agent_untraced ~provider ~model ?tools ?(max_retries = 2) ?debug_dir ?lo
          err.message)
   | Ai_provider.Provider_error.Provider_error err ->
     fail (Printf.sprintf "agent %s: provider error: %s" config.name (Ai_provider.Provider_error.to_string err))
+  | exn -> fail (Printf.sprintf "agent %s: unexpected provider failure: %s" config.name (Printexc.to_string exn))
 
 let add_reported_cost_attr = function
   | None -> ()

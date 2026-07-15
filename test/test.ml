@@ -365,6 +365,50 @@ let test_llm_provider_usage_metadata_combines_openrouter_costs () =
 let test_openrouter_requires_supported_parameters () =
   (check (option bool)) "require_parameters" (Some true) Llm_provider.anthropic_upstream_prefs.require_parameters
 
+let test_openrouter_maps_error_finish_reason () =
+  let is_error =
+    match Ai_provider_openrouter.Convert_response.map_finish_reason (Some "error") with
+    | Ai_provider.Finish_reason.Error -> true
+    | Ai_provider.Finish_reason.Stop | Ai_provider.Finish_reason.Length | Ai_provider.Finish_reason.Tool_calls
+    | Ai_provider.Finish_reason.Content_filter | Ai_provider.Finish_reason.Other _ | Ai_provider.Finish_reason.Unknown
+      ->
+      false
+  in
+  (check bool) "error finish reason" true is_error
+
+let test_openrouter_embedded_error_is_provider_error () =
+  let response =
+    `Assoc
+      [
+        ( "choices",
+          `List
+            [
+              `Assoc
+                [
+                  "index", `Int 0;
+                  "message", `Assoc [ "role", `String "assistant"; "content", `String "" ];
+                  "finish_reason", `String "error";
+                  ( "error",
+                    `Assoc
+                      [
+                        "code", `Int 502;
+                        "message", `String "Provider disconnected";
+                        ( "metadata",
+                          `Assoc [ "provider_name", `String "Anthropic"; "error_type", `String "provider_unavailable" ]
+                        );
+                      ] );
+                ];
+            ] );
+      ]
+  in
+  try
+    ignore (Ai_provider_openrouter.Convert_response.parse_response response : Ai_provider.Generate_result.t);
+    fail "expected an embedded OpenRouter error to raise"
+  with Ai_provider.Provider_error.Provider_error error ->
+    let message = Ai_provider.Provider_error.to_string error in
+    (check bool) "provider error preserves upstream message" true (contains_sub ~sub:"Provider disconnected" message);
+    (check bool) "provider error preserves retry status" true (contains_sub ~sub:"HTTP 502" message)
+
 let test_config_review_plugins_defaults () =
   let config = Config_types.config_of_json (Melange_json.of_string {|{}|}) in
   (check bool) "general enabled" true config.review_plugins.general.enabled;
@@ -6391,6 +6435,8 @@ let () =
           test_case "model ids no regression" `Quick test_model_ids_no_regression;
           test_case "llm_provider usage metadata cost" `Quick test_llm_provider_usage_metadata_combines_openrouter_costs;
           test_case "openrouter requires supported parameters" `Quick test_openrouter_requires_supported_parameters;
+          test_case "openrouter maps error finish reason" `Quick test_openrouter_maps_error_finish_reason;
+          test_case "openrouter embedded error" `Quick test_openrouter_embedded_error_is_provider_error;
           test_case "review_plugins defaults" `Quick test_config_review_plugins_defaults;
           test_case "review_plugins explicit" `Quick test_config_review_plugins_explicit;
           test_case "context create requires repos by default" `Quick test_context_create_requires_repos_by_default;

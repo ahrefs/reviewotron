@@ -23,7 +23,7 @@ depends: [
   "lwt_ppx" {< "6.0"}
   "melange-json-native"
   "mirage-crypto-pk" {< "2.1.0"}
-  "ocaml-ai-sdk" {>= "0.4"}
+  "ocaml-ai-sdk" {>= "0.5"}
   "opentelemetry"
   "opentelemetry-lwt"
   "opentelemetry-client-ocurl-lwt"
