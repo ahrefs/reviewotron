@@ -78,7 +78,7 @@ GitHub Webhook (POST /github)
 
 The `REVIEW` trigger is exact-match: the comment body must equal the literal string `REVIEW` after trimming whitespace. Anything else (including `REVIEW please` or quoted text) is ignored silently. The bot must have the `pull_request` GitHub App permission and the **Issue comment** webhook event subscribed.
 
-For PR reviews, Reviewotron adds an `eyes` reaction while a review is running. On automatic PR events the reaction is attached to the PR; on manual `REVIEW` comments it is attached to the trigger comment. The `eyes` reaction is removed before posting a review. If the review completes with no findings and no failure notice, no PR review is posted and Reviewotron posts a PR comment saying `LGTM :+1:`.
+For PR reviews, Reviewotron adds an `eyes` reaction while a review is running. On automatic PR events the reaction is attached to the PR; on manual `REVIEW` comments it is attached to the trigger comment. The `eyes` reaction is removed before posting a review. If the review runs to completion with no findings, no PR review is posted and Reviewotron posts a PR comment saying `LGTM :+1:`. If every changed file is excluded before review, Reviewotron posts an explicit skip notice instead; that is not an approval.
 
 Events are processed asynchronously — the webhook returns `200 accepted` immediately, and the review runs in the background.
 
@@ -344,7 +344,8 @@ version control. Webhook/server commands do not read the user-global files.
   "max_files": 50,
   "max_tokens_per_review": 100000,
   "model": "claude-sonnet-4-6",
-  "ignored_paths": ["*.test.js", "vendor/"],
+  "ignored_paths": ["*.test.js", "vendor/**"],
+  "ignored_file_regexes": ["^snapshots/.*\\.golden$"],
   "ignore_generated_files": true,
   "ignored_authors": ["dependabot[bot]"],
   "auto_review_pr_open": false,
@@ -367,6 +368,7 @@ version control. Webhook/server commands do not read the user-global files.
       "always_analyze_vuln_classes": [],
       "triage_model_tier": "fast",
       "analysis_model_tier": "standard",
+      "analysis_effort": "medium",
       "validator_model_tier": "standard",
       "confidence_threshold": "medium",
       "memory_max_tokens": 5000,
@@ -382,10 +384,11 @@ version control. Webhook/server commands do not read the user-global files.
 | Field | Default | Description |
 |-------|---------|-------------|
 | `max_diff_lines` | `2000` | Maximum total diff lines to review. PRs exceeding this are skipped. |
-| `max_files` | `50` | Maximum files to review after ignored/generated files are removed. |
+| `max_files` | `50` | Maximum files to review after ignored, custom-regex, and generated files are removed. |
 | `max_tokens_per_review` | `100000` | Token budget hint for the review agent. |
 | `model` | `claude-sonnet-4-6` | Model ID for the general review agent. |
 | `ignored_paths` | `[]` | Glob patterns for files to exclude from review. Supports `*` and `**` wildcards. |
+| `ignored_file_regexes` | `[]` | Regular expressions matched against repository-relative file paths to exclude from review. Catch-all patterns are rejected; use explicit `ignored_paths` entries when you intentionally want to exclude a complete set of files. |
 | `ignore_generated_files` | `true` | Exclude conservatively detected generated files before `max_files` and `max_diff_lines` are enforced. Set to `false` to review generated artifacts. |
 | `ignored_authors` | `[]` | GitHub usernames whose PRs/pushes should be skipped. |
 | `auto_review_pr_open` | `false` | Review PRs when they are opened, reopened, or marked ready. |
@@ -404,7 +407,8 @@ Generated-file detection is intentionally conservative. It includes exact
 in `_gen`, file stems starting with `generated_`, common generated artifact
 suffixes such as minified assets, `.map` files, and protobuf outputs, and
 generated-file header markers. Broad folders such as `generated/`, `dist/`,
-`build/`, and `vendor/` remain reviewable unless excluded with `ignored_paths`.
+`build/`, and `vendor/` remain reviewable unless excluded with `ignored_paths` or
+`ignored_file_regexes`.
 
 ### Plugin Configuration
 
@@ -424,6 +428,7 @@ generated-file header markers. Broad folders such as `generated/`, `dist/`,
 | `always_analyze_vuln_classes` | `[]` | Vulnerability classes that bypass `confidence_threshold`. Classes listed here are implicitly enabled even if absent from `vuln_classes`. Use sparingly for high-risk repos or temporarily while tuning recall. |
 | `triage_model_tier` | `"fast"` | Model tier for the triage agent. |
 | `analysis_model_tier` | `"standard"` | Model tier for per-class analysis agents. |
+| `analysis_effort` | `"medium"` | OpenRouter-only analysis effort: `"low"`, `"medium"`, `"high"`, or `"xhigh"`. Set to `null` for the provider default. |
 | `validator_model_tier` | `"standard"` | Model tier for the adversarial validator. |
 | `confidence_threshold` | `"medium"` | Minimum triage confidence to trigger analysis for enabled classes. `"high"` = only high-confidence signals. `"medium"` = high + medium. `"low"` = all signals. |
 | `memory_max_tokens` | `5000` | Target size limit for the repo's security memory file. |
@@ -435,8 +440,8 @@ generated-file header markers. Broad folders such as `generated/`, `dist/`,
 | Tier | Model | Typical Use |
 |------|-------|-------------|
 | `"fast"` | `claude-haiku-4-5-20251001` | Triage, memory curator |
-| `"standard"` | `claude-sonnet-4-6` | Analysis agents, validator, general review |
-| `"strong"` | `claude-opus-4-6` | Reserved for complex codebases |
+| `"standard"` | `claude-sonnet-5` | Analysis agents, validator, general review |
+| `"strong"` | `claude-opus-4-8` | Reserved for complex codebases |
 
 #### Vulnerability Classes
 
@@ -459,8 +464,8 @@ Reviewotron skips events in these cases:
 - **Non-reviewable actions** — PR closed, edited, or other non-code-change actions
 - **Draft PRs** — skipped until marked ready
 - **Already reviewed** — same PR + head SHA (or same push after SHA) already processed
-- **Empty diff** — all files filtered by `ignored_paths` or generated-file detection
-- **Diff too large** — exceeds `max_diff_lines` after ignored/generated files are removed
+- **Empty diff** — all files filtered by `ignored_paths`, `ignored_file_regexes`, or generated-file detection; Reviewotron posts a skip notice, not `LGTM`
+- **Diff too large** — exceeds `max_diff_lines` after ignored, custom-regex, and generated files are removed
 - **Non-develop pushes** — only `refs/heads/develop` is reviewed
 
 ---

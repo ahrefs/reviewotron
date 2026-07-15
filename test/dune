@@ -21,6 +21,8 @@
   (glob_files_rec mock_api_responses/claude/*)
   (glob_files_rec mock_api_responses/triage/*)
   (glob_files_rec mock_api_responses/security/*)
+  (glob_files_rec mock_api_responses/scout/*)
+  (glob_files_rec mock_api_responses/deep_review/*)
   (glob_files_rec security_corpus/injection/*)
   (glob_files_rec security_corpus/policy_regression/*))
  (preprocess

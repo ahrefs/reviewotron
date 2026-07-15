@@ -165,22 +165,21 @@ type prepared_diff = {
   filtered_text : string;
 }
 
-let filter_generated_files ~(config : Config_types.config) filtered_diff =
-  match config.ignore_generated_files with
-  | true -> Generated_file.filter filtered_diff
-  | false -> filtered_diff, []
+let filter_files ~(config : Config_types.config) filtered_diff =
+  Generated_file.filter ~ignored_file_regexes:config.ignored_file_regexes
+    ~ignore_generated_files:config.ignore_generated_files filtered_diff
 
 let prepare_diff ?log_context ~config diff_text =
   let parsed_diff = Diff_parser.parse diff_text in
   let ignored_path_filtered_diff = Diff_parser.filter_paths parsed_diff ~ignored:config.Config_types.ignored_paths in
-  let filtered_diff, skipped_generated_files = filter_generated_files ~config ignored_path_filtered_diff in
+  let filtered_diff, skipped_files = filter_files ~config ignored_path_filtered_diff in
   (* Report dropped files once, here where they are computed, regardless of the
      success/failure outcome below. *)
   CCOption.iter
     (fun detail ->
-      log#info "%sskipped generated file(s) (%d): %s" (log_context_prefix log_context)
-        (List.length skipped_generated_files) detail)
-    (Generated_file.describe_skipped skipped_generated_files);
+      log#info "%sskipped ignored/generated file(s) (%d): %s" (log_context_prefix log_context)
+        (List.length skipped_files) detail)
+    (Generated_file.describe_skipped skipped_files);
   match filtered_diff with
   | [] -> Error `Empty
   | _ when List.compare_length_with filtered_diff config.max_files > 0 ->
@@ -347,10 +346,15 @@ let review_body ~log_context ~change_label ~general_output ~findings ~unchanged_
   in
   let body =
     match general_output with
-    | Some (Ok review) ->
-      (match String.trim review.Review_types.summary with
-      | "" -> ":robot: **REVIEW**"
-      | summary -> Printf.sprintf ":robot: **REVIEW**\n\nMinor:\n%s" summary)
+    | Some (Ok _review) ->
+      (* [review.summary] is an internal audit trace (one line per lead) and
+         must never be shown to consumers. The consumer body is driven purely
+         by whether the review produced findings: findings render separately
+         (inline comments + the unchanged/anchor sections), so here we only
+         emit the header, or an LGTM when the whole review is clean. *)
+      (match findings with
+      | [] -> ":robot: **REVIEW**\n\nLGTM :+1:"
+      | _ :: _ -> ":robot: **REVIEW**")
     | Some (Error reason) -> failure_notice (Some reason)
     | None ->
     match config.review_plugins.general.enabled with

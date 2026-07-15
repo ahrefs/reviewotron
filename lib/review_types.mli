@@ -107,3 +107,34 @@ type review_output = {
 val review_output_to_json : review_output -> Yojson.Basic.t
 val review_output_of_json : Yojson.Basic.t -> review_output
 val review_output_jsonschema : Yojson.Basic.t
+
+(** {2 Scout lead} *)
+
+(** An investigation lead emitted by the general review scout: a concrete,
+    checkable hypothesis about a possible defect, pointing at a location in
+    the diff for the deep reviewer to verify. *)
+type scout_lead = {
+  path : string;
+  line : int;
+  end_line : int option;
+  hypothesis : string;
+  category : finding_category;
+  confidence : confidence;
+}
+
+val scout_lead_to_json : scout_lead -> Yojson.Basic.t
+val scout_lead_of_json : Yojson.Basic.t -> scout_lead
+val scout_lead_jsonschema : Yojson.Basic.t
+
+(** {2 Scout output} *)
+
+(** Structured output of the general review scout: capped investigation
+    leads plus a one-line note on what was deliberately skipped. *)
+type scout_output = {
+  leads : scout_lead list;
+  skip_note : string;
+}
+
+val scout_output_to_json : scout_output -> Yojson.Basic.t
+val scout_output_of_json : Yojson.Basic.t -> scout_output
+val scout_output_jsonschema : Yojson.Basic.t

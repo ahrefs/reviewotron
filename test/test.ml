@@ -339,8 +339,8 @@ let test_model_ids_no_regression () =
       (Llm_provider.normalize_model_id Llm_provider.Openrouter (Agent_runner.default_model_id tier))
   in
   expect Agent_runner.Fast ~anthropic_id:"claude-haiku-4-5-20251001" ~openrouter_id:"anthropic/claude-haiku-4.5";
-  expect Agent_runner.Standard ~anthropic_id:"claude-sonnet-4-6" ~openrouter_id:"anthropic/claude-sonnet-4.6";
-  expect Agent_runner.Strong ~anthropic_id:"claude-opus-4-6" ~openrouter_id:"anthropic/claude-opus-4.6";
+  expect Agent_runner.Standard ~anthropic_id:"claude-sonnet-5" ~openrouter_id:"anthropic/claude-sonnet-5";
+  expect Agent_runner.Strong ~anthropic_id:"claude-opus-4-8" ~openrouter_id:"anthropic/claude-opus-4.8";
   (* config.model default flows through the same normalization *)
   (check string) "config.model default on OR" "anthropic/claude-sonnet-4.6"
     (Llm_provider.normalize_model_id Llm_provider.Openrouter "claude-sonnet-4-6")
@@ -421,11 +421,15 @@ let test_config_review_plugins_defaults () =
        config.review_plugins.security.vuln_classes);
   (check int) "always_analyze_vuln_classes default empty" 0
     (List.length config.review_plugins.security.always_analyze_vuln_classes);
+  (match config.review_plugins.security.analysis_effort with
+  | Some Config_types.Effort.Medium -> ()
+  | Some Config_types.Effort.Low | Some High | Some Xhigh | None -> fail "expected medium analysis effort by default");
   (check int) "memory_max_tokens" 5000 config.review_plugins.security.memory_max_tokens;
   (check bool) "metrics_artifacts default off" false config.review_plugins.security.metrics_artifacts;
   (check bool) "debug_artifacts default off" false config.review_plugins.security.debug_artifacts;
   (check bool) "show_review_cost" false config.show_review_cost;
   (check bool) "agent debug_artifacts default off" false config.debug_artifacts;
+  (check int) "ignored_file_regexes default empty" 0 (List.length config.ignored_file_regexes);
   (check bool) "ignore_generated_files default on" true config.ignore_generated_files
 
 let test_config_review_plugins_explicit () =
@@ -433,6 +437,7 @@ let test_config_review_plugins_explicit () =
     {|{
     "show_review_cost": true,
     "debug_artifacts": true,
+    "ignored_file_regexes": ["^snapshots/.*\\.golden$"],
     "ignore_generated_files": false,
     "review_plugins": {
       "general": { "enabled": false },
@@ -441,6 +446,7 @@ let test_config_review_plugins_explicit () =
         "vuln_classes": ["injection", "xss"],
         "always_analyze_vuln_classes": ["xss"],
         "triage_model_tier": "standard",
+        "analysis_effort": "medium",
         "confidence_threshold": "high",
         "memory_max_tokens": 10000,
         "metrics_artifacts": true,
@@ -452,6 +458,7 @@ let test_config_review_plugins_explicit () =
   let config = Config_types.config_of_json (Melange_json.of_string json) in
   (check bool) "show_review_cost" true config.show_review_cost;
   (check bool) "agent debug_artifacts" true config.debug_artifacts;
+  (check (list string)) "ignored_file_regexes explicit" [ "^snapshots/.*\\.golden$" ] config.ignored_file_regexes;
   (check bool) "ignore_generated_files explicit off" false config.ignore_generated_files;
   (check bool) "general disabled" false config.review_plugins.general.enabled;
   (check bool) "security enabled" true config.review_plugins.security.enabled;
@@ -461,9 +468,92 @@ let test_config_review_plugins_explicit () =
        (Security_review_plugin.vuln_class_equal Config_types.Policy_regression)
        config.review_plugins.security.vuln_classes);
   (check int) "always_analyze count" 1 (List.length config.review_plugins.security.always_analyze_vuln_classes);
+  (match config.review_plugins.security.analysis_effort with
+  | Some Config_types.Effort.Medium -> ()
+  | Some Config_types.Effort.Low | Some High | Some Xhigh | None -> fail "expected medium analysis effort");
   (check int) "memory_max_tokens" 10000 config.review_plugins.security.memory_max_tokens;
   (check bool) "metrics_artifacts" true config.review_plugins.security.metrics_artifacts;
   (check bool) "debug_artifacts" true config.review_plugins.security.debug_artifacts
+
+let test_config_rejects_invalid_ignored_file_regex () =
+  match Config_types.config_of_json (Melange_json.of_string {|{"ignored_file_regexes":["["]}|}) with
+  | (_ : Config_types.config) -> fail "expected invalid ignored_file_regexes to be rejected"
+  | exception Melange_json.Of_json_error (Melange_json.Json_error msg) ->
+    (check bool) "error names ignored_file_regexes" true (contains_sub ~sub:"ignored_file_regexes" msg)
+
+let test_config_rejects_broad_ignored_file_regex () =
+  List.iter
+    (fun pattern ->
+      match
+        Config_types.config_of_json (Melange_json.of_string (Printf.sprintf {|{"ignored_file_regexes":[%S]}|} pattern))
+      with
+      | (_ : Config_types.config) -> fail (Printf.sprintf "expected broad ignored_file_regex %S to be rejected" pattern)
+      | exception Melange_json.Of_json_error (Melange_json.Json_error msg) ->
+        (check bool) "error names ignored_file_regexes" true (contains_sub ~sub:"ignored_file_regexes" msg))
+    [ ".*"; ".+"; "^.*$"; "^.+$"; "^" ]
+
+let test_config_general_scout_defaults () =
+  let config = Config_types.config_of_json (Melange_json.of_string {|{}|}) in
+  (check bool) "scout_enabled default on" true config.review_plugins.general.scout_enabled;
+  (check string) "scout_model_tier default standard" "standard"
+    (Config_types.model_tier_to_string config.review_plugins.general.scout_model_tier);
+  (check string) "deep_reviewer_model_tier default strong" "strong"
+    (Config_types.model_tier_to_string config.review_plugins.general.deep_reviewer_model_tier);
+  (check int) "max_leads default" 10 config.review_plugins.general.max_leads;
+  (check (option string)) "model absent by default" None config.model
+
+let test_config_general_scout_explicit () =
+  let json =
+    {|{
+    "model": "explicit-model",
+    "review_plugins": {
+      "general": {
+        "scout_enabled": false,
+        "scout_model_tier": "fast",
+        "deep_reviewer_model_tier": "standard",
+        "max_leads": 5
+      }
+    }
+  }|}
+  in
+  let config = Config_types.config_of_json (Melange_json.of_string json) in
+  (check bool) "scout_enabled explicit off" false config.review_plugins.general.scout_enabled;
+  (check string) "scout_model_tier explicit fast" "fast"
+    (Config_types.model_tier_to_string config.review_plugins.general.scout_model_tier);
+  (check string) "deep_reviewer_model_tier explicit standard" "standard"
+    (Config_types.model_tier_to_string config.review_plugins.general.deep_reviewer_model_tier);
+  (check int) "max_leads explicit" 5 config.review_plugins.general.max_leads;
+  (check (option string)) "model explicit override" (Some "explicit-model") config.model
+
+(* All three tests below drive the TOP-LEVEL [Config_types.config_of_json]
+   entrypoint (the real config-load path), not [general_plugin_config_of_json]
+   in isolation. [config_of_json] → [review_plugins_config_of_json] →
+   [general_plugin_config_of_json], so a green result here proves validation
+   fires on the nested path the pipeline actually uses. *)
+
+(* Assert that parsing [json] through the top-level config decoder raises
+   [Melange_json.Of_json_error] with a message naming [max_leads]. Matches the
+   exact exception the derived decoders raise via [Melange_json.of_json_error];
+   no broad catch-all. *)
+let expect_max_leads_rejected ~label json =
+  match Config_types.config_of_json (Melange_json.of_string json) with
+  | (_ : Config_types.config) -> Alcotest.failf "%s: expected max_leads to be rejected" label
+  | exception Melange_json.Of_json_error (Json_error msg) ->
+    (check bool) (label ^ ": message names max_leads") true (CCString.find ~sub:"max_leads" msg >= 0)
+
+let test_config_max_leads_zero_rejected () =
+  expect_max_leads_rejected ~label:"max_leads = 0" {|{ "review_plugins": { "general": { "max_leads": 0 } } }|}
+
+let test_config_max_leads_negative_rejected () =
+  expect_max_leads_rejected ~label:"max_leads = -3" {|{ "review_plugins": { "general": { "max_leads": -3 } } }|}
+
+let test_config_max_leads_valid_and_default_ok () =
+  let one =
+    Config_types.config_of_json (Melange_json.of_string {|{ "review_plugins": { "general": { "max_leads": 1 } } }|})
+  in
+  (check int) "max_leads = 1 accepted" 1 one.review_plugins.general.max_leads;
+  let omitted = Config_types.config_of_json (Melange_json.of_string {|{ "review_plugins": { "general": {} } }|}) in
+  (check int) "omitted max_leads defaults to 10" 10 omitted.review_plugins.general.max_leads
 
 let test_context_create_requires_repos_by_default () =
   let tmp_path = Filename.temp_file "reviewotron_secrets_" ".json" in
@@ -546,6 +636,7 @@ let test_security_plugin_config_roundtrip () =
       always_analyze_vuln_classes = [ Xss ];
       triage_model_tier = Fast;
       analysis_model_tier = Standard;
+      analysis_effort = Some Config_types.Effort.Medium;
       validator_model_tier = Strong;
       confidence_threshold = High;
       memory_max_tokens = 3000;
@@ -562,6 +653,9 @@ let test_security_plugin_config_roundtrip () =
   (check bool) "metrics_artifacts" true parsed.metrics_artifacts;
   (check bool) "debug_artifacts" false parsed.debug_artifacts;
   (check string) "confidence" "high" (Config_types.confidence_to_string parsed.confidence_threshold);
+  (match parsed.analysis_effort with
+  | Some Config_types.Effort.Medium -> ()
+  | Some Config_types.Effort.Low | Some High | Some Xhigh | None -> fail "expected medium analysis effort");
   (check string) "validator tier" "strong" (Config_types.model_tier_to_string parsed.validator_model_tier)
 
 (** {2 Review prompt tests} *)
@@ -1280,6 +1374,306 @@ let test_mock_claude_response () =
   (check int) "findings count" 3 (List.length review.findings);
   (check bool) "has summary" true (String.length review.summary > 0);
   (check bool) "has assessment" true (String.length review.overall_assessment > 0)
+
+let test_scout_output_parse_two_leads () =
+  let scout = Review_types.scout_output_of_json (read_json "mock_api_responses/scout/leads_two.json") in
+  (check int) "leads count" 2 (List.length scout.leads);
+  (check string) "skip note" "test-only churn in test/fixtures skipped" scout.skip_note;
+  match scout.leads with
+  | [ first; second ] ->
+    (check string) "first path" "lib/session.ml" first.path;
+    (check int) "first line" 42 first.line;
+    (check (option int)) "first end_line" None first.end_line;
+    (check string) "first hypothesis"
+      "The session token is no longer validated before use after this refactor; check whether callers can now pass an \
+       expired token through."
+      first.hypothesis;
+    (check string) "first category" "bug" (Review_types.finding_category_to_string first.category);
+    (check string) "first confidence" "high" (Review_types.confidence_to_string first.confidence);
+    (check string) "second path" "lib/retry.ml" second.path;
+    (check int) "second line" 88 second.line;
+    (check (option int)) "second end_line" (Some 95) second.end_line;
+    (check string) "second category" "performance" (Review_types.finding_category_to_string second.category);
+    (check string) "second confidence" "medium" (Review_types.confidence_to_string second.confidence)
+  | _ -> fail "expected exactly two leads"
+
+let test_scout_output_parse_empty_leads () =
+  let scout = Review_types.scout_output_of_json (read_json "mock_api_responses/scout/leads_empty.json") in
+  (check int) "leads count" 0 (List.length scout.leads);
+  (check string) "skip note empty" "" scout.skip_note
+
+let test_scout_output_parse_overflow_leads () =
+  let scout = Review_types.scout_output_of_json (read_json "mock_api_responses/scout/leads_overflow.json") in
+  (check int) "leads count" 12 (List.length scout.leads)
+
+let test_scout_output_roundtrip () =
+  let scout : Review_types.scout_output =
+    {
+      leads =
+        [
+          {
+            path = "lib/foo.ml";
+            line = 10;
+            end_line = Some 15;
+            hypothesis = "Guard removed on the error branch.";
+            category = Review_types.Bug;
+            confidence = Review_types.High;
+          };
+        ];
+      skip_note = "nothing skipped";
+    }
+  in
+  let json_str = Melange_json.to_string (Review_types.scout_output_to_json scout) in
+  let parsed = Review_types.scout_output_of_json (Melange_json.of_string json_str) in
+  (check int) "roundtrip leads count" 1 (List.length parsed.leads);
+  (check string) "roundtrip skip_note" "nothing skipped" parsed.skip_note;
+  let lead = List.hd parsed.leads in
+  (check string) "roundtrip path" "lib/foo.ml" lead.path;
+  (check int) "roundtrip line" 10 lead.line;
+  (check (option int)) "roundtrip end_line" (Some 15) lead.end_line;
+  (check string) "roundtrip hypothesis" "Guard removed on the error branch." lead.hypothesis;
+  (check string) "roundtrip category" "bug" (Review_types.finding_category_to_string lead.category);
+  (check string) "roundtrip confidence" "high" (Review_types.confidence_to_string lead.confidence)
+
+let test_scout_output_parse_missing_skip_note_defaults_empty () =
+  let json : Yojson.Basic.t =
+    `Assoc
+      [
+        ( "leads",
+          `List
+            [
+              `Assoc
+                [
+                  "path", `String "lib/session.ml";
+                  "line", `Int 42;
+                  "end_line", `Null;
+                  "hypothesis", `String "The session token is no longer validated before use after this refactor.";
+                  "category", `String "bug";
+                  "confidence", `String "high";
+                ];
+            ] );
+      ]
+  in
+  let scout = Review_types.scout_output_of_json json in
+  (check int) "leads count" 1 (List.length scout.leads);
+  (check string) "skip_note defaults to empty when absent" "" scout.skip_note
+
+let test_scout_output_jsonschema_has_properties () =
+  (check bool) "schema has properties" true
+    (match Review_types.scout_output_jsonschema with
+    | `Assoc fields -> List.exists (fun (k, _) -> String.equal k "properties") fields
+    | _ -> false)
+
+(** {2 General scout agent tests} *)
+
+let scout_lead ~path ~line ~confidence : Review_types.scout_lead =
+  { path; line; end_line = None; hypothesis = "hypothesis"; category = Review_types.Bug; confidence }
+
+let test_general_scout_cap_leads_truncates () =
+  let leads =
+    [
+      scout_lead ~path:"a.ml" ~line:1 ~confidence:High;
+      scout_lead ~path:"b.ml" ~line:2 ~confidence:Low;
+      scout_lead ~path:"c.ml" ~line:3 ~confidence:High;
+      scout_lead ~path:"d.ml" ~line:4 ~confidence:Medium;
+      scout_lead ~path:"e.ml" ~line:5 ~confidence:Low;
+      scout_lead ~path:"f.ml" ~line:6 ~confidence:Medium;
+      scout_lead ~path:"g.ml" ~line:7 ~confidence:High;
+      scout_lead ~path:"h.ml" ~line:8 ~confidence:Medium;
+      scout_lead ~path:"i.ml" ~line:9 ~confidence:Low;
+      scout_lead ~path:"j.ml" ~line:10 ~confidence:Medium;
+      scout_lead ~path:"k.ml" ~line:11 ~confidence:Low;
+      scout_lead ~path:"l.ml" ~line:12 ~confidence:Low;
+    ]
+  in
+  let capped = General_scout_agent.cap_leads ~max_leads:10 leads in
+  (check int) "capped to max_leads" 10 (List.length capped);
+  (* Highest-confidence first, relative order preserved within each band.
+     Highs (a, c, g), then Mediums (d, f, h, j), then Lows (b, e, i) — the two
+     lowest-confidence lows (k, l) are dropped. *)
+  let paths = List.map (fun (l : Review_types.scout_lead) -> l.path) capped in
+  (check (list string))
+    "kept highest-confidence, stable within band"
+    [ "a.ml"; "c.ml"; "g.ml"; "d.ml"; "f.ml"; "h.ml"; "j.ml"; "b.ml"; "e.ml"; "i.ml" ]
+    paths
+
+let test_general_scout_cap_leads_identity () =
+  let leads =
+    [
+      scout_lead ~path:"a.ml" ~line:1 ~confidence:Low;
+      scout_lead ~path:"b.ml" ~line:2 ~confidence:High;
+      scout_lead ~path:"c.ml" ~line:3 ~confidence:Medium;
+    ]
+  in
+  let capped = General_scout_agent.cap_leads ~max_leads:10 leads in
+  (check int) "identity length" 3 (List.length capped);
+  (* Fewer than max_leads: still stable-sorted by confidence, none dropped. *)
+  let paths = List.map (fun (l : Review_types.scout_lead) -> l.path) capped in
+  (check (list string)) "all kept, confidence-sorted" [ "b.ml"; "c.ml"; "a.ml" ] paths
+
+let test_general_scout_build_input_order () =
+  let input =
+    General_scout_agent.build_input ~diff_text:"THE_DIFF_BODY" ~change_title:"THE_TITLE"
+      ~change_description:"THE_DESCRIPTION" ()
+  in
+  (* First index at which [needle] occurs in [input]; -1 if absent. *)
+  let idx needle =
+    let n = String.length needle
+    and h = String.length input in
+    let rec scan i =
+      match i > h - n with
+      | true -> -1
+      | false ->
+      match String.equal (String.sub input i n) needle with
+      | true -> i
+      | false -> scan (i + 1)
+    in
+    scan 0
+  in
+  let i_title = idx "THE_TITLE" in
+  let i_desc = idx "THE_DESCRIPTION" in
+  let i_explainer = idx "## Diff Format" in
+  let i_diff = idx "THE_DIFF_BODY" in
+  (check bool) "contains title" true (Devkit.Stre.exists input "THE_TITLE");
+  (check bool) "contains description" true (Devkit.Stre.exists input "THE_DESCRIPTION");
+  (check bool) "contains explainer" true (Devkit.Stre.exists input "## Diff Format");
+  (check bool) "contains diff" true (Devkit.Stre.exists input "THE_DIFF_BODY");
+  (check bool) "title before description" true (i_title < i_desc);
+  (check bool) "description before explainer" true (i_desc < i_explainer);
+  (check bool) "explainer before diff" true (i_explainer < i_diff);
+  (check bool) "no file contents section" false (Devkit.Stre.exists input "File Contents")
+
+let test_general_scout_config_security_covered () =
+  let cfg = General_scout_agent.config ~model_tier:Standard ~security_covered_elsewhere:true in
+  (check string) "name" "general_scout" cfg.name;
+  (check int) "max_steps" 1 cfg.max_steps;
+  (check bool) "suppresses security leads" true (Devkit.Stre.exists cfg.system_prompt "do not duplicate it")
+
+let test_general_scout_config_security_not_covered () =
+  let cfg = General_scout_agent.config ~model_tier:Standard ~security_covered_elsewhere:false in
+  (check string) "name" "general_scout" cfg.name;
+  (check bool) "allows security leads" true (Devkit.Stre.exists cfg.system_prompt "category \"security\"")
+
+(** {2 General deep reviewer agent tests} *)
+
+(* First index at which [needle] occurs in [haystack]; -1 if absent. *)
+let substr_index haystack needle =
+  let n = String.length needle
+  and h = String.length haystack in
+  let rec scan i =
+    match i > h - n with
+    | true -> -1
+    | false ->
+    match String.equal (String.sub haystack i n) needle with
+    | true -> i
+    | false -> scan (i + 1)
+  in
+  scan 0
+
+let deep_lead ~path ~line ~confidence : Review_types.scout_lead =
+  { path; line; end_line = None; hypothesis = "hypothesis"; category = Review_types.Bug; confidence }
+
+let test_general_deep_reviewer_build_input_filters_and_orders () =
+  let leads = [ deep_lead ~path:"a.ml" ~line:1 ~confidence:High; deep_lead ~path:"b.ml" ~line:2 ~confidence:Medium ] in
+  let file_contents = [ "a.ml", "CONTENTS_OF_A"; "b.ml", "CONTENTS_OF_B"; "c.ml", "CONTENTS_OF_C" ] in
+  let input =
+    General_deep_reviewer_agent.build_input ~leads ~diff_text:"THE_DIFF_BODY" ~change_title:"THE_TITLE"
+      ~change_description:"THE_DESCRIPTION" ~file_contents ()
+  in
+  (check bool) "includes file A contents" true (Devkit.Stre.exists input "CONTENTS_OF_A");
+  (check bool) "includes file B contents" true (Devkit.Stre.exists input "CONTENTS_OF_B");
+  (check bool) "excludes file C contents" false (Devkit.Stre.exists input "CONTENTS_OF_C");
+  (check bool) "leads section header" true (Devkit.Stre.exists input "## Investigation Leads");
+  (check bool) "lead numbered L0" true (Devkit.Stre.exists input "L0");
+  (check bool) "lead numbered L1" true (Devkit.Stre.exists input "L1");
+  let i_leads = substr_index input "## Investigation Leads" in
+  let i_change = substr_index input "## Change" in
+  let i_files = substr_index input "## Relevant File Contents" in
+  let i_a = substr_index input "CONTENTS_OF_A" in
+  let i_diff = substr_index input "THE_DIFF_BODY" in
+  (check bool) "leads before change" true (i_leads < i_change);
+  (check bool) "change before file contents" true (i_change < i_files);
+  (check bool) "file contents before diff" true (i_a < i_diff);
+  (* Diff is the final section, after file contents and the explainer. *)
+  let i_diff_header = substr_index input "## Diff\n" in
+  (check bool) "file contents before diff header" true (i_files < i_diff_header);
+  (check bool) "diff header after file A contents" true (i_a < i_diff_header)
+
+let test_general_deep_reviewer_build_input_dedups_paths () =
+  let leads = [ deep_lead ~path:"a.ml" ~line:1 ~confidence:High; deep_lead ~path:"a.ml" ~line:9 ~confidence:Medium ] in
+  let file_contents = [ "a.ml", "UNIQUE_A_BODY" ] in
+  let input =
+    General_deep_reviewer_agent.build_input ~leads ~diff_text:"diff" ~change_title:"t" ~change_description:"d"
+      ~file_contents ()
+  in
+  (* Duplicate-path leads must include the file's contents exactly once. *)
+  let first = substr_index input "UNIQUE_A_BODY" in
+  (check bool) "contents present" true (first >= 0);
+  let rest_start = first + String.length "UNIQUE_A_BODY" in
+  let rest = String.sub input rest_start (String.length input - rest_start) in
+  (check bool) "contents included once" false (Devkit.Stre.exists rest "UNIQUE_A_BODY")
+
+let test_general_deep_reviewer_build_input_prefixed_lead_paths () =
+  (* Scout leads copy paths verbatim from git-style diff headers, so they may
+     carry an [a/] or [b/] prefix, while file_contents keys are bare paths.
+     The match must be prefix-tolerant; the emitted header must still show the
+     actual bare file_contents key. *)
+  let leads =
+    [
+      deep_lead ~path:"b/lib/foo.ml" ~line:1 ~confidence:High; deep_lead ~path:"a/lib/baz.ml" ~line:2 ~confidence:Medium;
+    ]
+  in
+  let file_contents =
+    [ "lib/foo.ml", "CONTENTS_OF_FOO"; "lib/baz.ml", "CONTENTS_OF_BAZ"; "lib/qux.ml", "CONTENTS_OF_QUX" ]
+  in
+  let input =
+    General_deep_reviewer_agent.build_input ~leads ~diff_text:"THE_DIFF_BODY" ~change_title:"THE_TITLE"
+      ~change_description:"THE_DESCRIPTION" ~file_contents ()
+  in
+  (* This is the assertion that fails on the old exact-match code: a lead path
+     of "b/lib/foo.ml" never equals the bare key "lib/foo.ml", so the contents
+     section is dropped and this substring is absent. *)
+  (check bool) "b/-prefixed lead matches bare key" true (Devkit.Stre.exists input "CONTENTS_OF_FOO");
+  (check bool) "a/-prefixed lead matches bare key" true (Devkit.Stre.exists input "CONTENTS_OF_BAZ");
+  (check bool) "unreferenced file excluded" false (Devkit.Stre.exists input "CONTENTS_OF_QUX");
+  (* Display shows the actual bare file_contents key, not the prefixed lead form. *)
+  (check bool) "header shows bare path" true (Devkit.Stre.exists input "### File: lib/foo.ml");
+  (check bool) "header does not show prefixed path" false (Devkit.Stre.exists input "### File: b/lib/foo.ml")
+
+let test_general_deep_reviewer_build_input_bare_lead_paths () =
+  (* No regression: a bare lead path still matches a bare file_contents key. *)
+  let leads = [ deep_lead ~path:"lib/bar.ml" ~line:1 ~confidence:High ] in
+  let file_contents = [ "lib/bar.ml", "CONTENTS_OF_BAR" ] in
+  let input =
+    General_deep_reviewer_agent.build_input ~leads ~diff_text:"diff" ~change_title:"t" ~change_description:"d"
+      ~file_contents ()
+  in
+  (check bool) "bare lead matches bare key" true (Devkit.Stre.exists input "CONTENTS_OF_BAR");
+  (check bool) "header shows bare path" true (Devkit.Stre.exists input "### File: lib/bar.ml")
+
+let test_general_deep_reviewer_build_input_a_dir_key_not_overstripped () =
+  (* Repo with a top-level "a" dir: lead "b/a/foo.ml" strips to "a/foo.ml",
+     which must match the bare key "a/foo.ml".  Normalizing the key too would
+     strip it to "foo.ml" and drop the file's contents. *)
+  let leads = [ deep_lead ~path:"b/a/foo.ml" ~line:1 ~confidence:High ] in
+  let file_contents = [ "a/foo.ml", "CONTENTS_OF_A_FOO" ] in
+  let input =
+    General_deep_reviewer_agent.build_input ~leads ~diff_text:"diff" ~change_title:"t" ~change_description:"d"
+      ~file_contents ()
+  in
+  (check bool) "lead b/a/foo.ml matches key a/foo.ml" true (Devkit.Stre.exists input "CONTENTS_OF_A_FOO")
+
+let test_general_deep_reviewer_config_default () =
+  let cfg = General_deep_reviewer_agent.config ~model_tier:Strong ~system_prompt_override:None in
+  (check string) "name" "general_deep_review" cfg.name;
+  (check int) "max_steps" 1 cfg.max_steps;
+  (check (option int)) "thinking budget" (Some 4096) cfg.thinking_budget;
+  (check bool) "uses normative prompt" true (Devkit.Stre.exists cfg.system_prompt "deep code reviewer")
+
+let test_general_deep_reviewer_config_override () =
+  let cfg = General_deep_reviewer_agent.config ~model_tier:Strong ~system_prompt_override:(Some "X") in
+  (check string) "name" "general_deep_review" cfg.name;
+  (check string) "override replaces prompt wholesale" "X" cfg.system_prompt
 
 (** {2 Security types tests} *)
 
@@ -2256,6 +2650,10 @@ let test_security_agent_model_tier () =
     | Strong -> true
     | Fast | Standard -> false)
 
+let test_security_standard_tier_uses_sonnet_5 () =
+  let tier = Security_review_plugin.agent_model_tier Config_types.default_security_plugin_config.analysis_model_tier in
+  (check string) "security standard tier" "claude-sonnet-5" (Agent_runner.default_model_id tier)
+
 let test_security_analysis_step_budget () =
   let high_authn = make_triage_signal ~vuln_class:Authn ~confidence:High in
   let medium_authn = make_triage_signal ~vuln_class:Authn ~confidence:Medium in
@@ -2404,6 +2802,12 @@ let test_analysis_agent_prompt_contains_methodology () =
   (check bool) "get_file_content tool" true (Devkit.Stre.exists cfg.system_prompt "get_file_content");
   (check bool) "policy proof model" true (Devkit.Stre.exists cfg.system_prompt "policy/control state")
 
+let test_analysis_agent_prompt_fetch_economy () =
+  let cfg = Analysis_agent.config ~vuln_class:Injection ~model_tier:Standard ~language_hints:[] in
+  (check bool) "requires concrete hypothesis" true (Devkit.Stre.exists cfg.system_prompt "concrete hypothesis");
+  (check bool) "forbids speculative fetches" true (Devkit.Stre.exists cfg.system_prompt "speculatively.");
+  (check bool) "prefers conclusion" true (Devkit.Stre.exists cfg.system_prompt "supported conclusion")
+
 let test_analysis_agent_prompt_contains_class_section () =
   let injection = Analysis_agent.config ~vuln_class:Injection ~model_tier:Standard ~language_hints:[] in
   let xss = Analysis_agent.config ~vuln_class:Xss ~model_tier:Standard ~language_hints:[] in
@@ -2506,6 +2910,15 @@ module R_test =
 
 let test_pr_review_e2e () =
   Test_helpers.reset_test_state ();
+  (* Scout pipeline is on by default: route the scout to leads and the deep
+     reviewer to the same review fixture the legacy single-pass agent used, so
+     the downstream filter/validator behavior (and these assertions) are
+     unchanged. *)
+  Api_local.set_agent_response_map
+    [
+      "general_scout", "mock_api_responses/scout/leads_two.json";
+      "general_deep_review", "mock_api_responses/claude/review_response.json";
+    ];
   let ctx = Test_helpers.make_test_context ~config:Test_helpers.auto_review_enabled_config () in
   let payload = read_file "mock_payloads/pr_opened.json" in
   let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
@@ -2520,10 +2933,65 @@ let test_pr_review_e2e () =
   (check bool) "correct repo" true (contains_sub ~sub:"repo=https://github.com/org/monorepo" write_log);
   (check bool) "correct PR number" true (contains_sub ~sub:"number=42" write_log);
   (check bool) "deterministic review body" true (contains_sub ~sub:":robot: **REVIEW**" write_log);
-  (check bool) "publishes agent summary" true (contains_sub ~sub:"The changes look generally good" write_log);
+  (* The internal summary trace must never leak into the consumer body. *)
+  (check bool) "summary not published" false (contains_sub ~sub:"The changes look generally good" write_log);
   (check bool) "asks for feedback" true (contains_sub ~sub:Review_format.feedback_prompt write_log);
   (check bool) "asks for review and inline feedback" true (count_sub ~sub:Review_format.feedback_prompt write_log >= 2);
   (check bool) "has comments" true (contains_sub ~sub:"error-handling" write_log)
+
+(* Regression: when findings exist alongside a non-empty summary trace, the
+   body must be the plain header (findings render separately) — never the
+   summary trace, and never under a "Minor:" heading. *)
+let test_pr_review_findings_present_no_summary_leak () =
+  Test_helpers.reset_test_state ();
+  Api_local.set_agent_response_map
+    [
+      "general_scout", "mock_api_responses/scout/leads_two.json";
+      "general_deep_review", "mock_api_responses/deep_review/finding_with_trace_summary.json";
+    ];
+  let ctx = Test_helpers.make_test_context ~config:Test_helpers.auto_review_enabled_config () in
+  let payload = read_file "mock_payloads/pr_opened.json" in
+  let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let write_log = Api_local.get_write_log () in
+  (check bool) "review body present" true (contains_sub ~sub:":robot: **REVIEW**" write_log);
+  (check bool) "the finding still renders" true (contains_sub ~sub:"error-handling" write_log);
+  (check bool) "no Minor heading" false (contains_sub ~sub:"Minor:" write_log);
+  (check bool) "summary trace not leaked" false (contains_sub ~sub:"refuted" write_log);
+  (check bool) "no LGTM when findings exist" false (contains_sub ~sub:"LGTM :+1:" write_log)
+
+(* Regression: [format_slack_attachment] must not put the internal summary
+   trace into the Slack attachment text. *)
+let test_slack_attachment_omits_summary_trace () =
+  let review : Review_types.review_output =
+    {
+      summary = "L0 lib/session.ml:42 — refuted: token expiry still checked by caller wrapper.";
+      findings =
+        [
+          {
+            path = "lib/session.ml";
+            line = 42;
+            end_line = None;
+            severity = Review_types.Warning;
+            category = Review_types.Bug;
+            message = "example";
+            failure_scenario = "";
+            evidence_snippet = "";
+            why_now = "";
+            confidence = Review_types.High;
+            suggested_fix = None;
+          };
+        ];
+      overall_assessment = "";
+    }
+  in
+  let att =
+    Review_format.format_slack_attachment ~compare_url:"https://example.com/compare" ~pusher_name:"alice" ~num_commits:2
+      ~review
+  in
+  (check bool) "attachment text omits summary trace" false (contains_sub ~sub:"refuted" att.Slack_types.text);
+  (check bool) "attachment text omits full summary" false
+    (contains_sub ~sub:"token expiry still checked" att.Slack_types.text)
 
 let test_pr_skipped_when_draft () =
   Test_helpers.reset_test_state ();
@@ -2573,6 +3041,11 @@ let comment_trigger_config = Config_types.config_of_json (Melange_json.of_string
 
 let test_comment_trigger_reviews_pr () =
   Test_helpers.reset_test_state ();
+  Api_local.set_agent_response_map
+    [
+      "general_scout", "mock_api_responses/scout/leads_two.json";
+      "general_deep_review", "mock_api_responses/claude/review_response.json";
+    ];
   let ctx = Test_helpers.make_test_context ~config:comment_trigger_config () in
   let payload = Test_helpers.make_issue_comment_payload () in
   let event = Test_helpers.parse_event_exn ~event_type:"issue_comment" ~body:payload in
@@ -2589,6 +3062,9 @@ let test_comment_trigger_reviews_pr () =
 let test_comment_trigger_quiet_success_posts_lgtm_comment () =
   Test_helpers.reset_test_state ();
   Api_local.set_agent_response_path "mock_api_responses/claude/empty_findings_response.json";
+  (* Empty scout leads early-exit the general pipeline with zero findings,
+     reproducing the legacy empty-findings quiet success. *)
+  Api_local.set_agent_response_map [ "general_scout", "mock_api_responses/scout/leads_empty.json" ];
   let ctx = Test_helpers.make_test_context ~config:comment_trigger_config () in
   let payload = Test_helpers.make_issue_comment_payload () in
   let event = Test_helpers.parse_event_exn ~event_type:"issue_comment" ~body:payload in
@@ -2740,7 +3216,7 @@ let test_pr_synchronize_review () =
   let write_log = Api_local.get_write_log () in
   (check bool) "review posted on synchronize" true (CCString.find ~sub:"[create_pr_review]" write_log >= 0)
 
-let test_pr_all_ignored_paths_posts_lgtm_comment () =
+let test_pr_all_ignored_paths_posts_skip_comment () =
   Test_helpers.reset_test_state ();
   let config =
     Config_types.config_of_json
@@ -2752,20 +3228,25 @@ let test_pr_all_ignored_paths_posts_lgtm_comment () =
   let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
   Lwt_main.run (R_test.process_event ctx ~event);
   let write_log = Api_local.get_write_log () in
-  (* Nothing to review is a successful no-op: LGTM comment, no review. *)
-  (check bool) "quiet success comment posted" true
+  (* Nothing to review is a skip, not an approval. *)
+  (check bool) "skip comment posted" true
     (contains_sub ~sub:"[create_issue_comment] repo=https://github.com/org/monorepo number=99" write_log);
-  (check bool) "quiet success comment says LGTM" true (contains_sub ~sub:"LGTM :+1:" write_log);
-  (check bool) "quiet success comment shows reviewed commit" true
+  (check bool) "skip comment explains no code was reviewed" true
+    (contains_sub ~sub:"no code was analyzed or approved" write_log);
+  (check bool) "skip comment does not say LGTM" false (contains_sub ~sub:"LGTM :+1:" write_log);
+  (check bool) "skip comment shows reviewed commit" true
     (contains_sub ~sub:(reviewed_commit_sub "abc123def456789012345678901234567890abcd") write_log);
   (check bool) "no thumbs-up reaction added" false
     (contains_sub ~sub:"[create_issue_reaction] repo=https://github.com/org/monorepo number=99 content=+1" write_log);
-  (check bool) "no failure comment" false (contains_sub ~sub:"couldn't review" write_log);
+  (check bool) "skip comment identifies the skip" true (contains_sub ~sub:"skipped this review" write_log);
   (check bool) "no review attempted" false (contains_sub ~sub:"[create_pr_review]" write_log)
 
 let test_pr_empty_findings_review () =
   Test_helpers.reset_test_state ();
   Api_local.set_agent_response_path "mock_api_responses/claude/empty_findings_response.json";
+  (* Empty scout leads early-exit the general pipeline with zero findings,
+     reproducing the legacy empty-findings quiet success. *)
+  Api_local.set_agent_response_map [ "general_scout", "mock_api_responses/scout/leads_empty.json" ];
   let ctx = Test_helpers.make_test_context ~config:Test_helpers.auto_review_enabled_config () in
   let payload = read_file "mock_payloads/pr_opened.json" in
   let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
@@ -2857,6 +3338,13 @@ let test_pr_generated_files_filtered_before_file_limit () =
 let test_push_review_e2e () =
   Test_helpers.reset_test_state ();
   Api_local.set_agent_response_path "mock_api_responses/claude/push_review_response.json";
+  (* Deep reviewer reuses the legacy push review fixture; the unmapped
+     validator keeps selecting its push fixture from the fallback path. *)
+  Api_local.set_agent_response_map
+    [
+      "general_scout", "mock_api_responses/scout/leads_two.json";
+      "general_deep_review", "mock_api_responses/claude/push_review_response.json";
+    ];
   let config =
     Config_types.config_of_json
       (Melange_json.of_string {|{"review_pushes_to_develop": true, "slack_channel": "dev-reviews"}|})
@@ -2925,6 +3413,11 @@ let test_duplicate_pr_prevention () =
 let test_duplicate_push_prevention () =
   Test_helpers.reset_test_state ();
   Api_local.set_agent_response_path "mock_api_responses/claude/push_review_response.json";
+  Api_local.set_agent_response_map
+    [
+      "general_scout", "mock_api_responses/scout/leads_two.json";
+      "general_deep_review", "mock_api_responses/claude/push_review_response.json";
+    ];
   let state = State.create () in
   let config =
     Config_types.config_of_json
@@ -3028,6 +3521,7 @@ module Capturing_agent_runner = struct
     let output =
       match config.Agent_runner.name with
       | "general_validator" -> validator_output_for_review_fixture ()
+      | "general_scout" -> Melange_json.of_string (read_file "mock_api_responses/scout/leads_two.json")
       | _ -> Melange_json.of_string (read_file "mock_api_responses/claude/review_response.json")
     in
     let usage : Ai_provider.Usage.t = { input_tokens = 0; output_tokens = 0; total_tokens = None } in
@@ -3330,6 +3824,11 @@ let test_local_review_path_filters_generated_before_limits () =
 
 let test_local_review_diff_returns_markdown () =
   Test_helpers.reset_test_state ();
+  Api_local.set_agent_response_map
+    [
+      "general_scout", "mock_api_responses/scout/leads_two.json";
+      "general_deep_review", "mock_api_responses/claude/review_response.json";
+    ];
   let state = State.create () in
   let ctx = Test_helpers.make_test_context ~state () in
   let config = Context.default_config () in
@@ -3342,7 +3841,7 @@ let test_local_review_diff_returns_markdown () =
   match result with
   | Error msg -> fail msg
   | Ok markdown ->
-    (check bool) "has summary" true (CCString.find ~sub:"The changes look generally good" markdown >= 0);
+    (check bool) "summary not leaked" false (CCString.find ~sub:"The changes look generally good" markdown >= 0);
     (check bool) "has inline comments section" true (CCString.find ~sub:"### Inline comments" markdown >= 0);
     (check bool) "has local inline location" true (CCString.find ~sub:"src/main.ml:14" markdown >= 0);
     (check bool) "records generic change review" true
@@ -3350,6 +3849,11 @@ let test_local_review_diff_returns_markdown () =
 
 let test_local_review_diff_text_returns_markdown () =
   Test_helpers.reset_test_state ();
+  Api_local.set_agent_response_map
+    [
+      "general_scout", "mock_api_responses/scout/leads_two.json";
+      "general_deep_review", "mock_api_responses/claude/review_response.json";
+    ];
   let ctx = Test_helpers.make_test_context () in
   let config = Context.default_config () in
   let diff_text = read_file "mock_api_responses/github/pr_42.diff" in
@@ -3361,8 +3865,36 @@ let test_local_review_diff_text_returns_markdown () =
   match result with
   | Error msg -> fail msg
   | Ok markdown ->
-    (check bool) "has summary" true (CCString.find ~sub:"The changes look generally good" markdown >= 0);
+    (check bool) "summary not leaked" false (CCString.find ~sub:"The changes look generally good" markdown >= 0);
     (check bool) "has inline comments section" true (CCString.find ~sub:"### Inline comments" markdown >= 0)
+
+(* Regression: the deep reviewer's [summary] is an internal audit trace (one
+   line per lead, e.g. "L0 ... refuted: ..."). When every lead is refuted the
+   review is clean, so the consumer body must be the LGTM form — not a "Minor:"
+   dump of the refutation trace. The local-review markdown surfaces
+   [review_body] directly, so it exercises the zero-findings arm. *)
+let test_local_review_all_refuted_shows_lgtm_not_summary () =
+  Test_helpers.reset_test_state ();
+  Api_local.set_agent_response_map
+    [
+      "general_scout", "mock_api_responses/scout/leads_two.json";
+      "general_deep_review", "mock_api_responses/deep_review/all_refuted.json";
+    ];
+  let ctx = Test_helpers.make_test_context () in
+  let config = Context.default_config () in
+  let diff_text = read_file "mock_api_responses/github/pr_42.diff" in
+  let result =
+    Lwt_main.run
+      (Local_review_test.review_diff_text ~ctx ~root:"." ~repo_key:"local/repo" ~change_key:"all-refuted"
+         ~title:"All refuted" ~description:"Local description" ~diff_text ~config ())
+  in
+  match result with
+  | Error msg -> fail msg
+  | Ok markdown ->
+    (check bool) "clean review shows LGTM" true (CCString.find ~sub:"LGTM :+1:" markdown >= 0);
+    (check bool) "no Minor heading" false (CCString.find ~sub:"Minor:" markdown >= 0);
+    (check bool) "refutation trace not leaked" false (CCString.find ~sub:"refuted" markdown >= 0);
+    (check bool) "lead marker not leaked" false (CCString.find ~sub:"L0 lib/session.ml" markdown >= 0)
 
 let test_local_review_security_only_empty_is_success () =
   Test_helpers.reset_test_state ();
@@ -3478,9 +4010,10 @@ let test_local_review_skips_duplicate_change () =
   (match second with
   | Error msg -> (check bool) "duplicate skipped" true (CCString.find ~sub:"already reviewed" msg >= 0)
   | Ok _markdown -> fail "duplicate local review should be skipped");
-  (* Count only model-carrying (general_review) calls: the duplicate second
-     review must not run, so exactly one review agent call is expected. *)
-  (check int) "agent calls" 1 (List.length (List.filter_map Fun.id (Capturing_agent_runner.get_model_ids ())))
+  (* Count all agent calls (general_scout + general_deep_review +
+     general_validator): the duplicate second review must not run, so exactly
+     three agent calls are expected from the single successful review. *)
+  (check int) "agent calls" 3 (List.length (Capturing_agent_runner.get_model_ids ()))
 
 let test_github_review_uses_captured_config_for_plugins () =
   Test_helpers.reset_test_state ();
@@ -4497,6 +5030,11 @@ let test_feedback_report_resolves_evidence_when_stored_dir_is_stale () =
 
 let test_feedback_publish_records_targets_and_markers () =
   Test_helpers.reset_test_state ();
+  Api_local.set_agent_response_map
+    [
+      "general_scout", "mock_api_responses/scout/leads_two.json";
+      "general_deep_review", "mock_api_responses/claude/review_response.json";
+    ];
   with_temp_feedback_store (fun state_path paths feedback_store ->
     let config =
       Config_types.config_of_json
@@ -4655,6 +5193,7 @@ let test_feedback_publish_failure_records_no_targets () =
 let test_feedback_quiet_success_records_no_targets () =
   Test_helpers.reset_test_state ();
   Api_local.set_agent_response_path "mock_api_responses/claude/empty_findings_response.json";
+  Api_local.set_agent_response_map [ "general_scout", "mock_api_responses/scout/leads_empty.json" ];
   with_temp_feedback_store (fun state_path paths feedback_store ->
     let state = State.create ~filepath:state_path () in
     let ctx =
@@ -4872,6 +5411,22 @@ let test_estimate_cost_opus () =
   in
   (* 100k * 5/1M + 10k * 25/1M = 0.50 + 0.25 = 0.75 *)
   (check (float 1e-6)) "opus 100k in + 10k out" 0.75 cost
+
+let test_estimate_cost_default_tier_models () =
+  (* Regression guard: the Standard/Strong tier defaults (Agent_runner.default_model_id)
+     must resolve to non-zero pricing, or cost tracking silently reports $0. *)
+  let cost_sonnet_5 =
+    Cost_tracking.estimate_cost ~model_id:"claude-sonnet-5" ~input_tokens:1_000_000 ~output_tokens:1_000_000
+      ~cache_read_input_tokens:0 ~cache_creation_input_tokens:0
+  in
+  (* Sonnet 5: $3/M input, $15/M output -> 3.0 + 15.0 = 18.0 *)
+  (check (float 1e-6)) "sonnet-5 1M in + 1M out" 18.0 cost_sonnet_5;
+  let cost_opus_4_8 =
+    Cost_tracking.estimate_cost ~model_id:"claude-opus-4-8" ~input_tokens:100_000 ~output_tokens:10_000
+      ~cache_read_input_tokens:0 ~cache_creation_input_tokens:0
+  in
+  (* Opus 4.8: $5/M input, $25/M output -> 100k*5/1M + 10k*25/1M = 0.50 + 0.25 = 0.75 *)
+  (check (float 1e-6)) "opus-4-8 100k in + 10k out" 0.75 cost_opus_4_8
 
 let test_estimate_cost_unknown_model () =
   let cost =
@@ -5306,6 +5861,8 @@ let test_security_e2e_vulnerable () =
   Api_local.set_agent_response_map
     [
       "general_review", "mock_api_responses/claude/review_response.json";
+      "general_scout", "mock_api_responses/scout/leads_two.json";
+      "general_deep_review", "mock_api_responses/claude/review_response.json";
       "security_triage", "mock_api_responses/security/triage_injection.json";
       "security_analysis_injection", "mock_api_responses/security/analysis_injection.json";
       "security_validator", "mock_api_responses/security/validator_confirmed.json";
@@ -5328,6 +5885,8 @@ let test_security_e2e_safe () =
   Api_local.set_agent_response_map
     [
       "general_review", "mock_api_responses/claude/review_response.json";
+      "general_scout", "mock_api_responses/scout/leads_two.json";
+      "general_deep_review", "mock_api_responses/claude/review_response.json";
       "security_triage", "mock_api_responses/security/triage_safe.json";
     ];
   let ctx = Test_helpers.make_test_context ~config:security_enabled_config () in
@@ -5363,6 +5922,8 @@ let test_security_e2e_rejected () =
   Api_local.set_agent_response_map
     [
       "general_review", "mock_api_responses/claude/review_response.json";
+      "general_scout", "mock_api_responses/scout/leads_two.json";
+      "general_deep_review", "mock_api_responses/claude/review_response.json";
       "security_triage", "mock_api_responses/security/triage_injection.json";
       "security_analysis_injection", "mock_api_responses/security/analysis_injection.json";
       "security_validator", "mock_api_responses/security/validator_rejected.json";
@@ -5406,6 +5967,11 @@ let test_security_e2e_triage_empty_skip_reason () =
 
 let test_security_e2e_disabled () =
   Test_helpers.reset_test_state ();
+  Api_local.set_agent_response_map
+    [
+      "general_scout", "mock_api_responses/scout/leads_two.json";
+      "general_deep_review", "mock_api_responses/claude/review_response.json";
+    ];
   let config =
     Config_types.config_of_json
       (Melange_json.of_string {|{"auto_review_pr_open": true, "review_plugins": {"security": {"enabled": false}}}|})
@@ -5545,6 +6111,11 @@ let test_push_prepare_failure_posts_slack () =
 
 let test_push_generated_files_do_not_trigger_prepare_failure_slack () =
   Test_helpers.reset_test_state ();
+  Api_local.set_agent_response_map
+    [
+      "general_scout", "mock_api_responses/scout/leads_two.json";
+      "general_deep_review", "mock_api_responses/claude/review_response.json";
+    ];
   let config =
     Config_types.config_of_json
       (Melange_json.of_string {|{"review_pushes_to_develop": true, "slack_channel": "dev-reviews", "max_files": 1}|})
@@ -5559,7 +6130,7 @@ let test_push_generated_files_do_not_trigger_prepare_failure_slack () =
   (check bool) "no prepare failure slack" false (contains_sub ~sub:"Code Review Failed" write_log);
   (check bool) "file-limit reason absent" false (contains_sub ~sub:"diff touches" write_log)
 
-let test_push_empty_prepare_no_slack () =
+let test_push_empty_prepare_posts_skip_slack () =
   Test_helpers.reset_test_state ();
   let config =
     Config_types.config_of_json
@@ -5570,8 +6141,20 @@ let test_push_empty_prepare_no_slack () =
   let payload = read_file "mock_payloads/push_develop.json" in
   let event = Test_helpers.parse_event_exn ~event_type:"push" ~body:payload in
   Lwt_main.run (R_test.process_event ctx ~event);
-  (check string) "empty push diff is a quiet no-op" "" (Api_local.get_write_log ());
-  (check int) "empty push diff sends no Slack" 0 (List.length (Api_local.get_slack_messages ()));
+  let write_log = Api_local.get_write_log () in
+  (check bool) "empty push diff logs a skip" true (contains_sub ~sub:"Code Review Skipped" write_log);
+  let slack_msgs = Api_local.get_slack_messages () in
+  (check int) "empty push diff sends one Slack skip" 1 (List.length slack_msgs);
+  (match slack_msgs with
+  | [] -> fail "expected a Slack skip message"
+  | (_channel, text, attachments) :: _ ->
+    (check bool) "Slack text identifies skip" true (contains_sub ~sub:"Code Review Skipped" text);
+    (match attachments with
+    | None -> fail "expected a Slack skip attachment"
+    | Some [] -> fail "expected a Slack skip attachment"
+    | Some (attachment :: _) ->
+      (check bool) "Slack attachment explains skip" true
+        (contains_sub ~sub:"no code was analyzed or approved" attachment.Slack_types.text)));
   match event with
   | Github.Push push ->
     (check bool) "empty push diff recorded in state" true
@@ -5590,6 +6173,8 @@ let test_pr_security_failure_notice () =
   Api_local.set_agent_response_map
     [
       "general_review", "mock_api_responses/claude/review_response.json";
+      "general_scout", "mock_api_responses/scout/leads_two.json";
+      "general_deep_review", "mock_api_responses/claude/review_response.json";
       "security_triage", "mock_api_responses/nonexistent_security_triage.json";
     ];
   let ctx = Test_helpers.make_test_context ~config:security_enabled_config () in
@@ -5717,7 +6302,7 @@ let test_with_retry_exhausts_attempts () =
     serve the diff) or an internal limit (diff exceeds [max_diff_lines] /
     [max_files]), reviewotron posts an issue comment to the PR explaining why,
     instead of silently logging and returning.  "All files filtered out" is
-    treated as a successful (empty) review: an LGTM issue comment. *)
+    treated as an explicit skip, not an LGTM approval. *)
 
 (* Unit tests for the pure classification / formatting helpers. *)
 let test_review_failure_classify_too_large () =
@@ -5726,14 +6311,14 @@ let test_review_failure_classify_too_large () =
   let error : Http_util.error = Http_util.Status (406, "the diff exceeded the maximum number of files (300)") in
   match Review_failure.classify_fetch_error error with
   | Diff_too_large_remote _ -> ()
-  | Fetch_failed _ | Too_many_lines _ | Too_many_files _ | Publish_failed _ ->
+  | No_reviewable_files | Fetch_failed _ | Too_many_lines _ | Too_many_files _ | Publish_failed _ ->
     Alcotest.fail "expected Diff_too_large_remote for a 406 response"
 
 let test_review_failure_classify_generic () =
   let error : Http_util.error = Http_util.Status (503, "service unavailable") in
   match Review_failure.classify_fetch_error error with
   | Fetch_failed _ -> ()
-  | Diff_too_large_remote _ | Too_many_lines _ | Too_many_files _ | Publish_failed _ ->
+  | No_reviewable_files | Diff_too_large_remote _ | Too_many_lines _ | Too_many_files _ | Publish_failed _ ->
     Alcotest.fail "expected Fetch_failed for a non-406 status"
 
 let test_review_failure_classify_transport_error () =
@@ -5742,7 +6327,7 @@ let test_review_failure_classify_transport_error () =
   let error : Http_util.error = Http_util.Transport Curl.CURLE_COULDNT_CONNECT in
   match Review_failure.classify_fetch_error error with
   | Fetch_failed _ -> ()
-  | Diff_too_large_remote _ | Too_many_lines _ | Too_many_files _ | Publish_failed _ ->
+  | No_reviewable_files | Diff_too_large_remote _ | Too_many_lines _ | Too_many_files _ | Publish_failed _ ->
     Alcotest.fail "expected Fetch_failed for a transport error with no status"
 
 let test_review_failure_comment_mentions_cause () =
@@ -5760,7 +6345,10 @@ let test_review_failure_comment_mentions_cause () =
   (check bool) "publish failure says review was produced" true (contains_sub ~sub:"produced a review" publish);
   (check bool) "failure details are open by default" true
     (contains_sub ~sub:"<details open><summary>Details</summary>" publish);
-  (check bool) "publish failure includes raw error" true (contains_sub ~sub:"http 422" publish)
+  (check bool) "publish failure includes raw error" true (contains_sub ~sub:"http 422" publish);
+  let skipped = Review_failure.to_comment No_reviewable_files in
+  (check bool) "skip comment identifies skipped review" true (contains_sub ~sub:"skipped this review" skipped);
+  (check bool) "skip comment denies approval" true (contains_sub ~sub:"no code was analyzed or approved" skipped)
 
 (* Integration tests: drive process_event and assert on the write log. *)
 let check_same_pr_webhook_deduped ~ctx ~event =
@@ -5960,6 +6548,7 @@ let test_pr_review_post_failure_retries_when_fallback_fails () =
 let test_pr_quiet_success_comment_failure_retries () =
   Test_helpers.reset_test_state ();
   Api_local.set_agent_response_path "mock_api_responses/claude/empty_findings_response.json";
+  Api_local.set_agent_response_map [ "general_scout", "mock_api_responses/scout/leads_empty.json" ];
   Api_local.set_next_issue_comment_error "missing Issues write permission";
   let state = State.create () in
   let ctx = Test_helpers.make_test_context ~state ~config:Test_helpers.auto_review_enabled_config () in
@@ -5978,7 +6567,7 @@ let test_pr_quiet_success_comment_failure_retries () =
     (contains_sub ~sub:"[create_issue_comment]" retry_log);
   check_pr_reviewed_state ~ctx ~event true
 
-let test_pr_empty_diff_posts_lgtm_comment () =
+let test_pr_empty_diff_posts_skip_comment () =
   Test_helpers.reset_test_state ();
   Api_local.set_next_pr_diff "";
   let ctx = Test_helpers.make_test_context ~config:Test_helpers.auto_review_enabled_config () in
@@ -5986,16 +6575,37 @@ let test_pr_empty_diff_posts_lgtm_comment () =
   let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
   Lwt_main.run (R_test.process_event ctx ~event);
   let write_log = Api_local.get_write_log () in
-  (check bool) "quiet success comment posted on empty diff" true
+  (check bool) "skip comment posted on empty diff" true
     (contains_sub ~sub:"[create_issue_comment] repo=https://github.com/org/monorepo number=42" write_log);
-  (check bool) "quiet success comment says LGTM" true (contains_sub ~sub:"LGTM :+1:" write_log);
-  (check bool) "quiet success comment shows reviewed commit" true
+  (check bool) "skip comment explains no code was reviewed" true
+    (contains_sub ~sub:"no code was analyzed or approved" write_log);
+  (check bool) "skip comment does not say LGTM" false (contains_sub ~sub:"LGTM :+1:" write_log);
+  (check bool) "skip comment shows reviewed commit" true
     (contains_sub ~sub:(reviewed_commit_sub "abc123def456789012345678901234567890abcd") write_log);
   (check bool) "no thumbs-up reaction added on empty diff" false
     (contains_sub ~sub:"[create_issue_reaction] repo=https://github.com/org/monorepo number=42 content=+1" write_log);
-  (check bool) "no failure comment posted on empty diff" false (contains_sub ~sub:"couldn't review" write_log);
+  (check bool) "skip comment identifies the skip" true (contains_sub ~sub:"skipped this review" write_log);
   (check bool) "no review attempted on empty diff" false (contains_sub ~sub:"[create_pr_review]" write_log);
   check_same_pr_webhook_deduped ~ctx ~event
+
+let test_pr_empty_diff_skip_comment_failure_retries () =
+  Test_helpers.reset_test_state ();
+  Api_local.set_next_pr_diff "";
+  Api_local.set_next_issue_comment_error "missing Issues write permission";
+  let state = State.create () in
+  let ctx = Test_helpers.make_test_context ~state ~config:Test_helpers.auto_review_enabled_config () in
+  let payload = Test_helpers.make_pr_payload () in
+  let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let write_log = Api_local.get_write_log () in
+  (check bool) "failed skip comment not logged as posted" false (contains_sub ~sub:"[create_issue_comment]" write_log);
+  check_pr_reviewed_state ~ctx ~event false;
+  Api_local.clear_write_log ();
+  Api_local.set_next_pr_diff "";
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let retry_log = Api_local.get_write_log () in
+  (check bool) "same PR webhook retries skip comment" true (contains_sub ~sub:"[create_issue_comment]" retry_log);
+  check_pr_reviewed_state ~ctx ~event true
 
 (** {2 Debug dump tests} *)
 
@@ -6010,6 +6620,7 @@ let test_write_debug_dump () =
       output_schema = `Assoc [];
       max_steps = 3;
       thinking_budget = None;
+      effort = None;
     }
   in
   let step0 : Ai_core.Generate_text_result.step =
@@ -6190,7 +6801,7 @@ let test_messages_of_steps_multi_turn_ordering () =
     that go on the wire.  Tests interrogate the pure helper that builds the
     provider_options so we don't need a live network call. *)
 
-let mk_agent_config ?thinking_budget () : Agent_runner.agent_config =
+let mk_agent_config ?thinking_budget ?effort () : Agent_runner.agent_config =
   {
     name = "test_agent";
     system_prompt = "be a test";
@@ -6198,6 +6809,7 @@ let mk_agent_config ?thinking_budget () : Agent_runner.agent_config =
     output_schema = `Assoc [];
     max_steps = 1;
     thinking_budget;
+    effort;
   }
 
 let test_provider_options_empty_when_no_thinking_budget () =
@@ -6217,6 +6829,18 @@ let test_provider_options_carries_thinking_when_set () =
   | Some t ->
     (check bool) "thinking enabled" true t.enabled;
     (check int) "thinking budget matches" 4096 (Ai_provider_anthropic.Thinking.to_int t.budget_tokens)
+
+let test_provider_options_carries_openrouter_medium_effort () =
+  let cfg = mk_agent_config ~effort:Config_types.Effort.Medium () in
+  let po = Agent_runner.build_provider_options ~provider:Llm_provider.Openrouter cfg in
+  let open Ai_provider_openrouter.Openrouter_options in
+  match of_provider_options po with
+  | None -> fail "expected OpenRouter options to be present"
+  | Some { reasoning = Some ({ enabled = Some true; exclude = None; budget = Effort Medium } as reasoning); _ } ->
+    (match reasoning_config_to_json reasoning with
+    | `Assoc fields -> (check string) "serialized effort" "medium" (json_string_field fields "effort")
+    | _ -> fail "expected OpenRouter reasoning JSON object")
+  | Some _ -> fail "expected OpenRouter reasoning.effort=medium"
 
 (** The general review agent must opt into Anthropic extended thinking.
     This is what gives the model a real reasoning channel instead of leaking
@@ -6294,14 +6918,22 @@ let review_output_with_findings findings =
 
 let validator_output_with_results results = Review_types.validator_output_to_json { results }
 
+(* These tests exercise the legacy single-pass [general_review] agent directly,
+   so they run with the scout pipeline disabled.  The scout -> deep reviewer
+   path has its own dedicated integration tests ([test_general_pipeline_*]). *)
+let general_plugin_legacy_config =
+  Config_types.config_of_json
+    (Melange_json.of_string
+       {|{"auto_review_pr_open": true, "auto_review_pr_sync": true, "review_pushes_to_develop": true, "review_plugins": {"general": {"scout_enabled": false}}}|})
+
 let run_general_plugin_with_outputs outputs =
   Test_helpers.reset_test_state ();
   General_plugin_agent_runner.reset_debug_dirs ();
   General_plugin_agent_runner.set_outputs outputs;
-  let ctx = Test_helpers.make_test_context ~config:Test_helpers.auto_review_enabled_config () in
+  let ctx = Test_helpers.make_test_context ~config:general_plugin_legacy_config () in
   Lwt_main.run
-    (General_plugin_test.run_review ~ctx ~repo_url:"https://github.com/org/repo"
-       ~config:Test_helpers.auto_review_enabled_config ~diff_text:"diff" ~metadata:general_plugin_metadata ())
+    (General_plugin_test.run_review ~ctx ~repo_url:"https://github.com/org/repo" ~config:general_plugin_legacy_config
+       ~diff_text:"diff" ~metadata:general_plugin_metadata ())
 
 let test_general_agent_debug_dumps_are_opt_in () =
   let outputs =
@@ -6314,7 +6946,7 @@ let test_general_agent_debug_dumps_are_opt_in () =
     Test_helpers.reset_test_state ();
     General_plugin_agent_runner.reset_debug_dirs ();
     General_plugin_agent_runner.set_outputs outputs;
-    let config = { Test_helpers.auto_review_enabled_config with debug_artifacts } in
+    let config = { general_plugin_legacy_config with debug_artifacts } in
     let ctx = Test_helpers.make_test_context ~config () in
     let _result, _costs =
       Lwt_main.run
@@ -6422,6 +7054,127 @@ let test_general_review_parse_failure_is_error () =
   | Ok _ -> fail "expected review parse failure to propagate"
   | Error msg -> (check bool) "review parse failure surfaced" true (contains_sub ~sub:"parse general review" msg)
 
+(* Integration tests for the scout -> deep reviewer -> validator pipeline.
+   Backed by [Api_local.Agent_runner] so unmapped agent names fall back to the
+   default response path — an omitted deep-review/validator entry therefore
+   surfaces as a wrong finding/cost count if the pipeline calls a stage it
+   should have skipped. *)
+module General_pipeline_test = General_review_plugin.Make (Api_local.Agent_runner)
+
+let pipeline_metadata : Review_plugin.review_metadata =
+  {
+    change_title = "Refactor session validation";
+    change_description = "Simplify validate_session and the retry loop.";
+    file_contents =
+      [
+        "lib/session.ml", "let validate_session token = Hashtbl.mem sessions token.id";
+        "lib/retry.ml", "let retry () = ()";
+      ];
+    fetch_file = (fun ~path:_ -> Lwt.return (Ok None));
+  }
+
+let scout_enabled_config =
+  Config_types.config_of_json
+    (Melange_json.of_string {|{"review_plugins": {"general": {"scout_enabled": true, "max_leads": 10}}}|})
+
+let scout_disabled_config =
+  Config_types.config_of_json (Melange_json.of_string {|{"review_plugins": {"general": {"scout_enabled": false}}}|})
+
+let run_pipeline_plugin ~config =
+  let ctx = Test_helpers.make_test_context ~config () in
+  Lwt_main.run
+    (General_pipeline_test.run_review ~ctx ~repo_url:"https://github.com/org/repo" ~config ~diff_text:"diff"
+       ~metadata:pipeline_metadata ())
+
+let has_cost name costs = List.exists (fun (c : Cost_tracking.agent_cost) -> String.equal c.agent_name name) costs
+
+let test_general_pipeline_full_flow () =
+  Test_helpers.reset_test_state ();
+  Api_local.set_agent_response_map
+    [
+      "general_scout", "mock_api_responses/scout/leads_two.json";
+      "general_deep_review", "mock_api_responses/deep_review/confirmed_one.json";
+      "general_validator", "mock_api_responses/deep_review/validator_confirmed_one.json";
+    ];
+  let result, costs = run_pipeline_plugin ~config:scout_enabled_config in
+  Test_helpers.reset_test_state ();
+  (match result with
+  | Error msg -> fail msg
+  | Ok review ->
+    (check int) "one confirmed finding" 1 (List.length review.findings);
+    (match review.findings with
+    | [ finding ] -> (check string) "confirmed lead finding kept" "lib/session.ml" finding.path
+    | [] | _ :: _ :: _ -> fail "expected exactly one confirmed finding"));
+  (check bool) "at least three cost entries" true (List.compare_length_with costs 3 >= 0);
+  (check bool) "scout cost present" true (has_cost "general_scout" costs);
+  (check bool) "deep review cost present" true (has_cost "general_deep_review" costs);
+  (check bool) "validator cost present" true (has_cost "general_validator" costs)
+
+let test_general_pipeline_early_exit_on_no_leads () =
+  Test_helpers.reset_test_state ();
+  (* Map ONLY the scout: if the deep reviewer or validator wrongly run, they
+     fall back to the default review response and the assertions below fail. *)
+  Api_local.set_agent_response_map [ "general_scout", "mock_api_responses/scout/leads_empty.json" ];
+  let result, costs = run_pipeline_plugin ~config:scout_enabled_config in
+  Test_helpers.reset_test_state ();
+  (match result with
+  | Error msg -> fail msg
+  | Ok review ->
+    (check int) "no findings on empty scout" 0 (List.length review.findings);
+    (check string) "early-exit summary" "Scout found no investigation leads." review.summary);
+  (check int) "exactly one cost entry" 1 (List.length costs);
+  (check bool) "only scout cost recorded" true (has_cost "general_scout" costs);
+  (check bool) "deep review never ran" false (has_cost "general_deep_review" costs);
+  (check bool) "validator never ran" false (has_cost "general_validator" costs)
+
+let test_general_pipeline_caps_leads () =
+  Test_helpers.reset_test_state ();
+  (* 12 leads with max_leads = 10. [Api_local] records the input handed to
+     each mocked agent, so we assert the truncation directly on the deep
+     reviewer's recorded input: [General_deep_reviewer_agent.build_input]
+     renders each kept lead as a "### L<index>" heading (0-indexed via
+     [List.iteri] over the post-cap list), so 10 kept leads means the input
+     must contain "### L9" (the 10th kept lead) and must not contain
+     "### L10" or "### L11" (which would only appear if capping failed to
+     drop any leads). *)
+  Api_local.set_agent_response_map
+    [
+      "general_scout", "mock_api_responses/scout/leads_overflow.json";
+      "general_deep_review", "mock_api_responses/deep_review/confirmed_one.json";
+      "general_validator", "mock_api_responses/deep_review/validator_confirmed_one.json";
+    ];
+  let result, costs = run_pipeline_plugin ~config:scout_enabled_config in
+  let deep_input = Api_local.recorded_agent_input "general_deep_review" in
+  Test_helpers.reset_test_state ();
+  (match result with
+  | Error msg -> fail msg
+  | Ok review -> (check int) "overflow leads still produce a confirmed finding" 1 (List.length review.findings));
+  (check bool) "scout cost present" true (has_cost "general_scout" costs);
+  (check bool) "deep review cost present" true (has_cost "general_deep_review" costs);
+  match deep_input with
+  | None -> fail "expected deep reviewer input to be recorded"
+  | Some input ->
+    (check bool) "deep input contains the 10th kept lead" true (CCString.mem ~sub:"### L9" input);
+    (check bool) "deep input does not contain an 11th lead" false (CCString.mem ~sub:"### L10" input);
+    (check bool) "deep input does not contain a 12th lead" false (CCString.mem ~sub:"### L11" input)
+
+let test_general_pipeline_legacy_fallback () =
+  Test_helpers.reset_test_state ();
+  (* scout_enabled = false routes to the legacy single-pass review, which maps
+     only [general_review] + [general_validator]. *)
+  Api_local.set_agent_response_map
+    [
+      "general_review", "mock_api_responses/claude/review_response.json";
+      "general_validator", "mock_api_responses/deep_review/validator_confirmed_one.json";
+    ];
+  let result, costs = run_pipeline_plugin ~config:scout_disabled_config in
+  Test_helpers.reset_test_state ();
+  (match result with
+  | Error msg -> fail msg
+  | Ok review -> (check int) "legacy single-pass confirms one finding" 1 (List.length review.findings));
+  (check bool) "legacy review cost present" true (has_cost "general_review" costs);
+  (check bool) "scout never ran on legacy path" false (has_cost "general_scout" costs)
+
 let test_provider_options_clamps_below_minimum () =
   (* Anthropic requires budget_tokens >= 1024.  When a caller asks for less,
      the runner must either reject or clamp; we choose to clamp up to 1024 so
@@ -6480,6 +7233,13 @@ let () =
           test_case "openrouter embedded error" `Quick test_openrouter_embedded_error_is_provider_error;
           test_case "review_plugins defaults" `Quick test_config_review_plugins_defaults;
           test_case "review_plugins explicit" `Quick test_config_review_plugins_explicit;
+          test_case "invalid ignored file regex rejected" `Quick test_config_rejects_invalid_ignored_file_regex;
+          test_case "broad ignored file regex rejected" `Quick test_config_rejects_broad_ignored_file_regex;
+          test_case "general scout config defaults" `Quick test_config_general_scout_defaults;
+          test_case "general scout config explicit" `Quick test_config_general_scout_explicit;
+          test_case "max_leads = 0 rejected" `Quick test_config_max_leads_zero_rejected;
+          test_case "max_leads negative rejected" `Quick test_config_max_leads_negative_rejected;
+          test_case "max_leads valid and default ok" `Quick test_config_max_leads_valid_and_default_ok;
           test_case "context create requires repos by default" `Quick test_context_create_requires_repos_by_default;
           test_case "context create allows repo-less when explicit" `Quick
             test_context_create_allows_repo_less_when_explicit;
@@ -6583,6 +7343,13 @@ let () =
         [
           test_case "review output roundtrip" `Quick test_review_output_roundtrip;
           test_case "mock claude response" `Quick test_mock_claude_response;
+          test_case "scout output parse two leads" `Quick test_scout_output_parse_two_leads;
+          test_case "scout output parse empty leads" `Quick test_scout_output_parse_empty_leads;
+          test_case "scout output parse overflow leads" `Quick test_scout_output_parse_overflow_leads;
+          test_case "scout output parse missing skip_note defaults empty" `Quick
+            test_scout_output_parse_missing_skip_note_defaults_empty;
+          test_case "scout output roundtrip" `Quick test_scout_output_roundtrip;
+          test_case "scout output jsonschema has properties" `Quick test_scout_output_jsonschema_has_properties;
         ] );
       ( "security_types",
         [
@@ -6643,6 +7410,27 @@ let () =
           test_case "build input with deterministic signals" `Quick
             test_triage_agent_build_input_with_deterministic_signals;
         ] );
+      ( "general_scout_agent",
+        [
+          test_case "cap_leads truncates keeping highest confidence" `Quick test_general_scout_cap_leads_truncates;
+          test_case "cap_leads under max is identity length" `Quick test_general_scout_cap_leads_identity;
+          test_case "build input section order" `Quick test_general_scout_build_input_order;
+          test_case "config security covered elsewhere" `Quick test_general_scout_config_security_covered;
+          test_case "config security not covered" `Quick test_general_scout_config_security_not_covered;
+        ] );
+      ( "general_deep_reviewer_agent",
+        [
+          test_case "build input filters to lead paths and orders diff last" `Quick
+            test_general_deep_reviewer_build_input_filters_and_orders;
+          test_case "build input dedups duplicate lead paths" `Quick test_general_deep_reviewer_build_input_dedups_paths;
+          test_case "build input matches prefixed lead paths to bare keys" `Quick
+            test_general_deep_reviewer_build_input_prefixed_lead_paths;
+          test_case "build input matches bare lead paths" `Quick test_general_deep_reviewer_build_input_bare_lead_paths;
+          test_case "build input does not over-strip a/ directory keys" `Quick
+            test_general_deep_reviewer_build_input_a_dir_key_not_overstripped;
+          test_case "config default normative prompt" `Quick test_general_deep_reviewer_config_default;
+          test_case "config override replaces prompt" `Quick test_general_deep_reviewer_config_override;
+        ] );
       ( "security_plugin",
         [
           test_case "confidence rank ordering" `Quick test_security_confidence_rank;
@@ -6658,6 +7446,7 @@ let () =
             test_security_should_analyze_high_threshold_restricted;
           test_case "should analyze low threshold" `Quick test_security_should_analyze_low_threshold;
           test_case "agent model tier conversion" `Quick test_security_agent_model_tier;
+          test_case "standard tier uses Sonnet 5" `Quick test_security_standard_tier_uses_sonnet_5;
           test_case "analysis step budget" `Quick test_security_analysis_step_budget;
         ] );
       ( "triage_corpus",
@@ -6676,6 +7465,7 @@ let () =
           test_case "config per class" `Quick test_analysis_agent_config_per_class;
           test_case "config model tier" `Quick test_analysis_agent_config_model_tier;
           test_case "prompt methodology" `Quick test_analysis_agent_prompt_contains_methodology;
+          test_case "prompt fetch economy" `Quick test_analysis_agent_prompt_fetch_economy;
           test_case "prompt class section" `Quick test_analysis_agent_prompt_contains_class_section;
           test_case "language hints" `Quick test_analysis_agent_language_hints;
           test_case "build input minimal" `Quick test_analysis_agent_build_input_minimal;
@@ -6695,10 +7485,16 @@ let () =
           test_case "validator failure propagates" `Quick test_general_review_validator_failure_is_error;
           test_case "validator parse failure propagates" `Quick test_general_review_validator_parse_failure_is_error;
           test_case "review parse failure propagates" `Quick test_general_review_parse_failure_is_error;
+          test_case "pipeline full flow scout deep validator" `Quick test_general_pipeline_full_flow;
+          test_case "pipeline early exit on no leads" `Quick test_general_pipeline_early_exit_on_no_leads;
+          test_case "pipeline caps leads and completes" `Quick test_general_pipeline_caps_leads;
+          test_case "pipeline legacy fallback when scout disabled" `Quick test_general_pipeline_legacy_fallback;
         ] );
       ( "reviewer_e2e",
         [
           test_case "PR review end-to-end" `Quick test_pr_review_e2e;
+          test_case "findings present without summary leak" `Quick test_pr_review_findings_present_no_summary_leak;
+          test_case "slack attachment omits summary trace" `Quick test_slack_attachment_omits_summary_trace;
           test_case "draft PR skipped" `Quick test_pr_skipped_when_draft;
           test_case "draft PR reviewed when review_draft_prs is enabled" `Quick
             test_pr_reviewed_when_draft_and_flag_enabled;
@@ -6723,7 +7519,7 @@ let () =
       ( "pr_edge_cases",
         [
           test_case "PR synchronize triggers review" `Quick test_pr_synchronize_review;
-          test_case "PR with all ignored paths posts LGTM comment" `Quick test_pr_all_ignored_paths_posts_lgtm_comment;
+          test_case "PR with all ignored paths posts skip comment" `Quick test_pr_all_ignored_paths_posts_skip_comment;
           test_case "PR with empty findings posts LGTM comment" `Quick test_pr_empty_findings_review;
           test_case "large PR over max_diff_lines posts comment" `Quick test_pr_large_diff_posts_comment;
           test_case "generated files filtered before PR file limit" `Quick
@@ -6767,6 +7563,8 @@ let () =
             test_local_review_path_filters_generated_before_limits;
           test_case "review diff returns markdown" `Quick test_local_review_diff_returns_markdown;
           test_case "review generated diff text returns markdown" `Quick test_local_review_diff_text_returns_markdown;
+          test_case "all-refuted local review shows LGTM not summary" `Quick
+            test_local_review_all_refuted_shows_lgtm_not_summary;
           test_case "security-only empty review is success" `Quick test_local_review_security_only_empty_is_success;
           test_case "policy sudo regression produces finding" `Quick test_local_review_policy_regression_sudo_vulnerable;
           test_case "policy sudo scoped safe produces no finding" `Quick
@@ -6846,6 +7644,7 @@ let () =
           test_case "estimate cost openrouter sonnet" `Quick test_estimate_cost_openrouter_sonnet;
           test_case "estimate cost haiku" `Quick test_estimate_cost_haiku;
           test_case "estimate cost opus" `Quick test_estimate_cost_opus;
+          test_case "estimate cost default tier models" `Quick test_estimate_cost_default_tier_models;
           test_case "estimate cost unknown model" `Quick test_estimate_cost_unknown_model;
           test_case "estimate cost with cache" `Quick test_estimate_cost_with_cache;
           test_case "of_agent_result" `Quick test_of_agent_result;
@@ -6905,7 +7704,7 @@ let () =
           test_case "push prepare failure posts Slack" `Quick test_push_prepare_failure_posts_slack;
           test_case "generated files do not trigger push prepare failure Slack" `Quick
             test_push_generated_files_do_not_trigger_prepare_failure_slack;
-          test_case "push empty prepare is quiet" `Quick test_push_empty_prepare_no_slack;
+          test_case "push empty prepare posts skip Slack" `Quick test_push_empty_prepare_posts_skip_slack;
         ] );
       ( "security_failure_notice",
         [
@@ -6944,7 +7743,9 @@ let () =
           test_case "PR review publish failure retries when fallback fails" `Quick
             test_pr_review_post_failure_retries_when_fallback_fails;
           test_case "PR quiet success retries when comment fails" `Quick test_pr_quiet_success_comment_failure_retries;
-          test_case "PR with empty diff posts LGTM comment" `Quick test_pr_empty_diff_posts_lgtm_comment;
+          test_case "PR with empty diff posts skip comment" `Quick test_pr_empty_diff_posts_skip_comment;
+          test_case "PR empty-diff skip retries when comment fails" `Quick
+            test_pr_empty_diff_skip_comment_failure_retries;
         ] );
       "debug_dump", [ test_case "write debug dump creates file with expected content" `Quick test_write_debug_dump ];
       ( "budget_recovery",
@@ -6963,6 +7764,8 @@ let () =
             test_provider_options_empty_when_no_thinking_budget;
           test_case "provider_options carries thinking config when set" `Quick
             test_provider_options_carries_thinking_when_set;
+          test_case "provider_options carries OpenRouter medium effort" `Quick
+            test_provider_options_carries_openrouter_medium_effort;
           test_case "provider_options clamps budget to 1024 minimum" `Quick test_provider_options_clamps_below_minimum;
           test_case "general review agent_config enables thinking" `Quick
             test_general_review_agent_config_enables_thinking;

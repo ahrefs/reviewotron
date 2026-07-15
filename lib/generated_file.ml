@@ -105,7 +105,7 @@ let find_generated_marker fd =
 (* Path-based rules classify on the file's current path only. A rename out of a
    generated location (e.g. __generated__/schema.ml -> src/schema.ml) makes the
    file hand-maintained and reviewable, so the stale old_path must not count. *)
-let classify fd =
+let classify_generated_rules fd =
   let path = fd.Diff_parser.path in
   match find_generated_directory_component path with
   | Some reason -> Some { path; reason = Printf.sprintf "%s in %s" reason path }
@@ -125,11 +125,26 @@ let classify fd =
   | Some marker -> Some { path = fd.path; reason = Printf.sprintf "generated marker %S in first diff lines" marker }
   | None -> None
 
-let filter diffs =
+let classify = classify_generated_rules
+
+let compile_ignored_file_regex pattern =
+  match Re2.create pattern with
+  | Ok regex -> pattern, regex
+  | Error _ -> invalid_arg (Printf.sprintf "invalid ignored file regular expression %S" pattern)
+
+let classify_with_filters ~ignore_generated_files ignored_file_regexes fd =
+  let path = fd.Diff_parser.path in
+  match List.find_opt (fun (_, regex) -> Re2.matches regex path) ignored_file_regexes with
+  | Some (pattern, _) -> Some { path; reason = Printf.sprintf "path matches ignored file regex %S" pattern }
+  | None when ignore_generated_files -> classify_generated_rules fd
+  | None -> None
+
+let filter ?(ignored_file_regexes = []) ?(ignore_generated_files = true) diffs =
+  let ignored_file_regexes = List.map compile_ignored_file_regex ignored_file_regexes in
   let kept_rev, skipped_rev =
     List.fold_left
       (fun (kept, skipped) fd ->
-        match classify fd with
+        match classify_with_filters ~ignore_generated_files ignored_file_regexes fd with
         | Some skipped_file -> kept, skipped_file :: skipped
         | None -> fd :: kept, skipped)
       ([], []) diffs

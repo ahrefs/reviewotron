@@ -56,11 +56,10 @@ type prepared_diff = {
   filtered_text : string;
 }
 
-(** Parse a raw diff, filter ignored paths and generated files, then annotate
-    the remaining diff for agent consumption. Generated-file filtering runs
-    before file and line limits when [Config_types.ignore_generated_files] is
-    enabled, and any skipped files are logged (prefixed with [log_context] when
-    given). *)
+(** Parse a raw diff, filter ignored paths, configured file regexes, and
+    generated files, then annotate the remaining diff for agent consumption.
+    These filters run before file and line limits, and any skipped files are
+    logged (prefixed with [log_context] when given). *)
 val prepare_diff :
   ?log_context:string -> config:Config_types.config -> string -> (prepared_diff, prepare_diff_error) result
 

@@ -1,6 +1,7 @@
 type t =
   | Diff_too_large_remote of string
   | Fetch_failed of string
+  | No_reviewable_files
   | Too_many_lines of {
       actual : int;
       limit : int;
@@ -33,6 +34,11 @@ let to_comment = function
         "The diff is too large for the GitHub API to serve, so I couldn't fetch the changes to review. Consider \
          splitting this into smaller PRs."
   | Fetch_failed detail -> with_details detail ~explanation:"I couldn't fetch the diff from GitHub."
+  | No_reviewable_files ->
+    Printf.sprintf
+      ":robot: **reviewotron** skipped this review.\n\n\
+       All changed files were excluded by the configured path, file-regex, or generated-file filters, so no code was \
+       analyzed or approved."
   | Too_many_lines { actual; limit } ->
     Printf.sprintf
       "%s\n\n\

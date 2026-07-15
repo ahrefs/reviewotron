@@ -47,12 +47,29 @@ val model_tier_to_string : model_tier -> string
 val model_tier_to_json : model_tier -> Yojson.Basic.t
 val model_tier_of_json : Yojson.Basic.t -> model_tier
 
+(** OpenRouter reasoning-effort levels available in the installed SDK. *)
+module Effort : sig
+  type t =
+    | Low
+    | Medium
+    | High
+    | Xhigh
+
+  val to_string : t -> string
+  val to_json : t -> Yojson.Basic.t
+  val of_json : Yojson.Basic.t -> t
+end
+
 (** {2 Plugin configuration} *)
 
 (** Configuration for the general review plugin. *)
 type general_plugin_config = {
   enabled : bool;
   system_prompt_override : string option;
+  scout_enabled : bool;
+  scout_model_tier : model_tier;
+  deep_reviewer_model_tier : model_tier;
+  max_leads : int;
 }
 
 val general_plugin_config_to_json : general_plugin_config -> Yojson.Basic.t
@@ -66,6 +83,7 @@ type security_plugin_config = {
   always_analyze_vuln_classes : vuln_class list;
   triage_model_tier : model_tier;
   analysis_model_tier : model_tier;
+  analysis_effort : Effort.t option;
   validator_model_tier : model_tier;
   confidence_threshold : confidence;
   memory_max_tokens : int;
@@ -93,8 +111,9 @@ type config = {
   max_diff_lines : int;
   max_files : int;
   max_tokens_per_review : int;
-  model : string;
+  model : string option;
   ignored_paths : string list;
+  ignored_file_regexes : string list;
   ignore_generated_files : bool;
   ignored_authors : string list;
   auto_review_pr_open : bool;

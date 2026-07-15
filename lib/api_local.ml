@@ -27,6 +27,14 @@ let agent_response_map : (string * string) list ref = ref []
 let set_agent_response_map entries = agent_response_map := entries
 let clear_agent_response_map () = agent_response_map := []
 
+(** Records the last [input] string passed to [Agent_runner.run], keyed by
+    agent config name. Lets tests assert on what a given agent actually
+    received (e.g. that lead-capping shrank the deep reviewer's input). *)
+let recorded_agent_inputs : (string * string) list ref = ref []
+
+let recorded_agent_input name = List.assoc_opt name !recorded_agent_inputs
+let clear_recorded_agent_inputs () = recorded_agent_inputs := []
+
 (** When set, the next [get_pr_diff] call returns this value instead of reading
     a mock file, then resets. Lets tests inject diff-fetch failures (e.g. the
     GitHub 406 "too_large" response) and empty/oversized diffs. *)
@@ -297,7 +305,9 @@ module Agent_runner : Api.Agent_runner = struct
       validator_output ~path:"src/main.ml" ~line:14 ~severity:Review_types.Warning ~category:Review_types.Error_handling
         ~message:"The `process` function can raise exceptions but the result is used without error handling."
 
-  let run ~ctx:_ ~repo_url:_ ?model_id:_ ?tools:_ ?debug_dir:_ ?log_context:_ ~config ~input:_ () =
+  let run ~ctx:_ ~repo_url:_ ?model_id:_ ?tools:_ ?debug_dir:_ ?log_context:_ ~config ~input () =
+    recorded_agent_inputs :=
+      (config.Agent_runner.name, input) :: List.remove_assoc config.Agent_runner.name !recorded_agent_inputs;
     match List.assoc_opt config.Agent_runner.name !agent_response_map, config.Agent_runner.name with
     | None, "general_validator" -> Lwt.return (result (default_validator_output ()))
     | path_opt, _ ->

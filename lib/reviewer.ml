@@ -51,7 +51,7 @@ let github_event_attrs event =
 
 let prepare_error_to_string = function
   | Github_source.Fetch_failed error -> Printf.sprintf "fetch_failed: %s" (Http_util.error_to_string error)
-  | Github_source.Empty -> "empty"
+  | Github_source.Empty -> "no_reviewable_files"
   | Github_source.Too_large total_lines -> Printf.sprintf "too_large: %d lines" total_lines
   | Github_source.Too_many_files file_count -> Printf.sprintf "too_many_files: %d files" file_count
 
@@ -64,7 +64,7 @@ let pr_prepare_error_to_string (error : Github_source.pr_prepare_error) = prepar
    rejection dimensions, so only the relevant size/limit pair is emitted and the
    other is left unset. *)
 let prepare_error_attrs ~(config : Config_types.config) = function
-  | Github_source.Empty -> [ "reviewotron.prepare.reject_category", `String "empty" ]
+  | Github_source.Empty -> [ "reviewotron.prepare.reject_category", `String "no_reviewable_files" ]
   | Github_source.Fetch_failed _ -> [ "reviewotron.prepare.reject_category", `String "fetch_failed" ]
   | Github_source.Too_large total_lines ->
     [
@@ -314,16 +314,14 @@ struct
           let%lwt () = remove_progress_reaction ~log_context ~ctx ~repo_url:job.repo_key progress in
           Lwt.fail exn)
 
-  (** Surface a PR-preparation failure to the author instead of silently
-      dropping it.  An [Empty] diff is a successful no-op (acknowledge with an
-      issue comment); the size/limit and fetch failures get an explanatory
-      issue comment.
+  (** Surface a PR-preparation non-review outcome to the author instead of
+      silently dropping it.  An [Empty] diff gets an explicit skip comment; the
+      size/limit and fetch failures get an explanatory issue comment.
 
       The PR is recorded as reviewed — suppressing retries on the same head SHA
-      — only for terminal outcomes whose notice was actually delivered: a
-      successfully posted limit/too-large comment, or the empty no-op.  A failed
-      comment post, or a transient ([Fetch_failed]) error, leaves the PR
-      un-recorded so the next webhook retries. *)
+      — only when a terminal notice was actually delivered.  A failed comment
+      post, or a transient ([Fetch_failed]) error, leaves the PR un-recorded so
+      the next webhook retries. *)
   let handle_pr_prepare_error ~ctx ~repo_url ~number (pr_error : Github_source.pr_prepare_error) =
     let Github_source.{ error; head_sha } = pr_error in
     let log_context = pr_notice_log_context ~repo_url ~number head_sha in
@@ -350,14 +348,12 @@ struct
     in
     match error with
     | Empty ->
-      (* Nothing to review after filtering — a successful no-op, not a failure.
-         Signal "looked, all good" with a visible PR comment. *)
       let%lwt post_result =
-        publish_span ~kind:"empty_comment" (fun () ->
-          publish_success_comment ~log_context ~head_sha ~ctx ~repo_url ~number)
+        publish_span ~kind:"filtered_out_comment" (fun () ->
+          Sink.publish_failure_comment ?head_sha ?log_context ~ctx ~repo_url ~number No_reviewable_files)
       in
       record_pr_notice_if_delivered ~ctx ~repo_url ~number ~head_sha post_result;
-      record_notice_outcome ~publish_kind:"empty_comment" post_result (Result.is_ok post_result);
+      record_notice_outcome ~publish_kind:"filtered_out_comment" post_result (Result.is_ok post_result);
       Lwt.return_unit
     | Too_large total_lines ->
       let config = Context.get_config ctx ~repo_key:repo_url in
@@ -381,14 +377,16 @@ struct
         | Diff_too_large_remote _ ->
           record_pr_notice_if_delivered ~ctx ~repo_url ~number ~head_sha post_result;
           Result.is_ok post_result
-        | Fetch_failed _ | Too_many_lines _ | Too_many_files _ | Publish_failed _ -> false
+        | No_reviewable_files | Fetch_failed _ | Too_many_lines _ | Too_many_files _ | Publish_failed _ -> false
       in
       record_notice_outcome ~publish_kind:"fetch_failed_comment" post_result recorded_reviewed;
       Lwt.return_unit
 
   let prepare_error_reason ~(config : Config_types.config) (error : Github_source.prepare_error) =
     match error with
-    | Empty -> "All files were filtered out, so there was nothing to review."
+    | Empty ->
+      "All changed files were excluded by the configured path, file-regex, or generated-file filters; no code was \
+       analyzed or approved."
     | Too_large total_lines ->
       Printf.sprintf "The diff is %d lines, which is over reviewotron's limit of %d." total_lines config.max_diff_lines
     | Too_many_files file_count ->
@@ -397,7 +395,8 @@ struct
     match Review_failure.classify_fetch_error fetch_error with
     | Diff_too_large_remote detail -> Printf.sprintf "The diff is too large for the GitHub API to serve.\n\n%s" detail
     | Fetch_failed detail -> Printf.sprintf "I couldn't fetch the diff from GitHub.\n\n%s" detail
-    | Too_many_lines _ | Too_many_files _ | Publish_failed _ -> Http_util.error_to_string fetch_error
+    | No_reviewable_files | Too_many_lines _ | Too_many_files _ | Publish_failed _ ->
+      Http_util.error_to_string fetch_error
 
   let push_failure_message ~(push : Github_types.commit_pushed_notification) ~findings ~security_error ?reason () =
     let text = Printf.sprintf ":warning: *Code Review Failed* for push to `develop` by %s" push.pusher.name in
@@ -438,6 +437,30 @@ struct
       let text, attachment = push_failure_message ~push ~findings ~security_error ?reason () in
       SL.post_message ~ctx ~channel ~text ~attachments:[ attachment ] ()
 
+  let push_skip_message ~(push : Github_types.commit_pushed_notification) ~reason () =
+    let text =
+      Printf.sprintf ":information_source: *Code Review Skipped* for push to `develop` by %s" push.pusher.name
+    in
+    let attachment =
+      Slack_types.
+        {
+          color = "#6c757d";
+          title = Printf.sprintf "Push by %s — %d commits" push.pusher.name (List.length push.commits);
+          title_link = push.compare;
+          text = reason;
+          fields = [];
+          footer = Some "reviewotron";
+        }
+    in
+    text, attachment
+
+  let post_push_skip_to_slack ~ctx ~(config : Config_types.config) ~push ~reason () =
+    match config.slack_channel with
+    | None -> Lwt.return_unit
+    | Some channel ->
+      let text, attachment = push_skip_message ~push ~reason () in
+      SL.post_message ~ctx ~channel ~text ~attachments:[ attachment ] ()
+
   let handle_push_prepare_error ~ctx ~(config : Config_types.config) (push : Github_types.commit_pushed_notification)
     (error : Github_source.prepare_error) =
     let log_context = push_log_context push in
@@ -452,7 +475,9 @@ struct
     in
     match error with
     | Empty ->
-      log#info "%spush %s completed with empty filtered diff; recording no-op review" log_prefix push.after;
+      let reason = prepare_error_reason ~config error in
+      log#info "%spush %s skipped: %s" log_prefix push.after reason;
+      let%lwt () = post_push_skip_to_slack ~ctx ~config ~push ~reason () in
       record_terminal ()
     | Too_large _ | Too_many_files _ ->
       let reason = prepare_error_reason ~config error in
@@ -462,7 +487,7 @@ struct
     | Diff_too_large_remote _ ->
       let reason = prepare_error_reason ~config error in
       post_terminal_failure ~reason ()
-    | Fetch_failed _ | Too_many_lines _ | Too_many_files _ | Publish_failed _ ->
+    | No_reviewable_files | Fetch_failed _ | Too_many_lines _ | Too_many_files _ | Publish_failed _ ->
       let reason = prepare_error_reason ~config error in
       post_push_failure_to_slack ~ctx ~config ~push ~findings:[] ~security_error:false ~reason ()
 

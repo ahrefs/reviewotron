@@ -193,7 +193,7 @@ let test_config_layers_precedence_and_deep_merge () =
         with
         | Error msg -> fail msg
         | Ok config ->
-          check string "scalar precedence" "inline" config.model;
+          check (option string) "scalar precedence" (Some "inline") config.model;
           check (list string) "array replacement" [ "local" ] config.ignored_paths;
           check int "nested override" 3 config.review_plugins.security.memory_max_tokens;
           check bool "nested value from XDG" true config.review_plugins.security.debug_artifacts;

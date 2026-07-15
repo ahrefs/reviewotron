@@ -1,0 +1,101 @@
+{
+  "leads": [
+    {
+      "path": "lib/a.ml",
+      "line": 1,
+      "end_line": null,
+      "hypothesis": "Lead 0: guard removed on the error branch, callers may now see an unhandled exception.",
+      "category": "bug",
+      "confidence": "high"
+    },
+    {
+      "path": "lib/b.ml",
+      "line": 2,
+      "end_line": null,
+      "hypothesis": "Lead 1: retry count changed without updating the timeout budget.",
+      "category": "performance",
+      "confidence": "medium"
+    },
+    {
+      "path": "lib/c.ml",
+      "line": 3,
+      "end_line": null,
+      "hypothesis": "Lead 2: enum case added but not handled in the matching serializer.",
+      "category": "bug",
+      "confidence": "low"
+    },
+    {
+      "path": "lib/d.ml",
+      "line": 4,
+      "end_line": null,
+      "hypothesis": "Lead 3: lock scope narrowed, shared counter may now race.",
+      "category": "bug",
+      "confidence": "high"
+    },
+    {
+      "path": "lib/e.ml",
+      "line": 5,
+      "end_line": null,
+      "hypothesis": "Lead 4: rounding mode changed silently for currency conversion.",
+      "category": "logic",
+      "confidence": "medium"
+    },
+    {
+      "path": "lib/f.ml",
+      "line": 6,
+      "end_line": null,
+      "hypothesis": "Lead 5: new input path bypasses the existing sanitizer.",
+      "category": "security",
+      "confidence": "low"
+    },
+    {
+      "path": "lib/g.ml",
+      "line": 7,
+      "end_line": null,
+      "hypothesis": "Lead 6: off-by-one candidate in the new pagination bound.",
+      "category": "bug",
+      "confidence": "high"
+    },
+    {
+      "path": "lib/h.ml",
+      "line": 8,
+      "end_line": null,
+      "hypothesis": "Lead 7: resource acquired on the new branch but not released on early return.",
+      "category": "error-handling",
+      "confidence": "medium"
+    },
+    {
+      "path": "lib/i.ml",
+      "line": 9,
+      "end_line": null,
+      "hypothesis": "Lead 8: async task failure is no longer observed after this change.",
+      "category": "bug",
+      "confidence": "low"
+    },
+    {
+      "path": "lib/j.ml",
+      "line": 10,
+      "end_line": null,
+      "hypothesis": "Lead 9: default value changed for a public config field with no migration note.",
+      "category": "logic",
+      "confidence": "high"
+    },
+    {
+      "path": "lib/k.ml",
+      "line": 11,
+      "end_line": null,
+      "hypothesis": "Lead 10: N+1 query pattern introduced in the new loop over results.",
+      "category": "performance",
+      "confidence": "medium"
+    },
+    {
+      "path": "lib/l.ml",
+      "line": 12,
+      "end_line": null,
+      "hypothesis": "Lead 11: copy-pasted branch with a missed rename leaves the wrong field compared.",
+      "category": "bug",
+      "confidence": "low"
+    }
+  ],
+  "skip_note": ""
+}
