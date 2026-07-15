@@ -377,7 +377,9 @@ let test_config_review_plugins_defaults () =
        config.review_plugins.security.vuln_classes);
   (check int) "always_analyze_vuln_classes default empty" 0
     (List.length config.review_plugins.security.always_analyze_vuln_classes);
-  (check bool) "analysis_effort default unset" true (Option.is_none config.review_plugins.security.analysis_effort);
+  (match config.review_plugins.security.analysis_effort with
+  | Some Config_types.Effort.Medium -> ()
+  | Some Config_types.Effort.Low | Some High | Some Xhigh | None -> fail "expected medium analysis effort by default");
   (check int) "memory_max_tokens" 5000 config.review_plugins.security.memory_max_tokens;
   (check bool) "metrics_artifacts default off" false config.review_plugins.security.metrics_artifacts;
   (check bool) "debug_artifacts default off" false config.review_plugins.security.debug_artifacts;

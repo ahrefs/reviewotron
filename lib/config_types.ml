@@ -221,8 +221,8 @@ type security_plugin_config = {
   analysis_effort : Effort.t option;
      [@json.option]
      [@jsonschema.description
-       "OpenRouter reasoning effort for per-class analysis agents. Unset keeps the provider default; direct Anthropic \
-        calls cannot encode this until ocaml-ai-sdk adds native effort support."]
+       "OpenRouter reasoning effort for per-class analysis agents. Defaults to medium; set null to keep the provider \
+        default. Direct Anthropic calls cannot encode this until ocaml-ai-sdk adds native effort support."]
   validator_model_tier : model_tier;
      [@json.default Standard] [@jsonschema.description "Model tier for the adversarial validator."]
   confidence_threshold : confidence;
@@ -259,7 +259,7 @@ let default_security_plugin_config =
     always_analyze_vuln_classes = [];
     triage_model_tier = Fast;
     analysis_model_tier = Standard;
-    analysis_effort = None;
+    analysis_effort = Some Effort.Medium;
     validator_model_tier = Standard;
     confidence_threshold = Medium;
     memory_max_tokens = 5000;
