@@ -3,6 +3,7 @@ open Reviewotron_lib
 open Cmdliner
 
 let log = Log.from "reviewotron"
+let cli_version = "dev"
 
 module Review = Local_review.Make (Api_remote.Agent_runner)
 module Feedback_collector_remote = Feedback_collector.Make (Api_remote.Github)
@@ -788,7 +789,7 @@ let feedback_report_cmd =
 
 let smart_local_review_cmd =
   let doc = "Review the current Git changes, or a local path when no Git delta applies." in
-  let info = Cmd.info "reviewotron" ~doc in
+  let info = Cmd.info "reviewotron" ~version:cli_version ~doc in
   let term =
     Term.(
       const smart_local_review_action
@@ -815,7 +816,7 @@ let smart_local_review_cmd =
 
 let default, info =
   let doc = "Reviewotron - an agentic code review bot" in
-  Term.(ret (const (`Help (`Pager, None)))), Cmd.info "reviewotron" ~doc
+  Term.(ret (const (`Help (`Pager, None)))), Cmd.info "reviewotron" ~version:cli_version ~doc
 
 let reserved_commands =
   [ "run"; "check"; "review-diff"; "review-path"; "collect-feedback"; "feedback-report"; "config-help" ]
@@ -823,18 +824,27 @@ let reserved_commands =
 let is_help_argument argument =
   String.equal argument "--help" || String.equal argument "-h" || String.starts_with ~prefix:"--help=" argument
 
+let is_version_argument argument = String.equal argument "--version" || String.equal argument "-version"
+
 let () =
-  let cmds =
-    [ run_cmd; check_cmd; review_diff_cmd; review_path_cmd; collect_feedback_cmd; feedback_report_cmd; config_help_cmd ]
-  in
-  let group = Cmd.group ~default info cmds in
-  let command =
-    match Array.length Sys.argv with
-    | 0 | 1 -> smart_local_review_cmd
-    | _ ->
-      let first = Sys.argv.(1) in
-      (match List.exists (String.equal first) reserved_commands || is_help_argument first with
-      | true -> group
-      | false -> smart_local_review_cmd)
-  in
-  exit @@ Cmd.eval command
+  match Array.length Sys.argv > 1 && String.equal Sys.argv.(1) "-version" with
+  | true -> Printf.printf "%s\n" cli_version
+  | false ->
+    let cmds =
+      [
+        run_cmd; check_cmd; review_diff_cmd; review_path_cmd; collect_feedback_cmd; feedback_report_cmd; config_help_cmd;
+      ]
+    in
+    let group = Cmd.group ~default info cmds in
+    let command =
+      match Array.length Sys.argv with
+      | 0 | 1 -> smart_local_review_cmd
+      | _ ->
+        let first = Sys.argv.(1) in
+        (match
+           List.exists (String.equal first) reserved_commands || is_help_argument first || is_version_argument first
+         with
+        | true -> group
+        | false -> smart_local_review_cmd)
+    in
+    exit @@ Cmd.eval command

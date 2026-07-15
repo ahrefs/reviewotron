@@ -12,6 +12,8 @@ else
 fi
 
 run_reviewotron --help >/dev/null
+run_reviewotron --version >/dev/null
+run_reviewotron -version >/dev/null
 run_reviewotron review-diff --help >/dev/null
 run_reviewotron review-path --help >/dev/null
 run_reviewotron config-help >/dev/null
