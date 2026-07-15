@@ -47,3 +47,8 @@
  (libraries reviewotron_lib alcotest extlib fmt)
  (deps
   (glob_files_rec mock_api_responses/github/*)))
+
+(test
+ (name test_local_cli)
+ (modules test_local_cli)
+ (libraries reviewotron_lib alcotest extlib extunix yojson))

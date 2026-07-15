@@ -113,3 +113,31 @@ let ingest path =
     (match file_diffs with
     | [] -> Error (Printf.sprintf "no reviewable files found in %s" path)
     | _ :: _ -> Ok { root; diff_text = Diff_parser.to_string file_diffs; title; file_count = List.length file_diffs })
+
+let has_hidden_or_skipped_component path =
+  String.split_on_char '/' path |> List.exists (fun component -> is_hidden component || should_skip_dir component)
+
+let safe_relative_path path =
+  match Filename.is_relative path with
+  | false -> false
+  | true ->
+    String.split_on_char '/' path
+    |> List.for_all (fun component ->
+      not (String.equal component "" || String.equal component "." || String.equal component ".."))
+
+let regular_file ~root path =
+  match Unix.lstat (Filename.concat root path) with
+  | { Unix.st_kind = Unix.S_REG; _ } -> true
+  | _ -> false
+  | exception Unix.Unix_error _ -> false
+
+let added_files_diff ~root ~paths =
+  let root = Local_git.normalize_path root in
+  let file_diffs =
+    paths
+    |> List.sort_uniq String.compare
+    |> List.filter (fun path -> safe_relative_path path && not (has_hidden_or_skipped_component path))
+    |> List.filter (regular_file ~root)
+    |> List.filter_map (fun path -> Option.map (added_file_diff ~path) (read_embeddable ~root path))
+  in
+  Diff_parser.to_string file_diffs

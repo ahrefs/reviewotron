@@ -365,6 +365,50 @@ let test_llm_provider_usage_metadata_combines_openrouter_costs () =
 let test_openrouter_requires_supported_parameters () =
   (check (option bool)) "require_parameters" (Some true) Llm_provider.anthropic_upstream_prefs.require_parameters
 
+let test_openrouter_maps_error_finish_reason () =
+  let is_error =
+    match Ai_provider_openrouter.Convert_response.map_finish_reason (Some "error") with
+    | Ai_provider.Finish_reason.Error -> true
+    | Ai_provider.Finish_reason.Stop | Ai_provider.Finish_reason.Length | Ai_provider.Finish_reason.Tool_calls
+    | Ai_provider.Finish_reason.Content_filter | Ai_provider.Finish_reason.Other _ | Ai_provider.Finish_reason.Unknown
+      ->
+      false
+  in
+  (check bool) "error finish reason" true is_error
+
+let test_openrouter_embedded_error_is_provider_error () =
+  let response =
+    `Assoc
+      [
+        ( "choices",
+          `List
+            [
+              `Assoc
+                [
+                  "index", `Int 0;
+                  "message", `Assoc [ "role", `String "assistant"; "content", `String "" ];
+                  "finish_reason", `String "error";
+                  ( "error",
+                    `Assoc
+                      [
+                        "code", `Int 502;
+                        "message", `String "Provider disconnected";
+                        ( "metadata",
+                          `Assoc [ "provider_name", `String "Anthropic"; "error_type", `String "provider_unavailable" ]
+                        );
+                      ] );
+                ];
+            ] );
+      ]
+  in
+  try
+    ignore (Ai_provider_openrouter.Convert_response.parse_response response : Ai_provider.Generate_result.t);
+    fail "expected an embedded OpenRouter error to raise"
+  with Ai_provider.Provider_error.Provider_error error ->
+    let message = Ai_provider.Provider_error.to_string error in
+    (check bool) "provider error preserves upstream message" true (contains_sub ~sub:"Provider disconnected" message);
+    (check bool) "provider error preserves retry status" true (contains_sub ~sub:"HTTP 502" message)
+
 let test_config_review_plugins_defaults () =
   let config = Config_types.config_of_json (Melange_json.of_string {|{}|}) in
   (check bool) "general enabled" true config.review_plugins.general.enabled;
@@ -384,6 +428,7 @@ let test_config_review_plugins_defaults () =
   (check bool) "metrics_artifacts default off" false config.review_plugins.security.metrics_artifacts;
   (check bool) "debug_artifacts default off" false config.review_plugins.security.debug_artifacts;
   (check bool) "show_review_cost" false config.show_review_cost;
+  (check bool) "agent debug_artifacts default off" false config.debug_artifacts;
   (check int) "ignored_file_regexes default empty" 0 (List.length config.ignored_file_regexes);
   (check bool) "ignore_generated_files default on" true config.ignore_generated_files
 
@@ -391,6 +436,7 @@ let test_config_review_plugins_explicit () =
   let json =
     {|{
     "show_review_cost": true,
+    "debug_artifacts": true,
     "ignored_file_regexes": ["^snapshots/.*\\.golden$"],
     "ignore_generated_files": false,
     "review_plugins": {
@@ -411,6 +457,7 @@ let test_config_review_plugins_explicit () =
   in
   let config = Config_types.config_of_json (Melange_json.of_string json) in
   (check bool) "show_review_cost" true config.show_review_cost;
+  (check bool) "agent debug_artifacts" true config.debug_artifacts;
   (check (list string)) "ignored_file_regexes explicit" [ "^snapshots/.*\\.golden$" ] config.ignored_file_regexes;
   (check bool) "ignore_generated_files explicit off" false config.ignore_generated_files;
   (check bool) "general disabled" false config.review_plugins.general.enabled;
@@ -4188,10 +4235,22 @@ let debug_dir_test_job ?(repo_key = Test_helpers.test_repo_url) ?(head_sha = "fb
     source_kind = Github;
   }
 
-let test_debug_dir_without_feedback_store_uses_relative_debug () =
-  let ctx = Test_helpers.make_test_context () in
-  let dir = Engine_debug_test.debug_dir_for_job ~ctx (debug_dir_test_job ()) in
-  (check string) "relative debug dir" "debug/org-monorepo/fb15a13a" dir
+let test_local_runtime_dirs_use_xdg_state () =
+  with_temp_feedback_store_dir (fun state_path _paths _store ->
+    let state_home = Filename.dirname state_path in
+    with_env_vars
+      [ "XDG_STATE_HOME", state_home ]
+      (fun () ->
+        let ctx = Test_helpers.make_test_context () in
+        let debug_dir = Engine_debug_test.debug_dir_for_job ~ctx (debug_dir_test_job ()) in
+        let memory_dir = Engine_debug_test.memory_dir_for_context ~ctx in
+        let runtime_root = Filename.concat state_home "reviewotron" in
+        let expected_debug = Filename.concat (Filename.concat runtime_root "debug") "org-monorepo/fb15a13a" in
+        let expected_memory = Filename.concat runtime_root "memory" in
+        (check string) "external debug dir" expected_debug debug_dir;
+        (check string) "external memory dir" expected_memory memory_dir;
+        (check bool) "debug dir is absolute" false (Filename.is_relative debug_dir);
+        (check bool) "memory dir is absolute" false (Filename.is_relative memory_dir)))
 
 let test_debug_dir_with_feedback_store_uses_feedback_sibling () =
   with_temp_feedback_store_dir (fun _state_path paths store ->
@@ -4199,11 +4258,6 @@ let test_debug_dir_with_feedback_store_uses_feedback_sibling () =
     let dir = Engine_debug_test.debug_dir_for_job ~ctx (debug_dir_test_job ()) in
     let expected = Filename.concat (Filename.concat (Filename.dirname paths.evidence_root) "debug") "org-monorepo" in
     (check string) "feedback sibling debug dir" (Filename.concat expected "fb15a13a") dir)
-
-let test_memory_dir_without_feedback_store_uses_relative_memory () =
-  let ctx = Test_helpers.make_test_context () in
-  let dir = Engine_debug_test.memory_dir_for_context ~ctx in
-  (check string) "relative memory dir" "memory" dir
 
 let test_memory_dir_with_feedback_store_uses_feedback_sibling () =
   with_temp_feedback_store_dir (fun _state_path paths store ->
@@ -6801,9 +6855,13 @@ let test_general_review_agent_config_enables_thinking () =
 
 module General_plugin_agent_runner = struct
   let outputs : (string * Yojson.Basic.t) list ref = ref []
+  let debug_dirs : string option list ref = ref []
   let set_outputs entries = outputs := entries
+  let reset_debug_dirs () = debug_dirs := []
+  let get_debug_dirs () = List.rev !debug_dirs
 
-  let run ~ctx:_ ~repo_url:_ ?model_id:_ ?tools:_ ?debug_dir:_ ?log_context:_ ~config ~input:_ () =
+  let run ~ctx:_ ~repo_url:_ ?model_id:_ ?tools:_ ?debug_dir ?log_context:_ ~config ~input:_ () =
+    debug_dirs := debug_dir :: !debug_dirs;
     match List.assoc_opt config.Agent_runner.name !outputs with
     | None -> Lwt.return (Error (Printf.sprintf "missing mock output for %s" config.Agent_runner.name))
     | Some output ->
@@ -6870,11 +6928,38 @@ let general_plugin_legacy_config =
 
 let run_general_plugin_with_outputs outputs =
   Test_helpers.reset_test_state ();
+  General_plugin_agent_runner.reset_debug_dirs ();
   General_plugin_agent_runner.set_outputs outputs;
   let ctx = Test_helpers.make_test_context ~config:general_plugin_legacy_config () in
   Lwt_main.run
     (General_plugin_test.run_review ~ctx ~repo_url:"https://github.com/org/repo" ~config:general_plugin_legacy_config
        ~diff_text:"diff" ~metadata:general_plugin_metadata ())
+
+let test_general_agent_debug_dumps_are_opt_in () =
+  let outputs =
+    [
+      "general_review", read_json "mock_api_responses/claude/review_response.json";
+      "general_validator", validator_echoes_damaged_confirmed_finding;
+    ]
+  in
+  let run ~debug_artifacts =
+    Test_helpers.reset_test_state ();
+    General_plugin_agent_runner.reset_debug_dirs ();
+    General_plugin_agent_runner.set_outputs outputs;
+    let config = { general_plugin_legacy_config with debug_artifacts } in
+    let ctx = Test_helpers.make_test_context ~config () in
+    let _result, _costs =
+      Lwt_main.run
+        (General_plugin_test.run_review ~ctx ~repo_url:"https://github.com/org/repo" ~config ~diff_text:"diff"
+           ~metadata:general_plugin_metadata ~debug_dir:"debug-test" ())
+    in
+    General_plugin_agent_runner.get_debug_dirs ()
+  in
+  (check (list (option string))) "debug dumps disabled" [ None; None ] (run ~debug_artifacts:false);
+  (check (list (option string)))
+    "debug dumps enabled"
+    [ Some "debug-test"; Some "debug-test" ]
+    (run ~debug_artifacts:true)
 
 let test_general_review_filters_low_value_and_validates () =
   let result, costs =
@@ -7144,6 +7229,8 @@ let () =
           test_case "model ids no regression" `Quick test_model_ids_no_regression;
           test_case "llm_provider usage metadata cost" `Quick test_llm_provider_usage_metadata_combines_openrouter_costs;
           test_case "openrouter requires supported parameters" `Quick test_openrouter_requires_supported_parameters;
+          test_case "openrouter maps error finish reason" `Quick test_openrouter_maps_error_finish_reason;
+          test_case "openrouter embedded error" `Quick test_openrouter_embedded_error_is_provider_error;
           test_case "review_plugins defaults" `Quick test_config_review_plugins_defaults;
           test_case "review_plugins explicit" `Quick test_config_review_plugins_explicit;
           test_case "invalid ignored file regex rejected" `Quick test_config_rejects_invalid_ignored_file_regex;
@@ -7389,6 +7476,7 @@ let () =
         ] );
       ( "general_review_plugin",
         [
+          test_case "agent debug dumps are opt-in" `Quick test_general_agent_debug_dumps_are_opt_in;
           test_case "filters low-value candidates and validates" `Quick
             test_general_review_filters_low_value_and_validates;
           test_case "validator rejection drops finding" `Quick test_general_review_validator_rejection_drops_finding;
@@ -7499,11 +7587,8 @@ let () =
           test_case "paths derive from state" `Quick test_feedback_paths_from_state;
           test_case "paths are absolute" `Quick test_feedback_paths_are_absolute;
           test_case "paths derive from custom feedback dir" `Quick test_feedback_paths_from_custom_dir;
-          test_case "debug dir defaults to relative debug" `Quick
-            test_debug_dir_without_feedback_store_uses_relative_debug;
+          test_case "local runtime dirs use XDG state" `Quick test_local_runtime_dirs_use_xdg_state;
           test_case "debug dir uses feedback sibling" `Quick test_debug_dir_with_feedback_store_uses_feedback_sibling;
-          test_case "memory dir defaults to relative memory" `Quick
-            test_memory_dir_without_feedback_store_uses_relative_memory;
           test_case "memory dir uses feedback sibling" `Quick test_memory_dir_with_feedback_store_uses_feedback_sibling;
           test_case "review job log context" `Quick test_review_job_log_context;
           test_case "marker and deterministic ids" `Quick test_feedback_marker_and_id_helpers;

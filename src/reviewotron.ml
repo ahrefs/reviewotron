@@ -3,6 +3,7 @@ open Reviewotron_lib
 open Cmdliner
 
 let log = Log.from "reviewotron"
+let cli_version = Build_info.version
 
 module Review = Local_review.Make (Api_remote.Agent_runner)
 module Feedback_collector_remote = Feedback_collector.Make (Api_remote.Github)
@@ -333,20 +334,23 @@ let build_local_context ~secrets_path ~api_key_flag ~openrouter_api_key_flag ~co
     in
     Ok (Context.make ~secrets ?config_filename ~state ())
 
-(* Config precedence: inline --config, then a config file in the root, then
-   built-in defaults. *)
+(* Local CLI config is layered separately from webhook/server config. *)
 let resolve_local_config ~ctx ~root ~inline_config =
-  match inline_config with
-  | Some json -> Context.parse_config json
-  | None -> Context.load_local_config ~root ~config_filename:(Context.config_filename ctx)
+  Config_loader.load_local ~root ~project_filename:(Context.config_filename ctx) ?inline_json:inline_config ()
 
 (* Local review runs the security pipeline by default (opt-out via --no-security),
    unlike the webhook path where it is off by default. The flag owns the on/off
    decision; --config still controls the security details (vuln_classes, model
    tiers, thresholds). *)
 let apply_local_plugin_defaults ~no_security (config : Config_types.config) =
-  let security = { config.review_plugins.security with enabled = not no_security } in
-  { config with review_plugins = { config.review_plugins with security } }
+  Config_loader.apply_local_plugin_defaults ~no_security config
+
+let combine_diff_text tracked_diff untracked_diff =
+  match tracked_diff, untracked_diff with
+  | "", diff | diff, "" -> diff
+  | tracked, untracked -> tracked ^ "\n" ^ untracked
+
+let untracked_diff ~root paths = Local_path.added_files_diff ~root ~paths
 
 let resolve_diff_source ~root ~base = function
   | Some "-" -> Ok (`Text (read_stdin ()), "Review diff from stdin")
@@ -357,7 +361,14 @@ let resolve_diff_source ~root ~base = function
   | Ok base ->
   match Local_git.diff_against_base ~root ~base with
   | Error msg -> Error msg
-  | Ok diff_text -> Ok (`Text diff_text, Local_git.title_for_base base)
+  | Ok tracked_diff ->
+  match Local_git.untracked_files ~root with
+  | Error msg -> Error msg
+  | Ok untracked_files ->
+    let diff_text = combine_diff_text tracked_diff (untracked_diff ~root untracked_files) in
+    (match String.equal diff_text "" with
+    | true -> Error "no changes to review"
+    | false -> Ok (`Text diff_text, Local_git.title_for_base base))
 
 let review_diff_action secrets_path api_key_flag openrouter_api_key_flag config_filename state_path logfile loglevel
   root repo_key change_key title base description_file diff_arg inline_config no_security output =
@@ -417,6 +428,63 @@ let review_path_action secrets_path api_key_flag openrouter_api_key_flag config_
         | Ok (ctx, root, repo_key, config, diff_text, title) ->
           run_local_review_lwt (fun () ->
             Review.review_diff_text_report ~ctx ~root ~repo_key ?change_key ~title ~description:"" ~diff_text ~config ())))
+  in
+  emit_local_result ~output result
+
+let smart_local_review_action secrets_path api_key_flag openrouter_api_key_flag config_filename state_path logfile
+  loglevel local_root repo_key change_key title base description_file inline_config no_security output requested_mode
+  path =
+  setup_logging logfile loglevel;
+  Mirage_crypto_rng_unix.use_default ();
+  let result =
+    guard_local_review (fun () ->
+      run_lwt_command ~command:"review" (fun () ->
+        match Local_mode.select ~requested_mode ~path ~root:local_root ~base with
+        | Error msg -> Lwt.return (Error msg)
+        | Ok (Local_mode.Review_path { path; project_root }) ->
+          let prepared =
+            let ( let* ) = Result.bind in
+            let* ctx =
+              build_local_context ~secrets_path ~api_key_flag ~openrouter_api_key_flag ~config_filename ~state_path
+            in
+            let* ingest = Local_path.ingest path in
+            let repo_key = resolve_repo_key ~root:project_root repo_key in
+            let* config = resolve_local_config ~ctx ~root:project_root ~inline_config in
+            let config = apply_local_plugin_defaults ~no_security config in
+            Context.set_config ctx ~repo_key config;
+            let* description = read_description_file description_file in
+            let title = CCOption.get_or ~default:ingest.Local_path.title title in
+            Ok (ctx, ingest.Local_path.root, repo_key, config, ingest.Local_path.diff_text, title, description)
+          in
+          (match prepared with
+          | Error msg -> Lwt.return (Error msg)
+          | Ok (ctx, root, repo_key, config, diff_text, title, description) ->
+            run_local_review_lwt (fun () ->
+              Review.review_diff_text_report ~ctx ~root ~repo_key ?change_key ~title ~description ~diff_text ~config ()))
+        | Ok (Local_mode.Review_diff { root; base; tracked_diff; untracked_files }) ->
+          let diff_text = combine_diff_text tracked_diff (untracked_diff ~root untracked_files) in
+          (match String.equal diff_text "" with
+          | true -> Lwt.return (Error "no changes to review")
+          | false ->
+            let prepared =
+              let ( let* ) = Result.bind in
+              let* ctx =
+                build_local_context ~secrets_path ~api_key_flag ~openrouter_api_key_flag ~config_filename ~state_path
+              in
+              let repo_key = resolve_repo_key ~root repo_key in
+              let* config = resolve_local_config ~ctx ~root ~inline_config in
+              let config = apply_local_plugin_defaults ~no_security config in
+              Context.set_config ctx ~repo_key config;
+              let* description = read_description_file description_file in
+              let title = CCOption.get_or ~default:(Local_git.title_for_base base) title in
+              Ok (ctx, repo_key, config, title, description)
+            in
+            (match prepared with
+            | Error msg -> Lwt.return (Error msg)
+            | Ok (ctx, repo_key, config, title, description) ->
+              run_local_review_lwt (fun () ->
+                Review.review_diff_text_report ~ctx ~root ~repo_key ?change_key ~title ~description ~diff_text ~config
+                  ())))))
   in
   emit_local_result ~output result
 
@@ -555,6 +623,17 @@ let diff_arg =
 let path_arg =
   let doc = "File or directory to review. Every file is treated as newly added; directories are walked recursively." in
   Arg.(required & pos 0 (some string) None & info [] ~docv:"PATH" ~doc)
+
+let smart_path_arg =
+  let doc = "File or directory to review. Defaults to the current directory." in
+  Arg.(value & pos 0 string "." & info [] ~docv:"PATH" ~doc)
+
+let local_mode =
+  let modes = [ "auto", Local_mode.Auto; "diff", Local_mode.Diff; "path", Local_mode.Path ] in
+  let doc =
+    "Review mode: $(b,auto) selects Git delta or path mode, $(b,diff) requires Git, $(b,path) reviews the path."
+  in
+  Arg.(value & opt (enum modes) Local_mode.Auto & info [ "mode" ] ~docv:"MODE" ~doc)
 
 let output_format =
   let formats = [ "markdown", Markdown; "json", Json ] in
@@ -708,13 +787,64 @@ let feedback_report_cmd =
   in
   Cmd.v info term
 
+let smart_local_review_cmd =
+  let doc = "Review the current Git changes, or a local path when no Git delta applies." in
+  let info = Cmd.info "reviewotron" ~version:cli_version ~doc in
+  let term =
+    Term.(
+      const smart_local_review_action
+      $ local_secrets
+      $ anthropic_api_key
+      $ openrouter_api_key
+      $ config_filename
+      $ state_path
+      $ logfile
+      $ loglevel
+      $ local_root
+      $ repo_key
+      $ change_key
+      $ title
+      $ base_ref
+      $ description_file
+      $ inline_config
+      $ no_security
+      $ output_format
+      $ local_mode
+      $ smart_path_arg)
+  in
+  Cmd.v info term
+
 let default, info =
   let doc = "Reviewotron - an agentic code review bot" in
-  Term.(ret (const (`Help (`Pager, None)))), Cmd.info "reviewotron" ~doc
+  Term.(ret (const (`Help (`Pager, None)))), Cmd.info "reviewotron" ~version:cli_version ~doc
+
+let reserved_commands =
+  [ "run"; "check"; "review-diff"; "review-path"; "collect-feedback"; "feedback-report"; "config-help" ]
+
+let is_help_argument argument =
+  String.equal argument "--help" || String.equal argument "-h" || String.starts_with ~prefix:"--help=" argument
+
+let is_version_argument argument = String.equal argument "--version" || String.equal argument "-version"
 
 let () =
-  let cmds =
-    [ run_cmd; check_cmd; review_diff_cmd; review_path_cmd; collect_feedback_cmd; feedback_report_cmd; config_help_cmd ]
-  in
-  let group = Cmd.group ~default info cmds in
-  exit @@ Cmd.eval group
+  match Array.length Sys.argv > 1 && String.equal Sys.argv.(1) "-version" with
+  | true -> Printf.printf "%s\n" cli_version
+  | false ->
+    let cmds =
+      [
+        run_cmd; check_cmd; review_diff_cmd; review_path_cmd; collect_feedback_cmd; feedback_report_cmd; config_help_cmd;
+      ]
+    in
+    let group = Cmd.group ~default info cmds in
+    let command =
+      match Array.length Sys.argv with
+      | 0 | 1 -> smart_local_review_cmd
+      | _ ->
+        let first = Sys.argv.(1) in
+        (match
+           List.exists (String.equal first) reserved_commands || is_help_argument first || is_version_argument first
+         with
+        | true -> group
+        | false -> smart_local_review_cmd)
+    in
+    exit @@ Cmd.eval command

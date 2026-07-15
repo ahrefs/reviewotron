@@ -39,7 +39,7 @@
   (mirage-crypto-pk
    (< 2.1.0))
   (ocaml-ai-sdk
-   (>= 0.4))
+   (>= 0.5))
   opentelemetry
   opentelemetry-lwt
   opentelemetry-client-ocurl-lwt

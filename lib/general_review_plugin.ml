@@ -275,6 +275,7 @@ module Make (AI : Api.Agent_runner) = struct
             ~prior_costs:(scout_costs @ deep_costs) ?debug_dir ?log_context ()))
 
   let run_review ~ctx ~repo_url ~(config : Config_types.config) ~diff_text ~metadata ?debug_dir ?log_context () =
+    let debug_dir = if config.debug_artifacts then debug_dir else None in
     let general_cfg = config.review_plugins.general in
     match general_cfg.scout_enabled with
     | true -> run_pipeline ~ctx ~repo_url ~config ~general_cfg ~diff_text ~metadata ?debug_dir ?log_context ()
