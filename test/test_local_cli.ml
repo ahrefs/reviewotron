@@ -20,14 +20,14 @@ let with_temp_dir f =
   Unix.mkdir path 0o755;
   Fun.protect ~finally:(fun () -> remove_tree path) (fun () -> f path)
 
+let set_env name = function
+  | Some value -> Unix.putenv name value
+  | None -> ExtUnix.All.unsetenv name
+
 let with_env name value f =
   let previous = Sys.getenv_opt name in
-  let value_or_empty = function
-    | Some value -> value
-    | None -> ""
-  in
-  Unix.putenv name (value_or_empty value);
-  Fun.protect ~finally:(fun () -> Unix.putenv name (value_or_empty previous)) f
+  set_env name value;
+  Fun.protect ~finally:(fun () -> set_env name previous) f
 
 let contains ~needle haystack =
   let needle_length = String.length needle in
@@ -239,6 +239,17 @@ let test_no_security_overrides_layered_config () =
       check bool "--no-security wins" false disabled.review_plugins.security.enabled;
       check bool "local default enables security" true enabled.review_plugins.security.enabled)
 
+let test_with_env_restores_unset_variable () =
+  let name = "REVIEWOTRON_LOCAL_CLI_TEST_UNSET" in
+  let previous = Sys.getenv_opt name in
+  ExtUnix.All.unsetenv name;
+  Fun.protect
+    ~finally:(fun () -> set_env name previous)
+    (fun () ->
+      with_env name (Some "set") (fun () ->
+        check (option string) "variable set in scope" (Some "set") (Sys.getenv_opt name));
+      check bool "variable restored to unset" true (Option.is_none (Sys.getenv_opt name)))
+
 let () =
   run "local_cli"
     [
@@ -257,4 +268,5 @@ let () =
           test_case "invalid layers fail clearly" `Quick test_invalid_config_layers_fail_clearly;
           test_case "no-security overrides config" `Quick test_no_security_overrides_layered_config;
         ] );
+      "environment", [ test_case "with_env restores unset variables" `Quick test_with_env_restores_unset_variable ];
     ]

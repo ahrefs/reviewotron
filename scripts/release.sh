@@ -67,5 +67,6 @@ mkdir -p "$extract_dir"
 tar -xzf "$work_dir/$archive_name" -C "$extract_dir"
 "$extract_dir/$release_name/reviewotron" --help >/dev/null
 
-release_url=$(gh release create "$tag" "$work_dir/$archive_name" "$work_dir/SHA256SUMS" --generate-notes --title "Reviewotron $tag")
+release_url=$(gh release create "$tag" "$work_dir/$archive_name" "$work_dir/SHA256SUMS" --draft --generate-notes --title "Reviewotron $tag")
+gh release edit "$tag" --draft=false >/dev/null
 printf '%s\n' "$release_url"
