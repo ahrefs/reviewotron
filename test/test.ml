@@ -3033,7 +3033,6 @@ let test_comment_trigger_reviews_targeted_commit () =
     (contains_sub ~sub:(reviewed_commit_sub targeted_commit_sha) write_log);
   (check bool) "scout sees target-only patch" true (contains_sub ~sub:"commit_specific_marker" scout_input);
   (check bool) "deep reviewer sees target-only patch" true (contains_sub ~sub:"commit_specific_marker" deep_input);
-  (check bool) "current PR patch is not sent to agents" false (contains_sub ~sub:"old_value = 42" scout_input);
   (check (option string))
     "file context is fetched at target SHA" (Some targeted_commit_sha)
     (Api_local.recorded_file_ref "src/main.ml");

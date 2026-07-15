@@ -531,8 +531,10 @@ struct
     in
     match error with
     | Target_commit_not_in_pr _ | Ambiguous_target_commit _ ->
-      let reason = prepare_error_reason ~config error in
-      post_push_failure_to_slack ~ctx ~config ~push ~findings:[] ~security_error:false ~reason ()
+      (* Targeted-commit resolution only runs on the PR comment path, which
+         supplies [?commit]; the push path never does, so these variants cannot
+         reach here. *)
+      invalid_arg "handle_push_prepare_error: targeted-commit error on push path"
     | Empty ->
       let reason = prepare_error_reason ~config error in
       log#info "%spush %s skipped: %s" log_prefix push.after reason;
