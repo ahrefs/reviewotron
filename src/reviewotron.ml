@@ -3,7 +3,7 @@ open Reviewotron_lib
 open Cmdliner
 
 let log = Log.from "reviewotron"
-let cli_version = "dev"
+let cli_version = Build_info.version
 
 module Review = Local_review.Make (Api_remote.Agent_runner)
 module Feedback_collector_remote = Feedback_collector.Make (Api_remote.Github)

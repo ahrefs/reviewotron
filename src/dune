@@ -12,3 +12,10 @@
   mirage-crypto-rng.unix)
  (preprocess
   (pps lwt_ppx)))
+
+(rule
+ (targets build_info.ml)
+ (action
+  (with-stdout-to
+   %{targets}
+   (echo "let version = \"%{env:REVIEWOTRON_VERSION=dev}\""))))

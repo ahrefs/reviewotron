@@ -44,7 +44,7 @@ if gh release view "$tag" >/dev/null 2>&1; then
 fi
 
 dune runtest
-dune build --profile=release src/reviewotron.exe
+REVIEWOTRON_VERSION="$version" dune build --profile=release src/reviewotron.exe
 
 release_name="reviewotron-v${version}-linux-x86_64-nspawn"
 archive_name="${release_name}.tar.gz"
@@ -65,7 +65,10 @@ fi
 extract_dir="$work_dir/extract"
 mkdir -p "$extract_dir"
 tar -xzf "$work_dir/$archive_name" -C "$extract_dir"
-"$extract_dir/$release_name/reviewotron" --help >/dev/null
+binary="$extract_dir/$release_name/reviewotron"
+"$binary" --help >/dev/null
+actual_version=$("$binary" --version)
+[[ "$actual_version" == "$version" ]] || die "built binary reports $actual_version, expected $version"
 
 release_url=$(gh release create "$tag" "$work_dir/$archive_name" "$work_dir/SHA256SUMS" --draft --generate-notes --title "Reviewotron $tag")
 gh release edit "$tag" --draft=false >/dev/null
