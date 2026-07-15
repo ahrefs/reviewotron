@@ -552,9 +552,13 @@ For GitHub webhooks, this prevents duplicate reviews — if the same PR at the s
 
 Without `--state`, state is in-memory only and lost on restart. This means reviews may be duplicated after a server restart.
 
+Local reviews do not write state, feedback, memory, or debug artifacts into the
+reviewed working tree by default. `--state` and `--feedback-dir` are explicit
+persistence locations; choose paths outside the repository when using them.
+
 ### Security Memory Files
 
-The security pipeline maintains per-repo memory files at `memory/{repo-slug}.md` in in-memory/local mode. In persistent server mode, memory lives beside feedback/debug data; for example, if feedback evidence is under `./var/reviewotron-feedback-evidence/`, memory files go under `./var/memory/{repo-slug}.md`. These are plain-text markdown files (target ~5000 tokens) that accumulate knowledge about the repo:
+The security pipeline maintains per-repo memory files outside the working tree by default: under `$XDG_STATE_HOME/reviewotron/memory/{repo-slug}.md`, or `~/.local/state/reviewotron/memory/{repo-slug}.md` when `XDG_STATE_HOME` is unset. In persistent server mode with an explicit feedback store, memory lives beside feedback/debug data; for example, if feedback evidence is under `./var/reviewotron-feedback-evidence/`, memory files go under `./var/memory/{repo-slug}.md`. These are plain-text markdown files (target ~5000 tokens) that accumulate knowledge about the repo:
 
 - Architecture notes (frameworks, DB access patterns, auth middleware)
 - Known safe patterns (parameterized queries, auto-escaping templates)
@@ -567,7 +571,7 @@ The memory curator rewrites the repo brief asynchronously after a review. If two
 
 ### Debug Dumps
 
-When an agent's structured output can't be parsed, a debug dump is saved to the review debug dir. In in-memory/local mode this is `debug/{repo-slug}/{sha-prefix}/`. In persistent server mode it uses a sibling root next to feedback evidence; for example, if feedback evidence is under `./var/reviewotron-feedback-evidence/`, debug dumps go under `./var/debug/{repo-slug}/{sha-prefix}/`. These contain the raw agent output for diagnosing prompt or parsing issues.
+When an agent's structured output can't be parsed, a debug dump is saved to the review debug dir. In local mode this is under `$XDG_STATE_HOME/reviewotron/debug/{repo-slug}/{sha-prefix}/`, or `~/.local/state/reviewotron/debug/{repo-slug}/{sha-prefix}/` when `XDG_STATE_HOME` is unset. In persistent server mode it uses a sibling root next to feedback evidence; for example, if feedback evidence is under `./var/reviewotron-feedback-evidence/`, debug dumps go under `./var/debug/{repo-slug}/{sha-prefix}/`. These contain the raw agent output for diagnosing prompt or parsing issues.
 
 Security metrics/debug artifacts are separate and opt-in via `review_plugins.security.metrics_artifacts` and `review_plugins.security.debug_artifacts`. Metrics write compact JSON files under the review debug dir's `security/` subdirectory; full debug artifacts additionally write redacted stage inputs and outputs and should be treated as sensitive.
 
@@ -937,7 +941,7 @@ SECURITY_CONFIG='{
 ```
 
 Inspect the security metrics line in `/tmp/reviewotron-security.log` and the
-artifact directory under `debug/local-security-timing/<diff-digest-prefix>/security/`.
+artifact directory under `/tmp/debug/local-security-timing/<diff-digest-prefix>/security/`.
 `metrics.json` and `fetch_stats.json` are compact and omit prompt/source bodies;
 the full debug files include redacted stage inputs and outputs and should be
 treated as sensitive.
@@ -1121,7 +1125,7 @@ Multiple reviews can run concurrently (events are processed via `Lwt.async`). Th
 
 ### Debug dumps
 
-When an agent produces output that can't be parsed as structured JSON, a debug dump is saved to the review debug dir. In persistent server mode, look for `debug/{repo-slug}/{sha-prefix}/` under the sibling root next to the feedback evidence root, for example `./var/debug/{repo-slug}/{sha-prefix}/`. Look here when you see `"failed to parse ... output"` in the logs.
+When an agent produces output that can't be parsed as structured JSON, a debug dump is saved to the review debug dir. In local mode, look under `$XDG_STATE_HOME/reviewotron/debug/{repo-slug}/{sha-prefix}/`, or `~/.local/state/reviewotron/debug/{repo-slug}/{sha-prefix}/`; in persistent server mode, look under the sibling root next to the feedback evidence root, for example `./var/debug/{repo-slug}/{sha-prefix}/`. Look here when you see `"failed to parse ... output"` in the logs.
 
 ---
 

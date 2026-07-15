@@ -376,19 +376,34 @@ module Make (AI : Api.Agent_runner) = struct
       };
     ]
 
+  let nonempty_env name =
+    match Sys.getenv_opt name with
+    | Some value when String.length (String.trim value) > 0 -> Some value
+    | Some _ | None -> None
+
+  let local_runtime_root () =
+    match nonempty_env "XDG_STATE_HOME" with
+    | Some state_home when not (Filename.is_relative state_home) -> Filename.concat state_home "reviewotron"
+    | Some _ | None ->
+    match nonempty_env "HOME" with
+    | Some home when not (Filename.is_relative home) ->
+      Filename.concat (Filename.concat home ".local/state") "reviewotron"
+    | Some _ | None ->
+      Filename.concat (Filename.get_temp_dir_name ()) (Printf.sprintf "reviewotron-%d" (Unix.getuid ()))
+
   let debug_root ~ctx =
     match Context.feedback_store ctx with
     | Some store ->
       let paths = Feedback_store.paths store in
       Filename.concat (Filename.dirname paths.evidence_root) "debug"
-    | None -> "debug"
+    | None -> Filename.concat (local_runtime_root ()) "debug"
 
   let memory_dir_for_context ~ctx =
     match Context.feedback_store ctx with
     | Some store ->
       let paths = Feedback_store.paths store in
       Filename.concat (Filename.dirname paths.evidence_root) "memory"
-    | None -> "memory"
+    | None -> Filename.concat (local_runtime_root ()) "memory"
 
   let debug_dir_for_job ~ctx (job : Review_job.t) =
     let slug = Security_memory.repo_slug job.repo_key in

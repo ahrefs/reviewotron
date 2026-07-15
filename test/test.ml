@@ -3699,10 +3699,22 @@ let debug_dir_test_job ?(repo_key = Test_helpers.test_repo_url) ?(head_sha = "fb
     source_kind = Github;
   }
 
-let test_debug_dir_without_feedback_store_uses_relative_debug () =
-  let ctx = Test_helpers.make_test_context () in
-  let dir = Engine_debug_test.debug_dir_for_job ~ctx (debug_dir_test_job ()) in
-  (check string) "relative debug dir" "debug/org-monorepo/fb15a13a" dir
+let test_local_runtime_dirs_use_xdg_state () =
+  with_temp_feedback_store_dir (fun state_path _paths _store ->
+    let state_home = Filename.dirname state_path in
+    with_env_vars
+      [ "XDG_STATE_HOME", state_home ]
+      (fun () ->
+        let ctx = Test_helpers.make_test_context () in
+        let debug_dir = Engine_debug_test.debug_dir_for_job ~ctx (debug_dir_test_job ()) in
+        let memory_dir = Engine_debug_test.memory_dir_for_context ~ctx in
+        let runtime_root = Filename.concat state_home "reviewotron" in
+        let expected_debug = Filename.concat (Filename.concat runtime_root "debug") "org-monorepo/fb15a13a" in
+        let expected_memory = Filename.concat runtime_root "memory" in
+        (check string) "external debug dir" expected_debug debug_dir;
+        (check string) "external memory dir" expected_memory memory_dir;
+        (check bool) "debug dir is absolute" false (Filename.is_relative debug_dir);
+        (check bool) "memory dir is absolute" false (Filename.is_relative memory_dir)))
 
 let test_debug_dir_with_feedback_store_uses_feedback_sibling () =
   with_temp_feedback_store_dir (fun _state_path paths store ->
@@ -3710,11 +3722,6 @@ let test_debug_dir_with_feedback_store_uses_feedback_sibling () =
     let dir = Engine_debug_test.debug_dir_for_job ~ctx (debug_dir_test_job ()) in
     let expected = Filename.concat (Filename.concat (Filename.dirname paths.evidence_root) "debug") "org-monorepo" in
     (check string) "feedback sibling debug dir" (Filename.concat expected "fb15a13a") dir)
-
-let test_memory_dir_without_feedback_store_uses_relative_memory () =
-  let ctx = Test_helpers.make_test_context () in
-  let dir = Engine_debug_test.memory_dir_for_context ~ctx in
-  (check string) "relative memory dir" "memory" dir
 
 let test_memory_dir_with_feedback_store_uses_feedback_sibling () =
   with_temp_feedback_store_dir (fun _state_path paths store ->
@@ -6747,11 +6754,8 @@ let () =
           test_case "paths derive from state" `Quick test_feedback_paths_from_state;
           test_case "paths are absolute" `Quick test_feedback_paths_are_absolute;
           test_case "paths derive from custom feedback dir" `Quick test_feedback_paths_from_custom_dir;
-          test_case "debug dir defaults to relative debug" `Quick
-            test_debug_dir_without_feedback_store_uses_relative_debug;
+          test_case "local runtime dirs use XDG state" `Quick test_local_runtime_dirs_use_xdg_state;
           test_case "debug dir uses feedback sibling" `Quick test_debug_dir_with_feedback_store_uses_feedback_sibling;
-          test_case "memory dir defaults to relative memory" `Quick
-            test_memory_dir_without_feedback_store_uses_relative_memory;
           test_case "memory dir uses feedback sibling" `Quick test_memory_dir_with_feedback_store_uses_feedback_sibling;
           test_case "review job log context" `Quick test_review_job_log_context;
           test_case "marker and deterministic ids" `Quick test_feedback_marker_and_id_helpers;

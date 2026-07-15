@@ -115,13 +115,13 @@ type report = {
 
 module Make (_ : Api.Agent_runner) : sig
   (** Build the per-review debug dump directory. In persistent server mode the
-      root lives beside feedback files; in in-memory/local mode it falls back
-      to [debug/] under the current working directory. *)
+      root lives beside feedback files; otherwise it uses the XDG state
+      directory outside the current working tree. *)
   val debug_dir_for_job : ctx:Context.t -> Review_job.t -> string
 
   (** Build the repository-memory directory. In persistent server mode this
-      lives beside feedback/debug files; in in-memory/local mode it falls back
-      to [memory/] under the current working directory. *)
+      lives beside feedback/debug files; otherwise it uses the XDG state
+      directory outside the current working tree. *)
   val memory_dir_for_context : ctx:Context.t -> string
 
   (** Run all enabled review plugins and collect findings and costs. *)
