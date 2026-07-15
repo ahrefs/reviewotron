@@ -1,6 +1,7 @@
 type t =
   | Diff_too_large_remote of string
   | Fetch_failed of string
+  | Invalid_target of string
   | No_reviewable_files
   | Too_many_lines of {
       actual : int;
@@ -34,6 +35,8 @@ let to_comment = function
         "The diff is too large for the GitHub API to serve, so I couldn't fetch the changes to review. Consider \
          splitting this into smaller PRs."
   | Fetch_failed detail -> with_details detail ~explanation:"I couldn't fetch the diff from GitHub."
+  | Invalid_target detail ->
+    Printf.sprintf "%s\n\nI couldn't select the requested commit for this PR.\n\n%s" prefix detail
   | No_reviewable_files ->
     Printf.sprintf
       ":robot: **reviewotron** skipped this review.\n\n\

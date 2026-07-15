@@ -8,6 +8,8 @@ let log_context_prefix = function
 
 type prepare_error =
   | Fetch_failed of Http_util.error
+  | Target_commit_not_in_pr of string
+  | Ambiguous_target_commit of string
   | Empty
   | Too_large of int
   | Too_many_files of int
@@ -147,63 +149,100 @@ module Make (SRC : Api.Github_review_source) = struct
   let fetch_file_at_ref ~log_context ~ctx ~repo_url ~ref_ ~path =
     fetch_text_file ~log_context ~ctx ~repo_url ~ref_ ~path
 
-  let prepare_pr_review_with_trigger ?(trigger = Review_job.Pull_request) ~ctx ~(config : Config_types.config)
+  let select_commit ~requested commits =
+    let normalized = String.lowercase_ascii requested in
+    match List.find_opt (fun commit -> String.equal (String.lowercase_ascii commit) normalized) commits with
+    | Some commit -> Ok commit
+    | None ->
+    match List.filter (fun commit -> String.starts_with ~prefix:normalized (String.lowercase_ascii commit)) commits with
+    | [] -> Error (Target_commit_not_in_pr requested)
+    | [ commit ] -> Ok commit
+    | _ :: _ -> Error (Ambiguous_target_commit requested)
+
+  let resolve_commit ~ctx ~repo_url ~number ~requested =
+    let%lwt result = SRC.get_pr_commit_shas ~ctx ~repo_url ~number in
+    match result with
+    | Error msg -> Lwt.return (Error (Fetch_failed (Http_util.Local msg)))
+    | Ok commits -> Lwt.return (select_commit ~requested commits)
+
+  let prepare_pr_review_with_trigger ?(trigger = Review_job.Pull_request) ?commit ~ctx ~(config : Config_types.config)
     (pr_notif : Github_types.pr_notification) =
     let repo_url = pr_notif.repository.url in
     let number = pr_notif.number in
     let pr = pr_notif.pull_request in
     let change_label = Printf.sprintf "PR #%d" number in
-    let log_context = Review_job.log_context_for ~repo_key:repo_url ~change_label ~head_sha:pr.head.sha in
-    let log_prefix = log_context_prefix (Some log_context) in
-    let error error = Error { error; head_sha = Some pr.head.sha } in
-    log#info "%sreviewing PR #%d in %s" log_prefix number pr_notif.repository.full_name;
-    let%lwt diff_result = SRC.get_pr_diff ~ctx ~repo_url ~number ~log_context () in
-    match diff_result with
-    | Error fetch_error ->
-      log#error "%sfailed to fetch diff for PR #%d: %s" log_prefix number (Http_util.error_to_string fetch_error);
-      Lwt.return (error (Fetch_failed fetch_error))
-    | Ok diff_text ->
-    match Review_engine.prepare_diff ~log_context ~config diff_text with
-    | Error `Empty ->
-      log#info
-        "%sPR #%d: all files filtered out by ignored path, file-regex, or generated-file filters, nothing to review"
-        log_prefix number;
-      Lwt.return (error Empty)
-    | Error (`Too_large total_lines) ->
-      log#info "%sPR #%d skipped: %d diff lines exceeds limit of %d" log_prefix number total_lines config.max_diff_lines;
-      Lwt.return (error (Too_large total_lines))
-    | Error (`Too_many_files file_count) ->
-      log#info "%sPR #%d skipped: %d files exceeds limit of %d" log_prefix number file_count config.max_files;
-      Lwt.return (error (Too_many_files file_count))
-    | Ok { Review_engine.filtered_diff; filtered_text } ->
-      let head_sha = pr.head.sha in
-      let%lwt file_contents =
-        fetch_key_files ~log_context:(Some log_context) ~ctx ~repo_url ~diff:filtered_diff ~ref_:head_sha
+    let initial_log_context = Review_job.log_context_for ~repo_key:repo_url ~change_label ~head_sha:pr.head.sha in
+    let initial_log_prefix = log_context_prefix (Some initial_log_context) in
+    log#info "%sreviewing PR #%d in %s" initial_log_prefix number pr_notif.repository.full_name;
+    let%lwt target_result =
+      match commit with
+      | None -> Lwt.return (Ok pr.head.sha)
+      | Some requested -> resolve_commit ~ctx ~repo_url ~number ~requested
+    in
+    match target_result with
+    | Error ((Target_commit_not_in_pr _ | Ambiguous_target_commit _) as target_error) ->
+      Lwt.return (Error { error = target_error; head_sha = None })
+    | Error (Fetch_failed error) ->
+      log#error "%sfailed to fetch commit list for PR #%d: %s" initial_log_prefix number
+        (Http_util.error_to_string error);
+      Lwt.return (Error { error = Fetch_failed error; head_sha = Some pr.head.sha })
+    | Error (Empty | Too_large _ | Too_many_files _) ->
+      invalid_arg "unexpected diff preparation error while resolving commit"
+    | Ok head_sha ->
+      let log_context = Review_job.log_context_for ~repo_key:repo_url ~change_label ~head_sha in
+      let log_prefix = log_context_prefix (Some log_context) in
+      let error error = Error { error; head_sha = Some head_sha } in
+      let%lwt diff_result =
+        match commit with
+        | None -> SRC.get_pr_diff ~ctx ~repo_url ~number ~log_context ()
+        | Some _ -> SRC.get_commit_diff ~ctx ~repo_url ~commit:head_sha ~log_context ()
       in
-      let description = CCOption.get_or ~default:"" pr.body in
-      let fetch_file = fetch_file_at_ref ~log_context:(Some log_context) ~ctx ~repo_url ~ref_:head_sha in
-      let job =
-        Review_job.
-          {
-            repo_key = repo_url;
-            change_key = Printf.sprintf "pr/%d/%s" number head_sha;
-            change_label;
-            title = pr.title;
-            description;
-            head_sha;
-            diff_text = filtered_text;
-            filtered_diff;
-            config;
-            file_contents;
-            fetch_file;
-            trigger;
-            source_kind = Github;
-          }
-      in
-      Lwt.return (Ok { number; job })
+      (match diff_result with
+      | Error fetch_error ->
+        log#error "%sfailed to fetch diff for PR #%d: %s" log_prefix number (Http_util.error_to_string fetch_error);
+        Lwt.return (error (Fetch_failed fetch_error))
+      | Ok diff_text ->
+      match Review_engine.prepare_diff ~log_context ~config diff_text with
+      | Error `Empty ->
+        log#info
+          "%sPR #%d: all files filtered out by ignored path, file-regex, or generated-file filters, nothing to review"
+          log_prefix number;
+        Lwt.return (error Empty)
+      | Error (`Too_large total_lines) ->
+        log#info "%sPR #%d skipped: %d diff lines exceeds limit of %d" log_prefix number total_lines
+          config.max_diff_lines;
+        Lwt.return (error (Too_large total_lines))
+      | Error (`Too_many_files file_count) ->
+        log#info "%sPR #%d skipped: %d files exceeds limit of %d" log_prefix number file_count config.max_files;
+        Lwt.return (error (Too_many_files file_count))
+      | Ok { Review_engine.filtered_diff; filtered_text } ->
+        let%lwt file_contents =
+          fetch_key_files ~log_context:(Some log_context) ~ctx ~repo_url ~diff:filtered_diff ~ref_:head_sha
+        in
+        let description = CCOption.get_or ~default:"" pr.body in
+        let fetch_file = fetch_file_at_ref ~log_context:(Some log_context) ~ctx ~repo_url ~ref_:head_sha in
+        let job =
+          Review_job.
+            {
+              repo_key = repo_url;
+              change_key = Printf.sprintf "pr/%d/%s" number head_sha;
+              change_label;
+              title = pr.title;
+              description;
+              head_sha;
+              diff_text = filtered_text;
+              filtered_diff;
+              config;
+              file_contents;
+              fetch_file;
+              trigger;
+              source_kind = Github;
+            }
+        in
+        Lwt.return (Ok { number; job }))
 
-  let prepare_pr_review_from_comment ~ctx ~(config : Config_types.config) (n : Github_types.issue_comment_notification)
-      =
+  let prepare_pr_review_from_comment ?commit ~ctx ~(config : Config_types.config)
+    (n : Github_types.issue_comment_notification) =
     let repo_url = n.repository.url in
     let%lwt result = SRC.get_pull_request ~ctx ~repo_url ~number:n.issue.number in
     match result with
@@ -225,7 +264,7 @@ module Make (SRC : Api.Github_review_source) = struct
           performed_via_github_app = n.performed_via_github_app;
         }
       in
-      prepare_pr_review_with_trigger ~trigger:Review_job.Manual ~ctx ~config synthesised
+      prepare_pr_review_with_trigger ~trigger:Review_job.Manual ?commit ~ctx ~config synthesised
 
   let prepare_pr_review ~ctx ~config pr_notif = prepare_pr_review_with_trigger ~ctx ~config pr_notif
 

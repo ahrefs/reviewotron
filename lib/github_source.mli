@@ -9,6 +9,8 @@ type prepare_error =
     (** The diff could not be fetched from GitHub.  Carries the typed HTTP error
         so the caller can distinguish a too-large diff (HTTP 406) from a
         transient failure and surface the right explanation. *)
+  | Target_commit_not_in_pr of string  (** The requested commit SHA is valid but is not part of this PR. *)
+  | Ambiguous_target_commit of string  (** The requested abbreviated SHA matches multiple commits in this PR. *)
   | Empty  (** Nothing to review after filtering; callers must emit a skip notice, not an approval. *)
   | Too_large of int  (** The filtered diff exceeds [Config_types.max_diff_lines]. *)
   | Too_many_files of int  (** The filtered diff touches more files than [Config_types.max_files]. *)
@@ -61,6 +63,7 @@ module Make (_ : Api.Github_review_source) : sig
   (** Fetch the full PR referenced by an issue_comment webhook and build a
       normalized manual-review job. *)
   val prepare_pr_review_from_comment :
+    ?commit:string ->
     ctx:Context.t ->
     config:Config_types.config ->
     Github_types.issue_comment_notification ->

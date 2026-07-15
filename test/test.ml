@@ -2992,6 +2992,111 @@ let test_pr_skipped_when_closed () =
 
 let comment_trigger_config = Config_types.config_of_json (Melange_json.of_string {|{"auto_review_on_comment": true}|})
 
+let targeted_commit_sha = "1234567890abcdef1234567890abcdef12345678"
+let current_pr_head_sha = "abc123def456789012345678901234567890abcd"
+
+let test_review_command_parser () =
+  (match Reviewer.parse_review_command "  REVIEW\t" with
+  | Some Reviewer.Current -> ()
+  | Some (Reviewer.Commit _) | None -> fail "expected current-head REVIEW command");
+  (match Reviewer.parse_review_command "REVIEW abc1234" with
+  | Some (Reviewer.Commit "abc1234") -> ()
+  | Some Reviewer.Current | Some (Reviewer.Commit _) | None -> fail "expected short commit REVIEW command");
+  (match Reviewer.parse_review_command "REVIEW ABC123456789012345678901234567890ABCDEF" with
+  | Some (Reviewer.Commit _) -> ()
+  | Some Reviewer.Current | None -> fail "expected full commit REVIEW command");
+  List.iter
+    (fun body ->
+      match Reviewer.parse_review_command body with
+      | None -> ()
+      | Some Reviewer.Current | Some (Reviewer.Commit _) -> fail (Printf.sprintf "accepted malformed command %S" body))
+    [ "REVIEW nope"; "REVIEW abcdef"; "REVIEW abc1234 extra"; "review abc1234" ]
+
+let test_comment_trigger_reviews_targeted_commit () =
+  Test_helpers.reset_test_state ();
+  Api_local.set_next_pr_diff_error "current PR diff must not be fetched";
+  Api_local.set_agent_response_map
+    [
+      "general_scout", "mock_api_responses/scout/leads_two.json";
+      "general_deep_review", "mock_api_responses/claude/review_response.json";
+    ];
+  let ctx = Test_helpers.make_test_context ~config:comment_trigger_config () in
+  let payload = Test_helpers.make_issue_comment_payload ~body:"REVIEW 1234567" () in
+  let event = Test_helpers.parse_event_exn ~event_type:"issue_comment" ~body:payload in
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let write_log = Api_local.get_write_log () in
+  let scout_input = require_some "targeted scout input" (Api_local.recorded_agent_input "general_scout") in
+  let deep_input = require_some "targeted deep-review input" (Api_local.recorded_agent_input "general_deep_review") in
+  (check bool) "targeted review posted" true (contains_sub ~sub:"[create_pr_review]" write_log);
+  (check bool) "canonical SHA is posted" true (contains_sub ~sub:targeted_commit_sha write_log);
+  (check bool) "review body identifies canonical commit" true
+    (contains_sub ~sub:(reviewed_commit_sub targeted_commit_sha) write_log);
+  (check bool) "scout sees target-only patch" true (contains_sub ~sub:"commit_specific_marker" scout_input);
+  (check bool) "deep reviewer sees target-only patch" true (contains_sub ~sub:"commit_specific_marker" deep_input);
+  (check bool) "current PR patch is not sent to agents" false (contains_sub ~sub:"old_value = 42" scout_input);
+  (check (option string))
+    "file context is fetched at target SHA" (Some targeted_commit_sha)
+    (Api_local.recorded_file_ref "src/main.ml");
+  (check bool) "target SHA is recorded as reviewed" true
+    (State.is_pr_reviewed (Context.state ctx) ~repo_url:Test_helpers.test_repo_url ~pr_number:42
+       ~head_sha:targeted_commit_sha);
+  (check bool) "current head is not recorded for targeted review" false
+    (State.is_pr_reviewed (Context.state ctx) ~repo_url:Test_helpers.test_repo_url ~pr_number:42
+       ~head_sha:current_pr_head_sha)
+
+let test_comment_trigger_rejects_unrelated_target () =
+  Test_helpers.reset_test_state ();
+  Api_local.set_pr_commit_shas ~number:42 [ current_pr_head_sha ];
+  let state = State.create () in
+  let ctx = Test_helpers.make_test_context ~state ~config:comment_trigger_config () in
+  let payload = Test_helpers.make_issue_comment_payload ~body:"REVIEW 1234567" () in
+  let event = Test_helpers.parse_event_exn ~event_type:"issue_comment" ~body:payload in
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let write_log = Api_local.get_write_log () in
+  (check bool) "invalid target comment posted" true (contains_sub ~sub:"[create_issue_comment]" write_log);
+  (check bool) "invalid target explains PR membership" true (contains_sub ~sub:"does not belong to this PR" write_log);
+  (check bool) "invalid target does not start a PR review" false (contains_sub ~sub:"[create_pr_review]" write_log);
+  (check (option string)) "invalid target does not run an agent" None (Api_local.recorded_agent_input "general_scout");
+  (check bool) "invalid target is not recorded" false
+    (State.is_pr_reviewed (Context.state ctx) ~repo_url:Test_helpers.test_repo_url ~pr_number:42
+       ~head_sha:current_pr_head_sha)
+
+let test_comment_trigger_rejects_ambiguous_target () =
+  Test_helpers.reset_test_state ();
+  let first = "deadbee00000000000000000000000000000000" in
+  let second = "deadbee11111111111111111111111111111111" in
+  Api_local.set_pr_commit_shas ~number:42 [ first; second ];
+  let ctx = Test_helpers.make_test_context ~config:comment_trigger_config () in
+  let payload = Test_helpers.make_issue_comment_payload ~body:"REVIEW deadbee" () in
+  let event = Test_helpers.parse_event_exn ~event_type:"issue_comment" ~body:payload in
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let write_log = Api_local.get_write_log () in
+  (check bool) "ambiguous target comment posted" true (contains_sub ~sub:"[create_issue_comment]" write_log);
+  (check bool) "ambiguous target explains the ambiguity" true (contains_sub ~sub:"matches multiple commits" write_log);
+  (check bool) "ambiguous target does not start a PR review" false (contains_sub ~sub:"[create_pr_review]" write_log);
+  (check (option string)) "ambiguous target does not run an agent" None (Api_local.recorded_agent_input "general_scout")
+
+let test_comment_trigger_commit_list_failure_is_retryable () =
+  Test_helpers.reset_test_state ();
+  Api_local.set_pr_commit_shas_error ~number:42 "commit list unavailable";
+  let state = State.create () in
+  let ctx = Test_helpers.make_test_context ~state ~config:comment_trigger_config () in
+  let payload = Test_helpers.make_issue_comment_payload ~body:"REVIEW 1234567" () in
+  let event = Test_helpers.parse_event_exn ~event_type:"issue_comment" ~body:payload in
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let write_log = Api_local.get_write_log () in
+  (check bool) "commit-list failure comment posted" true (contains_sub ~sub:"[create_issue_comment]" write_log);
+  (check bool) "commit-list failure uses fetch failure semantics" true
+    (contains_sub ~sub:"couldn't fetch the diff" write_log);
+  (check bool) "commit-list failure includes the source error" true
+    (contains_sub ~sub:"commit list unavailable" write_log);
+  (check (option string))
+    "commit-list failure does not run an agent" None
+    (Api_local.recorded_agent_input "general_scout");
+  (check bool) "commit-list failure remains retryable" false
+    (State.is_pr_reviewed (Context.state ctx) ~repo_url:Test_helpers.test_repo_url ~pr_number:42
+       ~head_sha:current_pr_head_sha)
+
 let test_comment_trigger_reviews_pr () =
   Test_helpers.reset_test_state ();
   Api_local.set_agent_response_map
@@ -3514,6 +3619,9 @@ module Config_mutating_source = struct
   let get_pr_diff ~ctx ~repo_url ~number ?log_context () =
     replace_config ctx repo_url;
     Api_local.Github.get_pr_diff ~ctx ~repo_url ~number ?log_context ()
+
+  let get_pr_commit_shas = Api_local.Github.get_pr_commit_shas
+  let get_commit_diff = Api_local.Github.get_commit_diff
 
   let get_pull_request = Api_local.Github.get_pull_request
 
@@ -4572,6 +4680,28 @@ let test_api_remote_collect_paginated_list_requests_all_pages () =
   | Ok items ->
     (check (list int)) "items from all pages" [ 1; 2; 3; 4; 5 ] items;
     (check (list int)) "requested pages" [ 1; 2; 3 ] (List.rev !seen_pages)
+
+let test_api_remote_collects_all_pr_commit_pages () =
+  let first_page =
+    List.init 100 (fun index -> Printf.sprintf {|{"sha":"%040x"}|} index) |> String.concat "," |> Printf.sprintf "[%s]"
+  in
+  let second_page = {|[{"sha":"ffffffffffffffffffffffffffffffffffffffff"}]|} in
+  let seen_pages = ref [] in
+  let fetch_page page =
+    seen_pages := page :: !seen_pages;
+    match page with
+    | 1 -> Lwt.return (Ok first_page)
+    | 2 -> Lwt.return (Ok second_page)
+    | _ -> Lwt.return (Error (Http_util.Local "unexpected page"))
+  in
+  match
+    Lwt_main.run
+      (Api_remote.collect_paginated_list ~page_size:100 ~fetch_page ~parse:Api_remote.parse_pr_commit_shas_json)
+  with
+  | Error msg -> fail (Printf.sprintf "unexpected commit pagination error: %s" msg)
+  | Ok shas ->
+    (check int) "all PR commit pages are collected" 101 (List.length shas);
+    (check (list int)) "commit pages requested" [ 1; 2 ] (List.rev !seen_pages)
 
 let test_api_remote_parse_pr_review_reaction_counts () =
   let body =
@@ -6257,14 +6387,15 @@ let test_review_failure_classify_too_large () =
   let error : Http_util.error = Http_util.Status (406, "the diff exceeded the maximum number of files (300)") in
   match Review_failure.classify_fetch_error error with
   | Diff_too_large_remote _ -> ()
-  | No_reviewable_files | Fetch_failed _ | Too_many_lines _ | Too_many_files _ | Publish_failed _ ->
+  | Invalid_target _ | No_reviewable_files | Fetch_failed _ | Too_many_lines _ | Too_many_files _ | Publish_failed _ ->
     Alcotest.fail "expected Diff_too_large_remote for a 406 response"
 
 let test_review_failure_classify_generic () =
   let error : Http_util.error = Http_util.Status (503, "service unavailable") in
   match Review_failure.classify_fetch_error error with
   | Fetch_failed _ -> ()
-  | No_reviewable_files | Diff_too_large_remote _ | Too_many_lines _ | Too_many_files _ | Publish_failed _ ->
+  | Invalid_target _ | No_reviewable_files | Diff_too_large_remote _ | Too_many_lines _ | Too_many_files _
+  | Publish_failed _ ->
     Alcotest.fail "expected Fetch_failed for a non-406 status"
 
 let test_review_failure_classify_transport_error () =
@@ -6273,7 +6404,8 @@ let test_review_failure_classify_transport_error () =
   let error : Http_util.error = Http_util.Transport Curl.CURLE_COULDNT_CONNECT in
   match Review_failure.classify_fetch_error error with
   | Fetch_failed _ -> ()
-  | No_reviewable_files | Diff_too_large_remote _ | Too_many_lines _ | Too_many_files _ | Publish_failed _ ->
+  | Invalid_target _ | No_reviewable_files | Diff_too_large_remote _ | Too_many_lines _ | Too_many_files _
+  | Publish_failed _ ->
     Alcotest.fail "expected Fetch_failed for a transport error with no status"
 
 let test_review_failure_comment_mentions_cause () =
@@ -7414,7 +7546,13 @@ let () =
         ] );
       ( "comment_trigger",
         [
+          test_case "REVIEW command parser" `Quick test_review_command_parser;
           test_case "REVIEW comment triggers PR review" `Quick test_comment_trigger_reviews_pr;
+          test_case "REVIEW targets a single commit" `Quick test_comment_trigger_reviews_targeted_commit;
+          test_case "REVIEW rejects unrelated commit" `Quick test_comment_trigger_rejects_unrelated_target;
+          test_case "REVIEW rejects ambiguous short SHA" `Quick test_comment_trigger_rejects_ambiguous_target;
+          test_case "REVIEW commit-list failure is retryable" `Quick
+            test_comment_trigger_commit_list_failure_is_retryable;
           test_case "REVIEW quiet success posts LGTM comment" `Quick
             test_comment_trigger_quiet_success_posts_lgtm_comment;
           test_case "REVIEW comment ignored when auto_review_on_comment disabled" `Quick test_comment_trigger_disabled;
@@ -7516,6 +7654,7 @@ let () =
           test_case "terminal statuses are not pollable" `Quick test_feedback_status_selection_terminal_values;
           test_case "remote pagination collects all pages" `Quick
             test_api_remote_collect_paginated_list_requests_all_pages;
+          test_case "PR commit pagination collects all pages" `Quick test_api_remote_collects_all_pr_commit_pages;
           test_case "remote GraphQL review reaction parser" `Quick test_api_remote_parse_pr_review_reaction_counts;
           test_case "collector resolves counts and is idempotent" `Quick
             test_feedback_collector_resolves_counts_and_is_idempotent;

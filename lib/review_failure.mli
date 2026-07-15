@@ -11,6 +11,7 @@ type t =
     (** GitHub refused to serve the diff because it is too large (HTTP 406 /
           [too_large]).  Carries the raw error for the comment detail. *)
   | Fetch_failed of string  (** Any other diff-fetch failure.  Carries the raw error. *)
+  | Invalid_target of string  (** The requested commit is not in the PR or its abbreviation is ambiguous. *)
   | No_reviewable_files  (** Every changed file was excluded before review. *)
   | Too_many_lines of {
       actual : int;

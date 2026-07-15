@@ -35,6 +35,11 @@ let recorded_agent_inputs : (string * string) list ref = ref []
 let recorded_agent_input name = List.assoc_opt name !recorded_agent_inputs
 let clear_recorded_agent_inputs () = recorded_agent_inputs := []
 
+let recorded_file_refs : (string * string) list ref = ref []
+
+let recorded_file_ref path = List.assoc_opt path !recorded_file_refs
+let clear_recorded_file_refs () = recorded_file_refs := []
+
 (** When set, the next [get_pr_diff] call returns this value instead of reading
     a mock file, then resets. Lets tests inject diff-fetch failures (e.g. the
     GitHub 406 "too_large" response) and empty/oversized diffs. *)
@@ -50,6 +55,30 @@ let set_next_pr_diff_error ?status message =
 
 let set_next_pr_diff diff = next_pr_diff := Some (Ok diff)
 let reset_next_pr_diff () = next_pr_diff := None
+
+let pr_commit_shas : (int * (string list, string) result) list ref = ref []
+
+let set_pr_commit_shas ~number shas = pr_commit_shas := (number, Ok shas) :: List.remove_assoc number !pr_commit_shas
+
+let set_pr_commit_shas_error ~number message =
+  pr_commit_shas := (number, Error message) :: List.remove_assoc number !pr_commit_shas
+
+let reset_pr_commit_shas () = pr_commit_shas := []
+
+let commit_diff_results : (string * (string, Http_util.error) result) list ref = ref []
+
+let set_commit_diff ~commit diff =
+  commit_diff_results := (commit, Ok diff) :: List.remove_assoc commit !commit_diff_results
+
+let set_commit_diff_error ?status ~commit message =
+  let error =
+    match status with
+    | Some status -> Http_util.Status (status, message)
+    | None -> Http_util.Local message
+  in
+  commit_diff_results := (commit, Error error) :: List.remove_assoc commit !commit_diff_results
+
+let reset_commit_diffs () = commit_diff_results := []
 
 let next_issue_comment_result : (unit, string) result option ref = ref None
 let set_next_issue_comment_error message = next_issue_comment_result := Some (Error message)
@@ -125,6 +154,23 @@ module Github : Api.Github = struct
       let path = Printf.sprintf "mock_api_responses/github/pr_%d.diff" number in
       Lwt.return (mock_diff_result path)
 
+  let get_pr_commit_shas ~ctx:_ ~repo_url:_ ~number =
+    match List.assoc_opt number !pr_commit_shas with
+    | Some result -> Lwt.return result
+    | None ->
+      let path = Printf.sprintf "mock_api_responses/github/pr_%d_commits.json" number in
+      Lwt.return
+        (match read_mock_file path with
+        | Error msg -> Error msg
+        | Ok body -> Api_remote.parse_pr_commit_shas_json body)
+
+  let get_commit_diff ~ctx:_ ~repo_url:_ ~commit ?log_context:_ () =
+    match List.assoc_opt commit !commit_diff_results with
+    | Some result -> Lwt.return result
+    | None ->
+      let path = Printf.sprintf "mock_api_responses/github/commit_%s.diff" commit in
+      Lwt.return (mock_diff_result path)
+
   let get_pull_request ~ctx:_ ~repo_url:_ ~number =
     let path = Printf.sprintf "mock_api_responses/github/pr_%d.json" number in
     match read_mock_file path with
@@ -138,6 +184,7 @@ module Github : Api.Github = struct
     Lwt.return (mock_diff_result path)
 
   let get_file_content ~ctx:_ ~repo_url:_ ~path:file_path ~ref_ ?log_context:_ () =
+    recorded_file_refs := (file_path, ref_) :: List.remove_assoc file_path !recorded_file_refs;
     let path = Printf.sprintf "mock_api_responses/github/content_%s_%s" ref_ file_path in
     match read_mock_file path with
     | Ok body -> Lwt.return (Ok (Some body))

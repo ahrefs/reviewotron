@@ -22,6 +22,25 @@ type progress_reaction = {
   reaction_id : int;
 }
 
+type review_command =
+  | Current
+  | Commit of string
+
+let review_command_whitespace_re = Re2.create_exn {|\s+|}
+let review_command_sha_re = Re2.create_exn {|(?i)^[0-9a-f]{7,40}$|}
+
+let parse_review_command body =
+  let body = String.trim body in
+  let tokens =
+    match String.equal body "" with
+    | true -> []
+    | false -> Re2.split review_command_whitespace_re body
+  in
+  match tokens with
+  | [ "REVIEW" ] -> Some Current
+  | [ "REVIEW"; sha ] when Re2.matches review_command_sha_re sha -> Some (Commit sha)
+  | _ -> None
+
 let github_event_kind = function
   | Github.Pull_request _ -> "pull_request"
   | Github.Push _ -> "push"
@@ -51,6 +70,8 @@ let github_event_attrs event =
 
 let prepare_error_to_string = function
   | Github_source.Fetch_failed error -> Printf.sprintf "fetch_failed: %s" (Http_util.error_to_string error)
+  | Github_source.Target_commit_not_in_pr requested -> Printf.sprintf "target_commit_not_in_pr: %s" requested
+  | Github_source.Ambiguous_target_commit requested -> Printf.sprintf "ambiguous_target_commit: %s" requested
   | Github_source.Empty -> "no_reviewable_files"
   | Github_source.Too_large total_lines -> Printf.sprintf "too_large: %d lines" total_lines
   | Github_source.Too_many_files file_count -> Printf.sprintf "too_many_files: %d files" file_count
@@ -66,6 +87,16 @@ let pr_prepare_error_to_string (error : Github_source.pr_prepare_error) = prepar
 let prepare_error_attrs ~(config : Config_types.config) = function
   | Github_source.Empty -> [ "reviewotron.prepare.reject_category", `String "no_reviewable_files" ]
   | Github_source.Fetch_failed _ -> [ "reviewotron.prepare.reject_category", `String "fetch_failed" ]
+  | Github_source.Target_commit_not_in_pr requested ->
+    [
+      "reviewotron.prepare.reject_category", `String "target_commit_not_in_pr";
+      "reviewotron.prepare.target_commit", `String requested;
+    ]
+  | Github_source.Ambiguous_target_commit requested ->
+    [
+      "reviewotron.prepare.reject_category", `String "ambiguous_target_commit";
+      "reviewotron.prepare.target_commit", `String requested;
+    ]
   | Github_source.Too_large total_lines ->
     [
       "reviewotron.prepare.reject_category", `String "too_large";
@@ -346,7 +377,20 @@ struct
       record_notice_outcome ~publish_kind post_result (Result.is_ok post_result);
       Lwt.return_unit
     in
+    let post_invalid_target detail =
+      let%lwt post_result =
+        publish_span ~kind:"invalid_target_comment" (fun () ->
+          Sink.publish_failure_comment ~ctx ~repo_url ~number (Invalid_target detail))
+      in
+      record_notice_outcome ~publish_kind:"invalid_target_comment" post_result false;
+      Lwt.return_unit
+    in
     match error with
+    | Target_commit_not_in_pr requested ->
+      post_invalid_target (Printf.sprintf "The requested commit `%s` does not belong to this PR." requested)
+    | Ambiguous_target_commit requested ->
+      post_invalid_target
+        (Printf.sprintf "The abbreviated commit `%s` matches multiple commits in this PR; use a longer SHA." requested)
     | Empty ->
       let%lwt post_result =
         publish_span ~kind:"filtered_out_comment" (fun () ->
@@ -377,13 +421,19 @@ struct
         | Diff_too_large_remote _ ->
           record_pr_notice_if_delivered ~ctx ~repo_url ~number ~head_sha post_result;
           Result.is_ok post_result
-        | No_reviewable_files | Fetch_failed _ | Too_many_lines _ | Too_many_files _ | Publish_failed _ -> false
+        | Invalid_target _ | No_reviewable_files | Fetch_failed _ | Too_many_lines _ | Too_many_files _
+        | Publish_failed _ ->
+          false
       in
       record_notice_outcome ~publish_kind:"fetch_failed_comment" post_result recorded_reviewed;
       Lwt.return_unit
 
   let prepare_error_reason ~(config : Config_types.config) (error : Github_source.prepare_error) =
     match error with
+    | Target_commit_not_in_pr requested ->
+      Printf.sprintf "The requested commit `%s` does not belong to this PR." requested
+    | Ambiguous_target_commit requested ->
+      Printf.sprintf "The abbreviated commit `%s` matches multiple commits in this PR; use a longer SHA." requested
     | Empty ->
       "All changed files were excluded by the configured path, file-regex, or generated-file filters; no code was \
        analyzed or approved."
@@ -395,7 +445,7 @@ struct
     match Review_failure.classify_fetch_error fetch_error with
     | Diff_too_large_remote detail -> Printf.sprintf "The diff is too large for the GitHub API to serve.\n\n%s" detail
     | Fetch_failed detail -> Printf.sprintf "I couldn't fetch the diff from GitHub.\n\n%s" detail
-    | No_reviewable_files | Too_many_lines _ | Too_many_files _ | Publish_failed _ ->
+    | Invalid_target _ | No_reviewable_files | Too_many_lines _ | Too_many_files _ | Publish_failed _ ->
       Http_util.error_to_string fetch_error
 
   let push_failure_message ~(push : Github_types.commit_pushed_notification) ~findings ~security_error ?reason () =
@@ -474,6 +524,9 @@ struct
       record_terminal ()
     in
     match error with
+    | Target_commit_not_in_pr _ | Ambiguous_target_commit _ ->
+      let reason = prepare_error_reason ~config error in
+      post_push_failure_to_slack ~ctx ~config ~push ~findings:[] ~security_error:false ~reason ()
     | Empty ->
       let reason = prepare_error_reason ~config error in
       log#info "%spush %s skipped: %s" log_prefix push.after reason;
@@ -487,7 +540,8 @@ struct
     | Diff_too_large_remote _ ->
       let reason = prepare_error_reason ~config error in
       post_terminal_failure ~reason ()
-    | No_reviewable_files | Fetch_failed _ | Too_many_lines _ | Too_many_files _ | Publish_failed _ ->
+    | Invalid_target _ | No_reviewable_files | Fetch_failed _ | Too_many_lines _ | Too_many_files _ | Publish_failed _
+      ->
       let reason = prepare_error_reason ~config error in
       post_push_failure_to_slack ~ctx ~config ~push ~findings:[] ~security_error:false ~reason ()
 
@@ -526,7 +580,7 @@ struct
         | Ok prepared -> run_prepared_pr_review ?reaction_target ~ctx prepared
         | Error error -> handle_pr_prepare_error ~ctx ~repo_url:pr_notif.repository.url ~number:pr_notif.number error)
 
-  let review_pr_from_comment ?reaction_target ~ctx ~config (n : Github_types.issue_comment_notification) =
+  let review_pr_from_comment ?reaction_target ?commit ~ctx ~config (n : Github_types.issue_comment_notification) =
     Telemetry.span
       ~attrs:
         [
@@ -545,7 +599,7 @@ struct
                 "github.comment.id", `Int n.comment.id;
               ]
             ~error_to_string:pr_prepare_error_to_string ~error_attrs:(pr_prepare_error_attrs ~config)
-            (fun () -> Source.prepare_pr_review_from_comment ~ctx ~config n)
+            (fun () -> Source.prepare_pr_review_from_comment ?commit ~ctx ~config n)
         with
         | Ok prepared -> run_prepared_pr_review ?reaction_target ~ctx prepared
         | Error error -> handle_pr_prepare_error ~ctx ~repo_url:n.repository.url ~number:n.issue.number error)
@@ -661,25 +715,28 @@ struct
           log#info "push %s skipped: %s" push.after reason;
           Lwt.return_unit)
       | Github.Issue_comment n ->
-        (* Trigger phrase: the comment body, after trimming, must equal
-         exactly "REVIEW".  Skip silently for any other body — most PR
-         comments are conversation, and we don't want to log a skip
-         reason for every one of them. *)
-        (match String.equal (String.trim n.comment.body) "REVIEW" with
-        | false ->
+        (* Skip silently for ordinary comments — most PR comments are
+           conversation, and we don't want to log a reason for every one. *)
+        (match parse_review_command n.comment.body with
+        | None ->
           Telemetry.add_attrs [ "reviewotron.event.outcome", `String "ignored" ];
           Lwt.return_unit
-        | true ->
-        match Source.comment_skip_reason ~ctx ~config n with
-        | None ->
-          Telemetry.add_attrs [ "reviewotron.event.outcome", `String "review_started" ];
-          log#info "REVIEW comment on PR #%d by %s: triggering review" n.issue.number n.sender.login;
-          review_pr_from_comment ~reaction_target:(Issue_comment n.comment.id) ~ctx ~config n
-        | Some reason ->
-          Telemetry.add_attrs
-            [ "reviewotron.event.outcome", `String "skipped"; "reviewotron.skip.reason", `String reason ];
-          log#info "REVIEW comment on PR #%d skipped: %s" n.issue.number reason;
-          Lwt.return_unit)
+        | Some command ->
+          let commit =
+            match command with
+            | Current -> None
+            | Commit sha -> Some sha
+          in
+          (match Source.comment_skip_reason ~ctx ~config n with
+          | None ->
+            Telemetry.add_attrs [ "reviewotron.event.outcome", `String "review_started" ];
+            log#info "REVIEW comment on PR #%d by %s: triggering review" n.issue.number n.sender.login;
+            review_pr_from_comment ~reaction_target:(Issue_comment n.comment.id) ?commit ~ctx ~config n
+          | Some reason ->
+            Telemetry.add_attrs
+              [ "reviewotron.event.outcome", `String "skipped"; "reviewotron.skip.reason", `String reason ];
+            log#info "REVIEW comment on PR #%d skipped: %s" n.issue.number reason;
+            Lwt.return_unit))
       | Github.Unknown kind ->
         Telemetry.add_attrs [ "reviewotron.event.outcome", `String "ignored" ];
         log#debug "ignoring unhandled event type: %s" kind;
