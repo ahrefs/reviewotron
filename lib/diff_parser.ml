@@ -184,13 +184,49 @@ let parse diff_text =
 let total_lines diffs =
   List.fold_left (fun acc fd -> List.fold_left (fun acc2 hunk -> acc2 + List.length hunk.lines) acc fd.hunks) 0 diffs
 
-(** Simple glob matching: supports [*] as wildcard *)
-let glob_star_re = Re2.create_exn {|\\\*|}
-
+(** Glob [*] matches within one path component; [**] can cross path separators. *)
 let glob_to_re pattern =
-  let escaped = Re2.escape pattern in
-  let re_str = Re2.rewrite_exn glob_star_re escaped ~template:"[^/]*" in
-  Re2.create_exn (Printf.sprintf "^%s$" re_str)
+  let pattern_length = String.length pattern in
+  let rec skip_stars index =
+    match index < pattern_length && Char.equal pattern.[index] '*' with
+    | true -> skip_stars (index + 1)
+    | false -> index
+  in
+  let rec skip_literal index =
+    match index >= pattern_length with
+    | true -> pattern_length
+    | false ->
+    match Char.equal pattern.[index] '*' with
+    | true -> index
+    | false -> skip_literal (index + 1)
+  in
+  let buffer = Buffer.create (pattern_length + 2) in
+  let rec add_pattern index =
+    match index >= pattern_length with
+    | true -> Buffer.add_char buffer '$'
+    | false ->
+    match pattern.[index] with
+    | '*' ->
+      let next = skip_stars index in
+      let has_separator = next < pattern_length && Char.equal pattern.[next] '/' in
+      (match next - index >= 2, has_separator with
+      | true, true ->
+        Buffer.add_string buffer "(?:.*/)?";
+        add_pattern (next + 1)
+      | true, false ->
+        Buffer.add_string buffer ".*";
+        add_pattern next
+      | false, _ ->
+        Buffer.add_string buffer "[^/]*";
+        add_pattern next)
+    | _ ->
+      let next = skip_literal index in
+      Buffer.add_string buffer (Re2.escape (String.sub pattern index (next - index)));
+      add_pattern next
+  in
+  Buffer.add_char buffer '^';
+  add_pattern 0;
+  Re2.create_exn (Buffer.contents buffer)
 
 let filter_paths diffs ~ignored =
   let compiled = List.map glob_to_re ignored in

@@ -165,7 +165,8 @@ module Make (SRC : Api.Github_review_source) = struct
     | Ok diff_text ->
     match Review_engine.prepare_diff ~log_context ~config diff_text with
     | Error `Empty ->
-      log#info "%sPR #%d: all files filtered out by ignored path or generated-file filters, nothing to review"
+      log#info
+        "%sPR #%d: all files filtered out by ignored path, file-regex, or generated-file filters, nothing to review"
         log_prefix number;
       Lwt.return (error Empty)
     | Error (`Too_large total_lines) ->
@@ -243,8 +244,8 @@ module Make (SRC : Api.Github_review_source) = struct
     | Ok diff_text ->
     match Review_engine.prepare_diff ~log_context ~config diff_text with
     | Error `Empty ->
-      log#info "%spush %s skipped: all files filtered out by ignored path or generated-file filters" log_prefix
-        push.after;
+      log#info "%spush %s skipped: all files filtered out by ignored path, file-regex, or generated-file filters"
+        log_prefix push.after;
       Lwt.return (Error Empty)
     | Error (`Too_large total_lines) ->
       log#info "%spush %s skipped: %d diff lines exceeds limit of %d" log_prefix push.after total_lines

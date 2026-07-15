@@ -279,47 +279,102 @@ type review_plugins_config = {
 let default_review_plugins_config =
   { general = default_general_plugin_config; security = default_security_plugin_config }
 
-type config = {
+module Config_codec = struct
+  type t = {
+    max_diff_lines : int;
+       [@json.default 2000]
+       [@jsonschema.description
+         "Maximum total diff lines to review; larger changes are skipped (raise for whole folders)."]
+    max_files : int;
+       [@json.default 50]
+       [@jsonschema.description "Maximum number of files to review (raise for whole-folder reviews)."]
+    max_tokens_per_review : int;
+       [@json.default 100000] [@jsonschema.description "Token budget hint for the review agent."]
+    model : string option;
+       [@json.option]
+       [@jsonschema.description
+         "Explicit model ID override for the general deep reviewer. When absent, deep_reviewer_model_tier decides."]
+    ignored_paths : string list;
+       [@json.default []] [@jsonschema.description "Glob patterns (\\* wildcard) for files to exclude from review."]
+    ignored_file_regexes : string list;
+       [@json.default []]
+       [@jsonschema.description
+         "Regular expressions matched against repository-relative file paths to exclude from review."]
+    ignore_generated_files : bool;
+       [@json.default true]
+       [@jsonschema.description
+         "Exclude conservatively detected generated files before file and line limits are enforced. Set false to \
+          review generated artifacts."]
+    ignored_authors : string list;
+       [@json.default []] [@jsonschema.description "Authors whose changes are skipped (webhook mode)."]
+    auto_review_pr_open : bool;
+       [@json.default false] [@jsonschema.description "Review PRs on open/reopen (webhook mode)."]
+    auto_review_pr_sync : bool;
+       [@json.default false] [@jsonschema.description "Review PRs on new commits (webhook mode)."]
+    review_pushes_to_develop : bool;
+       [@json.default false] [@jsonschema.description "Review pushes to develop (webhook mode)."]
+    auto_review_on_comment : bool;
+       [@json.default false] [@jsonschema.description "Review on a REVIEW comment (webhook mode)."]
+    review_draft_prs : bool;
+       [@json.default false] [@jsonschema.description "Include draft PRs in auto-review (webhook mode)."]
+    system_prompt_override : string option;
+       [@json.option] [@jsonschema.description "Replace the default general review system prompt entirely."]
+    slack_channel : string option;
+       [@json.option] [@jsonschema.description "Slack channel for push review notifications (webhook mode)."]
+    show_review_cost : bool;
+       [@json.default false] [@jsonschema.description "Append a cost summary footer to the review."]
+    review_plugins : review_plugins_config;
+       [@json.default default_review_plugins_config] [@jsonschema.description "Per-plugin configuration."]
+  }
+  [@@deriving json, jsonschema] [@@json.allow_extra_fields]
+end
+
+type config = Config_codec.t = {
   max_diff_lines : int;
-     [@json.default 2000]
-     [@jsonschema.description
-       "Maximum total diff lines to review; larger changes are skipped (raise for whole folders)."]
   max_files : int;
-     [@json.default 50] [@jsonschema.description "Maximum number of files to review (raise for whole-folder reviews)."]
   max_tokens_per_review : int;
-     [@json.default 100000] [@jsonschema.description "Token budget hint for the review agent."]
   model : string option;
-     [@json.option]
-     [@jsonschema.description
-       "Explicit model ID override for the general deep reviewer. When absent, deep_reviewer_model_tier decides."]
   ignored_paths : string list;
-     [@json.default []] [@jsonschema.description "Glob patterns (\\* wildcard) for files to exclude from review."]
+  ignored_file_regexes : string list;
   ignore_generated_files : bool;
-     [@json.default true]
-     [@jsonschema.description
-       "Exclude conservatively detected generated files before file and line limits are enforced. Set false to review \
-        generated artifacts."]
   ignored_authors : string list;
-     [@json.default []] [@jsonschema.description "Authors whose changes are skipped (webhook mode)."]
   auto_review_pr_open : bool;
-     [@json.default false] [@jsonschema.description "Review PRs on open/reopen (webhook mode)."]
   auto_review_pr_sync : bool;
-     [@json.default false] [@jsonschema.description "Review PRs on new commits (webhook mode)."]
   review_pushes_to_develop : bool;
-     [@json.default false] [@jsonschema.description "Review pushes to develop (webhook mode)."]
   auto_review_on_comment : bool;
-     [@json.default false] [@jsonschema.description "Review on a REVIEW comment (webhook mode)."]
   review_draft_prs : bool;
-     [@json.default false] [@jsonschema.description "Include draft PRs in auto-review (webhook mode)."]
   system_prompt_override : string option;
-     [@json.option] [@jsonschema.description "Replace the default general review system prompt entirely."]
   slack_channel : string option;
-     [@json.option] [@jsonschema.description "Slack channel for push review notifications (webhook mode)."]
-  show_review_cost : bool; [@json.default false] [@jsonschema.description "Append a cost summary footer to the review."]
+  show_review_cost : bool;
   review_plugins : review_plugins_config;
-     [@json.default default_review_plugins_config] [@jsonschema.description "Per-plugin configuration."]
 }
-[@@deriving json, jsonschema] [@@json.allow_extra_fields]
+
+let config_to_json = Config_codec.to_json
+let config_jsonschema = Config_codec.t_jsonschema
+
+(* ponytail: this deliberately uses a small set of representative paths rather
+   than attempting regex-language equivalence; expand the probes if a bypass
+   is found before introducing a regex AST dependency. *)
+let ignored_file_regex_probe_paths = [ "a"; "a/b"; "src/main.ml"; "src/security.ml"; ".github/workflows/review.yml" ]
+
+let regex_matches_all_probe_paths regex = List.for_all (Re2.matches regex) ignored_file_regex_probe_paths
+
+let validate_ignored_file_regex ~json pattern =
+  match Re2.create pattern with
+  | Error _ ->
+    Melange_json.of_json_error ~json (Printf.sprintf "invalid ignored_file_regexes regular expression %S" pattern)
+  | Ok regex when regex_matches_all_probe_paths regex ->
+    Melange_json.of_json_error ~json
+      (Printf.sprintf
+         "ignored_file_regexes regular expression %S matches every path probe; narrow it or use ignored_paths for \
+          explicit exclusions"
+         pattern)
+  | Ok _ -> ()
+
+let config_of_json (json : Yojson.Basic.t) : config =
+  let config = Config_codec.of_json json in
+  List.iter (validate_ignored_file_regex ~json) config.ignored_file_regexes;
+  config
 
 let config_help_json () = Yojson.Basic.pretty_to_string config_jsonschema
 

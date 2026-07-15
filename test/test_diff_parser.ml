@@ -298,6 +298,35 @@ let test_filter_paths () =
   let fd = hd_exn "filtered" filtered in
   (check string) "kept src/main.ml" "src/main.ml" fd.path
 
+let test_filter_paths_matches_exact_literals () =
+  let diffs = Diff_parser.parse single_hunk_diff in
+  let filtered = Diff_parser.filter_paths diffs ~ignored:[ "foo.ml" ] in
+  (check int) "exact literal excludes matching path" 0 (List.length filtered)
+
+let test_filter_paths_supports_globstar () =
+  let added_diff path =
+    String.concat "\n"
+      [
+        Printf.sprintf "diff --git a/%s b/%s" path path;
+        Printf.sprintf "--- a/%s" path;
+        Printf.sprintf "+++ b/%s" path;
+        "@@ -1,1 +1,1 @@";
+        "-old";
+        "+new";
+        "";
+      ]
+  in
+  let diffs =
+    Diff_parser.parse
+      (String.concat "\n" [ added_diff "README.md"; added_diff "src/main.ml"; added_diff "src/nested/util.ml" ])
+  in
+  let filtered = Diff_parser.filter_paths diffs ~ignored:[ "**/*.ml" ] in
+  (check (list string))
+    "globstar matches root and nested files" [ "README.md" ]
+    (List.map (fun (fd : Diff_parser.file_diff) -> fd.path) filtered);
+  let explicitly_ignored = Diff_parser.filter_paths diffs ~ignored:[ "**" ] in
+  (check int) "explicit ignored_paths catch-all excludes all files" 0 (List.length explicitly_ignored)
+
 (** {2 Generated-file classifier tests} *)
 
 let added_diff_text_for_path ?(lines = [ "+let x = 1" ]) path =
@@ -508,6 +537,68 @@ let test_prepare_diff_generated_filter_can_be_disabled () =
   | Error (`Too_many_files file_count) -> (check int) "generated files counted" 3 file_count
   | Error (`Empty | `Too_large _) -> fail "expected too many files"
 
+let test_prepare_diff_filters_custom_file_regexes_before_limits () =
+  let diff =
+    String.concat "\n"
+      [
+        added_diff_text_for_path ~lines:[ "+let reviewed = true" ] "src/app.ml";
+        added_diff_text_for_path ~lines:[ "+opaque snapshot" ] "fixtures/api.snapshot";
+        added_diff_text_for_path ~lines:[ "+function min(){}" ] "assets/app.min.js";
+      ]
+  in
+  let config =
+    Config_types.config_of_json
+      (Melange_json.of_string
+         {|{"max_files":2,"ignore_generated_files":false,"ignored_file_regexes":["^fixtures/.*\\.snapshot$"]}|})
+  in
+  let kept, skipped =
+    Generated_file.filter ~ignored_file_regexes:config.ignored_file_regexes ~ignore_generated_files:false
+      (Diff_parser.parse diff)
+  in
+  (check int) "custom regex skips one file" 1 (List.length skipped);
+  (match skipped with
+  | [ skipped_file ] ->
+    (check string) "custom skipped path" "fixtures/api.snapshot" skipped_file.path;
+    (check bool) "custom skip reason" true (CCString.find ~sub:"ignored file regex" skipped_file.reason >= 0)
+  | [] | _ :: _ :: _ -> fail "expected one custom skipped file");
+  (check int) "standard generated file stays when disabled" 2 (List.length kept);
+  match Review_engine.prepare_diff ~config diff with
+  | Error _ -> fail "expected custom regex filtering before file limits"
+  | Ok prepared ->
+    (check int) "two files remain after custom filter" 2 (List.length prepared.filtered_diff);
+    (check bool) "custom path absent from annotated diff" false
+      (CCString.find ~sub:"fixtures/api.snapshot" prepared.filtered_text >= 0);
+    (check bool) "standard generated path remains when disabled" true
+      (CCString.find ~sub:"assets/app.min.js" prepared.filtered_text >= 0)
+
+let test_custom_file_regex_uses_current_rename_path () =
+  let diff_text =
+    String.concat "\n"
+      [
+        "diff --git a/generated/schema.ml b/src/schema.ml";
+        "similarity index 90%";
+        "rename from generated/schema.ml";
+        "rename to src/schema.ml";
+        "index 1234567..abcdefg 100644";
+        "--- a/generated/schema.ml";
+        "+++ b/src/schema.ml";
+        "@@ -1,1 +1,1 @@";
+        "-let old_schema = 1";
+        "+let new_schema = 2";
+      ]
+  in
+  let diffs = Diff_parser.parse diff_text in
+  let kept_from_old, skipped_from_old =
+    Generated_file.filter ~ignored_file_regexes:[ "^generated/" ] ~ignore_generated_files:false diffs
+  in
+  (check int) "old rename path does not match" 1 (List.length kept_from_old);
+  (check int) "old rename path is not skipped" 0 (List.length skipped_from_old);
+  let kept_from_new, skipped_from_new =
+    Generated_file.filter ~ignored_file_regexes:[ "^src/" ] ~ignore_generated_files:false diffs
+  in
+  (check int) "new rename path matches" 0 (List.length kept_from_new);
+  (check int) "new rename path is skipped" 1 (List.length skipped_from_new)
+
 (** {2 Token estimation tests} *)
 
 let test_estimate_tokens () =
@@ -715,7 +806,12 @@ let () =
           test_case "permission-only change" `Quick test_permission_only_change;
           test_case "unicode content" `Quick test_unicode_content;
         ] );
-      "filtering", [ test_case "filter paths" `Quick test_filter_paths ];
+      ( "filtering",
+        [
+          test_case "filter paths" `Quick test_filter_paths;
+          test_case "filter paths matches exact literals" `Quick test_filter_paths_matches_exact_literals;
+          test_case "filter paths supports globstar" `Quick test_filter_paths_supports_globstar;
+        ] );
       ( "generated_file",
         [
           test_case "path rules" `Quick test_generated_file_path_rules;
@@ -731,6 +827,9 @@ let () =
           test_case "prepare returns empty when only generated files remain" `Quick
             test_prepare_diff_empty_when_only_generated;
           test_case "config disables generated filtering" `Quick test_prepare_diff_generated_filter_can_be_disabled;
+          test_case "custom file regexes filter before limits" `Quick
+            test_prepare_diff_filters_custom_file_regexes_before_limits;
+          test_case "custom file regex uses current rename path" `Quick test_custom_file_regex_uses_current_rename_path;
         ] );
       ( "metrics",
         [

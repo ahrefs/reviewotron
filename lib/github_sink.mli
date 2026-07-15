@@ -14,10 +14,11 @@ module Make (_ : Api.Github_review_sink) : sig
     ctx:Context.t -> job:Review_job.t -> number:int -> Review_engine.report -> (unit, string) result Lwt.t
 
   (** Post an issue comment to a PR explaining why a review could not be
-      produced (diff fetch failure or size/file limit exceeded). Returns the
-      post result so the caller can record the PR as reviewed only when the
-      notice was actually delivered. *)
+      produced, or why it was explicitly skipped after all files were excluded.
+      Returns the post result so the caller can record the PR as reviewed only
+      when the notice was actually delivered. *)
   val publish_failure_comment :
+    ?head_sha:string ->
     ?log_context:string ->
     ctx:Context.t ->
     repo_url:string ->

@@ -10,7 +10,7 @@ type prepare_error =
 
 let string_of_prepare_error = function
   | Read_failed msg -> msg
-  | Empty -> "all files were filtered out by ignored path or generated-file filters"
+  | Empty -> "all files were filtered out by ignored path, file-regex, or generated-file filters; no code was reviewed"
   | Too_large total_lines -> Printf.sprintf "diff has %d lines, which exceeds the configured limit" total_lines
   | Too_many_files file_count -> Printf.sprintf "diff touches %d files, which exceeds the configured limit" file_count
 
