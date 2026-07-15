@@ -40,7 +40,9 @@ let format_slack_attachment ~compare_url ~pusher_name ~num_commits ~(review : Re
       color;
       title = Printf.sprintf "Push by %s \u{2014} %d commits" pusher_name num_commits;
       title_link = compare_url;
-      text = review.summary;
+      (* [review.summary] is an internal audit trace and must never be shown to
+         consumers. Use the findings-derived count string instead. *)
+      text = findings_str;
       fields = [ { title = "Findings"; value = findings_str; short = true } ];
       footer = Some "reviewotron";
     }

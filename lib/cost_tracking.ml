@@ -52,6 +52,13 @@ let pricing_table =
       cache_read_per_million = 0.50;
     };
     {
+      model_id_prefix = "claude-sonnet-5";
+      input_per_million = 3.0;
+      output_per_million = 15.0;
+      cache_write_per_million = 3.75;
+      cache_read_per_million = 0.30;
+    };
+    {
       model_id_prefix = "claude-sonnet-4";
       input_per_million = 3.0;
       output_per_million = 15.0;

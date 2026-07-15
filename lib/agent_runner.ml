@@ -24,6 +24,7 @@ type agent_config = {
   output_schema : Yojson.Basic.t;
   max_steps : int;
   thinking_budget : int option;
+  effort : Config_types.Effort.t option;
 }
 
 let anthropic_min_thinking_budget = 1024
@@ -33,9 +34,11 @@ let anthropic_min_thinking_budget = 1024
 let clamp_thinking_budget n = max anthropic_min_thinking_budget n
 
 let build_provider_options ~provider (config : agent_config) : Ai_provider.Provider_options.t =
-  match config.thinking_budget with
-  | None -> Ai_provider.Provider_options.empty
-  | Some n -> Llm_provider.thinking_options provider ~budget_tokens:(clamp_thinking_budget n)
+  match config.effort, config.thinking_budget with
+  | None, None -> Ai_provider.Provider_options.empty
+  | None, Some n -> Llm_provider.thinking_options provider ~budget_tokens:(clamp_thinking_budget n)
+  | Some effort, None -> Llm_provider.effort_options provider ~effort
+  | Some _, Some _ -> invalid_arg "agent effort cannot be combined with thinking_budget"
 
 (* Anthropic prompt caching is opt-in: without an explicit [cache_control]
    marker on a content block, no caching happens and every step re-bills the
@@ -128,8 +131,8 @@ let default_model_id =
   let open Ai_provider_anthropic.Model_catalog in
   function
   | Fast -> to_model_id Claude_haiku_4_5
-  | Standard -> to_model_id Claude_sonnet_4_6
-  | Strong -> to_model_id Claude_opus_4_6
+  | Standard -> "claude-sonnet-5"
+  | Strong -> "claude-opus-4-8"
 
 (** Recursively create a directory path, like [mkdir -p].
     Silently succeeds if the directory already exists. *)
@@ -302,8 +305,18 @@ let run_agent_untraced ~provider ~model ?tools ?(max_retries = 2) ?debug_dir ?lo
     | None -> "off"
     | Some n -> string_of_int (clamp_thinking_budget n)
   in
-  log#info "%sagent %s: starting (model=%s, max_steps=%d, thinking_budget=%s)" log_prefix config.name model_id
-    config.max_steps thinking_budget_str;
+  let effort_str =
+    match config.effort with
+    | None -> "default"
+    | Some effort -> Config_types.Effort.to_string effort
+  in
+  log#info "%sagent %s: starting (model=%s, max_steps=%d, thinking_budget=%s, effort=%s)" log_prefix config.name
+    model_id config.max_steps thinking_budget_str effort_str;
+  (match provider, config.effort with
+  | Llm_provider.Anthropic, Some effort ->
+    log#warn "%sagent %s: direct Anthropic cannot encode effort=%s with installed ocaml-ai-sdk; using provider default"
+      log_prefix config.name (Config_types.Effort.to_string effort)
+  | Anthropic, None | Openrouter, None | Openrouter, Some _ -> ());
   let tools = Option.default [] tools in
   (* Hand-build the [messages] list (instead of using [~prompt:input]) so we
      can attach a [cache_control] marker to the input text block.  The
@@ -428,6 +441,15 @@ let run_agent ~provider ~model ?tools ?(max_retries = 2) ?debug_dir ?log_context
         "reviewotron.agent.thinking_budget", `Int (clamp_thinking_budget budget);
       ]
   in
+  let effort_attrs =
+    match config.effort with
+    | None -> [ "reviewotron.agent.effort.enabled", `Bool false ]
+    | Some effort ->
+      [
+        "reviewotron.agent.effort.enabled", `Bool true;
+        "reviewotron.agent.effort", `String (Config_types.Effort.to_string effort);
+      ]
+  in
   let attrs =
     [
       "reviewotron.agent.name", `String config.name;
@@ -436,6 +458,7 @@ let run_agent ~provider ~model ?tools ?(max_retries = 2) ?debug_dir ?log_context
       "reviewotron.agent.max_steps", `Int config.max_steps;
     ]
     @ thinking_attrs
+    @ effort_attrs
   in
   Telemetry.span_result ~error_to_string:Fun.id ~attrs "reviewotron.agent.run" (fun () ->
     let%lwt result =

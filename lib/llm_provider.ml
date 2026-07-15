@@ -31,6 +31,8 @@ let api_key_exn key = CCOption.get_exn_or __LOC__ (normalize_key key)
    [anthropic/] prefix. Keep the mappings explicit for known Claude aliases so
    the OpenRouter path calls the same underlying Claude model family/version. *)
 let normalize_anthropic_model_for_openrouter = function
+  | "claude-sonnet-5" | "anthropic/claude-sonnet-5" -> "anthropic/claude-sonnet-5"
+  | "claude-opus-4-8" | "anthropic/claude-opus-4-8" -> "anthropic/claude-opus-4.8"
   | "claude-opus-4-7" | "anthropic/claude-opus-4-7" -> "anthropic/claude-opus-4.7"
   | "claude-opus-4-6" | "anthropic/claude-opus-4-6" -> "anthropic/claude-opus-4.6"
   | "claude-sonnet-4-6" | "anthropic/claude-sonnet-4-6" -> "anthropic/claude-sonnet-4.6"
@@ -129,6 +131,25 @@ let thinking_options provider ~budget_tokens =
   | Openrouter ->
     let reasoning : Ai_provider_openrouter.Openrouter_options.reasoning_config =
       { enabled = Some true; exclude = None; budget = Max_tokens budget_tokens }
+    in
+    let opts = { Ai_provider_openrouter.Openrouter_options.default with reasoning = Some reasoning } in
+    Ai_provider_openrouter.Openrouter_options.to_provider_options opts
+
+let openrouter_effort = function
+  | Config_types.Effort.Low -> Ai_provider_openrouter.Openrouter_options.Low
+  | Medium -> Medium
+  | High -> High
+  | Xhigh -> Xhigh
+
+(* OpenRouter maps [reasoning.effort] to Anthropic [output_config.effort] for
+   Claude 4.6+ models.  The direct Anthropic SDK path cannot encode effort
+   until its typed [output_config] grows that field. *)
+let effort_options provider ~effort =
+  match provider with
+  | Anthropic -> Ai_provider.Provider_options.empty
+  | Openrouter ->
+    let reasoning : Ai_provider_openrouter.Openrouter_options.reasoning_config =
+      { enabled = Some true; exclude = None; budget = Effort (openrouter_effort effort) }
     in
     let opts = { Ai_provider_openrouter.Openrouter_options.default with reasoning = Some reasoning } in
     Ai_provider_openrouter.Openrouter_options.to_provider_options opts

@@ -1,0 +1,18 @@
+{
+  "summary": "L0 src/main.ml:14 — confirmed: unhandled exception on the changed call site.\nL1 src/utils.ml:2 — refuted: style-only, no correctness impact.",
+  "findings": [
+    {
+      "path": "src/main.ml",
+      "line": 14,
+      "severity": "warning",
+      "category": "error-handling",
+      "message": "The `process` function can raise but the result is used without an exception boundary.",
+      "failure_scenario": "When `process new_value` raises, the main flow terminates before returning a fallback result.",
+      "evidence_snippet": "let result = process new_value",
+      "why_now": "This PR changed the call site to use `process new_value` directly.",
+      "confidence": "high",
+      "suggested_fix": "match process new_value with | exception exn -> log_error exn; 0 | result -> result"
+    }
+  ],
+  "overall_assessment": "One confirmed finding; the style lead was refuted."
+}

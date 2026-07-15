@@ -1,0 +1,21 @@
+{
+  "results": [
+    {
+      "candidate_id": 0,
+      "finding": {
+        "path": "lib/session.ml",
+        "line": 42,
+        "severity": "warning",
+        "category": "bug",
+        "message": "The session token expiry check was dropped, so an expired token is accepted as valid.",
+        "failure_scenario": "A caller passes a token whose expiry has elapsed; validate_session returns true and the request proceeds with a stale identity.",
+        "evidence_snippet": "let validate_session token = Hashtbl.mem sessions token.id",
+        "why_now": "This PR removed the `not (expired token)` guard from validate_session, so the new call path no longer rejects expired tokens.",
+        "confidence": "high",
+        "suggested_fix": "let validate_session token = Hashtbl.mem sessions token.id && not (expired token)"
+      },
+      "verdict": "confirmed",
+      "evidence_notes": "Confirmed: the expiry guard is absent from the changed validate_session and no caller re-checks expiry."
+    }
+  ]
+}
