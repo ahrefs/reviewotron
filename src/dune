@@ -13,9 +13,24 @@
  (preprocess
   (pps lwt_ppx)))
 
+; The CLI version is baked in at build time. Release/install builds
+; (--profile=release) stamp the version declared in dune-project; every other
+; build reports "dev" so local development is never mistaken for a release.
+
 (rule
  (targets build_info.ml)
+ (enabled_if
+  (= %{profile} release))
  (action
   (with-stdout-to
    %{targets}
-   (echo "let version = \"%{env:REVIEWOTRON_VERSION=dev}\""))))
+   (echo "let version = \"%{version:reviewotron}\""))))
+
+(rule
+ (targets build_info.ml)
+ (enabled_if
+  (<> %{profile} release))
+ (action
+  (with-stdout-to
+   %{targets}
+   (echo "let version = \"dev\""))))

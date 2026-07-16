@@ -6,8 +6,16 @@ die() {
   exit 1
 }
 
-version=${1:-}
-[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "usage: $0 X.Y.Z"
+script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+dune_project="$script_dir/../dune-project"
+[[ -f "$dune_project" ]] || die "dune-project not found at $dune_project"
+
+# The version is declared once, in dune-project, and baked into the binary by
+# the release-profile build. Read it here so the git tag and GitHub release
+# stay in lockstep with the compiled-in version.
+version=$(sed -n 's/^(version[[:space:]]*\([0-9][0-9.]*\))[[:space:]]*$/\1/p' "$dune_project")
+[[ -n "$version" ]] || die "no (version X.Y.Z) declared in dune-project"
+[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "dune-project version is not X.Y.Z: $version"
 
 for tool in git dune gh strip tar; do
   command -v "$tool" >/dev/null 2>&1 || die "required tool not found: $tool"
@@ -44,7 +52,7 @@ if gh release view "$tag" >/dev/null 2>&1; then
 fi
 
 dune runtest
-REVIEWOTRON_VERSION="$version" dune build --profile=release src/reviewotron.exe
+dune build --profile=release src/reviewotron.exe
 
 release_name="reviewotron-v${version}-linux-x86_64-nspawn"
 archive_name="${release_name}.tar.gz"

@@ -1,5 +1,17 @@
 You are an Software engineer expert in OCaml, and your job is to write expert-level industry-standard OCaml code. You will do it taking in consideration our stack and following our internal code-style guidelines.
 
+# Versioning
+
+The project version lives in a single place: the `(version X.Y.Z)` field in
+`dune-project`. It is a numeric, orderable semver and is baked into the binary
+at release/install time (`--profile=release`); every other build reports `dev`.
+
+**Whenever you ship a new feature or a user-visible change, bump this version**
+following semver (`X` breaking, `Y` feature, `Z` fix). Do not hardcode the
+version anywhere else — `scripts/release.sh` reads it from `dune-project` to tag
+and publish the GitHub release, so `dune-project` and the release tag can never
+drift.
+
 # Backend Stack
 
 **Core Libraries:**
