@@ -44,6 +44,15 @@ let contains ~needle haystack =
   | true -> true
   | false -> loop 0
 
+let git_key args = String.concat "\n" args
+
+let fake_git mapping ~cwd:_ args =
+  let key = git_key args in
+  match List.find_opt (fun (candidate, _) -> String.equal candidate key) mapping with
+  | Some (_, `Ok output) -> Ok output
+  | Some (_, `Error msg) -> Error msg
+  | None -> Error (Printf.sprintf "unexpected git args: %s" (String.concat " " args))
+
 let selector_functions ~git_root =
   let discover_root ~cwd =
     match String.equal cwd git_root || String.starts_with ~prefix:(git_root ^ "/") cwd with
@@ -161,6 +170,67 @@ let test_untracked_files_are_synthesized () =
           | Diff_parser.Deleted | Diff_parser.Modified | Diff_parser.Renamed -> fail "untracked file was not added")
         file_diffs)
 
+let test_commit_resolution_accepts_full_and_abbreviated_revisions () =
+  let full = "0123456789012345678901234567890123456789" in
+  let run_git =
+    fake_git
+      [
+        git_key [ "rev-parse"; "--verify"; "--end-of-options"; "HEAD~2^{commit}" ], `Ok full;
+        git_key [ "rev-parse"; "--verify"; "--end-of-options"; "01234567^{commit}" ], `Ok full;
+      ]
+  in
+  (match Local_git.resolve_commit_with ~run_git ~root:"/repo" ~revision:"HEAD~2" with
+  | Ok commit -> check string "full revision" full commit
+  | Error msg -> fail msg);
+  match Local_git.resolve_commit_with ~run_git ~root:"/repo" ~revision:"01234567" with
+  | Ok commit -> check string "abbreviated revision" full commit
+  | Error msg -> fail msg
+
+let test_commit_resolution_reports_missing_and_ambiguous_revisions () =
+  let run_git ~cwd:_ args =
+    match args with
+    | [ "rev-parse"; "--verify"; "--end-of-options"; "missing^{commit}" ] -> Error "missing"
+    | [ "rev-parse"; "--verify"; "--end-of-options"; "ambiguous^{commit}" ] -> Error "ambiguous"
+    | _ -> Error "unexpected Git command"
+  in
+  (match Local_git.resolve_commit_with ~run_git ~root:"/repo" ~revision:"missing" with
+  | Ok _ -> fail "missing revision unexpectedly resolved"
+  | Error msg -> check bool "missing revision" true (contains ~needle:"missing" msg));
+  match Local_git.resolve_commit_with ~run_git ~root:"/repo" ~revision:"ambiguous" with
+  | Ok _ -> fail "ambiguous revision unexpectedly resolved"
+  | Error msg -> check bool "ambiguous revision" true (contains ~needle:"ambiguous" msg)
+
+let test_commit_diff_uses_first_parent_and_optional_path () =
+  let commit = "0123456789012345678901234567890123456789" in
+  let parent = "1111111111111111111111111111111111111111" in
+  let merge_parent = "2222222222222222222222222222222222222222" in
+  let diff_text = "diff --git a/src/a.ml b/src/a.ml\n" in
+  let run_git =
+    fake_git
+      [
+        git_key [ "rev-list"; "--parents"; "-n"; "1"; commit ], `Ok (String.concat " " [ commit; parent; merge_parent ]);
+        git_key [ "diff"; parent; commit; "--"; "src" ], `Ok diff_text;
+      ]
+  in
+  match Local_git.diff_against_commit_with ~run_git ~root:"/repo" ~commit ~path:"src" () with
+  | Ok diff -> check string "first-parent path diff" diff_text diff
+  | Error msg -> fail msg
+
+let test_root_commit_diff_uses_empty_tree () =
+  let commit = "0123456789012345678901234567890123456789" in
+  let empty_tree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904" in
+  let diff_text = "diff --git a/main.ml b/main.ml\n" in
+  let run_git =
+    fake_git
+      [
+        git_key [ "rev-list"; "--parents"; "-n"; "1"; commit ], `Ok commit;
+        git_key [ "diff"; empty_tree; commit ], `Ok diff_text;
+      ]
+  in
+  match Local_git.diff_against_commit_with ~run_git ~root:"/repo" ~commit () with
+  | Ok diff -> check string "root diff" diff_text diff
+  | Error msg -> fail msg
+
 let test_config_layers_precedence_and_deep_merge () =
   with_temp_dir (fun root ->
     let home = Filename.concat root "home" in
@@ -260,6 +330,15 @@ let () =
           test_case "empty Git tree" `Quick test_mode_empty_git_tree;
           test_case "missing base is actionable" `Quick test_mode_missing_base_is_actionable;
           test_case "untracked files are synthesized" `Quick test_untracked_files_are_synthesized;
+        ] );
+      ( "commit",
+        [
+          test_case "resolves full and abbreviated revisions" `Quick
+            test_commit_resolution_accepts_full_and_abbreviated_revisions;
+          test_case "reports missing and ambiguous revisions" `Quick
+            test_commit_resolution_reports_missing_and_ambiguous_revisions;
+          test_case "diff uses first parent and path" `Quick test_commit_diff_uses_first_parent_and_optional_path;
+          test_case "root diff uses empty tree" `Quick test_root_commit_diff_uses_empty_tree;
         ] );
       ( "config",
         [

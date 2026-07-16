@@ -21,26 +21,32 @@ module Make (AI : Api.Agent_runner) = struct
     let%lwt result = run_prepared_report ~ctx prepared in
     Lwt.return (Result.map Local_sink.render_markdown result)
 
-  let review_diff ~ctx ~root ~repo_key ?change_key ~title ~description ~diff_path ~config () =
-    match%lwt Local_source.prepare_review ~root ~repo_key ?change_key ~title ~description ~diff_path ~config () with
-    | Error error -> Lwt.return (Error (Local_source.string_of_prepare_error error))
-    | Ok prepared -> run_prepared ~ctx prepared
-
-  let review_diff_text ~ctx ~root ~repo_key ?change_key ~title ~description ~diff_text ~config () =
+  let review_diff ~ctx ~root ~repo_key ?change_key ?revision ~title ~description ~diff_path ~config () =
     match%lwt
-      Local_source.prepare_review_from_text ~root ~repo_key ?change_key ~title ~description ~diff_text ~config ()
+      Local_source.prepare_review ~root ~repo_key ?change_key ?revision ~title ~description ~diff_path ~config ()
     with
     | Error error -> Lwt.return (Error (Local_source.string_of_prepare_error error))
     | Ok prepared -> run_prepared ~ctx prepared
 
-  let review_diff_report ~ctx ~root ~repo_key ?change_key ~title ~description ~diff_path ~config () =
-    match%lwt Local_source.prepare_review ~root ~repo_key ?change_key ~title ~description ~diff_path ~config () with
+  let review_diff_text ~ctx ~root ~repo_key ?change_key ?revision ~title ~description ~diff_text ~config () =
+    match%lwt
+      Local_source.prepare_review_from_text ~root ~repo_key ?change_key ?revision ~title ~description ~diff_text ~config
+        ()
+    with
+    | Error error -> Lwt.return (Error (Local_source.string_of_prepare_error error))
+    | Ok prepared -> run_prepared ~ctx prepared
+
+  let review_diff_report ~ctx ~root ~repo_key ?change_key ?revision ~title ~description ~diff_path ~config () =
+    match%lwt
+      Local_source.prepare_review ~root ~repo_key ?change_key ?revision ~title ~description ~diff_path ~config ()
+    with
     | Error error -> Lwt.return (Error (Local_source.string_of_prepare_error error))
     | Ok prepared -> run_prepared_report ~ctx prepared
 
-  let review_diff_text_report ~ctx ~root ~repo_key ?change_key ~title ~description ~diff_text ~config () =
+  let review_diff_text_report ~ctx ~root ~repo_key ?change_key ?revision ~title ~description ~diff_text ~config () =
     match%lwt
-      Local_source.prepare_review_from_text ~root ~repo_key ?change_key ~title ~description ~diff_text ~config ()
+      Local_source.prepare_review_from_text ~root ~repo_key ?change_key ?revision ~title ~description ~diff_text ~config
+        ()
     with
     | Error error -> Lwt.return (Error (Local_source.string_of_prepare_error error))
     | Ok prepared -> run_prepared_report ~ctx prepared

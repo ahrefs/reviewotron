@@ -785,6 +785,7 @@ reviewotron ./src/file.ml
 reviewotron --mode auto .
 reviewotron --mode diff .
 reviewotron --mode path .
+reviewotron --commit HEAD~2 src/
 ```
 
 With no path, `PATH` defaults to `.`. In `auto` mode a directory inside a Git
@@ -793,6 +794,10 @@ mode. `--mode diff` requires Git, while `--mode path` reviews the selected file
 or directory as newly added code. A Git directory with no changes exits with
 `no changes to review`; if no base ref can be inferred, pass `--base` or use
 `--mode path`.
+
+With `--commit COMMIT`, the commit-ish is resolved to a full SHA and only that
+commit's first-parent patch is reviewed. The supplied path scopes the patch;
+staged, unstaged, and untracked worktree changes are ignored.
 
 The smart command accepts the local review options documented below, including
 `--root`, `--base`, `--config`, `--output`, and `--no-security`. It is also the
@@ -837,13 +842,14 @@ Parses and displays a GitHub webhook payload without starting the server or perf
 reviewotron review-diff [OPTIONS]
 ```
 
-Runs the same core review engine against a local unified diff and prints the final review to stdout. Logs go to stderr unless `--logfile` is set. The diff can be a file (`--diff FILE`), stdin (`--diff -`), or — when `--diff` is omitted — a Git diff generated from the merge-base of `HEAD` and the inferred base ref, including staged, unstaged, and non-ignored untracked changes. This path does not fetch or publish through GitHub; local file-content expansion uses `--root`.
+Runs the same core review engine against a local unified diff and prints the final review to stdout. Logs go to stderr unless `--logfile` is set. The diff can be a file (`--diff FILE`), stdin (`--diff -`), a selected commit (`--commit COMMIT`), or — when `--diff` and `--commit` are omitted — a Git diff generated from the merge-base of `HEAD` and the inferred base ref, including staged, unstaged, and non-ignored untracked changes. Commit mode reviews only the selected commit against its first parent and does not inspect the worktree. This path does not fetch or publish through GitHub; local file-content expansion uses `--root`.
 
 The Anthropic API key is resolved from `--anthropic-api-key`, then the `ANTHROPIC_API_KEY` environment variable, then a `--secrets` file if one is given — no secrets file is required. Configuration uses the layered local CLI precedence described in [Configuration](#configuration). See [Agent Helper Mode](#agent-helper-mode).
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--diff` | Git diff against inferred base | Path to a unified diff file |
+| `--commit` | (none) | Commit-ish to review; defaults the change key to `commit/<full-sha>` |
 | `--base` | inferred from Git | Base ref for generated diffs; tries `origin/HEAD`, `origin/main`, `origin/master`, then the upstream remote |
 | `--root` | Git worktree root, then cwd | Repository root for local file-content lookups |
 | `--repo-key` | `local:<root>` | Stable repository key for config, memory paths, and state |

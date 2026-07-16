@@ -27,8 +27,7 @@ let count_sub ~sub s =
     in
     loop 0 0
 
-let reviewed_commit_sub sha =
-  Printf.sprintf "**Reviewed code up until commit:** `%s`" (Review_job.short_display_id sha)
+let reviewed_commit_sub sha = Printf.sprintf "**Reviewed code up until commit:** `%s`" (Review_job.short_display_id sha)
 
 let write_file path contents =
   let oc = open_out_bin path in
@@ -3777,6 +3776,69 @@ let with_local_root f =
       Unix.mkdir src_dir 0o755;
       write_file main_path "let main () =\n  print_endline \"local\"\n";
       f tmp_dir)
+
+let test_local_source_revision_pins_diff_and_file_context () =
+  with_local_root (fun root ->
+    let run_git args =
+      match Local_git.run_git ~cwd:root args with
+      | Ok output -> output
+      | Error msg -> fail msg
+    in
+    let main_path = Filename.concat (Filename.concat root "src") "main.ml" in
+    write_file main_path "let source = \"target\"\n";
+    let _ = run_git [ "init"; "-q" ] in
+    let _ = run_git [ "config"; "user.email"; "reviewotron-test@example.com" ] in
+    let _ = run_git [ "config"; "user.name"; "Reviewotron Test" ] in
+    let _ = run_git [ "config"; "commit.gpgsign"; "false" ] in
+    let _ = run_git [ "add"; "src/main.ml" ] in
+    let _ = run_git [ "commit"; "-qm"; "target" ] in
+    let commit = run_git [ "rev-parse"; "HEAD" ] in
+    let abbreviated = String.sub commit 0 8 in
+    (match Local_git.resolve_commit ~root ~revision:abbreviated with
+    | Ok resolved -> (check string) "abbreviated commit resolves" commit resolved
+    | Error msg -> fail msg);
+    write_file main_path "let source = \"worktree\"\n";
+    let _ = run_git [ "add"; "src/main.ml" ] in
+    write_file (Filename.concat root "untracked.ml") "let source = \"untracked\"\n";
+    let diff_text =
+      match Local_git.diff_against_commit ~root ~commit () with
+      | Ok diff -> diff
+      | Error msg -> fail msg
+    in
+    (check bool) "commit diff excludes worktree content" true (contains_sub ~sub:"target" diff_text);
+    (check bool) "commit diff excludes later worktree content" false (contains_sub ~sub:"worktree" diff_text);
+    (check bool) "commit diff excludes untracked content" false (contains_sub ~sub:"untracked" diff_text);
+    let result =
+      Lwt_main.run
+        (Local_source.prepare_review_from_text ~root ~repo_key:"local/repo" ~revision:commit ~title:"Commit review"
+           ~description:"" ~diff_text ~config:(Context.default_config ()) ())
+    in
+    match result with
+    | Error error -> fail (Local_source.string_of_prepare_error error)
+    | Ok job ->
+      (check string) "head sha" commit job.head_sha;
+      (check string) "default commit key" (Printf.sprintf "commit/%s" commit) job.change_key;
+      let fetch path = Lwt_main.run (job.fetch_file ~path) in
+      (match fetch "src/main.ml" with
+      | Ok (Some contents) -> (check string) "target blob" "let source = \"target\"\n" contents
+      | Ok None -> fail "target blob was unavailable"
+      | Error msg -> fail msg);
+      (match fetch "src/missing.ml" with
+      | Ok None -> ()
+      | Ok (Some _) -> fail "missing blob unexpectedly returned content"
+      | Error msg -> fail msg);
+      (* A path that resolves to a tree (directory) at the revision is a read
+         error, not "unavailable" — matching the worktree fetcher's contract so
+         a directory in the diff is surfaced rather than silently dropped. *)
+      (match fetch "src" with
+      | Error msg ->
+        check bool "revision directory reported as read error" true (contains_sub ~sub:"failed to read" msg)
+      | Ok (Some _) -> fail "directory fetch should not return content"
+      | Ok None -> fail "directory fetch should report a read error");
+      (match fetch "../main.ml" with
+      | Error msg -> check bool "unsafe revision path" true (contains_sub ~sub:"unsafe local path" msg)
+      | Ok (Some _) -> fail "unsafe revision path returned content"
+      | Ok None -> fail "unsafe revision path should return an error"))
 
 let assert_local_trigger (trigger : Review_job.trigger) =
   match trigger with
@@ -7700,6 +7762,8 @@ let () =
           test_case "source rejects unsafe fetch path" `Quick test_local_source_rejects_unsafe_fetch_path;
           test_case "source rejects symlink escape" `Quick test_local_source_rejects_symlink_escape;
           test_case "source reports fetch read errors" `Quick test_local_source_reports_fetch_read_errors;
+          test_case "source pins commit diff and file context" `Quick
+            test_local_source_revision_pins_diff_and_file_context;
           test_case "source default change key uses filtered diff" `Quick
             test_local_source_default_change_key_uses_filtered_diff;
           test_case "review path filters generated before limits" `Quick

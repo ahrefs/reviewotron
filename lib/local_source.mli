@@ -15,11 +15,14 @@ val string_of_prepare_error : prepare_error -> string
 (** Build a local review job from [diff_path].
 
     [root] is used by the job's [fetch_file] callback for demand-driven file
-    content lookup. [change_key] defaults to a digest of the diff content. *)
+    content lookup. [change_key] defaults to a digest of the diff content.
+    When [revision] is supplied, file contents are read from that commit and
+    the commit SHA becomes the job identity. *)
 val prepare_review :
   root:string ->
   repo_key:string ->
   ?change_key:string ->
+  ?revision:string ->
   title:string ->
   description:string ->
   diff_path:string ->
@@ -32,6 +35,7 @@ val prepare_review_from_text :
   root:string ->
   repo_key:string ->
   ?change_key:string ->
+  ?revision:string ->
   title:string ->
   description:string ->
   diff_text:string ->
