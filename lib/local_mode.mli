@@ -17,6 +17,15 @@ type diff_selection = {
   untracked_files : string list;
 }
 
+type path_kind =
+  | File
+  | Directory
+
+(** Classify a filesystem path, rejecting anything that is neither a regular
+    file nor a directory (sockets, fifos, ...) and reporting a clear error when
+    the path cannot be read (e.g. does not exist). *)
+val path_kind : string -> (path_kind, string) result
+
 type selection =
   | Review_path of path_selection
   | Review_diff of diff_selection

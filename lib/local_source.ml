@@ -68,6 +68,17 @@ let resolve_fetch_path ~root ~path =
     | resolved_path ->
       Error (Printf.sprintf "refusing to read local path outside root: %s resolves to %s" path resolved_path))
 
+(* Drop binary/oversized blobs before they reach the agent prompt, the same
+   guard the GitHub source applies. A dropped file reads as "unavailable". Both
+   the worktree and revision fetchers end here so the two paths report dropped
+   files identically. *)
+let embeddable_or_dropped ~path contents =
+  match Review_job.is_embeddable contents with
+  | true -> Ok (Some contents)
+  | false ->
+    log#warn "skipping %s: not embeddable (binary or too large)" path;
+    Ok None
+
 let fetch_file_from_root ~root ~path =
   match resolve_fetch_path ~root ~path with
   | Error msg -> Lwt.return (Error msg)
@@ -75,14 +86,24 @@ let fetch_file_from_root ~root ~path =
   | Ok (Some full_path) ->
   match%lwt read_file full_path with
   | Error msg -> Lwt.return (Error msg)
-  | Ok contents ->
-  (* Drop binary/oversized blobs before they reach the agent prompt, the same
-       guard the GitHub source applies. A dropped file reads as "unavailable". *)
-  match Review_job.is_embeddable contents with
-  | true -> Lwt.return (Ok (Some contents))
-  | false ->
-    log#warn "skipping %s: not embeddable (binary or too large)" path;
-    Lwt.return (Ok None)
+  | Ok contents -> Lwt.return (embeddable_or_dropped ~path contents)
+
+let fetch_file_from_revision ~root ~revision ~path =
+  match unsafe_relative_path_reason path with
+  | Some reason -> Lwt.return (Error (Printf.sprintf "refusing to read unsafe local path %S: %s" path reason))
+  | None ->
+  (* A path absent from the revision (e.g. deleted by the commit) is
+     "unavailable"; a path that resolves to a tree or any other real error is
+     surfaced, matching [fetch_file_from_root]'s read-error contract. *)
+  match Local_git.object_type ~root ~revision ~path with
+  | Local_git.Missing -> Lwt.return (Ok None)
+  | Local_git.Object "blob" ->
+    let object_name = Printf.sprintf "%s:%s" revision path in
+    (match Local_git.run_git_raw ~cwd:root [ "cat-file"; "blob"; object_name ] with
+    | Error msg -> Lwt.return (Error (Printf.sprintf "failed to read %s: %s" path msg))
+    | Ok contents -> Lwt.return (embeddable_or_dropped ~path contents))
+  | Local_git.Object kind ->
+    Lwt.return (Error (Printf.sprintf "failed to read %s: expected a file but found a %s" path kind))
 
 let digest_change_key diff_text = Digest.(to_hex (string diff_text))
 
@@ -93,18 +114,29 @@ let prepare_diff ~config diff_text =
   | Error (`Too_large total_lines) -> Error (Too_large total_lines)
   | Error (`Too_many_files file_count) -> Error (Too_many_files file_count)
 
-let prepare_review_from_text ~root ~repo_key ?change_key ~title ~description ~diff_text ~config () =
+let prepare_review_from_text ~root ~repo_key ?change_key ?revision ~title ~description ~diff_text ~config () =
   match prepare_diff ~config diff_text with
   | Error error -> Lwt.return (Error error)
   | Ok { Review_engine.filtered_diff; filtered_text } ->
     let digest = digest_change_key filtered_text in
-    let change_label =
-      match change_key with
-      | Some key -> Printf.sprintf "local change %s" key
-      | None -> Printf.sprintf "local diff %s" (Review_job.short_display_id digest)
+    let default_change_key, change_label, head_sha, fetch_file =
+      match revision with
+      | Some revision ->
+        ( Printf.sprintf "commit/%s" revision,
+          (match change_key with
+          | Some key -> Printf.sprintf "local change %s" key
+          | None -> Printf.sprintf "local commit %s" revision),
+          revision,
+          fetch_file_from_revision ~root ~revision )
+      | None ->
+        ( Printf.sprintf "diff/%s" digest,
+          (match change_key with
+          | Some key -> Printf.sprintf "local change %s" key
+          | None -> Printf.sprintf "local diff %s" (Review_job.short_display_id digest)),
+          digest,
+          fetch_file_from_root ~root )
     in
-    let change_key = CCOption.get_or ~default:(Printf.sprintf "diff/%s" digest) change_key in
-    let fetch_file = fetch_file_from_root ~root in
+    let change_key = CCOption.get_or ~default:default_change_key change_key in
     let job =
       Review_job.
         {
@@ -113,7 +145,7 @@ let prepare_review_from_text ~root ~repo_key ?change_key ~title ~description ~di
           change_label;
           title;
           description;
-          head_sha = digest;
+          head_sha;
           diff_text = filtered_text;
           filtered_diff;
           config;
@@ -125,7 +157,8 @@ let prepare_review_from_text ~root ~repo_key ?change_key ~title ~description ~di
     in
     Lwt.return (Ok job)
 
-let prepare_review ~root ~repo_key ?change_key ~title ~description ~diff_path ~config () =
+let prepare_review ~root ~repo_key ?change_key ?revision ~title ~description ~diff_path ~config () =
   match%lwt read_file diff_path with
   | Error msg -> Lwt.return (Error (Read_failed msg))
-  | Ok diff_text -> prepare_review_from_text ~root ~repo_key ?change_key ~title ~description ~diff_text ~config ()
+  | Ok diff_text ->
+    prepare_review_from_text ~root ~repo_key ?change_key ?revision ~title ~description ~diff_text ~config ()

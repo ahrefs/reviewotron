@@ -16,6 +16,7 @@ module Make (_ : Api.Agent_runner) : sig
     root:string ->
     repo_key:string ->
     ?change_key:string ->
+    ?revision:string ->
     title:string ->
     description:string ->
     diff_path:string ->
@@ -31,6 +32,7 @@ module Make (_ : Api.Agent_runner) : sig
     root:string ->
     repo_key:string ->
     ?change_key:string ->
+    ?revision:string ->
     title:string ->
     description:string ->
     diff_text:string ->
@@ -45,6 +47,7 @@ module Make (_ : Api.Agent_runner) : sig
     root:string ->
     repo_key:string ->
     ?change_key:string ->
+    ?revision:string ->
     title:string ->
     description:string ->
     diff_path:string ->
@@ -59,6 +62,7 @@ module Make (_ : Api.Agent_runner) : sig
     root:string ->
     repo_key:string ->
     ?change_key:string ->
+    ?revision:string ->
     title:string ->
     description:string ->
     diff_text:string ->

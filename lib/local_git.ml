@@ -1,5 +1,7 @@
 type run_git = cwd:string -> string list -> (string, string) result
 
+let empty_tree_sha = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
 let close_fd_noerr fd = try Unix.close fd with Unix.Unix_error _ -> ()
 
 let waitpid_noerr pid =
@@ -25,7 +27,7 @@ let read_all ic =
 
 let git_command ~cwd args = Printf.sprintf "git -C %s %s" cwd (String.concat " " args)
 
-let run_git ~cwd args =
+let run_git_raw ~cwd args =
   let process_args = Array.of_list ("git" :: "-C" :: cwd :: args) in
   try
     let stdout_r, stdout_w = Unix.pipe () in
@@ -60,11 +62,13 @@ let run_git ~cwd args =
     | None -> Error (Printf.sprintf "git %s waitpid failed" (String.concat " " args))
     | Some status ->
     match status with
-    | Unix.WEXITED 0 -> Ok (String.trim output)
+    | Unix.WEXITED 0 -> Ok output
     | Unix.WEXITED code -> Error (Printf.sprintf "git %s exited with %d" (String.concat " " args) code)
     | Unix.WSIGNALED signal -> Error (Printf.sprintf "git %s killed by signal %d" (String.concat " " args) signal)
     | Unix.WSTOPPED signal -> Error (Printf.sprintf "git %s stopped by signal %d" (String.concat " " args) signal)
   with exn -> Error (Printf.sprintf "%s failed: %s" (git_command ~cwd args) (Printexc.to_string exn))
+
+let run_git ~cwd args = Result.map String.trim (run_git_raw ~cwd args)
 
 let absolute_path path =
   match Filename.is_relative path with
@@ -90,6 +94,8 @@ let default_repo_key ~root = "local:" ^ normalize_path root
 let title_for_base base = Printf.sprintf "Review current changes against %s" base
 
 let title_for_diff_file diff_path = Printf.sprintf "Review local diff %s" diff_path
+
+let title_for_commit commit = Printf.sprintf "Review commit %s" commit
 
 let remote_of_tracking tracking =
   match String.split_on_char '/' tracking with
@@ -163,6 +169,54 @@ let diff_against_base_with ~run_git ~root ~base =
   | Ok merge_base -> run_git ~cwd:root [ "diff"; merge_base ]
 
 let diff_against_base ~root ~base = diff_against_base_with ~run_git ~root ~base
+
+let resolve_commit_with ~run_git ~root ~revision =
+  let refname = revision ^ "^{commit}" in
+  match run_git ~cwd:root [ "rev-parse"; "--verify"; "--end-of-options"; refname ] with
+  | Ok commit -> Ok commit
+  | Error msg -> Error (Printf.sprintf "could not resolve commit %s: %s" revision msg)
+
+let resolve_commit ~root ~revision = resolve_commit_with ~run_git ~root ~revision
+
+(* Classify [revision:path] so the revision file-fetcher can tell a genuinely
+   absent path (e.g. a file the commit deleted, which callers treat as
+   "unavailable") from a real object it should read or reject. [Missing] covers
+   the absent case; a non-blob object resolves as [Object "tree"] etc. so the
+   caller can surface it as an error, matching the worktree fetcher which errors
+   when a path is a directory. *)
+type object_type =
+  | Object of string
+  | Missing
+
+let object_type_with ~run_git ~root ~revision ~path =
+  let object_name = Printf.sprintf "%s:%s" revision path in
+  match run_git ~cwd:root [ "cat-file"; "-t"; "--"; object_name ] with
+  | Ok kind -> Object kind
+  | Error _ -> Missing
+
+let object_type ~root ~revision ~path = object_type_with ~run_git ~root ~revision ~path
+
+let commit_parent_with ~run_git ~root ~commit =
+  match run_git ~cwd:root [ "rev-list"; "--parents"; "-n"; "1"; commit ] with
+  | Error msg -> Error (Printf.sprintf "could not inspect commit %s: %s" commit msg)
+  | Ok line ->
+  match String.split_on_char ' ' line |> List.filter (fun value -> not (String.equal value "")) with
+  | _commit :: parent :: _ -> Ok parent
+  | [ _commit ] -> Ok empty_tree_sha
+  | [] -> Error (Printf.sprintf "could not inspect commit %s: invalid parent list" commit)
+
+let diff_against_commit_with ~run_git ~root ~commit ?path () =
+  match commit_parent_with ~run_git ~root ~commit with
+  | Error msg -> Error msg
+  | Ok parent ->
+    let path_args =
+      match path with
+      | None -> []
+      | Some path -> [ "--"; path ]
+    in
+    run_git ~cwd:root (List.concat [ [ "diff"; parent; commit ]; path_args ])
+
+let diff_against_commit ~root ~commit ?path () = diff_against_commit_with ~run_git ~root ~commit ?path ()
 
 let untracked_files_with ~run_git ~root =
   match run_git ~cwd:root [ "ls-files"; "--others"; "--exclude-standard"; "-z" ] with

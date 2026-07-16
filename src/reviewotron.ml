@@ -266,6 +266,40 @@ let resolve_repo_key ~root = function
   | Some repo_key -> repo_key
   | None -> Local_git.default_repo_key ~root
 
+let validate_commit_options ~commit ~diff_arg ~base =
+  match commit, diff_arg, base with
+  | Some _, Some _, _ -> Error "--commit cannot be combined with --diff"
+  | Some _, None, Some _ -> Error "--commit cannot be combined with --base"
+  | None, _, _ | Some _, None, None -> Ok ()
+
+(* Canonicalize [path] the way [root] is canonicalized (symlinks resolved) even
+   when [path] itself does not exist on disk — e.g. a file the reviewed commit
+   deleted, or scoping under a symlinked worktree root. [Unix.realpath] only
+   resolves existing paths, so resolve the nearest existing ancestor and
+   re-append the remaining components; otherwise the prefix check below would
+   compare a realpath'd root against an unresolved path and spuriously report
+   "outside Git worktree". *)
+let rec canonical_path path =
+  match Filename.is_relative path with
+  | true -> canonical_path (Filename.concat (Sys.getcwd ()) path)
+  | false ->
+  match Unix.realpath path with
+  | resolved -> resolved
+  | exception Unix.Unix_error _ ->
+    let parent = Filename.dirname path in
+    (match String.equal parent path with
+    | true -> path
+    | false -> Filename.concat (canonical_path parent) (Filename.basename path))
+
+let relative_path_under_root ~root path =
+  let root = canonical_path root in
+  let path = canonical_path path in
+  let prefix = root ^ Filename.dir_sep in
+  match String.equal path root, String.starts_with ~prefix path with
+  | true, _ -> Ok "."
+  | false, true -> Ok (String.sub path (String.length prefix) (String.length path - String.length prefix))
+  | false, false -> Error (Printf.sprintf "path %s is outside Git worktree %s" path root)
+
 (* Single definition of "blank key" lives in [Llm_provider]; alias it here so
    the CLI key-precedence chains and [Llm_provider.resolve] agree on what counts
    as a usable key. *)
@@ -345,6 +379,21 @@ let resolve_local_config ~ctx ~root ~inline_config =
 let apply_local_plugin_defaults ~no_security (config : Config_types.config) =
   Config_loader.apply_local_plugin_defaults ~no_security config
 
+(* The context/config/description preamble is identical across every local
+   review mode (commit, path, diff); the modes differ only in which root scopes
+   the config and how the title defaults. Sharing it here keeps the three
+   selection branches in [smart_local_review_action] short and in lockstep. *)
+let prepare_local_review ~secrets_path ~api_key_flag ~openrouter_api_key_flag ~config_filename ~state_path ~root
+  ~repo_key ~inline_config ~no_security ~description_file =
+  let ( let* ) = Result.bind in
+  let* ctx = build_local_context ~secrets_path ~api_key_flag ~openrouter_api_key_flag ~config_filename ~state_path in
+  let repo_key = resolve_repo_key ~root repo_key in
+  let* config = resolve_local_config ~ctx ~root ~inline_config in
+  let config = apply_local_plugin_defaults ~no_security config in
+  Context.set_config ctx ~repo_key config;
+  let* description = read_description_file description_file in
+  Ok (ctx, repo_key, config, description)
+
 let combine_diff_text tracked_diff untracked_diff =
   match tracked_diff, untracked_diff with
   | "", diff | diff, "" -> diff
@@ -352,9 +401,20 @@ let combine_diff_text tracked_diff untracked_diff =
 
 let untracked_diff ~root paths = Local_path.added_files_diff ~root ~paths
 
-let resolve_diff_source ~root ~base = function
-  | Some "-" -> Ok (`Text (read_stdin ()), "Review diff from stdin")
-  | Some path -> Ok (`File path, Local_git.title_for_diff_file path)
+let resolve_diff_source ~root ~base ~commit = function
+  | Some "-" -> Ok (`Text (read_stdin ()), "Review diff from stdin", None)
+  | Some path -> Ok (`File path, Local_git.title_for_diff_file path, None)
+  | None ->
+  match commit with
+  | Some requested ->
+    let ( let* ) = Result.bind in
+    let* commit = Local_git.resolve_commit ~root ~revision:requested in
+    let* diff_text = Local_git.diff_against_commit ~root ~commit () in
+    (match String.equal diff_text "" with
+    | true -> Error "no changes to review"
+    (* Title uses the user-supplied commit-ish, not the resolved SHA, matching
+       the smart-review action. *)
+    | false -> Ok (`Text diff_text, Local_git.title_for_commit requested, Some commit))
   | None ->
   match Local_git.infer_base ~root ~explicit:base with
   | Error msg -> Error msg
@@ -368,37 +428,42 @@ let resolve_diff_source ~root ~base = function
     let diff_text = combine_diff_text tracked_diff (untracked_diff ~root untracked_files) in
     (match String.equal diff_text "" with
     | true -> Error "no changes to review"
-    | false -> Ok (`Text diff_text, Local_git.title_for_base base))
+    | false -> Ok (`Text diff_text, Local_git.title_for_base base, None))
 
 let review_diff_action secrets_path api_key_flag openrouter_api_key_flag config_filename state_path logfile loglevel
-  root repo_key change_key title base description_file diff_arg inline_config no_security output =
+  root repo_key change_key title base commit description_file diff_arg inline_config no_security output =
   setup_logging logfile loglevel;
   Mirage_crypto_rng_unix.use_default ();
   let result =
     guard_local_review (fun () ->
       run_lwt_command ~command:"review-diff" (fun () ->
-        let ( let* ) = Result.bind in
-        match
-          let* ctx =
-            build_local_context ~secrets_path ~api_key_flag ~openrouter_api_key_flag ~config_filename ~state_path
-          in
-          let root = resolve_local_root root in
-          let repo_key = resolve_repo_key ~root repo_key in
-          let* config = resolve_local_config ~ctx ~root ~inline_config in
-          let config = apply_local_plugin_defaults ~no_security config in
-          Context.set_config ctx ~repo_key config;
-          let* diff_source, default_title = resolve_diff_source ~root ~base diff_arg in
-          let* description = read_description_file description_file in
-          let title = CCOption.get_or ~default:default_title title in
-          Ok (ctx, root, repo_key, config, diff_source, title, description)
-        with
+        match validate_commit_options ~commit ~diff_arg ~base with
         | Error msg -> Lwt.return (Error msg)
-        | Ok (ctx, root, repo_key, config, `File diff_path, title, description) ->
-          run_local_review_lwt (fun () ->
-            Review.review_diff_report ~ctx ~root ~repo_key ?change_key ~title ~description ~diff_path ~config ())
-        | Ok (ctx, root, repo_key, config, `Text diff_text, title, description) ->
-          run_local_review_lwt (fun () ->
-            Review.review_diff_text_report ~ctx ~root ~repo_key ?change_key ~title ~description ~diff_text ~config ())))
+        | Ok () ->
+          let ( let* ) = Result.bind in
+          (match
+             let* ctx =
+               build_local_context ~secrets_path ~api_key_flag ~openrouter_api_key_flag ~config_filename ~state_path
+             in
+             let root = resolve_local_root root in
+             let repo_key = resolve_repo_key ~root repo_key in
+             let* config = resolve_local_config ~ctx ~root ~inline_config in
+             let config = apply_local_plugin_defaults ~no_security config in
+             Context.set_config ctx ~repo_key config;
+             let* diff_source, default_title, revision = resolve_diff_source ~root ~base ~commit diff_arg in
+             let* description = read_description_file description_file in
+             let title = CCOption.get_or ~default:default_title title in
+             Ok (ctx, root, repo_key, config, diff_source, title, description, revision)
+           with
+          | Error msg -> Lwt.return (Error msg)
+          | Ok (ctx, root, repo_key, config, `File diff_path, title, description, revision) ->
+            run_local_review_lwt (fun () ->
+              Review.review_diff_report ~ctx ~root ~repo_key ?change_key ?revision ~title ~description ~diff_path
+                ~config ())
+          | Ok (ctx, root, repo_key, config, `Text diff_text, title, description, revision) ->
+            run_local_review_lwt (fun () ->
+              Review.review_diff_text_report ~ctx ~root ~repo_key ?change_key ?revision ~title ~description ~diff_text
+                ~config ()))))
   in
   emit_local_result ~output result
 
@@ -432,59 +497,87 @@ let review_path_action secrets_path api_key_flag openrouter_api_key_flag config_
   emit_local_result ~output result
 
 let smart_local_review_action secrets_path api_key_flag openrouter_api_key_flag config_filename state_path logfile
-  loglevel local_root repo_key change_key title base description_file inline_config no_security output requested_mode
-  path =
+  loglevel local_root repo_key change_key title base commit description_file inline_config no_security output
+  requested_mode path =
   setup_logging logfile loglevel;
   Mirage_crypto_rng_unix.use_default ();
   let result =
     guard_local_review (fun () ->
       run_lwt_command ~command:"review" (fun () ->
-        match Local_mode.select ~requested_mode ~path ~root:local_root ~base with
+        match validate_commit_options ~commit ~diff_arg:None ~base with
         | Error msg -> Lwt.return (Error msg)
-        | Ok (Local_mode.Review_path { path; project_root }) ->
-          let prepared =
-            let ( let* ) = Result.bind in
-            let* ctx =
-              build_local_context ~secrets_path ~api_key_flag ~openrouter_api_key_flag ~config_filename ~state_path
-            in
-            let* ingest = Local_path.ingest path in
-            let repo_key = resolve_repo_key ~root:project_root repo_key in
-            let* config = resolve_local_config ~ctx ~root:project_root ~inline_config in
-            let config = apply_local_plugin_defaults ~no_security config in
-            Context.set_config ctx ~repo_key config;
-            let* description = read_description_file description_file in
-            let title = CCOption.get_or ~default:ingest.Local_path.title title in
-            Ok (ctx, ingest.Local_path.root, repo_key, config, ingest.Local_path.diff_text, title, description)
+        | Ok () ->
+          let prepare_context ~root =
+            prepare_local_review ~secrets_path ~api_key_flag ~openrouter_api_key_flag ~config_filename ~state_path ~root
+              ~repo_key ~inline_config ~no_security ~description_file
           in
-          (match prepared with
-          | Error msg -> Lwt.return (Error msg)
-          | Ok (ctx, root, repo_key, config, diff_text, title, description) ->
-            run_local_review_lwt (fun () ->
-              Review.review_diff_text_report ~ctx ~root ~repo_key ?change_key ~title ~description ~diff_text ~config ()))
-        | Ok (Local_mode.Review_diff { root; base; tracked_diff; untracked_files }) ->
-          let diff_text = combine_diff_text tracked_diff (untracked_diff ~root untracked_files) in
-          (match String.equal diff_text "" with
-          | true -> Lwt.return (Error "no changes to review")
-          | false ->
+          (match commit, requested_mode with
+          | Some _, Local_mode.Path -> Lwt.return (Error "--commit cannot be combined with --mode path")
+          | Some requested, (Local_mode.Auto | Local_mode.Diff) ->
             let prepared =
               let ( let* ) = Result.bind in
-              let* ctx =
-                build_local_context ~secrets_path ~api_key_flag ~openrouter_api_key_flag ~config_filename ~state_path
+              let root = resolve_local_root local_root in
+              let* commit = Local_git.resolve_commit ~root ~revision:requested in
+              (* No explicit PATH reviews the whole commit, matching
+               [review-diff --commit]; an explicit PATH scopes it as a Git
+               pathspec (validated and made root-relative first). *)
+              let* pathspec =
+                match path with
+                | None -> Ok None
+                | Some path ->
+                  let* (_ : Local_mode.path_kind) = Local_mode.path_kind path in
+                  let* relative = relative_path_under_root ~root path in
+                  Ok (Some relative)
               in
-              let repo_key = resolve_repo_key ~root repo_key in
-              let* config = resolve_local_config ~ctx ~root ~inline_config in
-              let config = apply_local_plugin_defaults ~no_security config in
-              Context.set_config ctx ~repo_key config;
-              let* description = read_description_file description_file in
-              let title = CCOption.get_or ~default:(Local_git.title_for_base base) title in
-              Ok (ctx, repo_key, config, title, description)
+              let* diff_text = Local_git.diff_against_commit ~root ~commit ?path:pathspec () in
+              match String.equal diff_text "" with
+              | true -> Error "no changes to review"
+              | false ->
+                let* ctx, repo_key, config, description = prepare_context ~root in
+                (* Title uses the user-supplied commit-ish, not the resolved SHA. *)
+                let title = CCOption.get_or ~default:(Local_git.title_for_commit requested) title in
+                Ok (ctx, root, repo_key, config, diff_text, title, description, commit)
             in
             (match prepared with
             | Error msg -> Lwt.return (Error msg)
-            | Ok (ctx, repo_key, config, title, description) ->
+            | Ok (ctx, root, repo_key, config, diff_text, title, description, commit) ->
+              run_local_review_lwt (fun () ->
+                Review.review_diff_text_report ~ctx ~root ~repo_key ?change_key ~revision:commit ~title ~description
+                  ~diff_text ~config ()))
+          | None, _ ->
+          match Local_mode.select ~requested_mode ~path:(CCOption.get_or ~default:"." path) ~root:local_root ~base with
+          | Error msg -> Lwt.return (Error msg)
+          | Ok (Local_mode.Review_path { path; project_root }) ->
+            let prepared =
+              let ( let* ) = Result.bind in
+              let* ingest = Local_path.ingest path in
+              let* ctx, repo_key, config, description = prepare_context ~root:project_root in
+              let title = CCOption.get_or ~default:ingest.Local_path.title title in
+              Ok (ctx, ingest.Local_path.root, repo_key, config, ingest.Local_path.diff_text, title, description)
+            in
+            (match prepared with
+            | Error msg -> Lwt.return (Error msg)
+            | Ok (ctx, root, repo_key, config, diff_text, title, description) ->
               run_local_review_lwt (fun () ->
                 Review.review_diff_text_report ~ctx ~root ~repo_key ?change_key ~title ~description ~diff_text ~config
-                  ())))))
+                  ()))
+          | Ok (Local_mode.Review_diff { root; base; tracked_diff; untracked_files }) ->
+            let diff_text = combine_diff_text tracked_diff (untracked_diff ~root untracked_files) in
+            (match String.equal diff_text "" with
+            | true -> Lwt.return (Error "no changes to review")
+            | false ->
+              let prepared =
+                let ( let* ) = Result.bind in
+                let* ctx, repo_key, config, description = prepare_context ~root in
+                let title = CCOption.get_or ~default:(Local_git.title_for_base base) title in
+                Ok (ctx, repo_key, config, title, description)
+              in
+              (match prepared with
+              | Error msg -> Lwt.return (Error msg)
+              | Ok (ctx, repo_key, config, title, description) ->
+                run_local_review_lwt (fun () ->
+                  Review.review_diff_text_report ~ctx ~root ~repo_key ?change_key ~title ~description ~diff_text ~config
+                    ()))))))
   in
   emit_local_result ~output result
 
@@ -609,6 +702,10 @@ let base_ref =
   in
   Arg.(value & opt (some string) None & info [ "base" ] ~docv:"BASE" ~doc)
 
+let commit_ref =
+  let doc = "Commit-ish to review. Resolves to a full SHA and reviews only that commit against its first parent." in
+  Arg.(value & opt (some string) None & info [ "commit" ] ~docv:"COMMIT" ~doc)
+
 let description_file =
   let doc = "Optional markdown/text file whose contents are passed as the review description." in
   Arg.(value & opt (some file) None & info [ "description-file" ] ~docv:"DESCRIPTION" ~doc)
@@ -625,8 +722,11 @@ let path_arg =
   Arg.(required & pos 0 (some string) None & info [] ~docv:"PATH" ~doc)
 
 let smart_path_arg =
-  let doc = "File or directory to review. Defaults to the current directory." in
-  Arg.(value & pos 0 string "." & info [] ~docv:"PATH" ~doc)
+  let doc =
+    "File or directory to review. Without --commit, defaults to the current directory; with --commit, an explicit path \
+     scopes the commit review to that path while omitting it reviews the whole commit."
+  in
+  Arg.(value & pos 0 (some string) None & info [] ~docv:"PATH" ~doc)
 
 let local_mode =
   let modes = [ "auto", Local_mode.Auto; "diff", Local_mode.Diff; "path", Local_mode.Path ] in
@@ -719,6 +819,7 @@ let review_diff_cmd =
       $ change_key
       $ title
       $ base_ref
+      $ commit_ref
       $ description_file
       $ diff_arg
       $ inline_config
@@ -805,6 +906,7 @@ let smart_local_review_cmd =
       $ change_key
       $ title
       $ base_ref
+      $ commit_ref
       $ description_file
       $ inline_config
       $ no_security
