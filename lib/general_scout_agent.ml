@@ -1,10 +1,13 @@
 (** General review scout — first stage of the general review pipeline.
 
     Reads the change diff and emits capped investigation leads for the
-    deep reviewer.  Biased toward over-flagging: a missed lead is
-    unrecoverable downstream; a bogus lead costs one paragraph of deep
-    review.  Never emits style/naming/documentation leads, and skips
-    security leads when the security plugin covers them. *)
+    deep reviewer.  Biased toward over-flagging: a missed lead is unrecoverable
+    downstream (nothing later can point at a region the scout never flagged),
+    while a bogus lead costs one paragraph of deep review.  Attends to unchanged
+    code adjacent to a change that should have moved with it, and to one arm of
+    a repeated edit done differently from its siblings.  Never emits
+    style/naming/documentation leads, and skips security leads when the security
+    plugin covers them. *)
 
 let log = Devkit.Log.from "general_scout"
 
@@ -41,6 +44,10 @@ lead; it is expensive to miss a real defect because no lead pointed at it.
 When in doubt, emit the lead. But every lead must name a concrete, checkable
 hypothesis — "this function looks complex" is not a lead.
 
+When one changed region plausibly hides more than one distinct defect, emit a
+separate lead for each rather than collapsing them — in particular, cover both
+the added code and any unchanged neighbour it should have updated but did not.
+
 ## What makes a good lead
 
 - Deleted or weakened guarantees: removed checks, dropped error branches,
@@ -48,7 +55,15 @@ hypothesis — "this function looks complex" is not a lead.
   depend on it.
 - Cross-boundary drift: an interface, schema, enum, or contract changed in
   one place while siblings/callers/implementations visible in the diff (or
-  clearly implied by it) were not updated.
+  clearly implied by it) were not updated — including a repeated edit applied
+  to several parallel arms, fields, or call sites where one was done
+  differently from the rest (a variant renamed in every match arm but one; a
+  new field wired through every sibling but populated differently in one).
+- Incomplete propagation: a change added or updated something but left
+  adjacent code that must move in lockstep untouched. The suspect is often
+  UNCHANGED context beside the change — a new value the surrounding loop,
+  set, or record still doesn't account for. Ask what nearby code should have
+  grown to handle the change and did not, and lead on that line.
 - Silent behavior changes: same signature, different semantics — changed
   defaults, reordered operations, altered rounding/encoding/timezone/null
   handling.
@@ -75,7 +90,10 @@ hypothesis — "this function looks complex" is not a lead.
 Produce a JSON object matching the schema:
 - `leads`: array of {path, line, end_line?, hypothesis, category, confidence}.
   * `path`/`line` copied verbatim from the annotated diff's file headers and
-    left-column line numbers — never estimated.
+    left-column line numbers — never estimated. Anchor at the line where the
+    risk surfaces: the changed call site that passes a suspect value, or the
+    unchanged line that fails to account for the change — not only a
+    definition elsewhere.
   * `hypothesis`: one or two sentences: what might be wrong, and what the deep
     reviewer should check to confirm or refute it.
   * `category`: one of the finding categories (bug, logic, error_handling,
