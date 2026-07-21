@@ -1668,7 +1668,15 @@ let test_general_deep_reviewer_config_default () =
   (check string) "name" "general_deep_review" cfg.name;
   (check int) "max_steps" 1 cfg.max_steps;
   (check (option int)) "thinking budget" (Some 4096) cfg.thinking_budget;
-  (check bool) "uses normative prompt" true (Devkit.Stre.exists cfg.system_prompt "deep code reviewer")
+  (check bool) "uses normative prompt" true (Devkit.Stre.exists cfg.system_prompt "deep code reviewer");
+  (* Calibration posture (tune/deep-calibration): a refutation needs quoted
+     contrary evidence, and an unrefuted high/medium-confidence lead is emitted
+     rather than dropped — absence of confirmation is not refutation. *)
+  (check bool) "refutation requires visible contrary evidence" true
+    (Devkit.Stre.exists cfg.system_prompt "visible contrary evidence");
+  (check bool) "absence of confirmation is not refutation" true
+    (Devkit.Stre.exists cfg.system_prompt "absence\n     of confirmation is not evidence of correctness");
+  (check bool) "unrefuted confident lead must be emitted" true (Devkit.Stre.exists cfg.system_prompt "MUST be emitted")
 
 let test_general_deep_reviewer_config_override () =
   let cfg = General_deep_reviewer_agent.config ~model_tier:Strong ~system_prompt_override:(Some "X") in

@@ -2,10 +2,11 @@
 
     Receives the scout's investigation leads and verifies each one against
     the diff and the contents of the files the leads point at.  Disprove-first
-    posture: a lead only becomes a finding when the reviewer fails to refute
-    it and can ground it in visible code.  Emits the same
-    [Review_types.review_output] as the legacy single-pass review, so the
-    downstream candidate filter and validator are unchanged. *)
+    posture: the reviewer tries to refute each lead, but refutation requires
+    visible contrary evidence — an unrefuted high-confidence lead is carried
+    forward as a finding rather than dropped for lack of positive confirmation.
+    Emits the same [Review_types.review_output] as the legacy single-pass
+    review, so the downstream candidate filter and validator are unchanged. *)
 
 val config : model_tier:Agent_runner.model_tier -> system_prompt_override:string option -> Agent_runner.agent_config
 
