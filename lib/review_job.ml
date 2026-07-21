@@ -1,3 +1,5 @@
+let log = Devkit.Log.from "review_job"
+
 type trigger =
   | Pull_request
   | Push
@@ -93,6 +95,39 @@ let is_text content =
   scan 0
 
 let is_embeddable content = String.length content <= max_embeddable_bytes && is_text content
+
+(* The deep reviewer is preloaded with the full contents of a few files the
+   change touches, so it can verify leads it cannot ground in the diff alone.
+   Only the first [max_key_files] added/modified files are embedded; deletions
+   have no post-change content and renames are followed via their diff. *)
+let max_key_files = 5
+
+let key_file_paths ~diff =
+  diff
+  |> List.filter (fun (fd : Diff_parser.file_diff) ->
+    match fd.status with
+    | Diff_parser.Added | Diff_parser.Modified -> true
+    | Diff_parser.Renamed | Diff_parser.Deleted -> false)
+  |> List.map (fun (fd : Diff_parser.file_diff) -> fd.path)
+  |> fun paths -> CCList.take max_key_files paths
+
+(* Select and fetch the deep reviewer's preloaded file contents. Source
+   adapters differ only in [fetch] — GitHub reads from the PR head SHA over the
+   API, local mode reads the worktree or a git revision — so the selection
+   (added/modified, first [max_key_files]) and the drop policy (an unavailable
+   or unreadable file is skipped, matching each [fetch]'s embeddable guard) live
+   here once. Fetches run concurrently, mirroring the GitHub source; the local
+   fetchers are internally synchronous, so this is at worst a no-op there. *)
+let select_key_files ?(log_context = "") ~diff ~(fetch : fetch_file) () =
+  Lwt_list.filter_map_p
+    (fun path ->
+      match%lwt fetch ~path with
+      | Ok (Some content) -> Lwt.return (Some (path, content))
+      | Ok None -> Lwt.return None
+      | Error msg ->
+        log#warn "%sfailed to fetch %s: %s" log_context path msg;
+        Lwt.return None)
+    (key_file_paths ~diff)
 
 type t = {
   repo_key : string;

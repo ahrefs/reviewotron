@@ -51,4 +51,4 @@
 (test
  (name test_local_cli)
  (modules test_local_cli)
- (libraries reviewotron_lib alcotest extlib extunix yojson))
+ (libraries reviewotron_lib alcotest extlib extunix lwt lwt.unix yojson))

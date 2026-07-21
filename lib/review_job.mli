@@ -28,6 +28,23 @@ type fetch_file = path:string -> (string option, string) result Lwt.t
     request. *)
 val is_embeddable : string -> bool
 
+(** [key_file_paths ~diff] is the repository-relative paths of the files whose
+    full contents the deep reviewer is preloaded with: the first few
+    added/modified files of [diff], in diff order (deletions and renames are
+    excluded). Shared by every source adapter so selection cannot drift between
+    them. *)
+val key_file_paths : diff:Diff_parser.file_diff list -> string list
+
+(** [select_key_files ~diff ~fetch ()] fetches the contents of
+    {!key_file_paths} through [fetch] and returns [(path, content)] pairs for
+    the files that came back available and embeddable. A file that [fetch]
+    reports as unavailable ([Ok None]) or that errors is skipped, so the review
+    proceeds on the diff and the remaining files. [fetch] closes over the
+    reviewed revision and applies its own embeddable guard (see {!fetch_file}).
+    Fetches run concurrently. [log_context] prefixes the fetch-failure warning. *)
+val select_key_files :
+  ?log_context:string -> diff:Diff_parser.file_diff list -> fetch:fetch_file -> unit -> (string * string) list Lwt.t
+
 (** Shorten an identifier for logs and labels. *)
 val short_display_id : string -> string
 
