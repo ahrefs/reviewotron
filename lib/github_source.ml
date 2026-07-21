@@ -124,27 +124,8 @@ module Make (SRC : Api.Github_review_source) = struct
 
   let fetch_key_files ~log_context ~ctx ~repo_url ~diff ~ref_ =
     let log_prefix = log_context_prefix log_context in
-    let paths =
-      diff
-      |> List.filter (fun (fd : Diff_parser.file_diff) ->
-        match fd.status with
-        | Diff_parser.Added -> true
-        | Diff_parser.Modified -> true
-        | Diff_parser.Renamed -> false
-        | Diff_parser.Deleted -> false)
-      |> List.map (fun (fd : Diff_parser.file_diff) -> fd.path)
-    in
-    let paths = CCList.take 5 paths in
-    Lwt_list.filter_map_p
-      (fun path ->
-        let%lwt result = fetch_text_file ~log_context ~ctx ~repo_url ~path ~ref_ in
-        match result with
-        | Ok (Some content) -> Lwt.return (Some (path, content))
-        | Ok None -> Lwt.return None
-        | Error msg ->
-          log#warn "%sfailed to fetch %s: %s" log_prefix path msg;
-          Lwt.return None)
-      paths
+    let fetch ~path = fetch_text_file ~log_context ~ctx ~repo_url ~path ~ref_ in
+    Review_job.select_key_files ~log_context:log_prefix ~diff ~fetch ()
 
   let fetch_file_at_ref ~log_context ~ctx ~repo_url ~ref_ ~path =
     fetch_text_file ~log_context ~ctx ~repo_url ~ref_ ~path

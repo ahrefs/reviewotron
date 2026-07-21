@@ -137,6 +137,13 @@ let prepare_review_from_text ~root ~repo_key ?change_key ?revision ~title ~descr
           fetch_file_from_root ~root )
     in
     let change_key = CCOption.get_or ~default:default_change_key change_key in
+    (* Preload the deep reviewer with the same key files a GitHub-source review
+       gets (added/modified, first few), read from the local repo at the
+       reviewed revision via [fetch_file] — no network. Selection and drop
+       policy are shared with the GitHub source (see {!Review_job.select_key_files}). *)
+    let log_prefix = Review_job.log_context_for ~repo_key ~change_label ~head_sha ^ " " in
+    let%lwt file_contents = Review_job.select_key_files ~log_context:log_prefix ~diff:filtered_diff ~fetch:fetch_file () in
+    log#info "%sembedded %d key file(s)" log_prefix (List.length file_contents);
     let job =
       Review_job.
         {
@@ -149,7 +156,7 @@ let prepare_review_from_text ~root ~repo_key ?change_key ?revision ~title ~descr
           diff_text = filtered_text;
           filtered_diff;
           config;
-          file_contents = [];
+          file_contents;
           fetch_file;
           trigger = Local;
           source_kind = Local;

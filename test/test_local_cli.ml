@@ -309,6 +309,73 @@ let test_no_security_overrides_layered_config () =
       check bool "--no-security wins" false disabled.review_plugins.security.enabled;
       check bool "local default enables security" true enabled.review_plugins.security.enabled)
 
+(* The deep reviewer's preloaded [file_contents] must be selected by the same
+   rule for every source (added/modified, first [Review_job.max_key_files]);
+   [Review_job.key_file_paths] is the single implementation both the GitHub and
+   local adapters call, so this asserts the shared contract directly. *)
+let test_key_file_selection_rule () =
+  let file path status = Diff_parser.{ path; old_path = None; status; hunks = [] } in
+  let renamed path old = Diff_parser.{ path; old_path = Some old; status = Diff_parser.Renamed; hunks = [] } in
+  let diff =
+    [
+      file "a.ml" Diff_parser.Modified;
+      file "gone.ml" Diff_parser.Deleted;
+      renamed "renamed.ml" "old.ml";
+      file "b.ml" Diff_parser.Added;
+      file "c.ml" Diff_parser.Modified;
+      file "d.ml" Diff_parser.Added;
+      file "e.ml" Diff_parser.Modified;
+      file "f.ml" Diff_parser.Added;
+    ]
+  in
+  (* Deleted has no post-change content and renames are followed via the diff,
+     so both are excluded; only the first five added/modified survive. *)
+  check (list string) "selects first 5 added/modified in diff order"
+    [ "a.ml"; "b.ml"; "c.ml"; "d.ml"; "e.ml" ]
+    (Review_job.key_file_paths ~diff)
+
+(* Regression guard for the local-mode blind-review bug: a local review-diff
+   must populate [file_contents] with the key files read from the worktree,
+   exactly as the GitHub source does — previously it left the list empty and
+   the deep reviewer ran without any preloaded context. *)
+let test_local_review_populates_file_contents () =
+  with_temp_dir (fun root ->
+    let a = "let a = 1\nlet a2 = 2\n" in
+    let b = "let b = 1\n" in
+    write_file (Filename.concat root "a.ml") a;
+    write_file (Filename.concat root "b.ml") b;
+    let diff =
+      String.concat ""
+        [
+          "diff --git a/a.ml b/a.ml\n";
+          "--- a/a.ml\n";
+          "+++ b/a.ml\n";
+          "@@ -1 +1,2 @@\n";
+          " let a = 1\n";
+          "+let a2 = 2\n";
+          "diff --git a/b.ml b/b.ml\n";
+          "new file mode 100644\n";
+          "--- /dev/null\n";
+          "+++ b/b.ml\n";
+          "@@ -0,0 +1 @@\n";
+          "+let b = 1\n";
+        ]
+    in
+    match Config_loader.load_local ~root () with
+    | Error msg -> fail msg
+    | Ok config ->
+    match
+      Lwt_main.run
+        (Local_source.prepare_review_from_text ~root ~repo_key:"local:test" ~title:"t" ~description:"" ~diff_text:diff
+           ~config ())
+    with
+    | Error err -> fail (Local_source.string_of_prepare_error err)
+    | Ok job ->
+      check (list string) "embedded key file paths" [ "a.ml"; "b.ml" ]
+        (List.map fst job.Review_job.file_contents);
+      check (option string) "a.ml content read from worktree" (Some a) (List.assoc_opt "a.ml" job.file_contents);
+      check (option string) "b.ml content read from worktree" (Some b) (List.assoc_opt "b.ml" job.file_contents))
+
 let test_with_env_restores_unset_variable () =
   let name = "REVIEWOTRON_LOCAL_CLI_TEST_UNSET" in
   let previous = Sys.getenv_opt name in
@@ -346,6 +413,11 @@ let () =
           test_case "arrays replace" `Quick test_config_array_replacement;
           test_case "invalid layers fail clearly" `Quick test_invalid_config_layers_fail_clearly;
           test_case "no-security overrides config" `Quick test_no_security_overrides_layered_config;
+        ] );
+      ( "key files",
+        [
+          test_case "selection rule (added/modified, first 5)" `Quick test_key_file_selection_rule;
+          test_case "local review populates file_contents" `Quick test_local_review_populates_file_contents;
         ] );
       "environment", [ test_case "with_env restores unset variables" `Quick test_with_env_restores_unset_variable ];
     ]
