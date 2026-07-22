@@ -63,6 +63,18 @@ type agent_result = {
     - [Strong] → [claude-opus-4-8] *)
 val default_model_id : model_tier -> string
 
+(** Non-cached prompt tokens, keeping the three prompt buckets
+    ([input_tokens], [cache_read_input_tokens], [cache_creation_input_tokens])
+    disjoint so downstream cost sums do not double-count the prompt.
+
+    Anthropic already reports [input_tokens] excluding the cached portion, so it
+    is returned unchanged. OpenRouter reports the full prompt in [input_tokens]
+    and repeats the cached portion in the cache buckets, so the cache portion is
+    subtracted out (clamped at 0). Exposed for testing; applied automatically
+    when building an {!agent_result}. *)
+val disjoint_input_tokens :
+  provider:Llm_provider.t -> input_tokens:int -> cache_read_input_tokens:int -> cache_creation_input_tokens:int -> int
+
 (** Write a debug dump of agent output when structured parsing fails.
 
     Creates [{dir}/{config.name}.txt] containing finish reason, token usage,

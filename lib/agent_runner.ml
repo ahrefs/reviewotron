@@ -109,6 +109,21 @@ let usage_of_result ~provider (result : Ai_core.Generate_text_result.t) =
         r + u.cache_read, w + u.cache_write, Llm_provider.sum_cost cost u.cost)
       (0, 0, None) result.steps
 
+(** Non-cached prompt tokens, so the three prompt buckets stay disjoint.
+
+    On the Anthropic path [input_tokens] already excludes the cached portion
+    (Anthropic reports cache-read/write in their own buckets), so it is returned
+    unchanged. OpenRouter instead reports the FULL prompt in [input_tokens] AND
+    repeats the cached portion in the cache buckets, so the raw [input_tokens]
+    overlaps them; subtract the cache portion so any consumer summing
+    input + cache_read + cache_write (the {!Cost_tracking} totals and the
+    pricing estimate) does not double-count the prompt. Clamped at 0 in case a
+    provider ever reports only partial overlap. *)
+let disjoint_input_tokens ~provider ~input_tokens ~cache_read_input_tokens ~cache_creation_input_tokens =
+  match provider with
+  | Llm_provider.Anthropic -> input_tokens
+  | Llm_provider.Openrouter -> max 0 (input_tokens - cache_read_input_tokens - cache_creation_input_tokens)
+
 let missing_structured_output_message ~agent_name ~finish_reason ~finalization_failed =
   let suffix =
     match finalization_failed with
@@ -337,11 +352,25 @@ let run_agent_untraced ~provider ~model ?tools ?(max_retries = 2) ?debug_dir ?lo
       result.usage.input_tokens result.usage.output_tokens;
     let make_result ~output ~usage ~extra_cache_read ~extra_cache_write ~extra_cost ~extra_steps ~extra_tool_calls
       ~extra_tool_results =
+      let total_cache_read = cache_read_input_tokens + extra_cache_read in
+      let total_cache_write = cache_creation_input_tokens + extra_cache_write in
+      (* Normalize prompt-token accounting to disjoint buckets so downstream
+         cost sums do not double-count the prompt on OpenRouter (see
+         {!disjoint_input_tokens}). The raw provider [input_tokens] was already
+         logged above, unmodified. *)
+      let usage : Ai_provider.Usage.t =
+        {
+          usage with
+          Ai_provider.Usage.input_tokens =
+            disjoint_input_tokens ~provider ~input_tokens:usage.Ai_provider.Usage.input_tokens
+              ~cache_read_input_tokens:total_cache_read ~cache_creation_input_tokens:total_cache_write;
+        }
+      in
       {
         output;
         usage;
-        cache_read_input_tokens = cache_read_input_tokens + extra_cache_read;
-        cache_creation_input_tokens = cache_creation_input_tokens + extra_cache_write;
+        cache_read_input_tokens = total_cache_read;
+        cache_creation_input_tokens = total_cache_write;
         steps_count = steps_count + extra_steps;
         tool_calls_count = List.length result.tool_calls + extra_tool_calls;
         tool_results_count = List.length result.tool_results + extra_tool_results;
