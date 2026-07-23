@@ -7,7 +7,10 @@ verified file/field in `/home/me/code/opensource/reviewotron`. Protection set = 
 
 Precision-only caveat applies (INSIGHTS §12): every action below makes the engine say *less*. No recall
 counter-metric exists in this snapshot — replay against `eval.jsonl` before shipping any of them.
-Full artifacts (aggregates.json, verdicts.jsonl, eval.jsonl): ~/reviewotron-feedback-analysis-fable/2026-07-17/
+**Provenance:** the method and labels (`eval.jsonl` + replay harness + protocol) are reproducible from `tools/replay/`
+once #27 merges. The raw run outputs and the dev-sg snapshot stay archived at `~/reviewotron-feedback-analysis-fable/2026-07-17/`
+on José's machine and are deliberately *not* committed — the snapshot contains monorepo diffs and colleague comments (private
+data), so it must remain external by design.
 
 ---
 
@@ -59,7 +62,12 @@ thread-mining of the 36 downvoted comments.
 
 ---
 
-## Rank 1 — Give the general deep reviewer a file-fetch tool (kill unverified-premise mode)
+## Original ranked actionables (2026-07-17) — 5 of 6 since retired
+
+Each heading below leads with its Stages 4–9 outcome; the bullets under it are the verbatim Stage-3 pre-replay
+projection, preserved as the historical record. Where the two conflict, the outcome (and the `OUTCOME:` box) wins.
+
+### Rank 1 — RETIRED (Stage-4b: addressable ceiling ≤2/19) — was: give the general deep reviewer a file-fetch tool
 
 > **OUTCOME: RETIRED (Stage-4b kill-stage diagnosis).** Wrong lever. The 19 lost
 > replayed TPs break down as 7 `scout_no_lead` + 9 `deep_dropped` + 3 intermittent
@@ -77,8 +85,9 @@ thread-mining of the 36 downvoted comments.
   `plugin: general`. Escalation confirms it: 19 context requests on `hypothetical_scenario`, 6 on
   `intent_mismatch` (`escalation.requested_by_failure_mode`).
 - **Control surface:** `lib/general_deep_reviewer_agent.ml` (`config`, `max_steps = 1`; `build_input` /
-  `relevant_file_contents`) + `lib/github_source.ml` (`fetch_key_files`, capped at `CCList.take 5`, fetches
-  ONLY Added/Modified changed files — never siblings/callers/callees/schemas). The `fetch_file` capability
+  `relevant_file_contents`) + `lib/github_source.ml` (`fetch_key_files`) → `lib/review_job.ml`
+  (`select_key_files`, capped at `CCList.take max_key_files` = 5, keeps ONLY Added/Modified changed files —
+  never siblings/callers/callees/schemas). The `fetch_file` capability
   (`lib/review_job.ml` `type fetch_file`; `Security_tools.make_get_file_content`) is wired ONLY into the
   security agents (`lib/analysis_agent.ml:862`, `lib/validator_agent.ml:211`); the general pipeline cannot
   fetch a file on demand.
@@ -102,7 +111,7 @@ thread-mining of the 36 downvoted comments.
 
 ---
 
-## Rank 2 — Bind declared `confidence` to verified reachability, not model belief
+### Rank 2 — SHELVED (precision already achieved vs the era) — was: bind declared `confidence` to verified reachability
 
 > **OUTCOME: SHELVED.** Precision is already where this rank aimed to take it: the
 > current pipeline emits only 4–8 of the 52 labeled FPs vs the era engine's 13–15
@@ -141,7 +150,7 @@ thread-mining of the 36 downvoted comments.
 
 ---
 
-## Rank 3 — Add a `broken_suggestion` / message-quality gate to the validator
+### Rank 3 — UNTESTED, optional next cycle (blocked on `suggested_fix` serialization) — was: add a `broken_suggestion` / message-quality gate to the validator
 
 > **OUTCOME: UNTESTED — optional, carried to the next cycle.** The only rank the
 > replays never contradicted: it rejects defective *payloads*, not findings, so
@@ -180,7 +189,7 @@ thread-mining of the 36 downvoted comments.
 
 ---
 
-## Rank 4 — Tighten `critical`-severity proportionality in calibration prompt
+### Rank 4 — SHELVED (precision already achieved; downgrade-only) — was: tighten `critical`-severity proportionality in calibration prompt
 
 > **OUTCOME: SHELVED.** Same disposition as Rank 2. This rank targets 1.0 of 17.0
 > invalid weight directly (one downvoted member); against a sampler where FP
@@ -212,7 +221,7 @@ thread-mining of the 36 downvoted comments.
 
 ---
 
-## Rank 5 — Broaden `fetch_key_files` beyond the 5 changed files (feed the deep reviewer's premises)
+### Rank 5 — SHELVED (context is not the lost-TP lever; superseded by #23) — was: broaden `fetch_key_files` beyond the 5 changed files
 
 > **OUTCOME: SHELVED.** Explicitly the fallback for Rank 1, which was retired
 > because context is not the lost-TP lever (Stage-4b: `deep_dropped` was
@@ -226,8 +235,9 @@ thread-mining of the 36 downvoted comments.
   `intent_mismatch` invalids (`context_fetch` 8). Escalation top paths cluster on the `apiv3_*` family
   (`apiv3_helpers.ml` ×2 requests) behind exhibits `rvf_c51f0aa…` and `rvf_73d915bc…`
   (`of_endpoint_result_private_error` misread — the helper's signature was one fetch away).
-- **Control surface:** `lib/github_source.ml` `fetch_key_files` (`CCList.take 5`; filters to Added/Modified
-  only). This is the static pre-fetch that becomes the deep reviewer's `file_contents`
+- **Control surface:** `lib/github_source.ml` `fetch_key_files` → `lib/review_job.ml` `select_key_files`
+  (`CCList.take max_key_files` = 5; filters to Added/Modified only). This is the static pre-fetch that
+  becomes the deep reviewer's `file_contents`
   (`lib/general_review_plugin.ml:230` → `General_deep_reviewer_agent.build_input`).
 - **Proposed change:** this is the fallback if Rank 1's on-demand tool is too large a change. Raise the
   `CCList.take 5` cap (e.g. to 10–15) and — higher value — additionally fetch files *referenced by the diff*
@@ -243,7 +253,7 @@ thread-mining of the 36 downvoted comments.
 
 ---
 
-## Rank 6 — Ground external-tool/platform knowledge (curb `false_mechanism` stale-knowledge subspecies)
+### Rank 6 — SHELVED (no measured FP win; part of the stable grounded-but-wrong floor) — was: ground external-tool/platform knowledge
 
 > **OUTCOME: SHELVED.** A `false_mechanism` stale-knowledge fix with no measured
 > FP win on the sampler. Its exhibits (`779e28` LD_LIBARY_PATH, `962a2b` unbound

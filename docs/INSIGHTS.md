@@ -3,7 +3,10 @@
 Snapshot: dev-sg, `2026-07-17`. 334 targets / 188 reviews / 83 reacted (47 up, 36 down, 0 mixed).
 Adjudication worklist: 173 = 83 reacted + 90 seeded unreacted controls. 170 accepted / 3 invalid / 0 contested.
 All numbers below are reproducible from `aggregates.json` (+ `synthesis_context.md` for pipeline facts).
-Full artifacts (aggregates.json, verdicts.jsonl, eval.jsonl, exhibits, snapshot): ~/reviewotron-feedback-analysis-fable/2026-07-17/
+**Provenance:** the method and labels (`eval.jsonl` + replay harness + protocol) are reproducible from `tools/replay/`
+once #27 merges. The raw run outputs and the dev-sg snapshot stay archived at `~/reviewotron-feedback-analysis-fable/2026-07-17/`
+on José's machine and are deliberately *not* committed — the snapshot contains monorepo diffs and colleague comments (private
+data), so it must remain external by design, not by archiving oversight.
 
 ---
 
@@ -28,10 +31,20 @@ config + model) **replayed at verified ~1:1 prompt fidelity reproduces only
 both runs only 20%). The era engine never reliably emitted the protection set
 either: a finding posted once in production re-appears on an identical re-roll
 with probability ≈ 0.3. Per-run TP recall (era 7 and 10 of 23; every current
-pipeline 4–10) shows **no meaningful drift**. The eval protection set is a union
-of one-shot samples from a ~0.3-per-row process; judging any single run against
-"36 protected TPs" overstates both the era's recall and every candidate's
-apparent regression.
+pipeline 4–10) shows **no drift the data can resolve** — a weaker claim than "no
+drift." With a p≈0.3 sampler over 23 rows a single run's TP count has σ≈2.2, so
+era (7, 10) versus current (4–10) cannot distinguish "no drift" from "a modest
+drop of ~2 TPs/run": the two era runs *bound* TP drift, they do not exclude it.
+The honest reading is asymmetric — **FP drift is unambiguous (era 13–15/52 vs
+current 4–8, non-overlapping ranges); TP drift, if any, is below the resolution
+of two era runs (≲2–3 TPs/run).** The eval protection set is a union of one-shot
+samples from a ~0.3-per-row process, so judging any single run against "36
+protected TPs" overstates both the era's recall and every candidate's apparent
+regression. A caveat on our own bar: the ≥3-run scoring rule adopted from Stage
+4b postdates most of the measurements it governs (the era baseline is two runs),
+so it bounds this null rather than settling it. Nothing currently hangs on it; if
+it ever becomes decision-relevant, two more era runs cost ≈$45 (73 diffs ×
+$0.29/diff).
 
 **2. FP suppression since the label era is real.** The one genuine drift signal
 is on the false-positive side: the era engine re-emits **13–15 of the 52 labeled
