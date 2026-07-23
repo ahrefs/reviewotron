@@ -28,7 +28,13 @@ type review_cost = {
 (** Estimate the USD cost for a given model and token counts.
     Includes cache write (1.25x base input) and cache read (0.1x base input)
     pricing when cache tokens are present.
-    Returns [0.0] if the model ID is not recognized (with a warning logged). *)
+    Returns [0.0] if the model ID is not recognized (with a warning logged).
+
+    The three input buckets ([input_tokens], [cache_read_input_tokens],
+    [cache_creation_input_tokens]) are assumed DISJOINT — each prompt token is
+    counted in exactly one. {!Agent_runner} guarantees this on both providers
+    (it subtracts the cached portion out of [input_tokens] on the OpenRouter
+    path, where the provider otherwise double-reports it). *)
 val estimate_cost :
   model_id:string ->
   input_tokens:int ->

@@ -5642,6 +5642,35 @@ let test_estimate_cost_with_cache () =
      = 0.03 + 0.075 + 0.1875 + 0.03 = 0.3225 *)
   (check (float 1e-6)) "sonnet with cache" 0.3225 cost
 
+(* Regression: OpenRouter double-counts the prompt (it reports the full prompt
+   in input_tokens AND repeats the cached portion in the cache buckets).
+   disjoint_input_tokens must subtract the cache portion so the three prompt
+   buckets stay disjoint and cost sums don't double-count. Anthropic already
+   reports them disjoint, so it passes through unchanged. *)
+let test_disjoint_input_tokens_openrouter () =
+  (* The proven era case (rvb_163a5c01): input == cache_creation, no cache read.
+     The full prompt was cache-written and echoed into input_tokens, so the
+     non-cached remainder is 0. *)
+  (check int) "full prompt cache-written -> 0 non-cached" 0
+    (Agent_runner.disjoint_input_tokens ~provider:Llm_provider.Openrouter ~input_tokens:169_673
+       ~cache_read_input_tokens:0 ~cache_creation_input_tokens:169_673);
+  (* Mixed: 200k prompt, 150k served from cache, 40k freshly cache-written =>
+     10k genuinely uncached. *)
+  (check int) "mixed cache read+write" 10_000
+    (Agent_runner.disjoint_input_tokens ~provider:Llm_provider.Openrouter ~input_tokens:200_000
+       ~cache_read_input_tokens:150_000 ~cache_creation_input_tokens:40_000);
+  (* Clamp: never negative if a provider over-reports the cache portion. *)
+  (check int) "clamped at zero" 0
+    (Agent_runner.disjoint_input_tokens ~provider:Llm_provider.Openrouter ~input_tokens:1_000
+       ~cache_read_input_tokens:900 ~cache_creation_input_tokens:500)
+
+let test_disjoint_input_tokens_anthropic () =
+  (* Anthropic reports input_tokens already excluding the cached buckets, so it
+     is returned verbatim — no subtraction. *)
+  (check int) "anthropic passthrough" 50_000
+    (Agent_runner.disjoint_input_tokens ~provider:Llm_provider.Anthropic ~input_tokens:50_000
+       ~cache_read_input_tokens:150_000 ~cache_creation_input_tokens:40_000)
+
 let test_of_agent_result () =
   let usage : Ai_provider.Usage.t = { input_tokens = 2000; output_tokens = 500; total_tokens = Some 2500 } in
   let result : Agent_runner.agent_result =
@@ -7855,6 +7884,8 @@ let () =
           test_case "estimate cost default tier models" `Quick test_estimate_cost_default_tier_models;
           test_case "estimate cost unknown model" `Quick test_estimate_cost_unknown_model;
           test_case "estimate cost with cache" `Quick test_estimate_cost_with_cache;
+          test_case "disjoint input tokens (openrouter double-count)" `Quick test_disjoint_input_tokens_openrouter;
+          test_case "disjoint input tokens (anthropic passthrough)" `Quick test_disjoint_input_tokens_anthropic;
           test_case "of_agent_result" `Quick test_of_agent_result;
           test_case "aggregate" `Quick test_aggregate;
           test_case "format footer" `Quick test_format_footer;
