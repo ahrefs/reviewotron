@@ -10,26 +10,33 @@ It is a **development / evaluation tool**, not part of the shipped binary.
 
 ## What `eval.jsonl` is
 
-`eval.jsonl` (vendored here, 101 rows) is the labeled evaluation set. Each row
-is one finding a deployed reviewotron posted on a real PR, tagged with a label
-derived from a **blind adjudication** (an agent judged validity without seeing
-the human reaction) cross-checked against the PR author's 👍/👎:
+`eval.jsonl` is the labeled evaluation set the harness scores against. **It is
+not shipped in this repo** — it points into a private deployment snapshot and is
+useful only to the team that produced it, so you supply your own (see
+[Supplying your own labels](#supplying-your-own-labels)). This section documents
+its format.
 
-| label | count | meaning |
-|---|---:|---|
-| `must_not_flag` | 65 | adjudicated **invalid** (a false positive the engine should not re-emit) |
-| `must_keep_flagging` | 36 | adjudicated **valid and endorsed** (the protection set — must not be lost) |
+Each row is one finding a deployed reviewotron posted on a real PR, tagged with
+a label derived from a **blind adjudication** (an agent judges validity without
+seeing the human reaction) cross-checked against the PR author's 👍/👎. Two
+labels:
 
-Row fields: `feedback_id`, `review_batch_id`, `head_sha`, `label`,
+| label | meaning |
+|---|---|
+| `must_not_flag` | adjudicated **invalid** (a false positive the engine should not re-emit) |
+| `must_keep_flagging` | adjudicated **valid and endorsed** (the protection set — must not be lost) |
+
+Row fields (all strings): `feedback_id`, `review_batch_id`, `head_sha`, `label`,
 `source_reaction`, `failure_mode`, `finding_ref`, and `diff_ref` (a
 provenance breadcrumb — an analysis-dir-relative path; the driver does **not**
 read it, it derives the diff path from `--analysis-dir`).
 
-**Provenance.** The labels come from the 2026-07-17 dev-sg deployment snapshot
-(334 targets / 188 reviews / 83 PR-author reactions), adjudicated over a
-173-item blind worklist with an adversarial verify pass. Full method and the
-per-row exhibits live in the analysis archive (see "The analysis dir" below),
-not in this repo.
+**How the reference labels were produced (as a method to reuse).** Take a
+deployment feedback snapshot (posted findings + author 👍/👎), run a blind
+adjudication over it (an agent scores validity without seeing the reaction),
+cross-check adjudication against reaction, and run an adversarial verify pass
+over the disagreements. The snapshot and per-row exhibits behind any specific
+label set are internal to whoever ran it and are not part of this repo.
 
 ### The single-draw caveat (read before trusting any single score)
 
@@ -45,6 +52,22 @@ single draw, not a reliable behavior. Practical consequences:
   on the *stable cores* (the rows that reproduce across all runs — ~6 TPs and
   ~9–10 FPs), not on any single roll.
 
+## Supplying your own labels
+
+`eval.jsonl` is not in this repo. To use the harness, produce a label set for
+your own deployment and place it at `tools/replay/eval.jsonl` (that path is
+gitignored, so it will never be committed) or point `EVAL_JSONL` at it
+elsewhere. Match the format in [What `eval.jsonl` is](#what-evaljsonl-is): one
+JSON object per line with the fields listed there, `label` being one of
+`must_not_flag` / `must_keep_flagging`. Build the labels with the blind-
+adjudication method described above (or any method you trust), then point
+`ANALYSIS_DIR` at the snapshot they were derived from so the driver can resolve
+each row's diff.
+
+A label set is a single-window artifact — it reflects one deployment snapshot
+and (per the single-draw caveat) one sampler draw per row, so plan to
+regenerate it each feedback cycle rather than treat it as permanent.
+
 ## How to score a candidate engine
 
 Prerequisites:
@@ -53,12 +76,13 @@ Prerequisites:
    If the tree predates PR #23 (local-mode key-file embedding), you must apply a
    local-context shim first or the deep reviewer runs blind — the driver prints
    whether the fix is present at startup. See "Fidelity" below.
-2. **A monorepo checkout** the diffs came from, and a **worktree pool**:
+2. **A checkout of the repository the reviewed diffs came from**, and a
+   **worktree pool**:
    ```sh
-   export MONOREPO_ROOT=~/code/monorepo
+   export TARGET_REPO_ROOT=/path/to/target-repo
    export OUTPUT_DIR=~/replay-out
    for i in $(seq 0 5); do
-     git -C "$MONOREPO_ROOT" worktree add --detach "$OUTPUT_DIR/replay_worktrees/wt$i"
+     git -C "$TARGET_REPO_ROOT" worktree add --detach "$OUTPUT_DIR/replay_worktrees/wt$i"
    done
    ```
 3. **The analysis dir** (`ANALYSIS_DIR`) — the un-vendored run inputs (snapshot
@@ -69,7 +93,7 @@ Prerequisites:
 Then:
 
 ```sh
-export ANALYSIS_DIR=~/feedback-analysis/2026-07-17
+export ANALYSIS_DIR=~/feedback-analysis
 export OUTPUT_DIR=~/replay-out
 export REVIEWOTRON_EXE=$PWD/_build/default/src/reviewotron.exe
 
@@ -162,10 +186,11 @@ era numbers without halving the era input side.
 
 ## The analysis dir (not vendored)
 
-Only `eval.jsonl` is checked into the repo. The harness also needs, from
-`ANALYSIS_DIR`, artifacts that are **snapshot / run outputs and are
-deliberately not vendored** (they are large and contain the deployment
-snapshot):
+Nothing under the analysis dir is checked into this repo — nor is `eval.jsonl`
+itself (you supply it; see [Supplying your own labels](#supplying-your-own-labels)).
+The harness needs, from `ANALYSIS_DIR`, artifacts that are **snapshot / run
+outputs and are deliberately not vendored** (they are large and contain the
+deployment snapshot):
 
 - `snapshot/reviewotron-feedback-evidence/<batch>/` — `filtered_diff.patch`,
   `fetched_files.json`, `review_config.json` per batch.
@@ -185,7 +210,7 @@ read-only archive.
 
 | file | role |
 |---|---|
-| `eval.jsonl` | the frozen labeled eval set (vendored) |
+| `eval.jsonl` | the labeled eval set — **you supply this; gitignored, not shipped** |
 | `_config.py` | env-driven path/credential resolution shared by all scripts |
 | `replay_scope.py` | coverage classification + prompt-override check (no engine runs) |
 | `verify_shim_fidelity.py` | offline key-file-selection fidelity check (no engine runs) |

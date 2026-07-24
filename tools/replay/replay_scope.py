@@ -5,7 +5,7 @@ Reports how many of the 101 eval rows are replayable (general-plugin,
 non-body, resolvable head_sha) and flags any batch config that carries a
 system_prompt_override (which would make prompt-hash reproduction impossible).
 
-Reads the vendored eval.jsonl plus per-batch review_config.json from the
+Reads eval.jsonl (operator-supplied) plus per-batch review_config.json from the
 snapshot bundles in ANALYSIS_DIR, and missing_shas.txt from ANALYSIS_DIR (a
 list of head SHAs known to be unresolvable; may be empty — direct-SHA HTTPS
 fetch usually recovers force-pushed-away heads). Writes

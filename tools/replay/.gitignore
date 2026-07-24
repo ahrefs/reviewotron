@@ -1,2 +1,5 @@
 __pycache__/
 *.pyc
+
+# Operator-supplied label set — private, never committed to this public repo.
+eval.jsonl

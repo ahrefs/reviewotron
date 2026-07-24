@@ -13,7 +13,7 @@ fetch-failed files), so they are reported rather than fail hard. Use this to
 confirm that a local replay (shimmed, or post-PR-#23) sees the same key files
 production did before trusting the scores.
 
-Reads snapshot bundles from ANALYSIS_DIR, resolves blobs in MONOREPO_ROOT,
+Reads snapshot bundles from ANALYSIS_DIR, resolves blobs in TARGET_REPO_ROOT,
 writes OUTPUT_DIR/shim_fidelity_report.json.
 """
 import hashlib
@@ -47,9 +47,9 @@ def diff_key_paths(patch_path):
     return paths[:5]
 
 
-def git_blob_sha256(monorepo, sha, path):
+def git_blob_sha256(target_repo, sha, path):
     r = subprocess.run(
-        ["git", "-C", monorepo, "show", "%s:%s" % (sha, path)],
+        ["git", "-C", target_repo, "show", "%s:%s" % (sha, path)],
         capture_output=True,
     )
     if r.returncode != 0:
@@ -58,7 +58,7 @@ def git_blob_sha256(monorepo, sha, path):
 
 
 def main():
-    monorepo = C.monorepo_root()
+    target_repo = C.target_repo_root()
     evidence = C.evidence_dir()
     rows = [json.loads(l) for l in open(C.EVAL_JSONL)]
     batches = json.load(open(C.in_analysis("replay_batches.json")))
@@ -80,7 +80,7 @@ def main():
             prob.append("paths diverge (subseq=%s): expected=%s recorded=%s"
                         % (subseq, expected, rec_paths))
         for p, want in recorded:
-            got = git_blob_sha256(monorepo, sha, p)
+            got = git_blob_sha256(target_repo, sha, p)
             if got != want:
                 prob.append("content mismatch %s (blob %s)"
                             % (p, "missing" if got is None else "differs"))

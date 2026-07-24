@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Replay driver: run the current engine (`review-diff`, general pipeline only)
-once per eval batch against a monorepo worktree pinned to the batch's head_sha.
+once per eval batch against a target-repo worktree pinned to the batch's head_sha.
 
 Design:
 - worktree pool (wt0..wtN under OUTPUT_DIR/replay_worktrees/), one worker each
@@ -13,12 +13,12 @@ Design:
 Paths and credentials come from _config.py (env-driven). Run:
 
   ANALYSIS_DIR=~/feedback-analysis OUTPUT_DIR=~/feedback-analysis \
-  MONOREPO_ROOT=~/code/monorepo OPENROUTER_API_KEY=... \
+  TARGET_REPO_ROOT=/path/to/target-repo OPENROUTER_API_KEY=... \
   python3 tools/replay/replay_driver.py --concurrency 6
 
 Create the worktree pool first (one detached checkout per worker):
   for i in $(seq 0 5); do
-    git -C "$MONOREPO_ROOT" worktree add --detach "$OUTPUT_DIR/replay_worktrees/wt$i"
+    git -C "$TARGET_REPO_ROOT" worktree add --detach "$OUTPUT_DIR/replay_worktrees/wt$i"
   done
 """
 import json
@@ -59,7 +59,7 @@ def inline_config():
 def batch_meta():
     """One entry per replayable diff: {bid, head_sha, diff, pr}.
 
-    Reads the vendored eval.jsonl for labels/SHAs, replay_batches.json (which
+    Reads eval.jsonl (operator-supplied) for labels/SHAs, replay_batches.json (which
     feedback_ids are covered per batch) and worklist.json (pr_number) from the
     ANALYSIS_DIR. The diff path is derived from ANALYSIS_DIR, never from the
     row's diff_ref (which is only a provenance breadcrumb).

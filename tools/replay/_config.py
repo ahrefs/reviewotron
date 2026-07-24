@@ -9,9 +9,9 @@ Environment variables (all optional; CLI flags on each script override):
 
   REVIEWOTRON_EXE   Path to the built reviewotron binary.
                     Default: <repo>/_build/default/src/reviewotron.exe
-  MONOREPO_ROOT     Path to the target monorepo checkout the diffs came from.
-                    Used to create the worktree pool and to resolve blob SHAs.
-                    Default: /home/me/code/monorepo  (override for your setup)
+  TARGET_REPO_ROOT  Path to a checkout of the repository the reviewed diffs
+                    came from. Used to create the worktree pool and to resolve
+                    blob SHAs. Default: ~/target-repo  (override for your setup)
   ANALYSIS_DIR      Directory holding the run inputs that are NOT vendored:
                     the snapshot/ evidence bundles, replay_batches.json,
                     worklist.json, items/, missing_shas.txt. This is the
@@ -26,8 +26,9 @@ Environment variables (all optional; CLI flags on each script override):
                     the provider from whichever is set (see project memory:
                     ANTHROPIC_API_KEY + no OPENROUTER_API_KEY -> Anthropic).
 
-The vendored eval.jsonl lives next to this file (tools/replay/eval.jsonl) and
-is the only run artifact checked into the repo.
+The label set eval.jsonl is NOT shipped in this repo — it is private to the
+operator (see README). Drop your own at tools/replay/eval.jsonl (gitignored) or
+point EVAL_JSONL at it.
 """
 import os
 
@@ -35,8 +36,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # tools/replay/ -> repo root is two levels up
 REPO_ROOT = os.path.abspath(os.path.join(HERE, os.pardir, os.pardir))
 
-# The vendored labels ship with the harness.
-EVAL_JSONL = os.path.join(HERE, "eval.jsonl")
+# Operator-supplied labels (not shipped): default next to this file, or override.
+EVAL_JSONL = os.environ.get("EVAL_JSONL", os.path.join(HERE, "eval.jsonl"))
 
 
 def reviewotron_exe():
@@ -46,8 +47,8 @@ def reviewotron_exe():
     )
 
 
-def monorepo_root():
-    return os.environ.get("MONOREPO_ROOT", "/home/me/code/monorepo")
+def target_repo_root():
+    return os.environ.get("TARGET_REPO_ROOT", os.path.expanduser("~/target-repo"))
 
 
 def analysis_dir():
