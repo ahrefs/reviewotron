@@ -29,9 +29,18 @@ def norm_path(p):
 def original_body(bid):
     path = C.in_analysis(os.path.join("snapshot", "reviewotron-feedback-evidence", bid, "posted_review.json"))
     try:
-        return json.load(open(path)).get("body", "").strip()
+        body = json.load(open(path)).get("body")
     except (OSError, json.JSONDecodeError):
         return None
+    return body.strip() if isinstance(body, str) and body.strip() else None
+
+
+def original_finding(fid):
+    path = C.in_analysis(os.path.join("items", fid, "finding.json"))
+    try:
+        return json.load(open(path))
+    except (OSError, json.JSONDecodeError) as error:
+        raise SystemExit("cannot load original finding for %s: %s" % (fid, error))
 
 
 def body_pair(fid, row, bid, original, replay):
@@ -112,11 +121,20 @@ def main():
         try:
             meta = json.load(open(os.path.join(runs, bid, "meta.json")))
             out = json.load(open(os.path.join(runs, bid, "output.json")))
-            run_status[bid] = "ok" if meta.get("exit") == 0 else "failed"
-            replay[bid] = out
-        except Exception:
+        except OSError:
             run_status[bid] = "missing"
             replay[bid] = {"findings": [], "summary": ""}
+            continue
+        except json.JSONDecodeError as error:
+            raise SystemExit("invalid replay output for %s: %s" % (bid, error))
+        if (
+            not isinstance(out, dict)
+            or not isinstance(out.get("findings"), list)
+            or not isinstance(out.get("summary"), str)
+        ):
+            raise SystemExit("invalid replay output for %s: expected object with findings list and summary" % bid)
+        run_status[bid] = "ok" if meta.get("exit") == 0 else "failed"
+        replay[bid] = out
 
     pairs = []
     auto = []
@@ -142,7 +160,7 @@ def main():
             else:
                 pairs.append(body_pair(fid, row, bid, original, replay_body))
             continue
-        original = json.load(open(C.in_analysis(os.path.join("items", fid, "finding.json"))))
+        original = original_finding(fid)
         inline = inline_pairs(fid, row, bid, original, replay[bid])
         if inline == []:
             auto.append({

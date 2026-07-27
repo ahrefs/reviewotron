@@ -30,11 +30,14 @@ class ReplayHarnessTest(unittest.TestCase):
         self.tempdir.cleanup()
 
     def run_script(self, script, *args):
-        env = os.environ | {
-            "ANALYSIS_DIR": str(self.analysis),
-            "OUTPUT_DIR": str(self.output),
-            "EVAL_JSONL": str(self.root / "eval.jsonl"),
-        }
+        env = os.environ.copy()
+        env.update(
+            {
+                "ANALYSIS_DIR": str(self.analysis),
+                "OUTPUT_DIR": str(self.output),
+                "EVAL_JSONL": str(self.root / "eval.jsonl"),
+            }
+        )
         return subprocess.run(
             [sys.executable, str(HERE / script), *args],
             capture_output=True,
@@ -85,6 +88,13 @@ class ReplayHarnessTest(unittest.TestCase):
         baseline = json.loads((self.output / "replay_baseline.json").read_text())
         self.assertEqual(baseline["rows"][0]["outcome"], "held")
 
+        write_json(self.output / "match_candidates.json", [])
+        write_json(self.output / "match_results.json", [])
+        write_json(self.output / "match_auto.json", [{"feedback_id": candidate["feedback_id"], "outcome": None}])
+        invalid_auto = self.run_script("replay_aggregate.py")
+        self.assertNotEqual(invalid_auto.returncode, 0)
+        self.assertIn("non-string outcome", invalid_auto.stderr)
+
     def test_scope_excludes_security_rows_from_general_replay(self):
         feedback_id = "feedback-security"
         batch_id = "batch-security"
@@ -110,6 +120,28 @@ class ReplayHarnessTest(unittest.TestCase):
         self.assertEqual(scope["summary"]["security_rows"], 1)
         self.assertEqual(scope["summary"]["replayable_rows"], 0)
 
+        (self.analysis / "items" / feedback_id / "finding.json").unlink()
+        unknown = self.run_script("replay_scope.py")
+        self.assertNotEqual(unknown.returncode, 0)
+        self.assertIn("unknown plugin", unknown.stderr)
+
+        self.write_eval(
+            [
+                {
+                    "feedback_id": feedback_id,
+                    "review_batch_id": batch_id,
+                    "head_sha": "head",
+                    "label": "must_not_flag",
+                    "finding_ref": "pr_review_comment",
+                    "plugin_name": "general",
+                }
+            ]
+        )
+        write_json(self.analysis / "items" / feedback_id / "finding.json", {"plugin_name": "security"})
+        mismatch = self.run_script("replay_scope.py")
+        self.assertNotEqual(mismatch.returncode, 0)
+        self.assertIn("plugin mismatch", mismatch.stderr)
+
     def test_prepare_matches_review_bodies_against_replay_summary(self):
         feedback_id = "feedback-body"
         batch_id = "batch-body"
@@ -121,6 +153,7 @@ class ReplayHarnessTest(unittest.TestCase):
                     "head_sha": "head",
                     "label": "must_keep_flagging",
                     "finding_ref": "pr_review_body",
+                    "plugin_name": "general",
                 }
             ]
         )
@@ -141,29 +174,89 @@ class ReplayHarnessTest(unittest.TestCase):
         self.assertEqual(candidates[0]["kind"], "review_body")
         self.assertEqual(candidates[0]["replay"]["body"], "The error path drops the response.")
 
+        write_json(
+            self.analysis / "snapshot" / "reviewotron-feedback-evidence" / batch_id / "posted_review.json",
+            {"body": ""},
+        )
+        empty_body = self.run_script("match_prepare.py")
+        self.assertEqual(empty_body.returncode, 0, empty_body.stderr)
+        auto = json.loads((self.output / "match_auto.json").read_text())
+        self.assertEqual(auto[0]["outcome"], "missing_original")
+
+        (self.output / "replay_runs" / batch_id / "output.json").write_text("{")
+        corrupt_output = self.run_script("match_prepare.py")
+        self.assertNotEqual(corrupt_output.returncode, 0)
+        self.assertIn("invalid replay output", corrupt_output.stderr)
+
+    def test_prepare_reports_missing_inline_original(self):
+        feedback_id = "feedback-inline"
+        batch_id = "batch-inline"
+        self.write_eval(
+            [
+                {
+                    "feedback_id": feedback_id,
+                    "review_batch_id": batch_id,
+                    "head_sha": "head",
+                    "label": "must_keep_flagging",
+                    "finding_ref": "pr_review_comment",
+                    "plugin_name": "general",
+                }
+            ]
+        )
+        write_json(self.analysis / "replay_batches.json", {batch_id: [feedback_id]})
+        write_json(self.output / "replay_runs" / batch_id / "meta.json", {"exit": 0})
+        write_json(self.output / "replay_runs" / batch_id / "output.json", {"summary": "", "findings": []})
+
+        result = self.run_script("match_prepare.py")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("cannot load original finding", result.stderr)
+
     def test_stable_aggregation_reports_repeatability(self):
         first = self.root / "first.json"
         second = self.root / "second.json"
+        third = self.root / "third.json"
         rows = [
             {"feedback_id": "keep", "label": "must_keep_flagging", "outcome": "held"},
             {"feedback_id": "drop", "label": "must_not_flag", "outcome": "regressed"},
         ]
-        write_json(first, {"rows": rows})
+        write_json(first, {"label": "baseline", "run": 1, "rows": rows})
         write_json(
             second,
             {
+                "label": "baseline",
+                "run": 2,
                 "rows": [
                     {"feedback_id": "keep", "label": "must_keep_flagging", "outcome": "lost"},
                     {"feedback_id": "drop", "label": "must_not_flag", "outcome": "regressed"},
                 ]
             },
         )
+        write_json(third, {"label": "baseline", "run": 3, "rows": rows})
         output = self.root / "stable.json"
-        result = self.run_script("replay_stable.py", str(first), str(second), "--output", str(output))
+        result = self.run_script("replay_stable.py", str(first), str(second), str(third), "--output", str(output))
         self.assertEqual(result.returncode, 0, result.stderr)
         stable = json.loads(output.read_text())
         self.assertEqual(stable["headline"]["must_keep_held_stable"], 0)
         self.assertEqual(stable["headline"]["must_not_flag_emitted_stable"], 1)
+
+        too_few = self.run_script("replay_stable.py", str(first), str(second))
+        self.assertNotEqual(too_few.returncode, 0)
+
+        duplicate_path = self.run_script("replay_stable.py", str(first), str(second), str(first))
+        self.assertNotEqual(duplicate_path.returncode, 0)
+        self.assertIn("duplicate baseline input", duplicate_path.stderr)
+
+        copy = self.root / "copy.json"
+        copy.write_text(first.read_text())
+        duplicate_content = self.run_script("replay_stable.py", str(first), str(second), str(copy))
+        self.assertNotEqual(duplicate_content.returncode, 0)
+        self.assertIn("duplicate baseline content", duplicate_content.stderr)
+
+        mismatched = self.root / "mismatched.json"
+        write_json(mismatched, {"label": "candidate", "run": 4, "rows": rows})
+        mismatched_label = self.run_script("replay_stable.py", str(first), str(second), str(mismatched))
+        self.assertNotEqual(mismatched_label.returncode, 0)
+        self.assertIn("inconsistent labels", mismatched_label.stderr)
 
 
 if __name__ == "__main__":

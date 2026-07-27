@@ -90,10 +90,24 @@ def finding_plugin_name(feedback_id, adir=None):
     return json.load(open(path)).get("plugin_name")
 
 
+def plugin_name(row, adir=None):
+    """Resolve a row's plugin, preferring the source finding when available."""
+    row_plugin = row.get("plugin_name")
+    bundle_plugin = finding_plugin_name(row["feedback_id"], adir)
+    if row_plugin and bundle_plugin and row_plugin != bundle_plugin:
+        raise SystemExit(
+            "plugin mismatch for %s: eval row=%s finding bundle=%s"
+            % (row["feedback_id"], row_plugin, bundle_plugin)
+        )
+    plugin = bundle_plugin or row_plugin
+    if not plugin:
+        raise SystemExit("unknown plugin for %s; add plugin_name to the eval row" % row["feedback_id"])
+    return plugin
+
+
 def is_general_row(row, adir=None):
     """Whether the general-only replay can score this evaluation row."""
-    plugin = row.get("plugin_name") or finding_plugin_name(row["feedback_id"], adir)
-    return plugin is None or plugin == "general"
+    return plugin_name(row, adir) == "general"
 
 
 def local_context_fix_present(repo=REPO_ROOT):

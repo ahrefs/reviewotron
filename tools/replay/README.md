@@ -30,8 +30,9 @@ Required row fields (all strings): `feedback_id`, `review_batch_id`, `head_sha`,
 `source_reaction`, `failure_mode`, `finding_ref`, and `diff_ref` (a
 provenance breadcrumb — an analysis-dir-relative path; the driver does **not**
 read it, it derives the diff path from `--analysis-dir`). `plugin_name` is
-optional; set it for review-body rows when the source plugin is known. Rows
-without it default to the general pipeline.
+required unless `items/<feedback_id>/finding.json` provides it. The finding
+bundle is authoritative; if both provide a value, they must agree. An unknown
+plugin fails the run rather than being treated as general.
 
 **How the reference labels were produced (as a method to reuse).** Take a
 deployment feedback snapshot (posted findings + author 👍/👎), run a blind
@@ -140,6 +141,9 @@ For a go/no-go decision (not a quick smoke check):
 3. A candidate passes only if it (a) does not lose stable-core TPs and (b)
    reduces expected FP emission across runs. A single run's `4/23` vs `7/23` is
    within noise — do not ship or reject on it.
+
+The inputs must be three distinct outputs for the same `--label`; mixed labels
+and duplicate files or contents are rejected.
 
 ## Coverage
 

@@ -107,13 +107,15 @@ def main():
             "label": rlabel,
             "finding_ref": row["finding_ref"],
         }
-        plugin = row.get("plugin_name") or C.finding_plugin_name(fid)
-        if not C.is_general_row(row):
+        plugin = C.plugin_name(row)
+        if plugin != "general":
             entry["coverage"] = "uncovered_plugin_%s" % (plugin or "unknown")
             entry["outcome"] = None
         elif bid not in batches or fid not in batches.get(bid, []):
             entry["coverage"] = "uncovered_missing_sha"
             entry["outcome"] = None
+        elif fid in auto and not isinstance(auto[fid].get("outcome"), str):
+            sys.exit("match auto row has non-string outcome: %s" % fid)
         elif fid in auto and auto[fid]["outcome"].startswith("run_"):
             entry["coverage"] = "uncovered_" + auto[fid]["outcome"]
             entry["outcome"] = None

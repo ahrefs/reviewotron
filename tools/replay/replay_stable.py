@@ -1,11 +1,21 @@
 #!/usr/bin/env python3
 """Aggregate repeated replay_baseline.json files into stable-core metrics."""
 import json
+import hashlib
+import os
 import sys
 
 
-def rows_by_id(path):
-    rows = json.load(open(path))["rows"]
+def read_baseline(path):
+    baseline = json.load(open(path))
+    label = baseline.get("label")
+    if not isinstance(label, str) or label == "":
+        sys.exit("baseline has no label: %s" % path)
+    return baseline
+
+
+def rows_by_id(path, baseline):
+    rows = baseline["rows"]
     result = {}
     for row in rows:
         fid = row["feedback_id"]
@@ -26,14 +36,24 @@ def parse_args():
                 sys.exit("--output requires a path")
         else:
             paths.append(arg)
-    if len(paths) < 2:
-        sys.exit("usage: replay_stable.py baseline.json baseline.json [baseline.json ...] [--output path]")
+    if len(paths) < 3:
+        sys.exit("usage: replay_stable.py baseline.json baseline.json baseline.json [baseline.json ...] [--output path]")
     return paths, output
 
 
 def main():
     paths, output = parse_args()
-    runs = [rows_by_id(path) for path in paths]
+    resolved_paths = [os.path.realpath(path) for path in paths]
+    if len(set(resolved_paths)) != len(resolved_paths):
+        sys.exit("duplicate baseline input")
+    contents = [hashlib.sha256(open(path, "rb").read()).digest() for path in paths]
+    if len(set(contents)) != len(contents):
+        sys.exit("duplicate baseline content")
+    baselines = [read_baseline(path) for path in paths]
+    baseline_labels = {baseline["label"] for baseline in baselines}
+    if len(baseline_labels) != 1:
+        sys.exit("baseline files have inconsistent labels")
+    runs = [rows_by_id(path, baseline) for path, baseline in zip(paths, baselines)]
     feedback_ids = set(runs[0])
     if any(set(rows) != feedback_ids for rows in runs[1:]):
         sys.exit("baseline files do not cover the same feedback IDs")
@@ -69,7 +89,7 @@ def main():
         "must_keep_held_stable": sum(row["stable_held"] for row in rows),
         "must_not_flag_emitted_mean": round(sum(row["emitted_runs"] for row in rows) / count, 3),
         "must_not_flag_emitted_stable": sum(row["stable_emitted"] for row in rows),
-        "uncovered_rows": sum(row["replayed_runs"] != count for row in rows),
+        "not_replayed_every_run": sum(row["replayed_runs"] != count for row in rows),
     }
     result = {"headline": stable, "rows": rows}
     encoded = json.dumps(result, indent=1)
