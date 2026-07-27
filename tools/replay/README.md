@@ -26,10 +26,12 @@ labels:
 | `must_not_flag` | adjudicated **invalid** (a false positive the engine should not re-emit) |
 | `must_keep_flagging` | adjudicated **valid and endorsed** (the protection set — must not be lost) |
 
-Row fields (all strings): `feedback_id`, `review_batch_id`, `head_sha`, `label`,
+Required row fields (all strings): `feedback_id`, `review_batch_id`, `head_sha`, `label`,
 `source_reaction`, `failure_mode`, `finding_ref`, and `diff_ref` (a
 provenance breadcrumb — an analysis-dir-relative path; the driver does **not**
-read it, it derives the diff path from `--analysis-dir`).
+read it, it derives the diff path from `--analysis-dir`). `plugin_name` is
+optional; set it for review-body rows when the source plugin is known. Rows
+without it default to the general pipeline.
 
 **How the reference labels were produced (as a method to reuse).** Take a
 deployment feedback snapshot (posted findings + author 👍/👎), run a blind
@@ -111,6 +113,7 @@ python3 tools/replay/match_prepare.py
 python3 tools/replay/gen_match_workflow.py
 #    -> run $OUTPUT_DIR/match_workflow.js with the Workflow tool
 #    -> save its returned `results` array to $OUTPUT_DIR/match_results.json
+#       (every generated pair_id must appear exactly once)
 
 # 4. score
 python3 tools/replay/replay_aggregate.py --label my-candidate --date 2026-07-30
@@ -125,23 +128,33 @@ require ≥3 runs before calling a delta real** (see the single-draw caveat).
 
 For a go/no-go decision (not a quick smoke check):
 
-1. Run steps 1–4 **at least 3 times** (delete/rename `replay_runs/` between
-   runs, or use separate `OUTPUT_DIR`s).
-2. Compute per-row hold/emit frequency across runs. The **stable core** = rows
-   held/emitted in *every* run.
+1. Run steps 1–4 **at least 3 times** in separate output directories.
+2. Compute stable-core metrics with:
+
+   ```sh
+   python3 tools/replay/replay_stable.py run-1/replay_baseline.json run-2/replay_baseline.json run-3/replay_baseline.json \
+     --output replay_stable.json
+   ```
+
+   The **stable core** = rows held/emitted in *every* run.
 3. A candidate passes only if it (a) does not lose stable-core TPs and (b)
    reduces expected FP emission across runs. A single run's `4/23` vs `7/23` is
    within noise — do not ship or reject on it.
 
 ## Coverage
 
-Of the 101 rows, **75 are replayable** by this harness (52 `must_not_flag` +
-23 `must_keep_flagging`). Uncovered by design:
+The harness replays all general-plugin rows, including review bodies. A review
+body is matched against the replay's JSON summary rather than a source line.
+The reference set contains **94 replayable rows** (75 inline + 19 body).
+Uncovered by design:
 
-- **19 `pr_review_body` rows** — body-level findings can't be matched to
-  inline replay output.
 - **7 security-plugin rows** — the replay runs the general pipeline only
   (`--no-security`).
+
+The local JSON output includes each finding's anchor range, confidence,
+evidence, `why_now`, and `suggested_fix`. This lets a future evaluator judge
+severity, suggestion safety, and lexical/type proof; the default same-issue
+matcher intentionally does not treat a severity change as a match failure.
 
 The "unrecoverable head SHA" class is empty in practice: force-pushed-away
 heads are recoverable with a direct-SHA HTTPS fetch
@@ -193,7 +206,7 @@ outputs and are deliberately not vendored** (they are large and contain the
 deployment snapshot):
 
 - `snapshot/reviewotron-feedback-evidence/<batch>/` — `filtered_diff.patch`,
-  `fetched_files.json`, `review_config.json` per batch.
+  `fetched_files.json`, `review_config.json`, and `posted_review.json` per batch.
 - `replay_batches.json` — which `feedback_id`s each batch covers.
 - `worklist.json` — per-item metadata (PR numbers).
 - `items/<feedback_id>/finding.json` — the original finding (path/line/message)
@@ -218,3 +231,5 @@ read-only archive.
 | `match_prepare.py` | build same-file/±10-line candidate pairs |
 | `gen_match_workflow.py` | emit the same-issue confirmation Workflow script |
 | `replay_aggregate.py` | score → `replay_baseline.json` + headline |
+| `replay_stable.py` | aggregate repeated baselines into stable-core metrics |
+| `test_replay.py` | focused no-network checks for replay invariants |

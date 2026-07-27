@@ -30,6 +30,7 @@ The label set eval.jsonl is NOT shipped in this repo — it is private to the
 operator (see README). Drop your own at tools/replay/eval.jsonl (gitignored) or
 point EVAL_JSONL at it.
 """
+import json
 import os
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -79,6 +80,20 @@ def in_analysis(name, adir=None):
 
 def in_output(name, odir=None):
     return os.path.join(odir or output_dir(), name)
+
+
+def finding_plugin_name(feedback_id, adir=None):
+    """Return a finding's plugin when the private analysis bundle has it."""
+    path = in_analysis(os.path.join("items", feedback_id, "finding.json"), adir)
+    if not os.path.exists(path):
+        return None
+    return json.load(open(path)).get("plugin_name")
+
+
+def is_general_row(row, adir=None):
+    """Whether the general-only replay can score this evaluation row."""
+    plugin = row.get("plugin_name") or finding_plugin_name(row["feedback_id"], adir)
+    return plugin is None or plugin == "general"
 
 
 def local_context_fix_present(repo=REPO_ROOT):

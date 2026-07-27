@@ -28,11 +28,38 @@ import collections
 import _config as C
 
 
-def plugin_name(fid):
-    p = C.in_analysis(os.path.join("items", fid, "finding.json"))
-    if os.path.exists(p):
-        return json.load(open(p)).get("plugin_name")
-    return None
+def unique_by(rows, key, label):
+    result = {}
+    for row in rows:
+        value = row.get(key)
+        if not isinstance(value, str) or value == "":
+            sys.exit("%s missing %s" % (label, key))
+        if value in result:
+            sys.exit("duplicate %s in %s: %s" % (key, label, value))
+        result[value] = row
+    return result
+
+
+def match_results_by_feedback(candidates, results):
+    candidate_by_id = unique_by(candidates, "pair_id", "match candidates")
+    result_by_id = unique_by(results, "pair_id", "match results")
+    missing = sorted(set(candidate_by_id) - set(result_by_id))
+    unexpected = sorted(set(result_by_id) - set(candidate_by_id))
+    if missing or unexpected:
+        sys.exit("match results must cover candidates exactly; missing=%s unexpected=%s" % (missing, unexpected))
+    by_feedback = collections.defaultdict(list)
+    for pair_id, result in result_by_id.items():
+        if not isinstance(result.get("match"), bool):
+            sys.exit("match result %s has non-boolean match" % pair_id)
+        candidate = candidate_by_id[pair_id]
+        by_feedback[candidate["feedback_id"]].append(
+            {
+                "pair_id": pair_id,
+                "match": result["match"],
+                "reason": result.get("reason", ""),
+            }
+        )
+    return by_feedback, candidate_by_id
 
 
 def main():
@@ -50,14 +77,23 @@ def main():
 
     rows = [json.loads(l) for l in open(C.EVAL_JSONL)]
     batches = json.load(open(C.in_analysis("replay_batches.json")))
-    auto = {a["feedback_id"]: a
-            for a in json.load(open(C.in_output("match_auto.json")))}
+    auto = unique_by(json.load(open(C.in_output("match_auto.json"))), "feedback_id", "match auto rows")
+    candidates = json.load(open(C.in_output("match_candidates.json")))
     results = json.load(open(C.in_output("match_results.json")))
     runs = C.runs_dir()
-
-    matched_rows = {}
-    for r in results:
-        matched_rows.setdefault(r["feedback_id"], []).append(r)
+    matched_rows, candidate_by_id = match_results_by_feedback(candidates, results)
+    scored_feedback_ids = {
+        row["feedback_id"]
+        for row in rows
+        if C.is_general_row(row)
+        and row["review_batch_id"] in batches
+        and row["feedback_id"] in batches[row["review_batch_id"]]
+    }
+    prepared_feedback_ids = set(auto) | {candidate["feedback_id"] for candidate in candidate_by_id.values()}
+    if scored_feedback_ids != prepared_feedback_ids:
+        missing = sorted(scored_feedback_ids - prepared_feedback_ids)
+        unexpected = sorted(prepared_feedback_ids - scored_feedback_ids)
+        sys.exit("match preparation does not cover replayable rows; missing=%s unexpected=%s" % (missing, unexpected))
 
     out_rows = []
     tally = collections.Counter()
@@ -71,18 +107,18 @@ def main():
             "label": rlabel,
             "finding_ref": row["finding_ref"],
         }
-        pl = plugin_name(fid)
-        if row["finding_ref"] == "pr_review_body":
-            entry["coverage"] = "uncovered_body"
-            entry["outcome"] = None
-        elif pl is not None and pl != "general":
-            entry["coverage"] = "uncovered_plugin_%s" % pl
+        plugin = row.get("plugin_name") or C.finding_plugin_name(fid)
+        if not C.is_general_row(row):
+            entry["coverage"] = "uncovered_plugin_%s" % (plugin or "unknown")
             entry["outcome"] = None
         elif bid not in batches or fid not in batches.get(bid, []):
             entry["coverage"] = "uncovered_missing_sha"
             entry["outcome"] = None
         elif fid in auto and auto[fid]["outcome"].startswith("run_"):
             entry["coverage"] = "uncovered_" + auto[fid]["outcome"]
+            entry["outcome"] = None
+        elif fid in auto and auto[fid]["outcome"] == "missing_original":
+            entry["coverage"] = "uncovered_missing_original"
             entry["outcome"] = None
         else:
             entry["coverage"] = "replayed"
