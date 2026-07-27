@@ -30,13 +30,20 @@ def main():
     for r in rows:
         by_batch[r["review_batch_id"]].append(r)
 
+    # Partition once: resolving a row's plugin reads its finding bundle.
+    general_by_batch = {
+        bid: [r for r in brows if C.is_general_row(r)]
+        for bid, brows in by_batch.items()
+    }
+    n_general = sum(len(v) for v in general_by_batch.values())
+
     summary = {
         "total_rows": len(rows),
         "must_not_flag": sum(1 for r in rows if r["label"] == "must_not_flag"),
         "must_keep_flagging": sum(1 for r in rows if r["label"] == "must_keep_flagging"),
         "distinct_batches": len(by_batch),
-        "body_rows": sum(1 for r in rows if r["finding_ref"] == "pr_review_body"),
-        "security_rows": sum(1 for r in rows if not C.is_general_row(r)),
+        "body_rows": sum(1 for r in rows if C.is_body_row(r)),
+        "security_rows": len(rows) - n_general,
     }
 
     def find_override(o):
@@ -63,7 +70,7 @@ def main():
         if os.path.exists(cfg_path):
             override = find_override(json.load(open(cfg_path)))
         sha_missing = head_sha in missing_shas
-        general_rows = [r for r in brows if C.is_general_row(r)]
+        general_rows = general_by_batch[bid]
         batches.append({
             "review_batch_id": bid,
             "head_sha": head_sha,
@@ -74,7 +81,7 @@ def main():
             "prompt_override": override,
             "sha_in_missing_list": sha_missing,
             "n_rows": len(brows),
-            "n_body_rows": sum(1 for r in brows if r["finding_ref"] == "pr_review_body"),
+            "n_body_rows": sum(1 for r in brows if C.is_body_row(r)),
             "n_security_rows": len(brows) - len(general_rows),
             "n_replayable_rows": len(general_rows) if not sha_missing else 0,
             "runnable": (not sha_missing) and os.path.exists(diff_path)

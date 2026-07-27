@@ -28,21 +28,20 @@ import collections
 import _config as C
 
 
-def unique_by(rows, key, label):
-    result = {}
-    for row in rows:
-        value = row.get(key)
-        if not isinstance(value, str) or value == "":
-            sys.exit("%s missing %s" % (label, key))
-        if value in result:
-            sys.exit("duplicate %s in %s: %s" % (key, label, value))
-        result[value] = row
-    return result
+def auto_rows():
+    """Load match_auto.json, validating every row's outcome up front."""
+    rows = C.unique_by(
+        json.load(open(C.in_output("match_auto.json"))), "feedback_id", "match auto rows"
+    )
+    for fid, row in rows.items():
+        if not isinstance(row.get("outcome"), str) or row["outcome"] == "":
+            sys.exit("match auto row has non-string outcome: %s" % fid)
+    return rows
 
 
 def match_results_by_feedback(candidates, results):
-    candidate_by_id = unique_by(candidates, "pair_id", "match candidates")
-    result_by_id = unique_by(results, "pair_id", "match results")
+    candidate_by_id = C.unique_by(candidates, "pair_id", "match candidates")
+    result_by_id = C.unique_by(results, "pair_id", "match results")
     missing = sorted(set(candidate_by_id) - set(result_by_id))
     unexpected = sorted(set(result_by_id) - set(candidate_by_id))
     if missing or unexpected:
@@ -77,18 +76,12 @@ def main():
 
     rows = [json.loads(l) for l in open(C.EVAL_JSONL)]
     batches = json.load(open(C.in_analysis("replay_batches.json")))
-    auto = unique_by(json.load(open(C.in_output("match_auto.json"))), "feedback_id", "match auto rows")
+    auto = auto_rows()
     candidates = json.load(open(C.in_output("match_candidates.json")))
     results = json.load(open(C.in_output("match_results.json")))
     runs = C.runs_dir()
     matched_rows, candidate_by_id = match_results_by_feedback(candidates, results)
-    scored_feedback_ids = {
-        row["feedback_id"]
-        for row in rows
-        if C.is_general_row(row)
-        and row["review_batch_id"] in batches
-        and row["feedback_id"] in batches[row["review_batch_id"]]
-    }
+    scored_feedback_ids = set(C.replayable_rows(rows, batches))
     prepared_feedback_ids = set(auto) | {candidate["feedback_id"] for candidate in candidate_by_id.values()}
     if scored_feedback_ids != prepared_feedback_ids:
         missing = sorted(scored_feedback_ids - prepared_feedback_ids)
@@ -114,13 +107,11 @@ def main():
         elif bid not in batches or fid not in batches.get(bid, []):
             entry["coverage"] = "uncovered_missing_sha"
             entry["outcome"] = None
-        elif fid in auto and not isinstance(auto[fid].get("outcome"), str):
-            sys.exit("match auto row has non-string outcome: %s" % fid)
-        elif fid in auto and auto[fid]["outcome"].startswith("run_"):
+        elif fid in auto and (
+            auto[fid]["outcome"].startswith("run_")
+            or auto[fid]["outcome"] == "missing_original"
+        ):
             entry["coverage"] = "uncovered_" + auto[fid]["outcome"]
-            entry["outcome"] = None
-        elif fid in auto and auto[fid]["outcome"] == "missing_original":
-            entry["coverage"] = "uncovered_missing_original"
             entry["outcome"] = None
         else:
             entry["coverage"] = "replayed"

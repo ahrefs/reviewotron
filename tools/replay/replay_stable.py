@@ -5,24 +5,21 @@ import hashlib
 import os
 import sys
 
+import _config as C
 
-def read_baseline(path):
-    baseline = json.load(open(path))
+
+def load_baseline(path):
+    """Read one baseline once, returning (content digest, label, rows by id)."""
+    raw = open(path, "rb").read()
+    try:
+        baseline = json.loads(raw)
+    except json.JSONDecodeError as error:
+        sys.exit("invalid baseline %s: %s" % (path, error))
     label = baseline.get("label")
     if not isinstance(label, str) or label == "":
         sys.exit("baseline has no label: %s" % path)
-    return baseline
-
-
-def rows_by_id(path, baseline):
-    rows = baseline["rows"]
-    result = {}
-    for row in rows:
-        fid = row["feedback_id"]
-        if fid in result:
-            sys.exit("duplicate feedback_id in %s: %s" % (path, fid))
-        result[fid] = row
-    return result
+    rows = C.unique_by(baseline["rows"], "feedback_id", path)
+    return hashlib.sha256(raw).digest(), label, rows
 
 
 def parse_args():
@@ -46,14 +43,13 @@ def main():
     resolved_paths = [os.path.realpath(path) for path in paths]
     if len(set(resolved_paths)) != len(resolved_paths):
         sys.exit("duplicate baseline input")
-    contents = [hashlib.sha256(open(path, "rb").read()).digest() for path in paths]
-    if len(set(contents)) != len(contents):
+    loaded = [load_baseline(path) for path in paths]
+    digests = [digest for digest, _, _ in loaded]
+    if len(set(digests)) != len(digests):
         sys.exit("duplicate baseline content")
-    baselines = [read_baseline(path) for path in paths]
-    baseline_labels = {baseline["label"] for baseline in baselines}
-    if len(baseline_labels) != 1:
+    if len({label for _, label, _ in loaded}) != 1:
         sys.exit("baseline files have inconsistent labels")
-    runs = [rows_by_id(path, baseline) for path, baseline in zip(paths, baselines)]
+    runs = [rows for _, _, rows in loaded]
     feedback_ids = set(runs[0])
     if any(set(rows) != feedback_ids for rows in runs[1:]):
         sys.exit("baseline files do not cover the same feedback IDs")
@@ -77,18 +73,19 @@ def main():
                 "outcomes": outcomes,
                 "held_runs": held,
                 "emitted_runs": emitted,
-                "stable_held": label == "must_keep_flagging" and held == len(runs),
-                "stable_emitted": label == "must_not_flag" and emitted == len(runs),
             }
         )
 
     count = len(runs)
+    # Each metric is scoped to the label it is named for.
+    keep = [row for row in rows if row["label"] == "must_keep_flagging"]
+    drop = [row for row in rows if row["label"] == "must_not_flag"]
     stable = {
         "run_count": count,
-        "must_keep_held_mean": round(sum(row["held_runs"] for row in rows) / count, 3),
-        "must_keep_held_stable": sum(row["stable_held"] for row in rows),
-        "must_not_flag_emitted_mean": round(sum(row["emitted_runs"] for row in rows) / count, 3),
-        "must_not_flag_emitted_stable": sum(row["stable_emitted"] for row in rows),
+        "must_keep_held_mean": round(sum(row["held_runs"] for row in keep) / count, 3),
+        "must_keep_held_stable": sum(row["held_runs"] == count for row in keep),
+        "must_not_flag_emitted_mean": round(sum(row["emitted_runs"] for row in drop) / count, 3),
+        "must_not_flag_emitted_stable": sum(row["emitted_runs"] == count for row in drop),
         "not_replayed_every_run": sum(row["replayed_runs"] != count for row in rows),
     }
     result = {"headline": stable, "rows": rows}

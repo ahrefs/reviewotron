@@ -236,4 +236,4 @@ read-only archive.
 | `gen_match_workflow.py` | emit the same-issue confirmation Workflow script |
 | `replay_aggregate.py` | score → `replay_baseline.json` + headline |
 | `replay_stable.py` | aggregate repeated baselines into stable-core metrics |
-| `test_replay.py` | focused no-network checks for replay invariants |
+| `test_replay.py` | focused no-network checks for replay invariants (`make test-replay`) |

@@ -27,7 +27,7 @@ def norm_path(p):
 
 
 def original_body(bid):
-    path = C.in_analysis(os.path.join("snapshot", "reviewotron-feedback-evidence", bid, "posted_review.json"))
+    path = C.posted_review_path(bid)
     try:
         body = json.load(open(path)).get("body")
     except (OSError, json.JSONDecodeError):
@@ -36,11 +36,22 @@ def original_body(bid):
 
 
 def original_finding(fid):
-    path = C.in_analysis(os.path.join("items", fid, "finding.json"))
+    path = C.finding_bundle_path(fid)
     try:
         return json.load(open(path))
     except (OSError, json.JSONDecodeError) as error:
         raise SystemExit("cannot load original finding for %s: %s" % (fid, error))
+
+
+def auto_row(fid, row, outcome, matched, **extra):
+    """One auto-resolved row. outcome/matched pairing is fixed per outcome."""
+    return {
+        "feedback_id": fid,
+        "label": row["label"],
+        "outcome": outcome,
+        "matched": matched,
+        **extra,
+    }
 
 
 def body_pair(fid, row, bid, original, replay):
@@ -56,12 +67,12 @@ def body_pair(fid, row, bid, original, replay):
 
 
 def inline_pairs(fid, row, bid, original, replay):
-    original_finding = original["finding"]
-    opath = norm_path(original_finding["path"])
-    oline = original_finding["line"]
+    finding = original["finding"]
+    opath = norm_path(finding["path"])
+    oline = finding["line"]
     candidates = [
         (i, replay_finding)
-        for i, replay_finding in enumerate(replay.get("findings", []))
+        for i, replay_finding in enumerate(replay["findings"])
         if norm_path(replay_finding["file"]) == opath and abs(replay_finding["line"] - oline) <= LINE_WINDOW
     ]
     pairs = []
@@ -74,17 +85,17 @@ def inline_pairs(fid, row, bid, original, replay):
                 "review_batch_id": bid,
                 "kind": "inline_finding",
                 "original": {
-                    "path": original_finding["path"],
+                    "path": finding["path"],
                     "line": oline,
-                    "end_line": original_finding.get("end_line"),
-                    "severity": original_finding.get("severity"),
-                    "category": original_finding.get("category"),
-                    "confidence": original_finding.get("confidence"),
-                    "message": original_finding["message"],
-                    "failure_scenario": original_finding.get("failure_scenario", ""),
-                    "evidence_snippet": original_finding.get("evidence_snippet", ""),
-                    "why_now": original_finding.get("why_now", ""),
-                    "suggested_fix": original_finding.get("suggested_fix"),
+                    "end_line": finding.get("end_line"),
+                    "severity": finding.get("severity"),
+                    "category": finding.get("category"),
+                    "confidence": finding.get("confidence"),
+                    "message": finding["message"],
+                    "failure_scenario": finding.get("failure_scenario", ""),
+                    "evidence_snippet": finding.get("evidence_snippet", ""),
+                    "why_now": finding.get("why_now", ""),
+                    "suggested_fix": finding.get("suggested_fix"),
                 },
                 "replay": {
                     "file": replay_finding["file"],
@@ -107,23 +118,16 @@ def inline_pairs(fid, row, bid, original, replay):
 def main():
     rows = [json.loads(l) for l in open(C.EVAL_JSONL)]
     batches = json.load(open(C.in_analysis("replay_batches.json")))
-    replayable = {
-        r["feedback_id"]: r
-        for r in rows
-        if r["review_batch_id"] in batches
-        and r["feedback_id"] in batches[r["review_batch_id"]]
-        and C.is_general_row(r)
-    }
+    replayable = C.replayable_rows(rows, batches)
     runs = C.runs_dir()
     replay = {}
     run_status = {}
-    for bid in batches:
+    for bid in sorted({row["review_batch_id"] for row in replayable.values()}):
         try:
             meta = json.load(open(os.path.join(runs, bid, "meta.json")))
             out = json.load(open(os.path.join(runs, bid, "output.json")))
         except OSError:
             run_status[bid] = "missing"
-            replay[bid] = {"findings": [], "summary": ""}
             continue
         except json.JSONDecodeError as error:
             raise SystemExit("invalid replay output for %s: %s" % (bid, error))
@@ -134,40 +138,33 @@ def main():
         ):
             raise SystemExit("invalid replay output for %s: expected object with findings list and summary" % bid)
         run_status[bid] = "ok" if meta.get("exit") == 0 else "failed"
-        replay[bid] = out
+        # Keep only what the pairing loop reads; engine prose is the bulk here.
+        replay[bid] = {"findings": out["findings"], "summary": out["summary"]}
 
     pairs = []
     auto = []
     for fid, row in sorted(replayable.items()):
         bid = row["review_batch_id"]
         if run_status[bid] != "ok":
-            auto.append({
-                "feedback_id": fid, "label": row["label"],
-                "outcome": "run_" + run_status[bid], "matched": None,
-            })
+            auto.append(auto_row(fid, row, "run_" + run_status[bid], None))
             continue
-        if row["finding_ref"] == "pr_review_body":
+        if C.is_body_row(row):
             original = original_body(bid)
-            replay_body = str(replay[bid].get("summary", "")).strip()
+            replay_body = replay[bid]["summary"].strip()
             if original is None:
-                auto.append({
-                    "feedback_id": fid, "label": row["label"], "outcome": "missing_original", "matched": None,
-                })
+                auto.append(auto_row(fid, row, "missing_original", None))
             elif replay_body == "":
-                auto.append({
-                    "feedback_id": fid, "label": row["label"], "outcome": "no_candidates", "matched": False,
-                })
+                auto.append(auto_row(fid, row, "no_candidates", False))
             else:
                 pairs.append(body_pair(fid, row, bid, original, replay_body))
             continue
         original = original_finding(fid)
         inline = inline_pairs(fid, row, bid, original, replay[bid])
         if inline == []:
-            auto.append({
-                "feedback_id": fid, "label": row["label"],
-                "outcome": "no_candidates", "matched": False,
-                "n_replay_findings_in_batch": len(replay[bid].get("findings", [])),
-            })
+            auto.append(auto_row(
+                fid, row, "no_candidates", False,
+                n_replay_findings_in_batch=len(replay[bid]["findings"]),
+            ))
             continue
         pairs.extend(inline)
 
