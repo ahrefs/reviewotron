@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Replay scoping: group eval rows by diff and classify coverage.
 
-Reports how many of the 101 eval rows are replayable (general-plugin,
-non-body, resolvable head_sha) and flags any batch config that carries a
+Reports how many eval rows are replayable (general-plugin, resolvable head_sha)
+and flags any batch config that carries a
 system_prompt_override (which would make prompt-hash reproduction impossible).
 
 Reads eval.jsonl (operator-supplied) plus per-batch review_config.json from the
@@ -30,12 +30,20 @@ def main():
     for r in rows:
         by_batch[r["review_batch_id"]].append(r)
 
+    # Partition once: resolving a row's plugin reads its finding bundle.
+    general_by_batch = {
+        bid: [r for r in brows if C.is_general_row(r)]
+        for bid, brows in by_batch.items()
+    }
+    n_general = sum(len(v) for v in general_by_batch.values())
+
     summary = {
         "total_rows": len(rows),
         "must_not_flag": sum(1 for r in rows if r["label"] == "must_not_flag"),
         "must_keep_flagging": sum(1 for r in rows if r["label"] == "must_keep_flagging"),
         "distinct_batches": len(by_batch),
-        "body_rows": sum(1 for r in rows if r["finding_ref"] == "pr_review_body"),
+        "body_rows": sum(1 for r in rows if C.is_body_row(r)),
+        "security_rows": len(rows) - n_general,
     }
 
     def find_override(o):
@@ -62,7 +70,7 @@ def main():
         if os.path.exists(cfg_path):
             override = find_override(json.load(open(cfg_path)))
         sha_missing = head_sha in missing_shas
-        non_body = [r for r in brows if r["finding_ref"] != "pr_review_body"]
+        general_rows = general_by_batch[bid]
         batches.append({
             "review_batch_id": bid,
             "head_sha": head_sha,
@@ -73,10 +81,11 @@ def main():
             "prompt_override": override,
             "sha_in_missing_list": sha_missing,
             "n_rows": len(brows),
-            "n_body_rows": len(brows) - len(non_body),
-            "n_replayable_rows": len(non_body) if not sha_missing else 0,
+            "n_body_rows": sum(1 for r in brows if C.is_body_row(r)),
+            "n_security_rows": len(brows) - len(general_rows),
+            "n_replayable_rows": len(general_rows) if not sha_missing else 0,
             "runnable": (not sha_missing) and os.path.exists(diff_path)
-            and len(non_body) > 0,
+            and len(general_rows) > 0,
         })
 
     summary["runnable_batches"] = sum(1 for b in batches if b["runnable"])

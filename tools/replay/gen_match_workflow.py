@@ -55,11 +55,12 @@ const out = await parallel(CHUNKS.map((chunk, ci) => () =>
     `You are judging whether pairs of code-review findings describe THE SAME ISSUE.\\n\\n` +
     `Read the JSON file ${CANDS} (use the Read tool; it is an array of pair objects). ` +
     `Process EXACTLY these pair_ids: ${JSON.stringify(chunk)}.\\n\\n` +
-    `Each pair has \\"original\\" (a finding a reviewer bot posted on a PR) and \\"replay\\" ` +
-    `(a finding a re-run of the bot emitted on the same diff; file and line already roughly match).\\n\\n` +
-    `For each pair decide match=true if both findings point at the same underlying defect/concern ` +
+    `Each pair has a kind. inline_finding pairs compare an original posted finding with a replay finding ` +
+    `at a nearby source line. review_body pairs compare the original review body with the replay summary.\\n\\n` +
+    `For inline_finding pairs decide match=true if both findings point at the same underlying defect/concern ` +
     `(same root cause and consequence), even if worded differently or with different severity. ` +
-    `match=false if they concern different issues that merely sit on nearby lines. ` +
+    `For review_body pairs decide match=true only when the replay body retains the same concrete actionable concern; ` +
+    `a generic summary, praise, or merely related observation is not a match. ` +
     `Give a one-line reason.\\n\\n` +
     `Return via StructuredOutput: {results: [{pair_id, match, reason}, ...]} with one entry per requested pair_id.`,
     { label: `match:${ci}`, schema: SCHEMA, effort: 'low' }

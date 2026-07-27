@@ -4242,7 +4242,10 @@ let test_local_sink_render_json () =
      session UUID. After upgrading, scc calls ensure_dir on the legacy file path, sees S_REG, and aborts on startup."
   in
   let finding =
-    mk_finding ~path:"backend/safer-claude-code/safer_claude_code.ml" ~line:492 ~message:summary ~failure_scenario ()
+    mk_finding ~path:"backend/safer-claude-code/safer_claude_code.ml" ~line:492 ~end_line:(Some 494) ~message:summary
+      ~failure_scenario ~evidence_snippet:"ensure_dir legacy_session_path"
+      ~why_now:"The upgrade now calls ensure_dir on the legacy path." ~confidence:Review_types.High
+      ~suggested_fix:(Some "remove the legacy file before ensure_dir") ()
   in
   let report : Review_engine.report =
     {
@@ -4266,10 +4269,17 @@ let test_local_sink_render_json () =
     | Some (`List [ `Assoc fields ]) ->
       (check string) "file" "backend/safer-claude-code/safer_claude_code.ml" (json_string_field fields "file");
       (check int) "line" 492 (json_int_field fields "line");
+      (check int) "end_line" 494 (json_int_field fields "end_line");
       (check string) "level" "warning" (json_string_field fields "level");
       (check string) "category" "security" (json_string_field fields "category");
+      (check string) "confidence" "high" (json_string_field fields "confidence");
       (check string) "summary" summary (json_string_field fields "summary");
-      (check string) "failure_scenario" failure_scenario (json_string_field fields "failure_scenario")
+      (check string) "failure_scenario" failure_scenario (json_string_field fields "failure_scenario");
+      (check string) "evidence_snippet" "ensure_dir legacy_session_path" (json_string_field fields "evidence_snippet");
+      (check string) "why_now" "The upgrade now calls ensure_dir on the legacy path."
+        (json_string_field fields "why_now");
+      (check string) "suggested_fix" "remove the legacy file before ensure_dir"
+        (json_string_field fields "suggested_fix")
     | Some _ -> fail "expected findings to contain one review finding"
     | None -> fail "missing JSON field findings")
   | _ -> fail "expected a JSON review object"

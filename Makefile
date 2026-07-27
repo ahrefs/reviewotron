@@ -59,9 +59,14 @@ install:
 test:
 	dune runtest
 	$(MAKE) cli-smoke
+	$(MAKE) test-replay
 
 cli-smoke:
 	sh test/cli_smoke.sh
+
+# No-network invariant checks for the replay eval harness (needs no eval.jsonl).
+test-replay:
+	python3 tools/replay/test_replay.py
 
 install-smoke:
 	prefix=$$(mktemp -d); trap 'rm -rf "$$prefix"' EXIT; $(MAKE) install PREFIX="$$prefix"; PATH="$$prefix/bin:$$PATH" reviewotron --help >/dev/null

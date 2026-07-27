@@ -30,7 +30,10 @@ The label set eval.jsonl is NOT shipped in this repo — it is private to the
 operator (see README). Drop your own at tools/replay/eval.jsonl (gitignored) or
 point EVAL_JSONL at it.
 """
+import functools
+import json
 import os
+import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # tools/replay/ -> repo root is two levels up
@@ -79,6 +82,106 @@ def in_analysis(name, adir=None):
 
 def in_output(name, odir=None):
     return os.path.join(odir or output_dir(), name)
+
+
+def finding_bundle_path(feedback_id, adir=None):
+    """Path to a feedback item's original-finding bundle."""
+    return in_analysis(os.path.join("items", feedback_id, "finding.json"), adir)
+
+
+def posted_review_path(batch_id, adir=None):
+    """Path to a batch's posted review (carries the review body)."""
+    return os.path.join(evidence_dir(adir), batch_id, "posted_review.json")
+
+
+@functools.lru_cache(maxsize=None)
+def finding_plugin_name(feedback_id, adir=None):
+    """Return a finding's plugin when the private analysis bundle has it.
+
+    Memoized: several scripts resolve the same feedback_id repeatedly, and the
+    analysis dir does not change within a run.
+    """
+    path = finding_bundle_path(feedback_id, adir)
+    if not os.path.exists(path):
+        return None
+    return json.load(open(path)).get("plugin_name")
+
+
+def plugin_name(row, adir=None):
+    """Resolve a row's plugin, preferring the source finding when available."""
+    row_plugin = row.get("plugin_name")
+    bundle_plugin = finding_plugin_name(row["feedback_id"], adir)
+    if row_plugin and bundle_plugin and row_plugin != bundle_plugin:
+        raise SystemExit(
+            "plugin mismatch for %s: eval row=%s finding bundle=%s"
+            % (row["feedback_id"], row_plugin, bundle_plugin)
+        )
+    plugin = bundle_plugin or row_plugin
+    if not plugin:
+        raise SystemExit("unknown plugin for %s; add plugin_name to the eval row" % row["feedback_id"])
+    return plugin
+
+
+def is_general_row(row, adir=None):
+    """Whether the general-only replay can score this evaluation row."""
+    return plugin_name(row, adir) == "general"
+
+
+BODY_FINDING_REF = "pr_review_body"
+INLINE_FINDING_REFS = ("pr_review_comment",)
+
+
+def is_body_row(row):
+    """Whether the row is a review-body finding rather than an inline one.
+
+    Fails closed on an unrecognized finding_ref: body vs inline is a dispatch
+    key now that both are replayed, so a new feedback kind must not silently
+    take the inline path.
+    """
+    ref = row["finding_ref"]
+    if ref == BODY_FINDING_REF:
+        return True
+    if ref in INLINE_FINDING_REFS:
+        return False
+    raise SystemExit(
+        "unrecognized finding_ref for %s: %s" % (row["feedback_id"], ref)
+    )
+
+
+def is_replayable_row(row, batches, adir=None):
+    """Whether this row is in a replayed batch and scoreable by the replay.
+
+    Shared by the driver, the matcher and the aggregator so their notions of
+    "replayable" cannot drift.
+    """
+    bid = row["review_batch_id"]
+    return (
+        bid in batches
+        and row["feedback_id"] in batches[bid]
+        and is_general_row(row, adir)
+    )
+
+
+def replayable_rows(rows, batches, adir=None):
+    """The replayable rows keyed by feedback_id."""
+    return {
+        row["feedback_id"]: row
+        for row in rows
+        if is_replayable_row(row, batches, adir)
+    }
+
+
+def unique_by(rows, key, label):
+    """Index rows by a non-empty string key, rejecting missing/duplicate keys."""
+    result = {}
+    for row in rows:
+        value = row.get(key)
+        if not isinstance(value, str) or value == "":
+            sys.exit("%s missing %s" % (label, key))
+        if value in result:
+            sys.exit("duplicate %s in %s: %s" % (key, label, value))
+        result[value] = row
+    return result
 
 
 def local_context_fix_present(repo=REPO_ROOT):

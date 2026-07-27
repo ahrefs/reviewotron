@@ -79,7 +79,7 @@ def batch_meta():
     seen = set()
     for r in rows:
         bid = r["review_batch_id"]
-        if bid in batches and bid not in seen:
+        if C.is_replayable_row(r, batches) and bid not in seen:
             seen.add(bid)
             out.append({
                 "bid": bid,

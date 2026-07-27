@@ -19,10 +19,21 @@ let finding_to_json (finding : Review_types.finding) =
     [
       "file", `String finding.path;
       "line", `Int finding.line;
+      ( "end_line",
+        match finding.end_line with
+        | Some line -> `Int line
+        | None -> `Null );
       "level", `String (Review_types.severity_to_string finding.severity);
       "category", `String (Review_types.finding_category_to_string finding.category);
+      "confidence", `String (Review_types.confidence_to_string finding.confidence);
       "summary", `String finding.message;
       "failure_scenario", `String (non_empty_or ~default:finding.message finding.failure_scenario);
+      "evidence_snippet", `String finding.evidence_snippet;
+      "why_now", `String finding.why_now;
+      ( "suggested_fix",
+        match finding.suggested_fix with
+        | Some fix -> `String fix
+        | None -> `Null );
     ]
 
 let include_finding_in_json (finding : Review_types.finding) =
