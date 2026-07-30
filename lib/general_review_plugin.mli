@@ -9,6 +9,20 @@
     Anthropic extended-thinking wiring is unit-testable. *)
 val build_agent_config : system_prompt:string -> Agent_runner.agent_config
 
+(** Outcome of the general-review pipeline.
+
+    A validator outage is distinct from an unfinished review: the reviewers
+    completed, but their provisional findings remain withheld rather than being
+    posted without the adversarial validation gate. *)
+type review_outcome =
+  | Completed of Review_types.review_output
+  | Validation_failed of {
+      review : Review_types.review_output;
+      candidates_withheld : int;
+      reason : string;
+    }
+  | Failed of string
+
 (** Build a general review plugin from an agent runner.
 
     The resulting module satisfies {!Review_plugin.S}.  It also exposes
@@ -24,8 +38,9 @@ module Make (_ : Api.Agent_runner) : sig
       returns the complete {!Review_types.review_output} including the
       LLM-generated summary and overall assessment.
 
-      Returns [(result, costs)] where [result] is [Error msg] on agent
-      failure or output parse failure.  Costs are always returned, even
+      Returns [(outcome, costs)].  [Validation_failed] retains the completed
+      review and the count of withheld provisional findings, while [Failed]
+      means a review stage could not complete. Costs are always returned, even
       on failure, since tokens were still consumed. *)
   val run_review :
     ctx:Context.t ->
@@ -36,5 +51,5 @@ module Make (_ : Api.Agent_runner) : sig
     ?debug_dir:string ->
     ?log_context:string ->
     unit ->
-    ((Review_types.review_output, string) result * Cost_tracking.agent_cost list) Lwt.t
+    (review_outcome * Cost_tracking.agent_cost list) Lwt.t
 end

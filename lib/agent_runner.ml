@@ -139,6 +139,43 @@ let missing_structured_output_message ~agent_name ~finish_reason ~finalization_f
       (Ai_provider.Finish_reason.to_string finish_reason)
       suffix
 
+(* Guesses OpenRouter's [metadata.error_type] from the trailing " (type)" suffix
+   the SDK appends when the gateway supplied one
+   (ai_provider_openrouter/openrouter_error.ml [message_of_error_json]).
+
+   This is a guess, not a recovery: by the time we hold a [Provider_error.t] the
+   structured envelope is gone — every construction path stores the flattened
+   human message as [body] — and the SDK's other path ([of_response] falling
+   back to [raw_error]) passes the upstream body through verbatim. A verbatim
+   body ending in an unrelated parenthetical ("...access to model
+   (claude-opus-4)") is therefore indistinguishable from a real classification,
+   so callers must present the result as inferred. Delete this shim if a future
+   ocaml-ai-sdk carries the classification on [Api_error] itself. *)
+let openrouter_error_type_re = Re2.create_exn {|\(([A-Za-z0-9_-]+)\)$|}
+
+let openrouter_error_type body =
+  match Re2.find_submatches openrouter_error_type_re body with
+  | Ok [| _; Some error_type |] -> Some error_type
+  | Ok _ | Error _ -> None
+
+let format_provider_error (error : Ai_provider.Provider_error.t) =
+  let retryability = if error.is_retryable then "retryable" else "non-retryable" in
+  match error.kind with
+  | Ai_provider.Provider_error.Api_error { status; body } ->
+    let classification =
+      match String.equal error.provider "openrouter" with
+      | false -> ""
+      | true ->
+      match openrouter_error_type body with
+      | Some error_type -> Printf.sprintf ", likely_type=%s" error_type
+      | None -> ""
+    in
+    Printf.sprintf "provider error from %s (HTTP %d, %s%s): %s" error.provider status retryability classification body
+  | Ai_provider.Provider_error.Network_error _ | Ai_provider.Provider_error.Deserialization_error _
+  | Ai_provider.Provider_error.Timeout _ ->
+    Printf.sprintf "provider error from %s (%s): %s" error.provider retryability
+      (Ai_provider.Provider_error.to_string error)
+
 let default_model_id =
   let open Ai_provider_anthropic.Model_catalog in
   function
@@ -299,8 +336,7 @@ let finalize_after_budget_exhaustion ~log_prefix ~provider ~model ~config ~provi
       err.message;
     Lwt.return None
   | Ai_provider.Provider_error.Provider_error err ->
-    log#warn "%sagent %s: finalization provider error: %s" log_prefix config.name
-      (Ai_provider.Provider_error.to_string err);
+    log#warn "%sagent %s: finalization provider error: %s" log_prefix config.name (format_provider_error err);
     Lwt.return None
 
 let run_agent_untraced ~provider ~model ?tools ?(max_retries = 2) ?debug_dir ?log_context ~config ~input () =
@@ -450,7 +486,7 @@ let run_agent_untraced ~provider ~model ?tools ?(max_retries = 2) ?debug_dir ?lo
          (Ai_core.Retry.reason_to_string err.reason)
          err.message)
   | Ai_provider.Provider_error.Provider_error err ->
-    fail (Printf.sprintf "agent %s: provider error: %s" config.name (Ai_provider.Provider_error.to_string err))
+    fail (Printf.sprintf "agent %s: %s" config.name (format_provider_error err))
   | exn -> fail (Printf.sprintf "agent %s: unexpected provider failure: %s" config.name (Printexc.to_string exn))
 
 let add_reported_cost_attr = function

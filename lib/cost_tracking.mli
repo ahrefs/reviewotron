@@ -54,6 +54,9 @@ val of_agent_result :
 (** Aggregate a list of per-agent costs into a per-plugin summary. *)
 val aggregate : plugin:string -> agent_cost list -> review_cost
 
+(** [pluralize ~n word] appends ["s"] unless [n] is 1. *)
+val pluralize : n:int -> string -> string
+
 (** Format an optional review footer showing review cost.
     Returns a markdown string like ["Review cost: 3 agents, ~$0.42"]. *)
 val format_footer : review_cost list -> string
