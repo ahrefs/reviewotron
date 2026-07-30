@@ -103,6 +103,10 @@ val build_provider_options : provider:Llm_provider.t -> agent_config -> Ai_provi
     Exposed for unit testing. *)
 val cached_input_provider_options : Llm_provider.t -> Ai_provider.Provider_options.t
 
+(** Render a provider failure with HTTP status, retryability, and OpenRouter's
+    typed classification when the gateway supplied one. *)
+val format_provider_error : Ai_provider.Provider_error.t -> string
+
 (** Run an agent with the given configuration and input prompt.
 
     Creates structured output from [config.output_schema], executes

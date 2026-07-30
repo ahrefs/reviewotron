@@ -139,6 +139,43 @@ let missing_structured_output_message ~agent_name ~finish_reason ~finalization_f
       (Ai_provider.Finish_reason.to_string finish_reason)
       suffix
 
+let openrouter_error_type body =
+  match String.rindex_opt body '(' with
+  | None -> None
+  | Some start ->
+  match String.ends_with ~suffix:")" body with
+  | false -> None
+  | true ->
+    let length = String.length body - start - 2 in
+    let candidate = String.sub body (start + 1) length in
+    (match
+       String.length candidate > 0
+       && String.for_all
+            (function
+              | 'a' .. 'z' | '0' .. '9' | '_' -> true
+              | 'A' .. 'Z' | '-' -> true
+              | _ -> false)
+            candidate
+     with
+    | true -> Some candidate
+    | false -> None)
+
+let format_provider_error (error : Ai_provider.Provider_error.t) =
+  let retryability = if error.is_retryable then "retryable" else "non-retryable" in
+  match error.kind with
+  | Ai_provider.Provider_error.Api_error { status; body } ->
+    let classification =
+      match String.equal error.provider "openrouter", openrouter_error_type body with
+      | true, Some error_type -> Printf.sprintf ", classification=%s" error_type
+      | true, None -> ", classification=unavailable"
+      | false, Some _ | false, None -> ""
+    in
+    Printf.sprintf "provider error from %s (HTTP %d, %s%s): %s" error.provider status retryability classification body
+  | Ai_provider.Provider_error.Network_error _ | Ai_provider.Provider_error.Deserialization_error _
+  | Ai_provider.Provider_error.Timeout _ ->
+    Printf.sprintf "provider error from %s (%s): %s" error.provider retryability
+      (Ai_provider.Provider_error.to_string error)
+
 let default_model_id =
   let open Ai_provider_anthropic.Model_catalog in
   function
@@ -299,8 +336,7 @@ let finalize_after_budget_exhaustion ~log_prefix ~provider ~model ~config ~provi
       err.message;
     Lwt.return None
   | Ai_provider.Provider_error.Provider_error err ->
-    log#warn "%sagent %s: finalization provider error: %s" log_prefix config.name
-      (Ai_provider.Provider_error.to_string err);
+    log#warn "%sagent %s: finalization provider error: %s" log_prefix config.name (format_provider_error err);
     Lwt.return None
 
 let run_agent_untraced ~provider ~model ?tools ?(max_retries = 2) ?debug_dir ?log_context ~config ~input () =
@@ -450,7 +486,7 @@ let run_agent_untraced ~provider ~model ?tools ?(max_retries = 2) ?debug_dir ?lo
          (Ai_core.Retry.reason_to_string err.reason)
          err.message)
   | Ai_provider.Provider_error.Provider_error err ->
-    fail (Printf.sprintf "agent %s: provider error: %s" config.name (Ai_provider.Provider_error.to_string err))
+    fail (Printf.sprintf "agent %s: %s" config.name (format_provider_error err))
   | exn -> fail (Printf.sprintf "agent %s: unexpected provider failure: %s" config.name (Printexc.to_string exn))
 
 let add_reported_cost_attr = function

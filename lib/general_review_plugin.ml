@@ -21,6 +21,15 @@ let build_agent_config ~system_prompt : Agent_runner.agent_config =
     effort = None;
   }
 
+type review_outcome =
+  | Completed of Review_types.review_output
+  | Validation_failed of {
+      review : Review_types.review_output;
+      candidates_withheld : int;
+      reason : string;
+    }
+  | Failed of string
+
 let low_value_inline (f : Review_types.finding) =
   match f.severity, f.category with
   | Praise, _ | Nitpick, _ | _, Style | _, Naming | _, Documentation -> true
@@ -168,11 +177,15 @@ module Make (AI : Api.Agent_runner) = struct
       run_validator ~ctx ~repo_url ~diff_text ~candidate_findings:candidates ?debug_dir ?log_context ()
     in
     match confirmed with
-    | Error msg -> Lwt.return (Error msg, prior_costs @ validator_costs)
+    | Error reason ->
+      let candidates_withheld = List.length candidates in
+      log#error "%sgeneral validator unavailable; withholding %d unvalidated candidate(s): %s" log_prefix
+        candidates_withheld reason;
+      Lwt.return (Validation_failed { review; candidates_withheld; reason }, prior_costs @ validator_costs)
     | Ok confirmed ->
       log#info "%sgeneral validator: %d/%d candidates confirmed" log_prefix (List.length confirmed)
         (List.length candidates);
-      Lwt.return (Ok { review with findings = confirmed }, prior_costs @ validator_costs)
+      Lwt.return (Completed { review with findings = confirmed }, prior_costs @ validator_costs)
 
   (* Legacy single-pass review: one full-context agent call, then validation.
      Preserved verbatim as the [scout_enabled = false] rollback path. *)
@@ -186,14 +199,14 @@ module Make (AI : Api.Agent_runner) = struct
       AI.run ~ctx ~repo_url ?model_id:config.model ?debug_dir ?log_context ~config:agent_config ~input ()
     in
     match result with
-    | Error _ as e -> Lwt.return (e, [])
+    | Error msg -> Lwt.return (Failed msg, [])
     | Ok agent_result ->
       let cost =
         Cost_tracking.of_agent_result ?log_context ~agent_name:"general_review" ~files_fetched:0 agent_result
       in
       (match Review_types.review_output_of_json agent_result.output with
       | exception exn ->
-        Lwt.return (Error (Printf.sprintf "failed to parse general review output: %s" (Exn.str exn)), [ cost ])
+        Lwt.return (Failed (Printf.sprintf "failed to parse general review output: %s" (Exn.str exn)), [ cost ])
       | review ->
         validate_review ~ctx ~repo_url ~security_covered_elsewhere ~diff_text ~review ~prior_costs:[ cost ] ?debug_dir
           ?log_context ())
@@ -255,21 +268,22 @@ module Make (AI : Api.Agent_runner) = struct
         ?debug_dir ?log_context ()
     in
     match scout_result with
-    | Error msg -> Lwt.return (Error msg, scout_costs)
+    | Error msg -> Lwt.return (Failed msg, scout_costs)
     | Ok scout ->
       let leads = General_scout_agent.cap_leads ?log_context ~max_leads:general_cfg.max_leads scout.leads in
       (match leads with
       | [] ->
         log#info "%sgeneral scout found no leads, skipping deep review" log_prefix;
         Lwt.return
-          ( Ok Review_types.{ summary = "Scout found no investigation leads."; findings = []; overall_assessment = "" },
+          ( Completed
+              Review_types.{ summary = "Scout found no investigation leads."; findings = []; overall_assessment = "" },
             scout_costs )
       | _ :: _ ->
         let%lwt deep_result, deep_costs =
           run_deep_review ~ctx ~repo_url ~config ~general_cfg ~leads ~diff_text ~metadata ?debug_dir ?log_context ()
         in
         (match deep_result with
-        | Error msg -> Lwt.return (Error msg, scout_costs @ deep_costs)
+        | Error msg -> Lwt.return (Failed msg, scout_costs @ deep_costs)
         | Ok review ->
           validate_review ~ctx ~repo_url ~security_covered_elsewhere ~diff_text ~review
             ~prior_costs:(scout_costs @ deep_costs) ?debug_dir ?log_context ()))
@@ -284,8 +298,11 @@ module Make (AI : Api.Agent_runner) = struct
   let run ~ctx ~repo_url ~config ~diff:_ ~diff_text ~metadata =
     let%lwt result, costs = run_review ~ctx ~repo_url ~config ~diff_text ~metadata () in
     match result with
-    | Ok review -> Lwt.return (review.findings, costs)
-    | Error msg ->
+    | Completed review -> Lwt.return (review.findings, costs)
+    | Validation_failed { candidates_withheld; reason; _ } ->
+      log#error "general validator failed; withholding %d candidate(s): %s" candidates_withheld reason;
+      Lwt.return ([], costs)
+    | Failed msg ->
       log#error "general review plugin failed: %s" msg;
       Lwt.return ([], costs)
 end

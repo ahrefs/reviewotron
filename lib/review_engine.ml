@@ -247,10 +247,10 @@ let security_error_notice =
    incomplete._"
 
 type plugin_result = {
-  general_output : (Review_types.review_output, string) result option;
-    (** The general plugin's outcome: [Some (Ok review)] on success,
-          [Some (Error reason)] when it ran but failed (the reason is surfaced
-          in the failure notice), or [None] when the plugin is disabled. *)
+  general_output : General_review_plugin.review_outcome option;
+    (** The general plugin's outcome, or [None] when the plugin is disabled.
+        A validator outage remains distinct from an unfinished review so the
+        sink can explain that provisional findings were withheld. *)
   findings : Review_types.finding list;
   sourced_findings : sourced_finding list;
   review_costs : Cost_tracking.review_cost list;
@@ -307,6 +307,21 @@ let cost_plugin_ran ~plugin review_costs =
       | _ :: _ -> true)
     review_costs
 
+let candidate_word count = if Int.equal count 1 then "finding" else "findings"
+
+let withholding_sentence count =
+  match Int.equal count 1 with
+  | true -> "One unvalidated finding was withheld rather than posted without validation."
+  | false -> Printf.sprintf "%d unvalidated findings were withheld rather than posted without validation." count
+
+let retry_guidance reason =
+  match CCString.mem ~sub:"HTTP 403" reason with
+  | true ->
+    "The provider rejected the validation request (HTTP 403). You can re-trigger the review once in case the block was \
+     transient. If it persists, ask a Reviewotron service operator to check the OpenRouter/Anthropic credentials, \
+     permissions, guardrails, and provider classification."
+  | false -> "Please re-trigger the review. If this persists, ask a Reviewotron service operator to investigate."
+
 let review_body ~log_context ~change_label ~general_output ~findings ~unchanged_findings ~anchor_failed_findings
   ~review_costs ~security_error ~(config : Config_types.config) =
   let log_prefix = log_context_prefix (Some log_context) in
@@ -324,11 +339,17 @@ let review_body ~log_context ~change_label ~general_output ~findings ~unchanged_
          mis-anchoring — please report:"
       anchor_failed_findings
   in
+  let security_completed =
+    config.review_plugins.security.enabled && (not security_error) && cost_plugin_ran ~plugin:"security" review_costs
+  in
+  let completed_security_summary =
+    match findings, security_completed with
+    | _ :: _, _ -> "Findings from completed review stages are shown below."
+    | [], true -> "The security review completed and found no confirmed security findings."
+    | [], false -> "Other review stages may not have completed."
+  in
   let failure_notice reason =
     log#error "%sreview failed for %s: no review output produced" log_prefix change_label;
-    let security_completed =
-      config.review_plugins.security.enabled && (not security_error) && cost_plugin_ran ~plugin:"security" review_costs
-    in
     let notice =
       match findings, security_completed with
       | _ :: _, _ ->
@@ -344,9 +365,23 @@ let review_body ~log_context ~change_label ~general_output ~findings ~unchanged_
     in
     with_failure_details ~reason notice
   in
+  let validation_failure_notice ~candidates_withheld ~reason =
+    log#error "%sreview validation failed for %s; withholding %d candidate %s" log_prefix change_label
+      candidates_withheld (candidate_word candidates_withheld);
+    let notice =
+      Printf.sprintf
+        "\xE2\x9A\xA0\xEF\xB8\x8F **General review validation failed** — the `general-validator` stage could not \
+         validate %d potential %s. %s %s\n\n\
+         %s"
+        candidates_withheld (candidate_word candidates_withheld)
+        (withholding_sentence candidates_withheld)
+        completed_security_summary (retry_guidance reason)
+    in
+    with_failure_details ~reason:(Some reason) notice
+  in
   let body =
     match general_output with
-    | Some (Ok _review) ->
+    | Some (General_review_plugin.Completed _review) ->
       (* [review.summary] is an internal audit trace (one line per lead) and
          must never be shown to consumers. The consumer body is driven purely
          by whether the review produced findings: findings render separately
@@ -355,7 +390,9 @@ let review_body ~log_context ~change_label ~general_output ~findings ~unchanged_
       (match findings with
       | [] -> ":robot: **REVIEW**\n\nLGTM :+1:"
       | _ :: _ -> ":robot: **REVIEW**")
-    | Some (Error reason) -> failure_notice (Some reason)
+    | Some (General_review_plugin.Validation_failed { candidates_withheld; reason; _ }) ->
+      validation_failure_notice ~candidates_withheld ~reason
+    | Some (General_review_plugin.Failed reason) -> failure_notice (Some reason)
     | None ->
     match config.review_plugins.general.enabled with
     | true -> failure_notice None
@@ -454,8 +491,12 @@ module Make (AI : Api.Agent_runner) = struct
                     ~log_context ()
                 in
                 (match result with
-                | Ok _ -> ()
-                | Error msg ->
+                | General_review_plugin.Completed _ -> ()
+                | General_review_plugin.Validation_failed { candidates_withheld; reason; _ } ->
+                  Telemetry.set_error reason;
+                  log#error "%sgeneral validator failed; withholding %d candidate(s): %s" log_prefix candidates_withheld
+                    reason
+                | General_review_plugin.Failed msg ->
                   Telemetry.set_error msg;
                   log#error "%sgeneral review plugin failed: %s" log_prefix msg);
                 Lwt.return (Some result, costs)
@@ -498,8 +539,8 @@ module Make (AI : Api.Agent_runner) = struct
         if security_error then log#warn "%sa findings plugin encountered an error; results may be incomplete" log_prefix;
         let general_findings =
           match general_output with
-          | Some (Ok (r : Review_types.review_output)) -> r.findings
-          | Some (Error _) | None -> []
+          | Some (General_review_plugin.Completed (r : Review_types.review_output)) -> r.findings
+          | Some (General_review_plugin.Validation_failed _) | Some (General_review_plugin.Failed _) | None -> []
         in
         let plugin_findings =
           List.concat_map
@@ -529,8 +570,9 @@ module Make (AI : Api.Agent_runner) = struct
         in
         let general_status =
           match general_output with
-          | Some (Ok _) -> "ok"
-          | Some (Error _) -> "error"
+          | Some (General_review_plugin.Completed _) -> "ok"
+          | Some (General_review_plugin.Validation_failed _) -> "validation_failed"
+          | Some (General_review_plugin.Failed _) -> "error"
           | None -> "disabled"
         in
         log#info "%splugins complete: findings=%d general=%s findings_plugin_error=%b" log_prefix (List.length findings)
@@ -594,8 +636,8 @@ module Make (AI : Api.Agent_runner) = struct
         in
         let general_failed =
           match plugin_result.general_output with
-          | Some (Error _) -> true
-          | Some (Ok _) | None -> false
+          | Some (General_review_plugin.Validation_failed _) | Some (General_review_plugin.Failed _) -> true
+          | Some (General_review_plugin.Completed _) | None -> false
         in
         log#info "%sreview routed: inline=%d unchanged=%d anchor_failed=%d total_findings=%d" log_prefix
           (List.length inline_findings) (List.length unchanged_findings) (List.length anchor_failed_findings)

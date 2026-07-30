@@ -83,11 +83,10 @@ val security_error_notice : string
 
 (** Raw plugin execution result, before sink-specific publishing. *)
 type plugin_result = {
-  general_output : (Review_types.review_output, string) result option;
-    (** The general plugin's outcome: [Some (Ok review)] on success,
-          [Some (Error reason)] when it ran but failed (the reason is surfaced
-          in the failure notice so the author sees the cause, not just "it
-          failed"), or [None] when the plugin is disabled. *)
+  general_output : General_review_plugin.review_outcome option;
+    (** The general plugin's outcome, or [None] when the plugin is disabled.
+        A validator failure preserves the completed review as a distinct,
+        fail-closed outcome. *)
   findings : Review_types.finding list;
   sourced_findings : sourced_finding list;
   review_costs : Cost_tracking.review_cost list;
@@ -107,9 +106,11 @@ type report = {
   review_costs : Cost_tracking.review_cost list;
   security_error : bool;
   general_failed : bool;
-    (** [true] when the general review plugin was enabled but produced no
-          output. GitHub publishing uses this to decide whether a no-finding
-          review can stay quiet (reaction only) or must post a failure notice. *)
+    (** [true] when the general review produced no publishable output, either
+          because a stage failed or because its findings could not be
+          validated. GitHub publishing uses this to decide whether a
+          no-finding review can stay quiet (reaction only) or must post a
+          failure notice. *)
 }
 
 module Make (_ : Api.Agent_runner) : sig

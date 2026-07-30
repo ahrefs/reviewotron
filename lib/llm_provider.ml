@@ -63,12 +63,12 @@ let normalize_model_id provider model_id =
   | Anthropic -> model_id
   | Openrouter -> normalize_anthropic_model_for_openrouter model_id
 
-(* Pin OpenRouter to Anthropic's own API: no third-party hosts, no quantized
-   variants — keeps model behavior identical to the direct path. *)
+(* Pin OpenRouter to Anthropic's own API: no third-party hosts or quantized
+   variants, while allowing OpenRouter to retry another Anthropic endpoint. *)
 let anthropic_upstream_prefs : Ai_provider_openrouter.Openrouter_options.provider_prefs =
   {
     order = [ "anthropic" ];
-    allow_fallbacks = Some false;
+    allow_fallbacks = Some true;
     require_parameters = Some true;
     data_collection = None;
     only = [ "anthropic" ];

@@ -652,7 +652,7 @@ struct
             in
             let slack_text, attachment =
               match general_output with
-              | Some (Ok review) ->
+              | Some (General_review_plugin.Completed review) ->
                 let text = Printf.sprintf ":robot_face: *Code Review* for push to `develop` by %s" push.pusher.name in
                 let att =
                   Review_format.format_slack_attachment ~compare_url:push.compare ~pusher_name:push.pusher.name
@@ -662,7 +662,13 @@ struct
                   if security_error then Slack_types.{ att with text = att.text ^ "\n" ^ security_note } else att
                 in
                 text, att
-              | Some (Error reason) -> failure_attachment (Some reason)
+              | Some (General_review_plugin.Validation_failed { candidates_withheld; reason; _ }) ->
+                let reason =
+                  Printf.sprintf "general-validator failed; withheld %d unvalidated candidate finding(s): %s"
+                    candidates_withheld reason
+                in
+                failure_attachment (Some reason)
+              | Some (General_review_plugin.Failed reason) -> failure_attachment (Some reason)
               | None -> failure_attachment None
             in
             let%lwt () =

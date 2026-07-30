@@ -363,7 +363,10 @@ let test_llm_provider_usage_metadata_combines_openrouter_costs () =
   (check (option (float 1e-9))) "total reported cost" (Some 0.52) usage.cost
 
 let test_openrouter_requires_supported_parameters () =
-  (check (option bool)) "require_parameters" (Some true) Llm_provider.anthropic_upstream_prefs.require_parameters
+  (check (option bool)) "require_parameters" (Some true) Llm_provider.anthropic_upstream_prefs.require_parameters;
+  (check (option bool))
+    "fallback stays within Anthropic" (Some true) Llm_provider.anthropic_upstream_prefs.allow_fallbacks;
+  (check (list string)) "only Anthropic upstreams" [ "anthropic" ] Llm_provider.anthropic_upstream_prefs.only
 
 let test_openrouter_maps_error_finish_reason () =
   let is_error =
@@ -408,6 +411,17 @@ let test_openrouter_embedded_error_is_provider_error () =
     let message = Ai_provider.Provider_error.to_string error in
     (check bool) "provider error preserves upstream message" true (contains_sub ~sub:"Provider disconnected" message);
     (check bool) "provider error preserves retry status" true (contains_sub ~sub:"HTTP 502" message)
+
+let test_provider_error_includes_openrouter_classification () =
+  let error =
+    Ai_provider.Provider_error.make_api_error ~provider:"openrouter" ~status:403
+      ~body:"[Anthropic] Request not allowed (content_policy_violation)" ()
+  in
+  let message = Agent_runner.format_provider_error error in
+  (check bool) "reports provider" true (contains_sub ~sub:"from openrouter" message);
+  (check bool) "reports non-retryable status" true (contains_sub ~sub:"HTTP 403, non-retryable" message);
+  check bool "reports OpenRouter classification" true
+    (contains_sub ~sub:"classification=content_policy_violation" message)
 
 let test_config_review_plugins_defaults () =
   let config = Config_types.config_of_json (Melange_json.of_string {|{}|}) in
@@ -6245,6 +6259,39 @@ let test_pr_general_failure_no_findings () =
   (check bool) "surfaces failure cause in details" true
     (CCString.find ~sub:"<details open><summary>Details</summary>" write_log >= 0)
 
+let test_pr_general_validator_failure_is_actionable () =
+  let module Validator_403_runner = struct
+    let run ~ctx ~repo_url ?model_id ?tools ?debug_dir ?log_context ~config ~input () =
+      match config.Agent_runner.name with
+      | "general_validator" ->
+        Lwt.return
+          (Error
+             "agent general_validator: provider error from openrouter (HTTP 403, non-retryable, \
+              classification=content_policy_violation): [Anthropic] Request not allowed (content_policy_violation)")
+      | _ -> Api_local.Agent_runner.run ~ctx ~repo_url ?model_id ?tools ?debug_dir ?log_context ~config ~input ()
+  end in
+  let module Validator_403_reviewer =
+    Reviewer.Make (Api_local.Github) (Api_local.Github) (Api_local.Github) (Validator_403_runner) (Api_local.Slack)
+  in
+  Test_helpers.reset_test_state ();
+  Api_local.set_agent_response_map
+    [
+      "general_scout", "mock_api_responses/scout/leads_two.json";
+      "general_deep_review", "mock_api_responses/claude/review_response.json";
+    ];
+  let ctx = Test_helpers.make_test_context ~config:Test_helpers.auto_review_enabled_config () in
+  let payload = read_file "mock_payloads/pr_opened.json" in
+  let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
+  Lwt_main.run (Validator_403_reviewer.process_event ctx ~event);
+  let write_log = Api_local.get_write_log () in
+  (check bool) "review posted despite validation failure" true (contains_sub ~sub:"[create_pr_review]" write_log);
+  (check bool) "names validator stage" true (contains_sub ~sub:"`general-validator`" write_log);
+  (check bool) "says one finding was withheld" true (contains_sub ~sub:"One unvalidated finding was withheld" write_log);
+  (check bool) "shows provider classification" true
+    (contains_sub ~sub:"classification=content_policy_violation" write_log);
+  check bool "directs persistent 403s to service operators" true
+    (contains_sub ~sub:"If it persists, ask a Reviewotron service operator" write_log)
+
 let test_pr_general_failure_with_security_findings () =
   Test_helpers.reset_test_state ();
   (* General review agent fails, but security pipeline finds a confirmed vulnerability. *)
@@ -7208,8 +7255,7 @@ let test_general_review_filters_low_value_and_validates () =
       ]
   in
   match result with
-  | Error msg -> fail msg
-  | Ok review ->
+  | General_review_plugin.Completed review ->
     (check int) "only validated actionable finding remains" 1 (List.length review.findings);
     (match review.findings with
     | [ finding ] ->
@@ -7219,6 +7265,7 @@ let test_general_review_filters_low_value_and_validates () =
     | [] | _ :: _ :: _ -> fail "expected exactly one validated finding");
     (check bool) "validator cost recorded" true
       (List.exists (fun (c : Cost_tracking.agent_cost) -> String.equal c.agent_name "general_validator") costs)
+  | General_review_plugin.Validation_failed _ | General_review_plugin.Failed _ -> fail "expected validated review"
 
 let test_general_review_validator_rejection_drops_finding () =
   let result, _costs =
@@ -7229,8 +7276,9 @@ let test_general_review_validator_rejection_drops_finding () =
       ]
   in
   match result with
-  | Error msg -> fail msg
-  | Ok review -> (check int) "validator rejection suppresses general finding" 0 (List.length review.findings)
+  | General_review_plugin.Completed review ->
+    check int "validator rejection suppresses general finding" 0 (List.length review.findings)
+  | General_review_plugin.Validation_failed _ | General_review_plugin.Failed _ -> fail "expected validated review"
 
 let test_general_review_matches_reordered_validator_results_by_id () =
   let first =
@@ -7253,24 +7301,27 @@ let test_general_review_matches_reordered_validator_results_by_id () =
       [ "general_review", review_output_with_findings [ first; second ]; "general_validator", validator_output ]
   in
   match result with
-  | Error msg -> fail msg
-  | Ok review ->
+  | General_review_plugin.Completed review ->
     (check int) "only confirmed finding remains" 1 (List.length review.findings);
     (match review.findings with
     | [ finding ] -> (check string) "matched by candidate_id" first.message finding.message
     | [] | _ :: _ :: _ -> fail "expected exactly one validated finding")
+  | General_review_plugin.Validation_failed _ | General_review_plugin.Failed _ -> fail "expected validated review"
 
-let test_general_review_validator_failure_is_error () =
+let test_general_review_validator_failure_is_degraded () =
   let result, costs =
     run_general_plugin_with_outputs [ "general_review", read_json "mock_api_responses/claude/review_response.json" ]
   in
   (check bool) "general review cost retained" true
     (List.exists (fun (c : Cost_tracking.agent_cost) -> String.equal c.agent_name "general_review") costs);
   match result with
-  | Ok _ -> fail "expected validator failure to propagate"
-  | Error msg -> (check bool) "validator failure surfaced" true (contains_sub ~sub:"general validator failed" msg)
+  | General_review_plugin.Validation_failed { review; candidates_withheld; reason } ->
+    (check int) "one candidate withheld" 1 candidates_withheld;
+    (check int) "completed review preserved" 3 (List.length review.findings);
+    check bool "validator failure surfaced" true (contains_sub ~sub:"general validator failed" reason)
+  | General_review_plugin.Completed _ | General_review_plugin.Failed _ -> fail "expected degraded validator outcome"
 
-let test_general_review_validator_parse_failure_is_error () =
+let test_general_review_validator_parse_failure_is_degraded () =
   let result, costs =
     run_general_plugin_with_outputs
       [
@@ -7281,16 +7332,20 @@ let test_general_review_validator_parse_failure_is_error () =
   (check bool) "validator cost retained" true
     (List.exists (fun (c : Cost_tracking.agent_cost) -> String.equal c.agent_name "general_validator") costs);
   match result with
-  | Ok _ -> fail "expected validator parse failure to propagate"
-  | Error msg -> (check bool) "validator parse failure surfaced" true (contains_sub ~sub:"parse general validator" msg)
+  | General_review_plugin.Validation_failed { candidates_withheld; reason; _ } ->
+    (check int) "one candidate withheld" 1 candidates_withheld;
+    check bool "validator parse failure surfaced" true (contains_sub ~sub:"parse general validator" reason)
+  | General_review_plugin.Completed _ | General_review_plugin.Failed _ -> fail "expected degraded validator outcome"
 
 let test_general_review_parse_failure_is_error () =
   let result, costs = run_general_plugin_with_outputs [ "general_review", `Assoc [ "findings", `List [] ] ] in
   (check bool) "general review cost retained" true
     (List.exists (fun (c : Cost_tracking.agent_cost) -> String.equal c.agent_name "general_review") costs);
   match result with
-  | Ok _ -> fail "expected review parse failure to propagate"
-  | Error msg -> (check bool) "review parse failure surfaced" true (contains_sub ~sub:"parse general review" msg)
+  | General_review_plugin.Failed msg ->
+    check bool "review parse failure surfaced" true (contains_sub ~sub:"parse general review" msg)
+  | General_review_plugin.Completed _ | General_review_plugin.Validation_failed _ ->
+    fail "expected failed review outcome"
 
 (* Integration tests for the scout -> deep reviewer -> validator pipeline.
    Backed by [Api_local.Agent_runner] so unmapped agent names fall back to the
@@ -7337,12 +7392,12 @@ let test_general_pipeline_full_flow () =
   let result, costs = run_pipeline_plugin ~config:scout_enabled_config in
   Test_helpers.reset_test_state ();
   (match result with
-  | Error msg -> fail msg
-  | Ok review ->
+  | General_review_plugin.Completed review ->
     (check int) "one confirmed finding" 1 (List.length review.findings);
     (match review.findings with
     | [ finding ] -> (check string) "confirmed lead finding kept" "lib/session.ml" finding.path
-    | [] | _ :: _ :: _ -> fail "expected exactly one confirmed finding"));
+    | [] | _ :: _ :: _ -> fail "expected exactly one confirmed finding")
+  | General_review_plugin.Validation_failed _ | General_review_plugin.Failed _ -> fail "expected completed review");
   (check bool) "at least three cost entries" true (List.compare_length_with costs 3 >= 0);
   (check bool) "scout cost present" true (has_cost "general_scout" costs);
   (check bool) "deep review cost present" true (has_cost "general_deep_review" costs);
@@ -7356,10 +7411,10 @@ let test_general_pipeline_early_exit_on_no_leads () =
   let result, costs = run_pipeline_plugin ~config:scout_enabled_config in
   Test_helpers.reset_test_state ();
   (match result with
-  | Error msg -> fail msg
-  | Ok review ->
+  | General_review_plugin.Completed review ->
     (check int) "no findings on empty scout" 0 (List.length review.findings);
-    (check string) "early-exit summary" "Scout found no investigation leads." review.summary);
+    (check string) "early-exit summary" "Scout found no investigation leads." review.summary
+  | General_review_plugin.Validation_failed _ | General_review_plugin.Failed _ -> fail "expected completed review");
   (check int) "exactly one cost entry" 1 (List.length costs);
   (check bool) "only scout cost recorded" true (has_cost "general_scout" costs);
   (check bool) "deep review never ran" false (has_cost "general_deep_review" costs);
@@ -7385,8 +7440,9 @@ let test_general_pipeline_caps_leads () =
   let deep_input = Api_local.recorded_agent_input "general_deep_review" in
   Test_helpers.reset_test_state ();
   (match result with
-  | Error msg -> fail msg
-  | Ok review -> (check int) "overflow leads still produce a confirmed finding" 1 (List.length review.findings));
+  | General_review_plugin.Completed review ->
+    check int "overflow leads still produce a confirmed finding" 1 (List.length review.findings)
+  | General_review_plugin.Validation_failed _ | General_review_plugin.Failed _ -> fail "expected completed review");
   (check bool) "scout cost present" true (has_cost "general_scout" costs);
   (check bool) "deep review cost present" true (has_cost "general_deep_review" costs);
   match deep_input with
@@ -7408,8 +7464,9 @@ let test_general_pipeline_legacy_fallback () =
   let result, costs = run_pipeline_plugin ~config:scout_disabled_config in
   Test_helpers.reset_test_state ();
   (match result with
-  | Error msg -> fail msg
-  | Ok review -> (check int) "legacy single-pass confirms one finding" 1 (List.length review.findings));
+  | General_review_plugin.Completed review ->
+    check int "legacy single-pass confirms one finding" 1 (List.length review.findings)
+  | General_review_plugin.Validation_failed _ | General_review_plugin.Failed _ -> fail "expected completed review");
   (check bool) "legacy review cost present" true (has_cost "general_review" costs);
   (check bool) "scout never ran on legacy path" false (has_cost "general_scout" costs)
 
@@ -7469,6 +7526,8 @@ let () =
           test_case "openrouter requires supported parameters" `Quick test_openrouter_requires_supported_parameters;
           test_case "openrouter maps error finish reason" `Quick test_openrouter_maps_error_finish_reason;
           test_case "openrouter embedded error" `Quick test_openrouter_embedded_error_is_provider_error;
+          test_case "provider error includes OpenRouter classification" `Quick
+            test_provider_error_includes_openrouter_classification;
           test_case "review_plugins defaults" `Quick test_config_review_plugins_defaults;
           test_case "review_plugins explicit" `Quick test_config_review_plugins_explicit;
           test_case "invalid ignored file regex rejected" `Quick test_config_rejects_invalid_ignored_file_regex;
@@ -7720,8 +7779,10 @@ let () =
           test_case "validator rejection drops finding" `Quick test_general_review_validator_rejection_drops_finding;
           test_case "matches reordered validator results by candidate_id" `Quick
             test_general_review_matches_reordered_validator_results_by_id;
-          test_case "validator failure propagates" `Quick test_general_review_validator_failure_is_error;
-          test_case "validator parse failure propagates" `Quick test_general_review_validator_parse_failure_is_error;
+          test_case "validator failure preserves a degraded review" `Quick
+            test_general_review_validator_failure_is_degraded;
+          test_case "validator parse failure preserves a degraded review" `Quick
+            test_general_review_validator_parse_failure_is_degraded;
           test_case "review parse failure propagates" `Quick test_general_review_parse_failure_is_error;
           test_case "pipeline full flow scout deep validator" `Quick test_general_pipeline_full_flow;
           test_case "pipeline early exit on no leads" `Quick test_general_pipeline_early_exit_on_no_leads;
@@ -7945,6 +8006,8 @@ let () =
       ( "general_failure_robustness",
         [
           test_case "PR review posted on general failure (no findings)" `Quick test_pr_general_failure_no_findings;
+          test_case "PR validator failure explains withheld finding" `Quick
+            test_pr_general_validator_failure_is_actionable;
           test_case "PR review posted on general failure (with security findings)" `Quick
             test_pr_general_failure_with_security_findings;
           test_case "push review posts Slack on general failure" `Quick test_push_general_failure;
