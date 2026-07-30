@@ -139,9 +139,17 @@ let missing_structured_output_message ~agent_name ~finish_reason ~finalization_f
       (Ai_provider.Finish_reason.to_string finish_reason)
       suffix
 
-(* Recovers OpenRouter's [metadata.error_type], which the SDK parses
-   structurally then flattens into a trailing " (type)" suffix on the message
-   (ai_provider_openrouter/openrouter_error.ml). Delete this shim if a future
+(* Guesses OpenRouter's [metadata.error_type] from the trailing " (type)" suffix
+   the SDK appends when the gateway supplied one
+   (ai_provider_openrouter/openrouter_error.ml [message_of_error_json]).
+
+   This is a guess, not a recovery: by the time we hold a [Provider_error.t] the
+   structured envelope is gone — every construction path stores the flattened
+   human message as [body] — and the SDK's other path ([of_response] falling
+   back to [raw_error]) passes the upstream body through verbatim. A verbatim
+   body ending in an unrelated parenthetical ("...access to model
+   (claude-opus-4)") is therefore indistinguishable from a real classification,
+   so callers must present the result as inferred. Delete this shim if a future
    ocaml-ai-sdk carries the classification on [Api_error] itself. *)
 let openrouter_error_type_re = Re2.create_exn {|\(([A-Za-z0-9_-]+)\)$|}
 
@@ -159,8 +167,8 @@ let format_provider_error (error : Ai_provider.Provider_error.t) =
       | false -> ""
       | true ->
       match openrouter_error_type body with
-      | Some error_type -> Printf.sprintf ", classification=%s" error_type
-      | None -> ", classification=unavailable"
+      | Some error_type -> Printf.sprintf ", likely_type=%s" error_type
+      | None -> ""
     in
     Printf.sprintf "provider error from %s (HTTP %d, %s%s): %s" error.provider status retryability classification body
   | Ai_provider.Provider_error.Network_error _ | Ai_provider.Provider_error.Deserialization_error _

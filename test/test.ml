@@ -420,8 +420,27 @@ let test_provider_error_includes_openrouter_classification () =
   let message = Agent_runner.format_provider_error error in
   (check bool) "reports provider" true (contains_sub ~sub:"from openrouter" message);
   (check bool) "reports non-retryable status" true (contains_sub ~sub:"HTTP 403, non-retryable" message);
-  check bool "reports OpenRouter classification" true
-    (contains_sub ~sub:"classification=content_policy_violation" message)
+  check bool "reports OpenRouter classification as inferred" true
+    (contains_sub ~sub:"likely_type=content_policy_violation" message)
+
+(* The flattened message cannot distinguish the gateway's [error_type] suffix
+   from an unrelated trailing parenthetical, so a bare message must not be
+   dressed up with a classification claim either way. *)
+let test_provider_error_omits_absent_openrouter_classification () =
+  let bare =
+    Ai_provider.Provider_error.make_api_error ~provider:"openrouter" ~status:403 ~body:"[Anthropic] Request not allowed"
+      ()
+    |> Agent_runner.format_provider_error
+  in
+  (check bool) "no classification claimed when absent" false (contains_sub ~sub:"likely_type=" bare);
+  (check bool) "never asserts unavailability" false (contains_sub ~sub:"unavailable" bare);
+  let anthropic_direct =
+    Ai_provider.Provider_error.make_api_error ~provider:"anthropic" ~status:403
+      ~body:"permission denied (some_parenthetical)" ()
+    |> Agent_runner.format_provider_error
+  in
+  check bool "no classification inferred for non-OpenRouter providers" false
+    (contains_sub ~sub:"likely_type=" anthropic_direct)
 
 let test_config_review_plugins_defaults () =
   let config = Config_types.config_of_json (Melange_json.of_string {|{}|}) in
@@ -6264,10 +6283,14 @@ let test_pr_general_validator_failure_is_actionable () =
     let run ~ctx ~repo_url ?model_id ?tools ?debug_dir ?log_context ~config ~input () =
       match config.Agent_runner.name with
       | "general_validator" ->
-        Lwt.return
-          (Error
-             "agent general_validator: provider error from openrouter (HTTP 403, non-retryable, \
-              classification=content_policy_violation): [Anthropic] Request not allowed (content_policy_violation)")
+        (* Formatted through [format_provider_error] rather than hardcoded, so
+           the notice's 403 detection stays pinned to the real wording. *)
+        let formatted =
+          Ai_provider.Provider_error.make_api_error ~provider:"openrouter" ~status:403
+            ~body:"[Anthropic] Request not allowed (content_policy_violation)" ()
+          |> Agent_runner.format_provider_error
+        in
+        Lwt.return (Error (Printf.sprintf "agent general_validator: %s" formatted))
       | _ -> Api_local.Agent_runner.run ~ctx ~repo_url ?model_id ?tools ?debug_dir ?log_context ~config ~input ()
   end in
   let module Validator_403_reviewer =
@@ -6288,8 +6311,8 @@ let test_pr_general_validator_failure_is_actionable () =
   (check bool) "names validator stage" true (contains_sub ~sub:"`general-validator`" write_log);
   (check bool) "says one finding was withheld, in the singular" true
     (contains_sub ~sub:"1 potential finding, which was withheld" write_log);
-  (check bool) "shows provider classification" true
-    (contains_sub ~sub:"classification=content_policy_violation" write_log);
+  (check bool) "shows inferred provider classification" true
+    (contains_sub ~sub:"likely_type=content_policy_violation" write_log);
   check bool "directs persistent 403s to service operators" true
     (contains_sub ~sub:"If it persists, ask a Reviewotron service operator" write_log)
 
@@ -7529,6 +7552,8 @@ let () =
           test_case "openrouter embedded error" `Quick test_openrouter_embedded_error_is_provider_error;
           test_case "provider error includes OpenRouter classification" `Quick
             test_provider_error_includes_openrouter_classification;
+          test_case "provider error omits absent OpenRouter classification" `Quick
+            test_provider_error_omits_absent_openrouter_classification;
           test_case "review_plugins defaults" `Quick test_config_review_plugins_defaults;
           test_case "review_plugins explicit" `Quick test_config_review_plugins_explicit;
           test_case "invalid ignored file regex rejected" `Quick test_config_rejects_invalid_ignored_file_regex;
