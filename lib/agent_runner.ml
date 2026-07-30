@@ -139,36 +139,28 @@ let missing_structured_output_message ~agent_name ~finish_reason ~finalization_f
       (Ai_provider.Finish_reason.to_string finish_reason)
       suffix
 
+(* Recovers OpenRouter's [metadata.error_type], which the SDK parses
+   structurally then flattens into a trailing " (type)" suffix on the message
+   (ai_provider_openrouter/openrouter_error.ml). Delete this shim if a future
+   ocaml-ai-sdk carries the classification on [Api_error] itself. *)
+let openrouter_error_type_re = Re2.create_exn {|\(([A-Za-z0-9_-]+)\)$|}
+
 let openrouter_error_type body =
-  match String.rindex_opt body '(' with
-  | None -> None
-  | Some start ->
-  match String.ends_with ~suffix:")" body with
-  | false -> None
-  | true ->
-    let length = String.length body - start - 2 in
-    let candidate = String.sub body (start + 1) length in
-    (match
-       String.length candidate > 0
-       && String.for_all
-            (function
-              | 'a' .. 'z' | '0' .. '9' | '_' -> true
-              | 'A' .. 'Z' | '-' -> true
-              | _ -> false)
-            candidate
-     with
-    | true -> Some candidate
-    | false -> None)
+  match Re2.find_submatches openrouter_error_type_re body with
+  | Ok [| _; Some error_type |] -> Some error_type
+  | Ok _ | Error _ -> None
 
 let format_provider_error (error : Ai_provider.Provider_error.t) =
   let retryability = if error.is_retryable then "retryable" else "non-retryable" in
   match error.kind with
   | Ai_provider.Provider_error.Api_error { status; body } ->
     let classification =
-      match String.equal error.provider "openrouter", openrouter_error_type body with
-      | true, Some error_type -> Printf.sprintf ", classification=%s" error_type
-      | true, None -> ", classification=unavailable"
-      | false, Some _ | false, None -> ""
+      match String.equal error.provider "openrouter" with
+      | false -> ""
+      | true ->
+      match openrouter_error_type body with
+      | Some error_type -> Printf.sprintf ", classification=%s" error_type
+      | None -> ", classification=unavailable"
     in
     Printf.sprintf "provider error from %s (HTTP %d, %s%s): %s" error.provider status retryability classification body
   | Ai_provider.Provider_error.Network_error _ | Ai_provider.Provider_error.Deserialization_error _

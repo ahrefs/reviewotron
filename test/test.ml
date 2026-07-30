@@ -6286,7 +6286,8 @@ let test_pr_general_validator_failure_is_actionable () =
   let write_log = Api_local.get_write_log () in
   (check bool) "review posted despite validation failure" true (contains_sub ~sub:"[create_pr_review]" write_log);
   (check bool) "names validator stage" true (contains_sub ~sub:"`general-validator`" write_log);
-  (check bool) "says one finding was withheld" true (contains_sub ~sub:"One unvalidated finding was withheld" write_log);
+  (check bool) "says one finding was withheld, in the singular" true
+    (contains_sub ~sub:"1 potential finding, which was withheld" write_log);
   (check bool) "shows provider classification" true
     (contains_sub ~sub:"classification=content_policy_violation" write_log);
   check bool "directs persistent 403s to service operators" true

@@ -269,8 +269,9 @@ type report = {
   review_costs : Cost_tracking.review_cost list;
   security_error : bool;
   general_failed : bool;
-    (** [true] when the general review plugin was expected to produce output
-          but failed. Used by GitHub publishing to decide whether a no-finding
+    (** [true] when the general review produced no publishable output, either
+          because a stage failed or because its findings could not be
+          validated. Used by GitHub publishing to decide whether a no-finding
           review can stay quiet (just a reaction) or must still post a failure
           notice. *)
 }
@@ -307,13 +308,6 @@ let cost_plugin_ran ~plugin review_costs =
       | _ :: _ -> true)
     review_costs
 
-let candidate_word count = if Int.equal count 1 then "finding" else "findings"
-
-let withholding_sentence count =
-  match Int.equal count 1 with
-  | true -> "One unvalidated finding was withheld rather than posted without validation."
-  | false -> Printf.sprintf "%d unvalidated findings were withheld rather than posted without validation." count
-
 let retry_guidance reason =
   match CCString.mem ~sub:"HTTP 403" reason with
   | true ->
@@ -342,12 +336,6 @@ let review_body ~log_context ~change_label ~general_output ~findings ~unchanged_
   let security_completed =
     config.review_plugins.security.enabled && (not security_error) && cost_plugin_ran ~plugin:"security" review_costs
   in
-  let completed_security_summary =
-    match findings, security_completed with
-    | _ :: _, _ -> "Findings from completed review stages are shown below."
-    | [], true -> "The security review completed and found no confirmed security findings."
-    | [], false -> "Other review stages may not have completed."
-  in
   let failure_notice reason =
     log#error "%sreview failed for %s: no review output produced" log_prefix change_label;
     let notice =
@@ -366,15 +354,24 @@ let review_body ~log_context ~change_label ~general_output ~findings ~unchanged_
     with_failure_details ~reason notice
   in
   let validation_failure_notice ~candidates_withheld ~reason =
+    let findings_word = Cost_tracking.pluralize ~n:candidates_withheld "finding" in
     log#error "%sreview validation failed for %s; withholding %d candidate %s" log_prefix change_label
-      candidates_withheld (candidate_word candidates_withheld);
+      candidates_withheld findings_word;
+    let completed_security_summary =
+      match findings, security_completed with
+      | _ :: _, _ -> "Findings from completed review stages are shown below."
+      | [], true -> "The security review completed and found no confirmed security findings."
+      | [], false -> "Other review stages may not have completed."
+    in
     let notice =
       Printf.sprintf
-        "\xE2\x9A\xA0\xEF\xB8\x8F **General review validation failed** — the `general-validator` stage could not \
-         validate %d potential %s. %s %s\n\n\
+        "\xE2\x9A\xA0\xEF\xB8\x8F **General review validation failed** \xE2\x80\x94 the `general-validator` stage \
+         could not validate %d potential %s, which %s withheld rather than posted without validation. %s\n\n\
          %s"
-        candidates_withheld (candidate_word candidates_withheld)
-        (withholding_sentence candidates_withheld)
+        candidates_withheld findings_word
+        (match Int.equal candidates_withheld 1 with
+        | true -> "was"
+        | false -> "were")
         completed_security_summary (retry_guidance reason)
     in
     with_failure_details ~reason:(Some reason) notice
@@ -492,10 +489,9 @@ module Make (AI : Api.Agent_runner) = struct
                 in
                 (match result with
                 | General_review_plugin.Completed _ -> ()
-                | General_review_plugin.Validation_failed { candidates_withheld; reason; _ } ->
-                  Telemetry.set_error reason;
-                  log#error "%sgeneral validator failed; withholding %d candidate(s): %s" log_prefix candidates_withheld
-                    reason
+                (* [validate_review] already logged the count and reason with
+                   the same context prefix; only telemetry is owed here. *)
+                | General_review_plugin.Validation_failed { reason; _ } -> Telemetry.set_error reason
                 | General_review_plugin.Failed msg ->
                   Telemetry.set_error msg;
                   log#error "%sgeneral review plugin failed: %s" log_prefix msg);

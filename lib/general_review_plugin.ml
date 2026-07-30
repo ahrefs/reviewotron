@@ -299,9 +299,8 @@ module Make (AI : Api.Agent_runner) = struct
     let%lwt result, costs = run_review ~ctx ~repo_url ~config ~diff_text ~metadata () in
     match result with
     | Completed review -> Lwt.return (review.findings, costs)
-    | Validation_failed { candidates_withheld; reason; _ } ->
-      log#error "general validator failed; withholding %d candidate(s): %s" candidates_withheld reason;
-      Lwt.return ([], costs)
+    (* [validate_review] already logged the withheld count and reason. *)
+    | Validation_failed _ -> Lwt.return ([], costs)
     | Failed msg ->
       log#error "general review plugin failed: %s" msg;
       Lwt.return ([], costs)
