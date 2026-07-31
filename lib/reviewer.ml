@@ -668,13 +668,14 @@ struct
                   if security_error then Slack_types.{ att with text = att.text ^ "\n" ^ security_note } else att
                 in
                 text, att
-              | Some (General_review_plugin.Validation_failed { candidates_withheld; reason; _ }) ->
+              | Some (General_review_plugin.Validation_failed { candidates_withheld; reason = provider_reason; _ }) ->
                 let reason =
                   Printf.sprintf "general-validator failed; withheld %d unvalidated candidate finding(s): %s"
-                    candidates_withheld reason
+                    candidates_withheld provider_reason
                 in
-                failure_attachment ~guidance:(Review_engine.retry_guidance reason) (Some reason)
-              | Some (General_review_plugin.Failed reason) -> failure_attachment (Some reason)
+                failure_attachment ~guidance:(Review_engine.retry_guidance provider_reason) (Some reason)
+              | Some (General_review_plugin.Failed reason) ->
+                failure_attachment ?guidance:(Review_engine.retry_guidance_for_403 reason) (Some reason)
               | None -> failure_attachment None
             in
             let%lwt () =

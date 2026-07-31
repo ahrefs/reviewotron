@@ -158,6 +158,16 @@ let openrouter_error_type body =
   | Ok [| _; Some error_type |] -> Some error_type
   | Ok _ | Error _ -> None
 
+let should_retry_generic_openrouter_403 (error : Ai_provider.Provider_error.t) =
+  match error.kind with
+  | Ai_provider.Provider_error.Api_error { status; body } ->
+    String.equal error.provider "openrouter"
+    && Int.equal status 403
+    && String.equal (String.trim body) "[Anthropic] Request not allowed"
+  | Ai_provider.Provider_error.Network_error _ | Ai_provider.Provider_error.Deserialization_error _
+  | Ai_provider.Provider_error.Timeout _ ->
+    false
+
 let format_provider_error (error : Ai_provider.Provider_error.t) =
   let retryability = if error.is_retryable then "retryable" else "non-retryable" in
   match error.kind with
@@ -175,6 +185,26 @@ let format_provider_error (error : Ai_provider.Provider_error.t) =
   | Ai_provider.Provider_error.Timeout _ ->
     Printf.sprintf "provider error from %s (%s): %s" error.provider retryability
       (Ai_provider.Provider_error.to_string error)
+
+let provider_name = function
+  | Llm_provider.Anthropic -> "anthropic"
+  | Llm_provider.Openrouter -> "openrouter"
+
+let retry_generic_openrouter_403_once ?(sleep = Lwt_unix.sleep) ~log_prefix ~agent_name f =
+  Lwt.catch f (function
+    | Ai_provider.Provider_error.Provider_error error when should_retry_generic_openrouter_403 error ->
+      log#warn "%sagent %s: OpenRouter returned an unclassified HTTP 403; retrying once in 2s" log_prefix agent_name;
+      let%lwt () = sleep 2.0 in
+      f ()
+    | exn -> Lwt.fail exn)
+
+let retry_generic_openrouter_403_model ~log_prefix ~agent_name model =
+  let module Retry_generic_openrouter_403 = struct
+    let wrap_generate ~generate call =
+      retry_generic_openrouter_403_once ~log_prefix ~agent_name (fun () -> generate call)
+    let wrap_stream ~stream call = stream call
+  end in
+  Ai_provider.Middleware.apply (module Retry_generic_openrouter_403) model
 
 let default_model_id =
   let open Ai_provider_anthropic.Model_catalog in
@@ -348,6 +378,7 @@ let run_agent_untraced ~provider ~model ?tools ?(max_retries = 2) ?debug_dir ?lo
   let output_spec = Ai_core.Output.object_ ~name:(config.name ^ "_output") ~schema:config.output_schema () in
   let model_id = Ai_provider.Language_model.model_id model in
   let provider_options = build_provider_options ~provider config in
+  let model = retry_generic_openrouter_403_model ~log_prefix ~agent_name:config.name model in
   let thinking_budget_str =
     match config.thinking_budget with
     | None -> "off"
@@ -358,8 +389,8 @@ let run_agent_untraced ~provider ~model ?tools ?(max_retries = 2) ?debug_dir ?lo
     | None -> "default"
     | Some effort -> Config_types.Effort.to_string effort
   in
-  log#info "%sagent %s: starting (model=%s, max_steps=%d, thinking_budget=%s, effort=%s)" log_prefix config.name
-    model_id config.max_steps thinking_budget_str effort_str;
+  log#info "%sagent %s: starting (provider=%s, model=%s, max_steps=%d, thinking_budget=%s, effort=%s)" log_prefix
+    config.name (provider_name provider) model_id config.max_steps thinking_budget_str effort_str;
   (match provider, config.effort with
   | Llm_provider.Anthropic, Some effort ->
     log#warn "%sagent %s: direct Anthropic cannot encode effort=%s with installed ocaml-ai-sdk; using provider default"

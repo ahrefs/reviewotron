@@ -112,6 +112,16 @@ val cached_input_provider_options : Llm_provider.t -> Ai_provider.Provider_optio
     there is none. *)
 val format_provider_error : Ai_provider.Provider_error.t -> string
 
+(** [true] only for OpenRouter's unclassified 403 response
+    [[Anthropic] Request not allowed]. The SDK marks all 403s non-retryable,
+    but this specific response has been observed to be transient. *)
+val should_retry_generic_openrouter_403 : Ai_provider.Provider_error.t -> bool
+
+(** Retry one provider request after the specific transient OpenRouter 403.
+    [sleep] is injectable for tests. *)
+val retry_generic_openrouter_403_once :
+  ?sleep:(float -> unit Lwt.t) -> log_prefix:string -> agent_name:string -> (unit -> 'a Lwt.t) -> 'a Lwt.t
+
 (** Run an agent with the given configuration and input prompt.
 
     Creates structured output from [config.output_schema], executes

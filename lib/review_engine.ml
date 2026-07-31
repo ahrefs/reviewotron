@@ -311,10 +311,15 @@ let cost_plugin_ran ~plugin review_costs =
 let retry_guidance reason =
   match CCString.mem ~sub:"HTTP 403" reason with
   | true ->
-    "The provider rejected the validation request (HTTP 403). You can re-trigger the review once in case the block was \
+    "The provider rejected the review request (HTTP 403). You can re-trigger the review once in case the block was \
      transient. If it persists, ask a Reviewotron service operator to check the OpenRouter/Anthropic credentials, \
      permissions, guardrails, and provider classification."
   | false -> "Please re-trigger the review. If this persists, ask a Reviewotron service operator to investigate."
+
+let retry_guidance_for_403 reason =
+  match CCString.mem ~sub:"HTTP 403" reason with
+  | true -> Some (retry_guidance reason)
+  | false -> None
 
 let review_body ~log_context ~change_label ~general_output ~findings ~unchanged_findings ~anchor_failed_findings
   ~review_costs ~security_error ~(config : Config_types.config) =
@@ -351,7 +356,15 @@ let review_body ~log_context ~change_label ~general_output ~findings ~unchanged_
         "\xE2\x9A\xA0\xEF\xB8\x8F **Review failed** \xE2\x80\x94 the code review encountered an error and could not \
          produce results. Please re-trigger the review. If this persists, check the service logs."
     in
-    with_failure_details ~reason notice
+    let guidance =
+      match reason with
+      | None -> ""
+      | Some reason ->
+      match retry_guidance_for_403 reason with
+      | None -> ""
+      | Some guidance -> "\n\n" ^ guidance
+    in
+    with_failure_details ~reason (notice ^ guidance)
   in
   let validation_failure_notice ~candidates_withheld ~reason =
     let findings_word = Cost_tracking.pluralize ~n:candidates_withheld "finding" in

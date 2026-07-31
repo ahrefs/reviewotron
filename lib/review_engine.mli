@@ -81,8 +81,11 @@ val finding_to_review_comment :
     despite being enabled. *)
 val security_error_notice : string
 
-(** User-facing retry guidance for a failed validation request. *)
+(** User-facing retry guidance for a failed review request. *)
 val retry_guidance : string -> string
+
+(** Actionable retry guidance for an HTTP 403 provider rejection. *)
+val retry_guidance_for_403 : string -> string option
 
 (** Raw plugin execution result, before sink-specific publishing. *)
 type plugin_result = {

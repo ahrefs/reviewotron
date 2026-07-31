@@ -442,6 +442,45 @@ let test_provider_error_omits_absent_openrouter_classification () =
   check bool "no classification inferred for non-OpenRouter providers" false
     (contains_sub ~sub:"likely_type=" anthropic_direct)
 
+let test_generic_openrouter_403_is_retryable () =
+  let generic =
+    Ai_provider.Provider_error.make_api_error ~provider:"openrouter" ~status:403 ~body:"[Anthropic] Request not allowed"
+      ()
+  in
+  let classified =
+    Ai_provider.Provider_error.make_api_error ~provider:"openrouter" ~status:403
+      ~body:"[Anthropic] Request not allowed (content_policy_violation)" ()
+  in
+  let direct =
+    Ai_provider.Provider_error.make_api_error ~provider:"anthropic" ~status:403 ~body:"[Anthropic] Request not allowed"
+      ()
+  in
+  (check bool) "generic OpenRouter 403 is retried" true (Agent_runner.should_retry_generic_openrouter_403 generic);
+  (check bool) "classified 403 is not retried" false (Agent_runner.should_retry_generic_openrouter_403 classified);
+  check bool "direct Anthropic 403 is not retried" false (Agent_runner.should_retry_generic_openrouter_403 direct)
+
+let test_generic_openrouter_403_retries_one_provider_request () =
+  let error =
+    Ai_provider.Provider_error.make_api_error ~provider:"openrouter" ~status:403 ~body:"[Anthropic] Request not allowed"
+      ()
+  in
+  let calls = ref 0 in
+  let request () =
+    calls := !calls + 1;
+    match !calls with
+    | 1 -> Lwt.fail (Ai_provider.Provider_error.Provider_error error)
+    | 2 -> Lwt.return "retried"
+    | _ -> fail "expected at most two provider requests"
+  in
+  let result =
+    Lwt_main.run
+      (Agent_runner.retry_generic_openrouter_403_once
+         ~sleep:(fun _ -> Lwt.return_unit)
+         ~log_prefix:"" ~agent_name:"test" request)
+  in
+  (check string) "second request succeeds" "retried" result;
+  check int "exactly one retry" 2 !calls
+
 let test_config_review_plugins_defaults () =
   let config = Config_types.config_of_json (Melange_json.of_string {|{}|}) in
   (check bool) "general enabled" true config.review_plugins.general.enabled;
@@ -6338,6 +6377,50 @@ let test_pr_and_push_general_validator_failures_are_actionable () =
   | [ (_channel, _text, Some []) ] -> fail "expected a Slack attachment"
   | _ -> fail "expected one Slack message with one attachment"
 
+let test_pr_and_push_general_scout_403_failures_are_actionable () =
+  let module Scout_403_runner = struct
+    let run ~ctx ~repo_url ?model_id ?tools ?debug_dir ?log_context ~config ~input () =
+      match config.Agent_runner.name with
+      | "general_scout" ->
+        let formatted =
+          Ai_provider.Provider_error.make_api_error ~provider:"openrouter" ~status:403
+            ~body:"[Anthropic] Request not allowed" ()
+          |> Agent_runner.format_provider_error
+        in
+        Lwt.return (Error (Printf.sprintf "agent general_scout: %s" formatted))
+      | _ -> Api_local.Agent_runner.run ~ctx ~repo_url ?model_id ?tools ?debug_dir ?log_context ~config ~input ()
+  end in
+  let module Scout_403_reviewer =
+    Reviewer.Make (Api_local.Github) (Api_local.Github) (Api_local.Github) (Scout_403_runner) (Api_local.Slack)
+  in
+  Test_helpers.reset_test_state ();
+  Api_local.set_agent_response_map [ "security_triage", "mock_api_responses/security/triage_safe.json" ];
+  let ctx = Test_helpers.make_test_context ~config:security_enabled_config () in
+  let payload = read_file "mock_payloads/pr_opened.json" in
+  let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
+  Lwt_main.run (Scout_403_reviewer.process_event ctx ~event);
+  let write_log = Api_local.get_write_log () in
+  (check bool) "review posted despite scout failure" true (contains_sub ~sub:"[create_pr_review]" write_log);
+  (check bool) "names scout stage" true (contains_sub ~sub:"agent general_scout" write_log);
+  (check bool) "names the rejected review request" true
+    (contains_sub ~sub:"The provider rejected the review request (HTTP 403)." write_log);
+  (check bool) "directs persistent 403s to service operators" true
+    (contains_sub ~sub:"If it persists, ask a Reviewotron service operator" write_log);
+  Test_helpers.reset_test_state ();
+  Api_local.set_agent_response_map [ "security_triage", "mock_api_responses/security/triage_safe.json" ];
+  let ctx = Test_helpers.make_test_context ~config:security_enabled_slack_config () in
+  let payload = read_file "mock_payloads/push_develop.json" in
+  let event = Test_helpers.parse_event_exn ~event_type:"push" ~body:payload in
+  Lwt_main.run (Scout_403_reviewer.process_event ctx ~event);
+  match Api_local.get_slack_messages () with
+  | [ (_channel, _text, Some [ attachment ]) ] ->
+    check bool "push notice directs persistent 403s to service operators" true
+      (contains_sub ~sub:"If it persists, ask a Reviewotron service operator" attachment.Slack_types.text)
+  | [] -> fail "expected a Slack message"
+  | [ (_channel, _text, None) ] -> fail "expected Slack attachments"
+  | [ (_channel, _text, Some []) ] -> fail "expected a Slack attachment"
+  | _ -> fail "expected one Slack message with one attachment"
+
 let test_pr_general_failure_with_security_findings () =
   Test_helpers.reset_test_state ();
   (* General review agent fails, but security pipeline finds a confirmed vulnerability. *)
@@ -7576,6 +7659,9 @@ let () =
             test_provider_error_includes_openrouter_classification;
           test_case "provider error omits absent OpenRouter classification" `Quick
             test_provider_error_omits_absent_openrouter_classification;
+          test_case "generic OpenRouter 403 retry policy" `Quick test_generic_openrouter_403_is_retryable;
+          test_case "generic OpenRouter 403 retries one provider request" `Quick
+            test_generic_openrouter_403_retries_one_provider_request;
           test_case "review_plugins defaults" `Quick test_config_review_plugins_defaults;
           test_case "review_plugins explicit" `Quick test_config_review_plugins_explicit;
           test_case "invalid ignored file regex rejected" `Quick test_config_rejects_invalid_ignored_file_regex;
@@ -8056,6 +8142,8 @@ let () =
           test_case "PR review posted on general failure (no findings)" `Quick test_pr_general_failure_no_findings;
           test_case "PR and push validator failures are actionable" `Quick
             test_pr_and_push_general_validator_failures_are_actionable;
+          test_case "PR and push scout 403 failures are actionable" `Quick
+            test_pr_and_push_general_scout_403_failures_are_actionable;
           test_case "PR review posted on general failure (with security findings)" `Quick
             test_pr_general_failure_with_security_findings;
           test_case "push review posts Slack on general failure" `Quick test_push_general_failure;
