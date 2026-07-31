@@ -454,7 +454,8 @@ struct
     | Invalid_target _ | No_reviewable_files | Too_many_lines _ | Too_many_files _ | Publish_failed _ ->
       Http_util.error_to_string fetch_error
 
-  let push_failure_message ~(push : Github_types.commit_pushed_notification) ~findings ~security_error ?reason () =
+  let push_failure_message ~(push : Github_types.commit_pushed_notification) ~findings ~security_error ?reason ?guidance
+    () =
     let text = Printf.sprintf ":warning: *Code Review Failed* for push to `develop` by %s" push.pusher.name in
     let failure_text =
       match findings with
@@ -469,6 +470,11 @@ struct
       match reason with
       | None -> failure_text
       | Some reason -> Printf.sprintf "%s\n```\n%s\n```" failure_text reason
+    in
+    let failure_text =
+      match guidance with
+      | None -> failure_text
+      | Some guidance -> Printf.sprintf "%s\n\n%s" failure_text guidance
     in
     let failure_text =
       if security_error then failure_text ^ "\n" ^ String.trim Review_engine.security_error_notice else failure_text
@@ -646,9 +652,9 @@ struct
             Cost_tracking.log_review_costs ~log_context review_costs;
             let%lwt () = Sink.post_push_comments ~log_context ~ctx ~repo_url:job.repo_key ~sha:job.head_sha findings in
             let security_note = String.trim Review_engine.security_error_notice in
-            let failure_attachment reason =
+            let failure_attachment ?guidance reason =
               log#error "%sreview failed for push %s: no review output produced" log_prefix push.after;
-              push_failure_message ~push ~findings ~security_error ?reason ()
+              push_failure_message ~push ~findings ~security_error ?reason ?guidance ()
             in
             let slack_text, attachment =
               match general_output with
@@ -667,7 +673,7 @@ struct
                   Printf.sprintf "general-validator failed; withheld %d unvalidated candidate finding(s): %s"
                     candidates_withheld reason
                 in
-                failure_attachment (Some reason)
+                failure_attachment ~guidance:(Review_engine.retry_guidance reason) (Some reason)
               | Some (General_review_plugin.Failed reason) -> failure_attachment (Some reason)
               | None -> failure_attachment None
             in

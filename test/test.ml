@@ -6278,7 +6278,7 @@ let test_pr_general_failure_no_findings () =
   (check bool) "surfaces failure cause in details" true
     (CCString.find ~sub:"<details open><summary>Details</summary>" write_log >= 0)
 
-let test_pr_general_validator_failure_is_actionable () =
+let test_pr_and_push_general_validator_failures_are_actionable () =
   let module Validator_403_runner = struct
     let run ~ctx ~repo_url ?model_id ?tools ?debug_dir ?log_context ~config ~input () =
       match config.Agent_runner.name with
@@ -6314,7 +6314,29 @@ let test_pr_general_validator_failure_is_actionable () =
   (check bool) "shows inferred provider classification" true
     (contains_sub ~sub:"likely_type=content_policy_violation" write_log);
   check bool "directs persistent 403s to service operators" true
-    (contains_sub ~sub:"If it persists, ask a Reviewotron service operator" write_log)
+    (contains_sub ~sub:"If it persists, ask a Reviewotron service operator" write_log);
+  Test_helpers.reset_test_state ();
+  Api_local.set_agent_response_map
+    [
+      "general_scout", "mock_api_responses/scout/leads_two.json";
+      "general_deep_review", "mock_api_responses/claude/review_response.json";
+    ];
+  let ctx = Test_helpers.make_test_context ~config:security_enabled_slack_config () in
+  let payload = read_file "mock_payloads/push_develop.json" in
+  let event = Test_helpers.parse_event_exn ~event_type:"push" ~body:payload in
+  Lwt_main.run (Validator_403_reviewer.process_event ctx ~event);
+  match Api_local.get_slack_messages () with
+  | [ (_channel, _text, Some [ attachment ]) ] ->
+    (check bool) "push notice names validator stage" true
+      (contains_sub ~sub:"general-validator failed" attachment.Slack_types.text);
+    (check bool) "push notice says retry once" true
+      (contains_sub ~sub:"re-trigger the review once" attachment.Slack_types.text);
+    check bool "push notice directs persistent 403s to service operators" true
+      (contains_sub ~sub:"If it persists, ask a Reviewotron service operator" attachment.Slack_types.text)
+  | [] -> fail "expected a Slack message"
+  | [ (_channel, _text, None) ] -> fail "expected Slack attachments"
+  | [ (_channel, _text, Some []) ] -> fail "expected a Slack attachment"
+  | _ -> fail "expected one Slack message with one attachment"
 
 let test_pr_general_failure_with_security_findings () =
   Test_helpers.reset_test_state ();
@@ -8032,8 +8054,8 @@ let () =
       ( "general_failure_robustness",
         [
           test_case "PR review posted on general failure (no findings)" `Quick test_pr_general_failure_no_findings;
-          test_case "PR validator failure explains withheld finding" `Quick
-            test_pr_general_validator_failure_is_actionable;
+          test_case "PR and push validator failures are actionable" `Quick
+            test_pr_and_push_general_validator_failures_are_actionable;
           test_case "PR review posted on general failure (with security findings)" `Quick
             test_pr_general_failure_with_security_findings;
           test_case "push review posts Slack on general failure" `Quick test_push_general_failure;

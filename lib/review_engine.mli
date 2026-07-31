@@ -81,6 +81,9 @@ val finding_to_review_comment :
     despite being enabled. *)
 val security_error_notice : string
 
+(** User-facing retry guidance for a failed validation request. *)
+val retry_guidance : string -> string
+
 (** Raw plugin execution result, before sink-specific publishing. *)
 type plugin_result = {
   general_output : General_review_plugin.review_outcome option;
