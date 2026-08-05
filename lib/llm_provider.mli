@@ -6,7 +6,7 @@
 
 type t =
   | Anthropic  (** Direct api.anthropic.com. Backwards-compatible path. *)
-  | Openrouter  (** openrouter.ai, pinned to the Anthropic upstream. *)
+  | Openrouter  (** openrouter.ai, with an independent OpenAI fallback. *)
 
 (** A key is usable only if it is non-blank: trims surrounding whitespace and
     maps the empty string to [None]. The single definition of "blank key" shared
@@ -20,9 +20,9 @@ val nonempty : string -> string option
 val resolve : Config_types.secrets -> (t, string) result
 
 (** Build the language model for [model_id] under this provider.
-    [Openrouter] uses only the OpenRouter API key and pins routing to the
-    Anthropic upstream. It does not inject provider BYOK keys; OpenRouter account
-    credits are sufficient for normal routing. *)
+    [Openrouter] uses only the OpenRouter API key and restricts routing to the
+    Anthropic and OpenAI labs' endpoints. It does not inject provider BYOK keys;
+    OpenRouter account credits are sufficient for normal routing. *)
 val language_model : t -> secrets:Config_types.secrets -> model_id:string -> Ai_provider.Language_model.t
 
 (** Namespace a model ID for this provider. Funnels BOTH tier-derived defaults
@@ -42,10 +42,16 @@ val effort_options : t -> effort:Config_types.Effort.t -> Ai_provider.Provider_o
 (** Cache-control marker for the cached input prefix. *)
 val cached_input_options : t -> Ai_provider.Provider_options.t
 
-(** OpenRouter provider routing preferences used by {!language_model}. Exposed
-    for tests and operational introspection: Reviewotron relies on structured
-    output, so OpenRouter must route only to Anthropic endpoints that accept
-    every requested parameter, with fallback enabled between those endpoints. *)
+(** Cross-lab fallback model for each supported default Claude model. Custom
+    model overrides receive no implicit fallback. *)
+val openrouter_fallback_models : string -> string list
+
+(** OpenRouter provider routing preferences used by {!language_model}. Routing
+    is restricted to Anthropic and OpenAI's own endpoints, requires every
+    requested parameter, and excludes providers that may collect prompts. *)
+val openrouter_provider_prefs : Ai_provider_openrouter.Openrouter_options.provider_prefs
+
+(** Deprecated compatibility alias for {!openrouter_provider_prefs}. *)
 val anthropic_upstream_prefs : Ai_provider_openrouter.Openrouter_options.provider_prefs
 
 (** Usage read from a step's [provider_metadata]. Carries the cache token counts

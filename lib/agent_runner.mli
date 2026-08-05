@@ -49,6 +49,8 @@ type agent_result = {
         only tool is [get_file_content], this is the number of file-fetch
         attempts that actually ran. *)
   model_id : string;
+    (** Model that produced the final structured output. This differs from the
+        requested model when OpenRouter used a cross-lab fallback. *)
   reported_cost_usd : float option;
     (** The provider's actual billed USD cost for the run, when it reports one
           (OpenRouter). [None] on the Anthropic path, where {!Cost_tracking}
@@ -102,6 +104,10 @@ val build_provider_options : provider:Llm_provider.t -> agent_config -> Ai_provi
     [tools + system + input] prefix (per the provider's prefix caching rules).
     Exposed for unit testing. *)
 val cached_input_provider_options : Llm_provider.t -> Ai_provider.Provider_options.t
+
+(** Select the model used for result attribution. OpenRouter reports the model
+    it actually served; direct Anthropic retains the requested model ID. *)
+val response_model_id : provider:Llm_provider.t -> requested_model_id:string -> string option -> string
 
 (** Render a provider failure with HTTP status and retryability.
 

@@ -190,6 +190,11 @@ let provider_name = function
   | Llm_provider.Anthropic -> "anthropic"
   | Llm_provider.Openrouter -> "openrouter"
 
+let response_model_id ~provider ~requested_model_id response_model =
+  match provider, response_model with
+  | Llm_provider.Openrouter, Some model_id -> model_id
+  | Openrouter, None | Anthropic, None | Anthropic, Some _ -> requested_model_id
+
 let retry_generic_openrouter_403_once ?(sleep = Lwt_unix.sleep) ~log_prefix ~agent_name f =
   Lwt.catch f (function
     | Ai_provider.Provider_error.Provider_error error when should_retry_generic_openrouter_403 error ->
@@ -376,7 +381,7 @@ let run_agent_untraced ~provider ~model ?tools ?(max_retries = 2) ?debug_dir ?lo
     Lwt.return_error msg
   in
   let output_spec = Ai_core.Output.object_ ~name:(config.name ^ "_output") ~schema:config.output_schema () in
-  let model_id = Ai_provider.Language_model.model_id model in
+  let requested_model_id = Ai_provider.Language_model.model_id model in
   let provider_options = build_provider_options ~provider config in
   let model = retry_generic_openrouter_403_model ~log_prefix ~agent_name:config.name model in
   let thinking_budget_str =
@@ -390,7 +395,7 @@ let run_agent_untraced ~provider ~model ?tools ?(max_retries = 2) ?debug_dir ?lo
     | Some effort -> Config_types.Effort.to_string effort
   in
   log#info "%sagent %s: starting (provider=%s, model=%s, max_steps=%d, thinking_budget=%s, effort=%s)" log_prefix
-    config.name (provider_name provider) model_id config.max_steps thinking_budget_str effort_str;
+    config.name (provider_name provider) requested_model_id config.max_steps thinking_budget_str effort_str;
   (match provider, config.effort with
   | Llm_provider.Anthropic, Some effort ->
     log#warn "%sagent %s: direct Anthropic cannot encode effort=%s with installed ocaml-ai-sdk; using provider default"
@@ -415,10 +420,13 @@ let run_agent_untraced ~provider ~model ?tools ?(max_retries = 2) ?debug_dir ?lo
     in
     let steps_count = List.length result.steps in
     let cache_read_input_tokens, cache_creation_input_tokens, reported_cost_usd = usage_of_result ~provider result in
-    log#info "%sagent %s: finished (%d steps, %d input tokens, %d output tokens)" log_prefix config.name steps_count
-      result.usage.input_tokens result.usage.output_tokens;
+    let result_model_id =
+      response_model_id ~provider ~requested_model_id result.Ai_core.Generate_text_result.response.model
+    in
+    log#info "%sagent %s: finished (%d steps, %d input tokens, %d output tokens, model=%s)" log_prefix config.name
+      steps_count result.usage.input_tokens result.usage.output_tokens result_model_id;
     let make_result ~output ~usage ~extra_cache_read ~extra_cache_write ~extra_cost ~extra_steps ~extra_tool_calls
-      ~extra_tool_results =
+      ~extra_tool_results ~model_id =
       let total_cache_read = cache_read_input_tokens + extra_cache_read in
       let total_cache_write = cache_creation_input_tokens + extra_cache_write in
       (* Normalize prompt-token accounting to disjoint buckets so downstream
@@ -449,7 +457,7 @@ let run_agent_untraced ~provider ~model ?tools ?(max_retries = 2) ?debug_dir ?lo
     | Some output ->
       Lwt.return_ok
         (make_result ~output ~usage:result.usage ~extra_cache_read:0 ~extra_cache_write:0 ~extra_cost:None
-           ~extra_steps:0 ~extra_tool_calls:0 ~extra_tool_results:0)
+           ~extra_steps:0 ~extra_tool_calls:0 ~extra_tool_results:0 ~model_id:result_model_id)
     | None ->
       let recoverable_exhaustion =
         match result.finish_reason with
@@ -486,10 +494,11 @@ let run_agent_untraced ~provider ~model ?tools ?(max_retries = 2) ?debug_dir ?lo
           let extra_cache_read, extra_cache_write, extra_cost = usage_of_result ~provider second in
           (match second.output with
           | Some output ->
+            let model_id = response_model_id ~provider ~requested_model_id second.response.model in
             Lwt.return_ok
               (make_result ~output ~usage ~extra_cache_read ~extra_cache_write ~extra_cost
                  ~extra_steps:(List.length second.steps) ~extra_tool_calls:(List.length second.tool_calls)
-                 ~extra_tool_results:(List.length second.tool_results))
+                 ~extra_tool_results:(List.length second.tool_results) ~model_id)
           | None ->
             (* Impossible: finalize returns Some only when second.output is Some. *)
             let msg = Printf.sprintf "agent %s: finalization returned empty output" config.name in
@@ -525,7 +534,7 @@ let add_reported_cost_attr = function
   | Some cost -> Telemetry.add_attrs [ "gen_ai.usage.reported_cost_usd", `Float cost ]
 
 let run_agent ~provider ~model ?tools ?(max_retries = 2) ?debug_dir ?log_context ~config ~input () =
-  let model_id = Ai_provider.Language_model.model_id model in
+  let requested_model_id = Ai_provider.Language_model.model_id model in
   let thinking_attrs =
     match config.thinking_budget with
     | None -> [ "reviewotron.agent.thinking_budget.enabled", `Bool false ]
@@ -548,7 +557,7 @@ let run_agent ~provider ~model ?tools ?(max_retries = 2) ?debug_dir ?log_context
     [
       "reviewotron.agent.name", `String config.name;
       "reviewotron.agent.model_tier", `String (model_tier_to_string config.model_tier);
-      "gen_ai.request.model", `String model_id;
+      "gen_ai.request.model", `String requested_model_id;
       "reviewotron.agent.max_steps", `Int config.max_steps;
     ]
     @ thinking_attrs
@@ -565,6 +574,8 @@ let run_agent ~provider ~model ?tools ?(max_retries = 2) ?debug_dir ?log_context
           "reviewotron.agent.steps", `Int result.steps_count;
           "reviewotron.agent.tool_calls", `Int result.tool_calls_count;
           "reviewotron.agent.tool_results", `Int result.tool_results_count;
+          "gen_ai.response.model", `String result.model_id;
+          "reviewotron.agent.model_fallback", `Bool (not (String.equal requested_model_id result.model_id));
           "gen_ai.usage.input_tokens", `Int result.usage.input_tokens;
           "gen_ai.usage.output_tokens", `Int result.usage.output_tokens;
           "gen_ai.usage.cache_read_input_tokens", `Int result.cache_read_input_tokens;

@@ -63,15 +63,21 @@ let normalize_model_id provider model_id =
   | Anthropic -> model_id
   | Openrouter -> normalize_anthropic_model_for_openrouter model_id
 
-(* Pin OpenRouter to Anthropic's own API: no third-party hosts or quantized
-   variants, while allowing OpenRouter to retry another Anthropic endpoint. *)
-let anthropic_upstream_prefs : Ai_provider_openrouter.Openrouter_options.provider_prefs =
+let openrouter_fallback_models = function
+  | "anthropic/claude-opus-4.8" -> [ "openai/gpt-5.6-sol" ]
+  | "anthropic/claude-sonnet-5" -> [ "openai/gpt-5.6-terra" ]
+  | "anthropic/claude-haiku-4.5" -> [ "openai/gpt-5.6-luna" ]
+  | _ -> []
+
+(* Keep source-bearing review prompts on the model labs' own endpoints while
+   allowing an independent OpenAI fallback when Anthropic is unavailable. *)
+let openrouter_provider_prefs : Ai_provider_openrouter.Openrouter_options.provider_prefs =
   {
-    order = [ "anthropic" ];
+    order = [];
     allow_fallbacks = Some true;
     require_parameters = Some true;
-    data_collection = None;
-    only = [ "anthropic" ];
+    data_collection = Some "deny";
+    only = [ "anthropic"; "openai" ];
     ignore_ = [];
     quantizations = [];
     sort = None;
@@ -82,32 +88,34 @@ let anthropic_upstream_prefs : Ai_provider_openrouter.Openrouter_options.provide
     enforce_distillable_text = None;
   }
 
+let anthropic_upstream_prefs = openrouter_provider_prefs
+
 (* The SDK's [Ai_provider_openrouter.language_model] does not accept default
    provider options at construction; options are attached per-call via
-   [Call_options.provider_options].  To pin every request to the Anthropic
-   upstream regardless of what the caller passes, wrap the base model and merge
-   our [provider_prefs] into each call's options.  We merge into any existing
-   [Openrouter_options.t] (e.g. the reasoning config from {!thinking_options})
-   rather than replacing it, since both share the single [Openrouter] key. *)
-let pin_openrouter_model (base : Ai_provider.Language_model.t) : Ai_provider.Language_model.t =
+   [Call_options.provider_options]. Wrap the base model and merge the cross-lab
+   fallback policy into every call, preserving other OpenRouter options such as
+   reasoning config because they share the same provider-options key. *)
+let route_openrouter_model (base : Ai_provider.Language_model.t) : Ai_provider.Language_model.t =
   let module Base = (val base : Ai_provider.Language_model.S) in
-  let with_pinning (opts : Ai_provider.Provider_options.t) =
+  let with_routing (opts : Ai_provider.Provider_options.t) =
     let existing =
       Option.default Ai_provider_openrouter.Openrouter_options.default
         (Ai_provider_openrouter.Openrouter_options.of_provider_options opts)
     in
-    let pinned = { existing with provider = Some anthropic_upstream_prefs } in
-    Ai_provider_openrouter.Openrouter_options.to_provider_options pinned
+    let routed =
+      { existing with models = openrouter_fallback_models Base.model_id; provider = Some openrouter_provider_prefs }
+    in
+    Ai_provider_openrouter.Openrouter_options.to_provider_options routed
   in
-  let pin (call : Ai_provider.Call_options.t) = { call with provider_options = with_pinning call.provider_options } in
-  let module Pinned = struct
+  let route (call : Ai_provider.Call_options.t) = { call with provider_options = with_routing call.provider_options } in
+  let module Routed = struct
     let specification_version = Base.specification_version
     let provider = Base.provider
     let model_id = Base.model_id
-    let generate call = Base.generate (pin call)
-    let stream call = Base.stream (pin call)
+    let generate call = Base.generate (route call)
+    let stream call = Base.stream (route call)
   end in
-  (module Pinned : Ai_provider.Language_model.S)
+  (module Routed : Ai_provider.Language_model.S)
 
 let language_model provider ~(secrets : Config_types.secrets) ~model_id =
   match provider with
@@ -118,7 +126,7 @@ let language_model provider ~(secrets : Config_types.secrets) ~model_id =
   | Openrouter ->
     let api_key = api_key_exn secrets.openrouter_api_key in
     let base = Ai_provider_openrouter.language_model ~api_key ~model:model_id () in
-    pin_openrouter_model base
+    route_openrouter_model base
 
 let thinking_options provider ~budget_tokens =
   match provider with

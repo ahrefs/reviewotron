@@ -362,11 +362,36 @@ let test_llm_provider_usage_metadata_combines_openrouter_costs () =
   (check int) "cache write" 11 usage.cache_write;
   (check (option (float 1e-9))) "total reported cost" (Some 0.52) usage.cost
 
-let test_openrouter_requires_supported_parameters () =
-  (check (option bool)) "require_parameters" (Some true) Llm_provider.anthropic_upstream_prefs.require_parameters;
-  (check (option bool))
-    "fallback stays within Anthropic" (Some true) Llm_provider.anthropic_upstream_prefs.allow_fallbacks;
-  (check (list string)) "only Anthropic upstreams" [ "anthropic" ] Llm_provider.anthropic_upstream_prefs.only
+let test_openrouter_cross_lab_routing () =
+  let prefs = Llm_provider.openrouter_provider_prefs in
+  (check (option bool)) "require_parameters" (Some true) prefs.require_parameters;
+  (check (option bool)) "provider fallback enabled" (Some true) prefs.allow_fallbacks;
+  (check (option string)) "providers may not collect prompts" (Some "deny") prefs.data_collection;
+  (check (list string)) "only model labs" [ "anthropic"; "openai" ] prefs.only;
+  (check (list string)) "OpenRouter keeps default load balancing" [] prefs.order;
+  (check (list string))
+    "Opus falls back to Sol" [ "openai/gpt-5.6-sol" ]
+    (Llm_provider.openrouter_fallback_models "anthropic/claude-opus-4.8");
+  (check (list string))
+    "Sonnet falls back to Terra" [ "openai/gpt-5.6-terra" ]
+    (Llm_provider.openrouter_fallback_models "anthropic/claude-sonnet-5");
+  (check (list string))
+    "Haiku falls back to Luna" [ "openai/gpt-5.6-luna" ]
+    (Llm_provider.openrouter_fallback_models "anthropic/claude-haiku-4.5");
+  (check (list string))
+    "custom models stay explicit" []
+    (Llm_provider.openrouter_fallback_models "google/gemini-custom")
+
+let test_response_model_id () =
+  (check string) "OpenRouter fallback is attributed" "openai/gpt-5.6-terra"
+    (Agent_runner.response_model_id ~provider:Llm_provider.Openrouter ~requested_model_id:"anthropic/claude-sonnet-5"
+       (Some "openai/gpt-5.6-terra"));
+  (check string) "OpenRouter missing response model uses requested" "anthropic/claude-sonnet-5"
+    (Agent_runner.response_model_id ~provider:Llm_provider.Openrouter ~requested_model_id:"anthropic/claude-sonnet-5"
+       None);
+  (check string) "direct Anthropic keeps requested model" "claude-sonnet-5"
+    (Agent_runner.response_model_id ~provider:Llm_provider.Anthropic ~requested_model_id:"claude-sonnet-5"
+       (Some "claude-sonnet-5-20260801"))
 
 let test_openrouter_maps_error_finish_reason () =
   let is_error =
@@ -7652,7 +7677,8 @@ let () =
           test_case "llm_provider normalize model id" `Quick test_llm_provider_normalize;
           test_case "model ids no regression" `Quick test_model_ids_no_regression;
           test_case "llm_provider usage metadata cost" `Quick test_llm_provider_usage_metadata_combines_openrouter_costs;
-          test_case "openrouter requires supported parameters" `Quick test_openrouter_requires_supported_parameters;
+          test_case "openrouter cross-lab routing" `Quick test_openrouter_cross_lab_routing;
+          test_case "response model attribution" `Quick test_response_model_id;
           test_case "openrouter maps error finish reason" `Quick test_openrouter_maps_error_finish_reason;
           test_case "openrouter embedded error" `Quick test_openrouter_embedded_error_is_provider_error;
           test_case "provider error includes OpenRouter classification" `Quick
