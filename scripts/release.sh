@@ -21,6 +21,16 @@ done
 [[ -z "$(git status --porcelain)" ]] || die "working tree is not clean"
 gh auth status >/dev/null 2>&1 || die "GitHub CLI is not authenticated"
 
+# GitHub resolves the release tag against the remote branch, not the local HEAD,
+# so releasing with unpushed commits tags a different tree than the one being
+# built. Compare against the remote itself rather than the local origin/ ref,
+# which may be stale.
+branch=$(git rev-parse --abbrev-ref HEAD)
+remote_head=$(git ls-remote origin "refs/heads/$branch" | cut -f1)
+[[ -n "$remote_head" ]] || die "branch $branch does not exist on origin — push it first"
+[[ "$remote_head" == "$(git rev-parse HEAD)" ]] ||
+  die "HEAD differs from origin/$branch — push or pull before releasing"
+
 # Fail before the build (minutes) rather than at upload, when the tag is taken.
 tag="v$version"
 git rev-parse --verify --quiet "refs/tags/$tag" >/dev/null && die "tag already exists: $tag"
