@@ -1,4 +1,4 @@
-.PHONY: all build clean start default fmt test dev install cli-smoke install-smoke
+.PHONY: all build clean start default fmt test dev install cli-smoke install-smoke release gh-release
 
 PREFIX ?= $(HOME)/.local
 BINDIR ?= $(PREFIX)/bin
@@ -35,6 +35,12 @@ watch:
 
 release:
 	dune build --profile=release src/reviewotron.exe
+
+# Publish a GitHub release: build, package the binary as a tarball, and upload it
+# with its checksum. The version and tag both come from the (version X.Y.Z) field
+# in dune-project — bump it there before running this.
+gh-release:
+	./scripts/release.sh
 
 # Resolve the built exe path robustly whether we build standalone or from inside
 # a larger dune workspace (e.g. vendored as a subrepo). dune always builds from

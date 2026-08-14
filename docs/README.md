@@ -227,7 +227,41 @@ PREFIX="$HOME/.local" make install
 ```
 
 Users already working in the project opam switch can use `opam install .`
-instead. The initial binary workflow targets the current nspawn userspace.
+instead.
+
+### Install From a Release
+
+Published releases ship a prebuilt `x86_64` Linux binary, so there is nothing to
+compile on the target machine. Each release has two assets: the
+`reviewotron-vX.Y.Z-linux-x86_64.tar.gz` archive and a `SHA256SUMS` file.
+
+Download both, verify the checksum, and extract the binary:
+
+```bash
+VERSION=X.Y.Z
+BASE="https://github.com/ahrefs/reviewotron/releases/download/v$VERSION"
+
+curl -fLO "$BASE/reviewotron-v$VERSION-linux-x86_64.tar.gz"
+curl -fLO "$BASE/SHA256SUMS"
+sha256sum --check --ignore-missing SHA256SUMS
+
+tar -xzf "reviewotron-v$VERSION-linux-x86_64.tar.gz"
+```
+
+That leaves the executable at `reviewotron-v$VERSION-linux-x86_64/reviewotron`.
+Move it wherever you keep binaries and make sure that location is on your
+`PATH` — `/usr/local/bin` for a system-wide install, `~/.local/bin` for a
+single user. Then check it runs:
+
+```bash
+reviewotron --version
+```
+
+The binary is dynamically linked against the usual system libraries (`libcurl`,
+`libssl`, `libcrypto`, `libevent`, `libgmp`, `libpcre2`, `libstdc++`, `zlib`),
+which are present on a standard Ubuntu 24.04 host. If one is missing, the
+binary fails at startup naming the library it could not load; install the
+matching distribution package.
 
 ### Secrets File
 
@@ -1108,10 +1142,12 @@ Duplicate review prevention relies on the state file. Without `--state`, or afte
 
 ### Supported Local Runtime
 
-The `make install` binary is currently intended for the supported nspawn
-userspace and its runtime libraries. Cross-platform binaries and static
-linking are not part of this phase. Publishing a packaged GitHub Release is
-handled separately by `scripts/release.sh` from that environment.
+Released binaries target `x86_64` Linux and are dynamically linked against the
+usual system libraries — see [Install From a Release](#install-from-a-release).
+Other architectures and static linking are not part of this phase. Publishing a
+release is handled by `make gh-release` (`scripts/release.sh`), which builds,
+packages, and uploads from a prepared build environment. It requires a clean
+working tree and takes the version from `dune-project`.
 
 ### Concurrent Reviews
 

@@ -7,54 +7,32 @@ die() {
 }
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-dune_project="$script_dir/../dune-project"
-[[ -f "$dune_project" ]] || die "dune-project not found at $dune_project"
 
 # The version is declared once, in dune-project, and baked into the binary by
 # the release-profile build. Read it here so the git tag and GitHub release
 # stay in lockstep with the compiled-in version.
-version=$(sed -n 's/^(version[[:space:]]*\([0-9][0-9.]*\))[[:space:]]*$/\1/p' "$dune_project")
-[[ -n "$version" ]] || die "no (version X.Y.Z) declared in dune-project"
-[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "dune-project version is not X.Y.Z: $version"
+version=$(sed -n 's/^(version[[:space:]]*\([0-9][0-9.]*\))[[:space:]]*$/\1/p' "$script_dir/../dune-project")
+[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "no (version X.Y.Z) in dune-project: '$version'"
 
-for tool in git dune gh strip tar; do
+for tool in git dune gh strip tar sha256sum; do
   command -v "$tool" >/dev/null 2>&1 || die "required tool not found: $tool"
 done
-
-if command -v sha256sum >/dev/null 2>&1; then
-  checksum_tool=sha256sum
-elif command -v shasum >/dev/null 2>&1; then
-  checksum_tool=shasum
-else
-  die "required checksum tool not found: sha256sum or shasum"
-fi
 
 [[ -z "$(git status --porcelain)" ]] || die "working tree is not clean"
 gh auth status >/dev/null 2>&1 || die "GitHub CLI is not authenticated"
 
-remote_url=$(git config --get remote.origin.url || true)
-remote_repo=${remote_url#git@github.com:}
-remote_repo=${remote_repo#https://github.com/}
-remote_repo=${remote_repo#ssh://git@github.com/}
-remote_repo=${remote_repo%.git}
-[[ "$remote_repo" == */* ]] || die "origin is not a GitHub repository"
-
-github_repo=$(gh repo view --json nameWithOwner --jq '.nameWithOwner')
-[[ "$github_repo" == "$remote_repo" ]] || die "GitHub repository mismatch: origin=$remote_repo gh=$github_repo"
-
+# Fail before the build (minutes) rather than at upload, when the tag is taken.
 tag="v$version"
 git rev-parse --verify --quiet "refs/tags/$tag" >/dev/null && die "tag already exists: $tag"
-if gh api "repos/$github_repo/git/ref/tags/$tag" >/dev/null 2>&1; then
-  die "GitHub tag already exists: $tag"
-fi
-if gh release view "$tag" >/dev/null 2>&1; then
-  die "GitHub release already exists: $tag"
-fi
+gh release view "$tag" >/dev/null 2>&1 && die "GitHub release already exists: $tag"
 
 dune runtest
 dune build --profile=release src/reviewotron.exe
 
-release_name="reviewotron-v${version}-linux-x86_64-nspawn"
+# The release ships the prebuilt binary in a gzipped tarball, alongside a
+# SHA256SUMS file. The archive name carries the version; the extracted binary is
+# plain `reviewotron`.
+release_name="reviewotron-v${version}-linux-x86_64"
 archive_name="${release_name}.tar.gz"
 work_dir=$(mktemp -d)
 trap 'rm -rf "$work_dir"' EXIT
@@ -64,20 +42,21 @@ install -m 755 _build/default/src/reviewotron.exe "$stage_dir/reviewotron"
 strip "$stage_dir/reviewotron"
 tar -C "$work_dir" -czf "$work_dir/$archive_name" "$release_name"
 
-if [[ "$checksum_tool" == sha256sum ]]; then
-  (cd "$work_dir" && sha256sum "$archive_name" > SHA256SUMS)
-else
-  (cd "$work_dir" && shasum -a 256 "$archive_name" > SHA256SUMS)
-fi
+(cd "$work_dir" && sha256sum "$archive_name" > SHA256SUMS)
 
+# Verify what is actually being published: extract the archive and check the
+# binary runs and reports the version declared in dune-project. Guards against
+# publishing a stale build.
 extract_dir="$work_dir/extract"
 mkdir -p "$extract_dir"
 tar -xzf "$work_dir/$archive_name" -C "$extract_dir"
-binary="$extract_dir/$release_name/reviewotron"
-"$binary" --help >/dev/null
-actual_version=$("$binary" --version)
+actual_version=$("$extract_dir/$release_name/reviewotron" --version)
 [[ "$actual_version" == "$version" ]] || die "built binary reports $actual_version, expected $version"
 
-release_url=$(gh release create "$tag" "$work_dir/$archive_name" "$work_dir/SHA256SUMS" --draft --generate-notes --title "Reviewotron $tag")
+# Uploaded as a draft first so the assets are never half-uploaded under a live
+# tag, then published once they are all in place. `gh release create` prints the
+# draft's placeholder URL (releases/tag/untagged-...), so report the tag URL the
+# release ends up at instead.
+gh release create "$tag" "$work_dir/$archive_name" "$work_dir/SHA256SUMS" --draft --notes "" --title "Reviewotron $tag" >/dev/null
 gh release edit "$tag" --draft=false >/dev/null
-printf '%s\n' "$release_url"
+printf 'https://github.com/%s/releases/tag/%s\n' "$(gh repo view --json nameWithOwner --jq '.nameWithOwner')" "$tag"
