@@ -371,8 +371,7 @@ let test_local_review_populates_file_contents () =
     with
     | Error err -> fail (Local_source.string_of_prepare_error err)
     | Ok job ->
-      check (list string) "embedded key file paths" [ "a.ml"; "b.ml" ]
-        (List.map fst job.Review_job.file_contents);
+      check (list string) "embedded key file paths" [ "a.ml"; "b.ml" ] (List.map fst job.Review_job.file_contents);
       check (option string) "a.ml content read from worktree" (Some a) (List.assoc_opt "a.ml" job.file_contents);
       check (option string) "b.ml content read from worktree" (Some b) (List.assoc_opt "b.ml" job.file_contents))
 
