@@ -132,7 +132,7 @@ let thinking_options provider ~budget_tokens =
   match provider with
   | Anthropic ->
     let thinking : Ai_provider_anthropic.Thinking.t =
-      { enabled = true; budget_tokens = Ai_provider_anthropic.Thinking.budget_exn budget_tokens }
+      Enabled { budget_tokens = Ai_provider_anthropic.Thinking.budget_exn budget_tokens; display = None }
     in
     let opts = { Ai_provider_anthropic.Anthropic_options.default with thinking = Some thinking } in
     Ai_provider_anthropic.Anthropic_options.to_provider_options opts

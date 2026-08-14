@@ -7070,6 +7070,7 @@ let test_write_debug_dump () =
       tool_results = [];
       finish_reason = Ai_provider.Finish_reason.Tool_calls;
       usage = { input_tokens = 0; output_tokens = 0; total_tokens = None };
+      response_model = None;
       provider_metadata = None;
     }
   in
@@ -7081,6 +7082,7 @@ let test_write_debug_dump () =
       tool_results = [];
       finish_reason = Ai_provider.Finish_reason.Stop;
       usage = { input_tokens = 0; output_tokens = 0; total_tokens = None };
+      response_model = None;
       provider_metadata = None;
     }
   in
@@ -7121,7 +7123,16 @@ let zero_usage : Ai_provider.Usage.t = { input_tokens = 0; output_tokens = 0; to
 
 let mk_step ?(text = "") ?(tool_calls = []) ?(tool_results = []) ?(finish_reason = Ai_provider.Finish_reason.Stop) () :
   Ai_core.Generate_text_result.step =
-  { text; reasoning = ""; tool_calls; tool_results; finish_reason; usage = zero_usage; provider_metadata = None }
+  {
+    text;
+    reasoning = "";
+    tool_calls;
+    tool_results;
+    finish_reason;
+    usage = zero_usage;
+    response_model = None;
+    provider_metadata = None;
+  }
 
 let mk_tool_call ~id ~name ~args : Ai_core.Generate_text_result.tool_call =
   { tool_call_id = id; tool_name = name; args }
@@ -7265,9 +7276,9 @@ let test_provider_options_carries_thinking_when_set () =
   | Some opts ->
   match opts.thinking with
   | None -> fail "expected thinking config to be populated"
-  | Some t ->
-    (check bool) "thinking enabled" true t.enabled;
-    (check int) "thinking budget matches" 4096 (Ai_provider_anthropic.Thinking.to_int t.budget_tokens)
+  | Some (Enabled { budget_tokens; _ }) ->
+    (check int) "thinking budget matches" 4096 (Ai_provider_anthropic.Thinking.to_int budget_tokens)
+  | Some (Adaptive _ | Disabled) -> fail "expected thinking to be enabled with an explicit budget"
 
 let test_provider_options_carries_openrouter_medium_effort () =
   let cfg = mk_agent_config ~effort:Config_types.Effort.Medium () in
@@ -7632,8 +7643,10 @@ let test_provider_options_clamps_below_minimum () =
   let po = Agent_runner.build_provider_options ~provider:Llm_provider.Anthropic cfg in
   match Ai_provider_anthropic.Anthropic_options.of_provider_options po with
   | None -> fail "expected Anthropic options to be present"
-  | Some { thinking = Some t; _ } ->
-    (check int) "budget clamped to 1024 minimum" 1024 (Ai_provider_anthropic.Thinking.to_int t.budget_tokens)
+  | Some { thinking = Some (Enabled { budget_tokens; _ }); _ } ->
+    (check int) "budget clamped to 1024 minimum" 1024 (Ai_provider_anthropic.Thinking.to_int budget_tokens)
+  | Some { thinking = Some (Adaptive _ | Disabled); _ } ->
+    fail "expected thinking to be enabled with an explicit budget"
   | Some { thinking = None; _ } -> fail "expected thinking config to be populated"
 
 (** The cached-input [Provider_options.t] must carry an ephemeral
