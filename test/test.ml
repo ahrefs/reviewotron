@@ -332,6 +332,100 @@ let test_llm_provider_normalize () =
   (check string) "openrouter canonicalizes old prefixed id" "anthropic/claude-opus-4.6"
     (Llm_provider.normalize_model_id Llm_provider.Openrouter "anthropic/claude-opus-4-6")
 
+let test_llm_provider_base_url_of_env () =
+  (check (option string)) "unset leaves the SDK default" None (Llm_provider.base_url_of_env None);
+  (check (option string))
+    "explicit proxy URL passes through" (Some "http://127.0.0.1:18080/api/v1")
+    (Llm_provider.base_url_of_env (Some "http://127.0.0.1:18080/api/v1"));
+  (check (option string)) "empty behaves as unset" None (Llm_provider.base_url_of_env (Some ""));
+  (check (option string)) "whitespace-only behaves as unset" None (Llm_provider.base_url_of_env (Some "   \t "));
+  (check (option string))
+    "surrounding whitespace trimmed" (Some "http://127.0.0.1:18080/api/v1")
+    (Llm_provider.base_url_of_env (Some "  http://127.0.0.1:18080/api/v1  "));
+  (* The SDK appends "/chat/completions" to the base URL verbatim. *)
+  (check (option string))
+    "trailing slash stripped" (Some "http://127.0.0.1:18080/api/v1")
+    (Llm_provider.base_url_of_env (Some "http://127.0.0.1:18080/api/v1/"));
+  (check (option string))
+    "repeated trailing slashes stripped" (Some "http://127.0.0.1:18080/api/v1")
+    (Llm_provider.base_url_of_env (Some "http://127.0.0.1:18080/api/v1///"));
+  (check (option string)) "slashes only behaves as unset" None (Llm_provider.base_url_of_env (Some "///"))
+
+(* Pins the wiring, not just the resolver: [language_model] must actually hand
+   the resolved override to the SDK. Deleting the [?base_url] argument leaves
+   every pure test green, so this drives the real model against a loopback
+   listener and asserts on the request line it receives. [Language_model.S]
+   exposes no URL, so an actual request is the only way to observe the wiring. *)
+let test_llm_provider_base_url_reaches_sdk () =
+  let secrets : Config_types.secrets =
+    { repos = []; anthropic_api_key = None; openrouter_api_key = Some "sk-or-test"; slack_access_token = None }
+  in
+  let listener = Unix.socket Unix.PF_INET Unix.SOCK_STREAM 0 in
+  Unix.setsockopt listener Unix.SO_REUSEADDR true;
+  Unix.bind listener (Unix.ADDR_INET (Unix.inet_addr_loopback, 0));
+  Unix.listen listener 1;
+  let port =
+    match Unix.getsockname listener with
+    | Unix.ADDR_INET (_, port) -> port
+    | Unix.ADDR_UNIX _ -> failwith "expected an inet socket"
+  in
+  (* Trailing slash on purpose: the asserted path proves it was stripped before
+     the SDK appended "/chat/completions". *)
+  let base_url = Printf.sprintf "http://127.0.0.1:%d/api/v1/" port in
+  let request_line () =
+    let lwt_listener = Lwt_unix.of_unix_file_descr listener in
+    Fun.protect
+      ~finally:(fun () -> Lwt_main.run (Lwt_unix.close lwt_listener))
+      (fun () ->
+        with_env_vars
+          [ "OPENROUTER_BASE_URL", base_url ]
+          (fun () ->
+            let model =
+              Llm_provider.language_model Llm_provider.Openrouter ~secrets ~model_id:"anthropic/claude-sonnet-5"
+            in
+            let call =
+              Ai_provider.Call_options.default
+                ~prompt:
+                  [
+                    Ai_provider.Prompt.User
+                      { content = [ Text { text = "ping"; provider_options = Ai_provider.Provider_options.empty } ] };
+                  ]
+            in
+            let capture =
+              let%lwt accepted, _ = Lwt_unix.accept lwt_listener in
+              let buf = Bytes.create 4096 in
+              let%lwt read = Lwt_unix.read accepted buf 0 (Bytes.length buf) in
+              (* Answer with an error the SDK understands: closing without a
+                 reply makes cohttp raise [Connection.Retry] instead. *)
+              let body = {|{"error":{"message":"test listener"}}|} in
+              let response =
+                Printf.sprintf
+                  "HTTP/1.1 502 Bad Gateway\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s"
+                  (String.length body) body
+              in
+              let%lwt _ = Lwt_unix.write_string accepted response 0 (String.length response) in
+              let%lwt () = Lwt_unix.close accepted in
+              Lwt.return (Bytes.sub_string buf 0 read)
+            in
+            let text =
+              Lwt_main.run
+                (let request =
+                   Lwt.catch
+                     (fun () -> Lwt.map (fun _ -> ()) (Ai_provider.Language_model.generate model call))
+                     (fun _ -> Lwt.return_unit)
+                 in
+                 let%lwt captured = Lwt.pick [ capture; Lwt.map (fun () -> "TIMEOUT") (Lwt_unix.sleep 10.) ] in
+                 let%lwt () = request in
+                 Lwt.return captured)
+            in
+            match String.index_opt text '\r' with
+            | Some i -> String.sub text 0 i
+            | None -> text))
+  in
+  (* An exact match also proves the path carries no double slash. *)
+  (check string) "override reaches the SDK as the request path" "POST /api/v1/chat/completions HTTP/1.1"
+    (request_line ())
+
 let test_model_ids_no_regression () =
   let expect tier ~anthropic_id ~openrouter_id =
     (check string) "anthropic tier id" anthropic_id (Agent_runner.default_model_id tier);
@@ -7778,6 +7872,8 @@ let () =
           test_case "parse secrets openrouter only" `Quick test_parse_secrets_openrouter_only;
           test_case "llm_provider resolve precedence" `Quick test_llm_provider_resolve;
           test_case "llm_provider normalize model id" `Quick test_llm_provider_normalize;
+          test_case "llm_provider openrouter base url override" `Quick test_llm_provider_base_url_of_env;
+          test_case "llm_provider openrouter base url reaches sdk" `Quick test_llm_provider_base_url_reaches_sdk;
           test_case "model ids no regression" `Quick test_model_ids_no_regression;
           test_case "llm_provider usage metadata cost" `Quick test_llm_provider_usage_metadata_combines_openrouter_costs;
           test_case "openrouter cross-lab routing" `Quick test_openrouter_cross_lab_routing;

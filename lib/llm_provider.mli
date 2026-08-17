@@ -13,6 +13,18 @@ type t =
     by {!resolve} and the CLI key-precedence chains. *)
 val nonempty : string -> string option
 
+(** Resolve an OpenRouter base-URL override from a raw environment value.
+    Blank or whitespace-only maps to [None] (indistinguishable from unset), and
+    trailing slashes are stripped because the SDK appends ["/chat/completions"]
+    directly. A value of only slashes is therefore also [None]. *)
+val base_url_of_env : string option -> string option
+
+(** [base_url_of_env] applied to [OPENROUTER_BASE_URL]. [None] leaves the SDK
+    default ([https://openrouter.ai/api/v1]) untouched. Deployment-only knob for
+    routing through an OpenAI-compatible proxy; there is no CLI flag or config
+    field for it. *)
+val openrouter_base_url : unit -> string option
+
 (** Credential-driven selection, ignoring blank keys:
     - [openrouter_api_key] present -> [Openrouter]
     - else [anthropic_api_key] present -> [Anthropic]

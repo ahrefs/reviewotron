@@ -9,6 +9,16 @@ let nonempty s =
 
 let normalize_key key = Stdlib.Option.bind key nonempty
 
+(* The SDK builds request URLs as [base_url ^ "/chat/completions"], so a trailing
+   slash would yield a double slash.  Strip them defensively; the second
+   [nonempty] leaves an all-slashes value "absent" rather than "".  The captured
+   URL also survives the {!route_openrouter_model} wrapper, so the cross-lab
+   fallback routes through the same endpoint. *)
+let base_url_of_env raw =
+  Stdlib.Option.bind (normalize_key raw) (fun url -> nonempty (CCString.rdrop_while (Char.equal '/') url))
+
+let openrouter_base_url () = base_url_of_env (Sys.getenv_opt "OPENROUTER_BASE_URL")
+
 (* Combine two optional USD costs: [None] means "no figure reported", a lone
    figure passes through, and two figures sum.  Shared by the per-step OpenRouter
    totalling in {!Agent_runner} and the [cost]/[upstream_inference_cost]
@@ -125,7 +135,10 @@ let language_model provider ~(secrets : Config_types.secrets) ~model_id =
     Ai_provider_anthropic.language_model ~api_key ~model:model_id ()
   | Openrouter ->
     let api_key = api_key_exn secrets.openrouter_api_key in
-    let base = Ai_provider_openrouter.language_model ~api_key ~model:model_id () in
+    (* [?base_url] absent keeps the SDK default (https://openrouter.ai/api/v1);
+       set it to route through an OpenAI-compatible proxy on a restricted host. *)
+    let base_url = openrouter_base_url () in
+    let base = Ai_provider_openrouter.language_model ~api_key ?base_url ~model:model_id () in
     route_openrouter_model base
 
 let thinking_options provider ~budget_tokens =

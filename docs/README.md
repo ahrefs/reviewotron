@@ -110,6 +110,9 @@ publishing, then re-running after each change.
   else the `ANTHROPIC_API_KEY` environment variable, else a `--secrets` file if
   you choose to provide one (in that order). A `secrets.json` is *not* read
   unless you pass `--secrets` explicitly.
+- **Redirectable endpoint.** On an OpenRouter key, `OPENROUTER_BASE_URL` points
+  the provider at an OpenAI-compatible proxy instead of `openrouter.ai` — see
+  [OpenRouter Base URL Override](#openrouter-base-url-override).
 - **Configurable in layers.** Local CLI reviews merge built-in defaults, the
   user-global config, `.reviewotron.json`, `.reviewotron.local.json`, and
   `--config` in that order. Explicit behavior flags such as `--no-security`
@@ -323,6 +326,34 @@ Instead of a personal access token, you can authenticate as a GitHub App install
 ```
 
 App installation tokens are automatically refreshed and cached (55-minute TTL).
+
+#### OpenRouter Base URL Override
+
+When an OpenRouter API key is in use, the endpoint defaults to
+`https://openrouter.ai/api/v1`. Set `OPENROUTER_BASE_URL` to route OpenRouter
+traffic through an OpenAI-compatible proxy instead — for example on a host whose
+egress is firewalled off from `openrouter.ai`, where a local proxy holds the real
+key and substitutes it server-side:
+
+```bash
+export OPENROUTER_API_KEY=sk-or-v1-proxy-placeholder-key-replaced-by-llm-proxy
+export OPENROUTER_BASE_URL=http://127.0.0.1:18080/api/v1
+```
+
+- **Environment variable only.** There is deliberately no CLI flag, secrets-file
+  field, or config-schema field: this is deployment configuration, not review
+  configuration.
+- **No trailing slash.** Request paths are appended directly to the base URL, so
+  the value should end at the API version (`.../api/v1`, not `.../api/v1/`).
+  Trailing slashes are stripped defensively, but do not rely on it.
+- Blank or whitespace-only is treated exactly as unset, leaving the default
+  endpoint in place.
+- Plain `http://` is supported, for proxies on loopback.
+- The key is still required and still only checked for non-emptiness, so a
+  placeholder value is fine when the proxy supplies the real key.
+- Affects the OpenRouter path only. The direct Anthropic path
+  (`ANTHROPIC_API_KEY`) is unchanged, as is the cross-lab fallback routing,
+  which follows whatever base URL is in effect.
 
 ### GitHub Webhook
 
