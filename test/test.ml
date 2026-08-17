@@ -4106,18 +4106,13 @@ let test_local_review_diff_returns_markdown () =
   let config = Context.default_config () in
   let result =
     Lwt_main.run
-      (Local_review_test.review_diff_report ~ctx ~root:"." ~repo_key:"local/repo" ~change_key:"local-change"
+      (Local_review_test.review_diff ~ctx ~root:"." ~repo_key:"local/repo" ~change_key:"local-change"
          ~title:"Local change" ~description:"Local description" ~diff_path:"mock_api_responses/github/pr_42.diff"
          ~config ())
   in
   match result with
   | Error msg -> fail msg
-  | Ok report ->
-    (match report.Review_engine.status with
-    | Review_engine.Success -> ()
-    | Review_engine.Partial_failure -> fail "clean review was partially failed"
-    | Review_engine.Failure -> fail "clean review failed");
-    let markdown = Local_sink.render_markdown report in
+  | Ok markdown ->
     (check bool) "summary not leaked" false (CCString.find ~sub:"The changes look generally good" markdown >= 0);
     (check bool) "has inline comments section" true (CCString.find ~sub:"### Inline comments" markdown >= 0);
     (check bool) "has local inline location" true (CCString.find ~sub:"src/main.ml:14" markdown >= 0);
@@ -4145,6 +4140,16 @@ let test_local_review_diff_text_returns_markdown () =
     (check bool) "summary not leaked" false (CCString.find ~sub:"The changes look generally good" markdown >= 0);
     (check bool) "has inline comments section" true (CCString.find ~sub:"### Inline comments" markdown >= 0)
 
+let run_local_failure_report ~state ~change_key =
+  let ctx = Test_helpers.make_test_context ~state () in
+  let config =
+    Config_types.config_of_json (Melange_json.of_string {|{"review_plugins": {"security": {"enabled": true}}}|})
+  in
+  let diff_text = read_file "mock_api_responses/github/pr_42.diff" in
+  Lwt_main.run
+    (Local_review_test.review_diff_text_report ~ctx ~root:"." ~repo_key:"local/repo" ~change_key ~title:"Failed review"
+       ~description:"Local description" ~diff_text ~config ())
+
 let test_local_review_total_failure_is_retryable () =
   Test_helpers.reset_test_state ();
   Api_local.set_agent_response_map
@@ -4153,23 +4158,11 @@ let test_local_review_total_failure_is_retryable () =
       "security_triage", "mock_api_responses/nonexistent_security_triage.json";
     ];
   let state = State.create () in
-  let ctx = Test_helpers.make_test_context ~state () in
-  let config =
-    Config_types.config_of_json (Melange_json.of_string {|{"review_plugins": {"security": {"enabled": true}}}|})
-  in
-  let diff_text = read_file "mock_api_responses/github/pr_42.diff" in
-  let review () =
-    Lwt_main.run
-      (Local_review_test.review_diff_text_report ~ctx ~root:"." ~repo_key:"local/repo" ~change_key:"total-failure"
-         ~title:"Total failure" ~description:"Local description" ~diff_text ~config ())
-  in
+  let review () = run_local_failure_report ~state ~change_key:"total-failure" in
   let expect_failure = function
     | Error msg -> fail msg
     | Ok report ->
-      (match report.Review_engine.status with
-      | Review_engine.Success -> fail "failed review reported success"
-      | Review_engine.Partial_failure -> fail "total failure reported partial failure"
-      | Review_engine.Failure -> ());
+      (check bool) "report failed" true (Review_engine.report_failed report);
       (check bool) "failure body preserved" true (contains_sub ~sub:"Review failed" report.body);
       (check bool) "JSON failure outcome" true
         (contains_sub ~sub:{|"outcome": "failure"|} (Local_sink.render_json report))
@@ -4189,29 +4182,17 @@ let test_local_review_partial_failure_is_retryable () =
       "security_validator", "mock_api_responses/security/validator_confirmed.json";
     ];
   let state = State.create () in
-  let ctx = Test_helpers.make_test_context ~state () in
-  let config =
-    Config_types.config_of_json (Melange_json.of_string {|{"review_plugins": {"security": {"enabled": true}}}|})
-  in
-  let diff_text = read_file "mock_api_responses/github/pr_42.diff" in
-  let result =
-    Lwt_main.run
-      (Local_review_test.review_diff_text_report ~ctx ~root:"." ~repo_key:"local/repo" ~change_key:"partial-failure"
-         ~title:"Partial failure" ~description:"Local description" ~diff_text ~config ())
-  in
+  let result = run_local_failure_report ~state ~change_key:"partial-failure" in
   match result with
   | Error msg -> fail msg
   | Ok report ->
-    (match report.Review_engine.status with
-    | Review_engine.Success -> fail "partial failure reported success"
-    | Review_engine.Partial_failure -> ()
-    | Review_engine.Failure -> fail "partial failure reported total failure");
+    (check bool) "report failed" true (Review_engine.report_failed report);
     (match report.findings with
     | [] -> fail "security findings missing from partial review"
     | _ :: _ -> ());
     (check bool) "partial failure body preserved" true (contains_sub ~sub:"Review partially failed" report.body);
     (check bool) "JSON partial failure outcome" true
-      (contains_sub ~sub:{|"outcome": "partial_failure"|} (Local_sink.render_json report));
+      (contains_sub ~sub:{|"outcome": "failure"|} (Local_sink.render_json report));
     (check bool) "partially failed change not recorded" false
       (State.is_change_reviewed state ~repo_key:"local/repo" ~change_key:"partial-failure")
 
@@ -4431,7 +4412,7 @@ let test_local_sink_render_json () =
       anchor_failed_findings = [];
       review_costs = [];
       security_error = false;
-      status = Review_engine.Success;
+      general_failed = false;
     }
   in
   match Yojson.Basic.from_string (Local_sink.render_json report) with

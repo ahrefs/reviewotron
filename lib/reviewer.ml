@@ -211,10 +211,7 @@ struct
       | [] -> false
       | _ :: _ -> true)
     || report.security_error
-    ||
-    match report.status with
-    | Review_engine.Success -> false
-    | Review_engine.Partial_failure | Review_engine.Failure -> true
+    || report.general_failed
 
   let record_pr_reviewed ~ctx ~repo_url ~number ~head_sha ~review_costs =
     let state = Context.state ctx in

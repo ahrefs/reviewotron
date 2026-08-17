@@ -45,10 +45,9 @@ let render_json (report : Review_engine.report) =
   let findings = report.findings |> List.filter include_finding_in_json |> List.map finding_to_json in
   let fields = [ "summary", `String (String.trim report.body); "findings", `List findings ] in
   let fields =
-    match report.status with
-    | Review_engine.Success -> fields
-    | Review_engine.Partial_failure | Review_engine.Failure ->
-      ("outcome", `String (Review_engine.outcome_to_string report.status)) :: fields
+    match Review_engine.report_failed report with
+    | false -> fields
+    | true -> ("outcome", `String "failure") :: fields
   in
   Yojson.Basic.pretty_to_string (`Assoc fields)
 
