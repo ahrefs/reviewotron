@@ -12,9 +12,12 @@ module Make (AI : Api.Agent_runner) = struct
     | true -> Lwt.return (Error (already_reviewed_message ~repo_key:job.repo_key ~change_key:job.change_key))
     | false ->
       let%lwt report = Engine.run_review ~ctx ~job in
-      State.record_change_review state ~repo_key:job.repo_key ~change_key:job.change_key
-        ~review_costs:report.review_costs;
-      State.save state;
+      (match report.status with
+      | Review_engine.Success ->
+        State.record_change_review state ~repo_key:job.repo_key ~change_key:job.change_key
+          ~review_costs:report.review_costs;
+        State.save state
+      | Review_engine.Partial_failure | Review_engine.Failure -> ());
       Lwt.return (Ok report)
 
   let run_prepared ~ctx prepared =

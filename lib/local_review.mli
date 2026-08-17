@@ -8,9 +8,10 @@
 val is_already_reviewed_message : string -> bool
 
 module Make (_ : Api.Agent_runner) : sig
-  (** Review a local unified diff, record the generic [change_key] in state,
-      and return markdown output. Returns [Error _] if the change was already
-      reviewed in the current state. *)
+  (** Review a local unified diff and return markdown output. Records the
+      generic [change_key] only when every enabled review plugin completed.
+      Returns [Error _] if the change was already reviewed in the current
+      state. *)
   val review_diff :
     ctx:Context.t ->
     root:string ->
@@ -24,9 +25,10 @@ module Make (_ : Api.Agent_runner) : sig
     unit ->
     (string, string) result Lwt.t
 
-  (** Review raw unified diff text, record the generic [change_key] in state,
-      and return markdown output. Returns [Error _] if the change was already
-      reviewed in the current state. *)
+  (** Review raw unified diff text and return markdown output. Records the
+      generic [change_key] only when every enabled review plugin completed.
+      Returns [Error _] if the change was already reviewed in the current
+      state. *)
   val review_diff_text :
     ctx:Context.t ->
     root:string ->
@@ -41,7 +43,8 @@ module Make (_ : Api.Agent_runner) : sig
     (string, string) result Lwt.t
 
   (** Review a local unified diff and return the neutral report for caller-owned
-      rendering. *)
+      rendering. Failed reports retain their body and carry a non-success
+      {!Review_engine.outcome}; they are not recorded in state. *)
   val review_diff_report :
     ctx:Context.t ->
     root:string ->
@@ -56,7 +59,8 @@ module Make (_ : Api.Agent_runner) : sig
     (Review_engine.report, string) result Lwt.t
 
   (** Review raw unified diff text and return the neutral report for caller-owned
-      rendering. *)
+      rendering. Failed reports retain their body and carry a non-success
+      {!Review_engine.outcome}; they are not recorded in state. *)
   val review_diff_text_report :
     ctx:Context.t ->
     root:string ->

@@ -257,6 +257,16 @@ type plugin_result = {
   security_error : bool;
 }
 
+type outcome =
+  | Success
+  | Partial_failure
+  | Failure
+
+let outcome_to_string = function
+  | Success -> "success"
+  | Partial_failure -> "partial_failure"
+  | Failure -> "failure"
+
 type report = {
   body : string;
   comments : Review_comment.t list;
@@ -268,12 +278,7 @@ type report = {
   anchor_failed_findings : Review_types.finding list;
   review_costs : Cost_tracking.review_cost list;
   security_error : bool;
-  general_failed : bool;
-    (** [true] when the general review produced no publishable output, either
-          because a stage failed or because its findings could not be
-          validated. Used by GitHub publishing to decide whether a no-finding
-          review can stay quiet (just a reaction) or must still post a failure
-          notice. *)
+  status : outcome;
 }
 
 let surfaces_in_unchanged_section (f : Review_types.finding) =
@@ -341,6 +346,11 @@ let review_body ~log_context ~change_label ~general_output ~findings ~unchanged_
   let security_completed =
     config.review_plugins.security.enabled && (not security_error) && cost_plugin_ran ~plugin:"security" review_costs
   in
+  let failure_outcome =
+    match findings, security_completed with
+    | _ :: _, _ | [], true -> Partial_failure
+    | [], false -> Failure
+  in
   let failure_notice reason =
     log#error "%sreview failed for %s: no review output produced" log_prefix change_label;
     let notice =
@@ -389,7 +399,7 @@ let review_body ~log_context ~change_label ~general_output ~findings ~unchanged_
     in
     with_failure_details ~reason:(Some reason) notice
   in
-  let body =
+  let body, outcome =
     match general_output with
     | Some (General_review_plugin.Completed _review) ->
       (* [review.summary] is an internal audit trace (one line per lead) and
@@ -397,20 +407,35 @@ let review_body ~log_context ~change_label ~general_output ~findings ~unchanged_
          by whether the review produced findings: findings render separately
          (inline comments + the unchanged/anchor sections), so here we only
          emit the header, or an LGTM when the whole review is clean. *)
-      (match findings with
-      | [] -> ":robot: **REVIEW**\n\nLGTM :+1:"
-      | _ :: _ -> ":robot: **REVIEW**")
+      let body =
+        match findings with
+        | [] -> ":robot: **REVIEW**\n\nLGTM :+1:"
+        | _ :: _ -> ":robot: **REVIEW**"
+      in
+      let outcome =
+        match security_error with
+        | true -> Partial_failure
+        | false -> Success
+      in
+      body, outcome
     | Some (General_review_plugin.Validation_failed { candidates_withheld; reason; _ }) ->
-      validation_failure_notice ~candidates_withheld ~reason
-    | Some (General_review_plugin.Failed reason) -> failure_notice (Some reason)
+      validation_failure_notice ~candidates_withheld ~reason, failure_outcome
+    | Some (General_review_plugin.Failed reason) -> failure_notice (Some reason), failure_outcome
     | None ->
     match config.review_plugins.general.enabled with
-    | true -> failure_notice None
-    | false -> ":robot: **REVIEW**"
+    | true -> failure_notice None, failure_outcome
+    | false ->
+      let outcome =
+        match security_error with
+        | true -> Failure
+        | false -> Success
+      in
+      ":robot: **REVIEW**", outcome
   in
   let body = body ^ unchanged_section ^ anchor_failed_section in
   let body = if security_error then body ^ security_error_notice else body in
-  if config.show_review_cost then body ^ Cost_tracking.format_footer review_costs else body
+  let body = if config.show_review_cost then body ^ Cost_tracking.format_footer review_costs else body in
+  body, outcome
 
 module Make (AI : Api.Agent_runner) = struct
   module General_plugin = General_review_plugin.Make (AI)
@@ -638,7 +663,7 @@ module Make (AI : Api.Agent_runner) = struct
         let comments = List.map (fun inline -> inline.comment) inline_findings in
         let unchanged_findings = List.rev unchanged_rev in
         let anchor_failed_findings = List.rev anchor_failed_rev in
-        let body =
+        let body, outcome =
           review_body ~log_context ~change_label:job.change_label ~general_output:plugin_result.general_output
             ~findings:plugin_result.findings ~unchanged_findings ~anchor_failed_findings
             ~review_costs:plugin_result.review_costs ~security_error:plugin_result.security_error ~config:job.config
@@ -672,6 +697,6 @@ module Make (AI : Api.Agent_runner) = struct
             anchor_failed_findings;
             review_costs = plugin_result.review_costs;
             security_error = plugin_result.security_error;
-            general_failed;
+            status = outcome;
           })
 end

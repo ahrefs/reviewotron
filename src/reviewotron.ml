@@ -227,7 +227,11 @@ let log_local_review_error msg =
    failure. *)
 let emit_local_result ~output result =
   match result with
-  | Ok report -> Printf.printf "%s\n" (render_review_output output report)
+  | Ok report ->
+    Printf.printf "%s\n" (render_review_output output report);
+    (match report.Review_engine.status with
+    | Review_engine.Success -> ()
+    | Review_engine.Partial_failure | Review_engine.Failure -> exit 1)
   | Error msg ->
     (match output with
     | Json -> Printf.printf "%s\n" (Local_sink.render_error msg)

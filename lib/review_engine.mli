@@ -99,6 +99,16 @@ type plugin_result = {
   security_error : bool;
 }
 
+(** Completion state of a review report. Partial and total failures both mean
+    that the review is incomplete and should be retried by local callers. *)
+type outcome =
+  | Success  (** Every enabled review plugin completed. *)
+  | Partial_failure  (** At least one enabled plugin failed and at least one completed. *)
+  | Failure  (** No enabled review plugin completed. *)
+
+(** Stable machine-readable name for an outcome. *)
+val outcome_to_string : outcome -> string
+
 (** Platform-neutral review report. *)
 type report = {
   body : string;
@@ -111,12 +121,7 @@ type report = {
   anchor_failed_findings : Review_types.finding list;
   review_costs : Cost_tracking.review_cost list;
   security_error : bool;
-  general_failed : bool;
-    (** [true] when the general review produced no publishable output, either
-          because a stage failed or because its findings could not be
-          validated. GitHub publishing uses this to decide whether a
-          no-finding review can stay quiet (reaction only) or must post a
-          failure notice. *)
+  status : outcome;  (** Typed completion status for callers that need retry semantics. *)
 }
 
 module Make (_ : Api.Agent_runner) : sig
