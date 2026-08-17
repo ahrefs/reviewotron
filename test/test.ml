@@ -393,8 +393,22 @@ let test_llm_provider_base_url_reaches_sdk () =
             in
             let capture =
               let%lwt accepted, _ = Lwt_unix.accept lwt_listener in
+              (* TCP does not preserve write boundaries, so keep reading until
+                 the request line is complete rather than trusting one read. *)
               let buf = Bytes.create 4096 in
-              let%lwt read = Lwt_unix.read accepted buf 0 (Bytes.length buf) in
+              let rec read_request_line acc =
+                match String.index_opt acc '\r' with
+                | Some i -> Lwt.return (String.sub acc 0 i)
+                | None ->
+                match String.length acc >= Bytes.length buf with
+                | true -> Lwt.return acc
+                | false ->
+                  let%lwt read = Lwt_unix.read accepted buf 0 (Bytes.length buf) in
+                  (match read with
+                  | 0 -> Lwt.return acc
+                  | read -> read_request_line (acc ^ Bytes.sub_string buf 0 read))
+              in
+              let%lwt request_line = read_request_line "" in
               (* Answer with an error the SDK understands: closing without a
                  reply makes cohttp raise [Connection.Retry] instead. *)
               let body = {|{"error":{"message":"test listener"}}|} in
@@ -405,22 +419,20 @@ let test_llm_provider_base_url_reaches_sdk () =
               in
               let%lwt _ = Lwt_unix.write_string accepted response 0 (String.length response) in
               let%lwt () = Lwt_unix.close accepted in
-              Lwt.return (Bytes.sub_string buf 0 read)
+              Lwt.return request_line
             in
-            let text =
-              Lwt_main.run
-                (let request =
-                   Lwt.catch
-                     (fun () -> Lwt.map (fun _ -> ()) (Ai_provider.Language_model.generate model call))
-                     (fun _ -> Lwt.return_unit)
-                 in
-                 let%lwt captured = Lwt.pick [ capture; Lwt.map (fun () -> "TIMEOUT") (Lwt_unix.sleep 10.) ] in
-                 let%lwt () = request in
-                 Lwt.return captured)
-            in
-            match String.index_opt text '\r' with
-            | Some i -> String.sub text 0 i
-            | None -> text))
+            Lwt_main.run
+              (let request =
+                 Lwt.catch
+                   (fun () -> Lwt.map (fun _ -> ()) (Ai_provider.Language_model.generate model call))
+                   (fun _ -> Lwt.return_unit)
+               in
+               let%lwt captured = Lwt.pick [ capture; Lwt.map (fun () -> "TIMEOUT") (Lwt_unix.sleep 10.) ] in
+               (* Never wait on [request] itself: the SDK's request timeout is
+                  600s and it retries, so a regression that never reaches the
+                  listener would hang for many minutes instead of failing here. *)
+               Lwt.cancel request;
+               Lwt.return captured)))
   in
   (* An exact match also proves the path carries no double slash. *)
   (check string) "override reaches the SDK as the request path" "POST /api/v1/chat/completions HTTP/1.1"
