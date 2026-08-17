@@ -71,6 +71,8 @@ val enforce_validator_proofs : Security_types.validated_finding list -> Security
 module Make (_ : Api.Agent_runner) : sig
   val name : string
 
+  (** Run the security pipeline, returning findings, costs, and whether any
+      required stage failed. *)
   val run :
     ctx:Context.t ->
     repo_url:string ->
@@ -81,7 +83,7 @@ module Make (_ : Api.Agent_runner) : sig
     log_context:string option ->
     debug_dir:string ->
     memory_dir:string ->
-    (Review_types.finding list * Cost_tracking.agent_cost list) Lwt.t
+    (Review_types.finding list * Cost_tracking.agent_cost list * bool) Lwt.t
 
   (** Convert a validated security finding into a review finding, choosing the
       inline anchor from the evidence chain so that findings whose sink lives

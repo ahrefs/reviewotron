@@ -119,6 +119,10 @@ type report = {
           failure notice. *)
 }
 
+(** [true] when any enabled review plugin failed. Partial reviews therefore
+    count as failures for retry purposes. *)
+val report_failed : report -> bool
+
 module Make (_ : Api.Agent_runner) : sig
   (** Build the per-review debug dump directory. In persistent server mode the
       root lives beside feedback files; otherwise it uses the XDG state

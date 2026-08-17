@@ -57,7 +57,7 @@ type findings_plugin = {
     log_context:string option ->
     debug_dir:string ->
     memory_dir:string ->
-    (Review_types.finding list * Cost_tracking.agent_cost list) Lwt.t;
+    (Review_types.finding list * Cost_tracking.agent_cost list * bool) Lwt.t;
 }
 
 let severity_rank = function
@@ -275,6 +275,8 @@ type report = {
           review can stay quiet (just a reaction) or must still post a failure
           notice. *)
 }
+
+let report_failed report = report.general_failed || report.security_error
 
 let surfaces_in_unchanged_section (f : Review_types.finding) =
   match f.severity with
@@ -523,11 +525,11 @@ module Make (AI : Api.Agent_runner) = struct
               | true ->
                 Lwt.catch
                   (fun () ->
-                    let%lwt findings, costs =
+                    let%lwt findings, costs, failed =
                       plugin.fp_run ~ctx ~repo_url ~config ~diff ~diff_text:job.diff_text ~metadata
                         ~log_context:(Some log_context) ~debug_dir ~memory_dir
                     in
-                    Lwt.return (plugin, findings, costs, false))
+                    Lwt.return (plugin, findings, costs, failed))
                   (fun exn ->
                     Telemetry.set_error (Exn.str exn);
                     log#error "%s%s review plugin raised: %s" log_prefix plugin.fp_name (Exn.str exn);
@@ -536,10 +538,8 @@ module Make (AI : Api.Agent_runner) = struct
         let%lwt (general_output, general_costs), findings_results =
           Lwt.both general_promise (Lwt.all (List.map run_findings_plugin findings_plugins))
         in
-        (* A findings plugin "errored" if it raised, or if it was enabled yet
-       produced no cost record (its agents never ran). The security plugin is
-       currently the only findings plugin, so this matches the prior
-       [security_error] semantics and drives the same failure notice. *)
+        (* A findings plugin errors if it reports a failed stage, raises, or
+           produces no cost record despite being enabled. *)
         let security_error =
           List.exists
             (fun (plugin, _findings, costs, errored) -> errored || (plugin.fp_enabled config && costs = []))
