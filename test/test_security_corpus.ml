@@ -70,12 +70,14 @@ let run_pipeline ~ctx ~diff_text ~diff =
     { change_title = "corpus test"; change_description = ""; file_contents = []; fetch_file }
   in
   let config = Context.get_config ctx ~repo_key:corpus_repo_url in
-  let findings, _costs =
+  let findings, _costs, failed =
     Lwt_main.run
       (SP.run ~ctx ~repo_url:corpus_repo_url ~config ~diff ~diff_text ~metadata ~log_context:None
          ~debug_dir:"debug/corpus" ~memory_dir:"memory/corpus")
   in
-  findings
+  match failed with
+  | true -> fail "security pipeline failed"
+  | false -> findings
 
 (** Expected outcome of running the pipeline against a corpus diff. *)
 type expected_outcome =

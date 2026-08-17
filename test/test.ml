@@ -4140,11 +4140,11 @@ let test_local_review_diff_text_returns_markdown () =
     (check bool) "summary not leaked" false (CCString.find ~sub:"The changes look generally good" markdown >= 0);
     (check bool) "has inline comments section" true (CCString.find ~sub:"### Inline comments" markdown >= 0)
 
-let run_local_failure_report ~state ~change_key =
+let run_local_failure_report
+  ?(config =
+    Config_types.config_of_json (Melange_json.of_string {|{"review_plugins": {"security": {"enabled": true}}}|})) ~state
+  ~change_key () =
   let ctx = Test_helpers.make_test_context ~state () in
-  let config =
-    Config_types.config_of_json (Melange_json.of_string {|{"review_plugins": {"security": {"enabled": true}}}|})
-  in
   let diff_text = read_file "mock_api_responses/github/pr_42.diff" in
   Lwt_main.run
     (Local_review_test.review_diff_text_report ~ctx ~root:"." ~repo_key:"local/repo" ~change_key ~title:"Failed review"
@@ -4158,7 +4158,7 @@ let test_local_review_total_failure_is_retryable () =
       "security_triage", "mock_api_responses/nonexistent_security_triage.json";
     ];
   let state = State.create () in
-  let review () = run_local_failure_report ~state ~change_key:"total-failure" in
+  let review () = run_local_failure_report ~state ~change_key:"total-failure" () in
   let expect_failure = function
     | Error msg -> fail msg
     | Ok report ->
@@ -4182,7 +4182,7 @@ let test_local_review_partial_failure_is_retryable () =
       "security_validator", "mock_api_responses/security/validator_confirmed.json";
     ];
   let state = State.create () in
-  let result = run_local_failure_report ~state ~change_key:"partial-failure" in
+  let result = run_local_failure_report ~state ~change_key:"partial-failure" () in
   match result with
   | Error msg -> fail msg
   | Ok report ->
@@ -4195,6 +4195,39 @@ let test_local_review_partial_failure_is_retryable () =
       (contains_sub ~sub:{|"outcome": "failure"|} (Local_sink.render_json report));
     (check bool) "partially failed change not recorded" false
       (State.is_change_reviewed state ~repo_key:"local/repo" ~change_key:"partial-failure")
+
+let test_local_review_security_stage_failures_are_retryable () =
+  let config =
+    Config_types.config_of_json
+      (Melange_json.of_string {|{"review_plugins": {"general": {"enabled": false}, "security": {"enabled": true}}}|})
+  in
+  let cases =
+    [
+      ( "analysis",
+        [
+          "security_triage", "mock_api_responses/security/triage_injection.json";
+          "security_analysis_injection", "mock_api_responses/nonexistent_security_analysis.json";
+        ] );
+      ( "validator",
+        [
+          "security_triage", "mock_api_responses/security/triage_injection.json";
+          "security_analysis_injection", "mock_api_responses/security/analysis_injection.json";
+          "security_validator", "mock_api_responses/nonexistent_security_validator.json";
+        ] );
+    ]
+  in
+  List.iter
+    (fun (stage, responses) ->
+      Test_helpers.reset_test_state ();
+      Api_local.set_agent_response_map responses;
+      let state = State.create () in
+      let change_key = Printf.sprintf "security-%s-failure" stage in
+      (match run_local_failure_report ~config ~state ~change_key () with
+      | Error msg -> fail msg
+      | Ok report -> (check bool) (stage ^ " failure reported") true (Review_engine.report_failed report));
+      (check bool) (stage ^ " failure not recorded") false
+        (State.is_change_reviewed state ~repo_key:"local/repo" ~change_key))
+    cases
 
 (* Regression: the deep reviewer's [summary] is an internal audit trace (one
    line per lead, e.g. "L0 ... refuted: ..."). When every lead is refuted the
@@ -8102,6 +8135,8 @@ let () =
           test_case "review generated diff text returns markdown" `Quick test_local_review_diff_text_returns_markdown;
           test_case "total failure is retryable" `Quick test_local_review_total_failure_is_retryable;
           test_case "partial failure is retryable" `Quick test_local_review_partial_failure_is_retryable;
+          test_case "security stage failures are retryable" `Quick
+            test_local_review_security_stage_failures_are_retryable;
           test_case "all-refuted local review shows LGTM not summary" `Quick
             test_local_review_all_refuted_shows_lgtm_not_summary;
           test_case "security-only empty review is success" `Quick test_local_review_security_only_empty_is_success;

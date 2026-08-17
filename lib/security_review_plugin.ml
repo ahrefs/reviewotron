@@ -458,8 +458,8 @@ module Make (AI : Api.Agent_runner) = struct
 
   (** Run a single analysis agent for one vulnerability class.
 
-      Returns the list of candidate findings and the agent cost on success,
-      or an empty list with no cost if the agent fails. *)
+      Returns the candidate findings, agent costs, and whether the stage
+      failed. *)
   let run_single_analysis ~ctx ~repo_url ~fetch_file ~security_config ~diff_text ~file_paths ~language_hints ~vuln_class
     ~triage_signals ~artifacts ?debug_dir ?log_context () =
     let log_prefix = log_context_prefix log_context in
@@ -482,7 +482,7 @@ module Make (AI : Api.Agent_runner) = struct
     match result with
     | Error msg ->
       log#error "%sanalysis agent %s failed: %s" log_prefix vc_name msg;
-      Lwt.return ([], [])
+      Lwt.return ([], [], true)
     | Ok agent_result ->
       let agent_name = Printf.sprintf "%s_analysis" vc_name in
       let files_fetched = agent_result.tool_results_count in
@@ -493,7 +493,7 @@ module Make (AI : Api.Agent_runner) = struct
       let analysis = Security_types.analysis_output_of_json agent_result.output in
       log#info "%sanalysis agent %s: %d findings, %d files examined" log_prefix vc_name (List.length analysis.findings)
         (List.length analysis.files_examined);
-      Lwt.return (analysis.findings, [ cost ])
+      Lwt.return (analysis.findings, [ cost ], false)
 
   (** Map confidence from a candidate finding to review severity.
 
@@ -652,9 +652,8 @@ module Make (AI : Api.Agent_runner) = struct
 
   (** Run the validator agent on candidate findings and parse its output.
 
-      Returns the list of validated findings and the agent cost on success.
-      If the validator agent fails or its output cannot be parsed, returns
-      an empty list — unvalidated findings are never reported. *)
+      Returns the validated findings, agent costs, and whether the stage
+      failed. Unvalidated findings are never reported. *)
   let run_validator ~ctx ~repo_url ~fetch_file ~security_config ~diff_text ~candidate_findings ~artifacts ?debug_dir
     ?log_context () =
     let log_prefix = log_context_prefix log_context in
@@ -667,7 +666,7 @@ module Make (AI : Api.Agent_runner) = struct
     match result with
     | Error msg ->
       log#error "%svalidator agent failed: %s" log_prefix msg;
-      Lwt.return ([], [])
+      Lwt.return ([], [], true)
     | Ok agent_result ->
       let files_fetched = agent_result.tool_results_count in
       let cost = Cost_tracking.of_agent_result ?log_context ~agent_name:"validator" ~files_fetched agent_result in
@@ -677,7 +676,7 @@ module Make (AI : Api.Agent_runner) = struct
          match validator_results_for_candidates ~candidate_findings output with
          | Error msg ->
            log#error "%s%s" log_prefix msg;
-           Lwt.return ([], [ cost ])
+           Lwt.return ([], [ cost ], true)
          | Ok results ->
            let downgraded = count_confirmed output.results - count_confirmed results in
            (match downgraded > 0 with
@@ -685,10 +684,10 @@ module Make (AI : Api.Agent_runner) = struct
              log#warn "%svalidator: downgraded %d confirmed result(s) without concrete proof" log_prefix downgraded
            | false -> ());
            log#info "%svalidator: %d results" log_prefix (List.length results);
-           Lwt.return (results, [ cost ])
+           Lwt.return (results, [ cost ], false)
        with exn ->
          log#error "%svalidator output parse failed: %s" log_prefix (Exn.str exn);
-         Lwt.return ([], [ cost ]))
+         Lwt.return ([], [ cost ], true))
 
   (** Collapse candidate findings that share the same [(sink.path, sink.line)].
 
@@ -802,7 +801,7 @@ module Make (AI : Api.Agent_runner) = struct
     match actionable with
     | [] ->
       log#info "%striage: no actionable signals" log_prefix;
-      Lwt.return ([], [], empty_analysis_metrics ~actionable_triage_signal_count:0)
+      Lwt.return ([], [], empty_analysis_metrics ~actionable_triage_signal_count:0, false)
     | _ :: _ ->
       log#info "%striage: %d signals, %d actionable" log_prefix (List.length signals) (List.length actionable);
       let groups = group_by_vuln_class actionable in
@@ -817,7 +816,7 @@ module Make (AI : Api.Agent_runner) = struct
                 log#error "%sanalysis agent %s raised: %s" log_prefix
                   (Security_types.vuln_class_to_string vuln_class)
                   (Exn.str exn);
-                Lwt.return ([], [])))
+                Lwt.return ([], [], true)))
           groups
       in
       let%lwt results = Lwt.all promises in
@@ -825,7 +824,7 @@ module Make (AI : Api.Agent_runner) = struct
         let rec collect acc groups results =
           match groups, results with
           | [], [] -> List.rev acc
-          | (vuln_class, triage_signals) :: rest_groups, (candidates, _) :: rest_results ->
+          | (vuln_class, triage_signals) :: rest_groups, (candidates, _, _) :: rest_results ->
             (match candidates with
             | [] ->
               let vc_name = Security_types.vuln_class_to_string vuln_class in
@@ -838,8 +837,9 @@ module Make (AI : Api.Agent_runner) = struct
         in
         collect [] groups results
       in
-      let raw_candidates = List.concat_map fst results in
-      let analysis_costs = List.concat_map snd results in
+      let raw_candidates = List.concat_map (fun (candidates, _, _) -> candidates) results in
+      let analysis_costs = List.concat_map (fun (_, costs, _) -> costs) results in
+      let analysis_failed = List.exists (fun (_, _, failed) -> failed) results in
       log#info "%sanalysis complete: %d total candidate findings" log_prefix (List.length raw_candidates);
       let candidates = dedup_candidates ?log_context raw_candidates in
       (match List.compare_lengths candidates raw_candidates < 0 with
@@ -862,9 +862,9 @@ module Make (AI : Api.Agent_runner) = struct
             class_drops;
           }
         in
-        Lwt.return ([], analysis_costs, metrics)
+        Lwt.return ([], analysis_costs, metrics, analysis_failed)
       | _ :: _ ->
-        let%lwt validated, validator_costs =
+        let%lwt validated, validator_costs, validator_failed =
           run_validator ~ctx ~repo_url ~fetch_file ~security_config ~diff_text ~candidate_findings:candidates ~artifacts
             ?debug_dir ?log_context ()
         in
@@ -895,7 +895,7 @@ module Make (AI : Api.Agent_runner) = struct
             class_drops;
           }
         in
-        Lwt.return (findings, analysis_costs @ validator_costs, metrics))
+        Lwt.return (findings, analysis_costs @ validator_costs, metrics, analysis_failed || validator_failed))
 
   (** Build the architectural observations passed to the memory curator.
 
@@ -994,7 +994,7 @@ module Make (AI : Api.Agent_runner) = struct
            ~metrics ~costs:triage_costs);
       Security_artifacts.write_fetch_stats artifacts triage_costs;
       Security_artifacts.write_debug_json artifacts ~filename:"final_findings.json" (`List []);
-      Lwt.return ([], triage_costs)
+      Lwt.return ([], triage_costs, true)
     | Some triage_output ->
       (* Triage is sometimes asked to choose between [skip_reason = None] (proceed)
        and [skip_reason = Some "..."] (bail).  When it has nothing to say but
@@ -1019,9 +1019,9 @@ module Make (AI : Api.Agent_runner) = struct
              ~triage_signal_count:(List.length triage_output.signals) ~metrics ~costs:triage_costs);
         Security_artifacts.write_fetch_stats artifacts triage_costs;
         Security_artifacts.write_debug_json artifacts ~filename:"final_findings.json" (`List []);
-        Lwt.return ([], triage_costs)
+        Lwt.return ([], triage_costs, false)
       | None ->
-        let%lwt findings, analysis_costs, analysis_metrics =
+        let%lwt findings, analysis_costs, analysis_metrics, analysis_failed =
           run_analysis ~ctx ~repo_url ~fetch_file:metadata.fetch_file ~security_config ~diff ~diff_text ~file_paths
             ~language_hints:triage_output.language_hints ~artifacts ?debug_dir:agent_debug_dir ?log_context
             triage_output.signals
@@ -1052,5 +1052,5 @@ module Make (AI : Api.Agent_runner) = struct
           with exn ->
             log#error "%smemory curator async task raised: %s" log_prefix (Exn.str exn);
             Lwt.return_unit);
-        Lwt.return (findings, costs))
+        Lwt.return (findings, costs, analysis_failed))
 end
