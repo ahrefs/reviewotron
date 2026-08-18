@@ -246,6 +246,22 @@ let security_error_notice =
    _Note: The security review plugin encountered an error and may not have completed. Security analysis may be \
    incomplete._"
 
+(** Body used when the security stage failed and produced no findings.
+
+    [LGTM] must never be derived from an empty finding list alone: a failed
+    security stage discards its candidate findings, which is indistinguishable
+    from a clean review at the render site. Emitting an all-clear there reports
+    a false negative as a pass, so a failed stage renders this instead.
+
+    The number of withheld candidates is deliberately absent: it is logged at
+    the validator but not carried to the renderer, and the same failure flag is
+    also raised by triage and analysis failures that have no candidate count. *)
+let security_incomplete_body =
+  ":robot: **REVIEW**\n\n\
+   :warning: **Security review did not complete** — the security stage failed, so any candidate findings it produced \
+   were withheld rather than posted unvalidated.\n\n\
+   This is **not** an all-clear: the change has not been fully reviewed. Please re-trigger the review."
+
 type plugin_result = {
   general_output : General_review_plugin.review_outcome option;
     (** The general plugin's outcome, or [None] when the plugin is disabled.
@@ -399,19 +415,30 @@ let review_body ~log_context ~change_label ~general_output ~findings ~unchanged_
          by whether the review produced findings: findings render separately
          (inline comments + the unchanged/anchor sections), so here we only
          emit the header, or an LGTM when the whole review is clean. *)
-      (match findings with
-      | [] -> ":robot: **REVIEW**\n\nLGTM :+1:"
-      | _ :: _ -> ":robot: **REVIEW**")
+      (match findings, security_error with
+      | [], true -> security_incomplete_body
+      | [], false -> ":robot: **REVIEW**\n\nLGTM :+1:"
+      | _ :: _, (true | false) -> ":robot: **REVIEW**")
     | Some (General_review_plugin.Validation_failed { candidates_withheld; reason; _ }) ->
       validation_failure_notice ~candidates_withheld ~reason
     | Some (General_review_plugin.Failed reason) -> failure_notice (Some reason)
     | None ->
     match config.review_plugins.general.enabled with
     | true -> failure_notice None
+    | false ->
+    match security_error with
+    | true -> security_incomplete_body
     | false -> ":robot: **REVIEW**"
   in
+  let states_security_failure = String.equal body security_incomplete_body in
   let body = body ^ unchanged_section ^ anchor_failed_section in
-  let body = if security_error then body ^ security_error_notice else body in
+  (* [security_incomplete_body] already states the stage failed; appending the
+     note there would say it twice. *)
+  let body =
+    match security_error && not states_security_failure with
+    | true -> body ^ security_error_notice
+    | false -> body
+  in
   if config.show_review_cost then body ^ Cost_tracking.format_footer review_costs else body
 
 module Make (AI : Api.Agent_runner) = struct

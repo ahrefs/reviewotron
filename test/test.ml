@@ -4278,6 +4278,99 @@ let test_local_review_security_only_empty_is_success () =
     (check bool) "does not report failure" false (contains_sub ~sub:"Review failed" markdown);
     (check bool) "does not ask for retrigger" false (contains_sub ~sub:"re-trigger the review" markdown)
 
+(* Regression: a security validator that returns fewer results than candidates
+   fails the count check, so every candidate finding is discarded. That leaves
+   the renderer with an empty finding list, which is indistinguishable from a
+   clean review — and it used to emit "LGTM :+1:", reporting a false negative as
+   a pass. Observed in production: 9 real vulnerabilities detected, 1 validator
+   result returned, all 9 dropped, LGTM posted. *)
+let test_local_review_validation_failure_is_not_lgtm () =
+  Test_helpers.reset_test_state ();
+  Api_local.set_agent_response_map
+    [
+      "security_triage", "mock_api_responses/security/triage_injection.json";
+      "security_analysis_injection", "mock_api_responses/security/analysis_injection.json";
+      "security_validator", "mock_api_responses/security/validator_count_mismatch.json";
+    ];
+  let ctx = Test_helpers.make_test_context () in
+  let config =
+    Config_types.config_of_json
+      (Melange_json.of_string {|{"review_plugins": {"general": {"enabled": false}, "security": {"enabled": true}}}|})
+  in
+  let diff_text = read_file "mock_api_responses/github/pr_42.diff" in
+  let result =
+    Lwt_main.run
+      (Local_review_test.review_diff_text ~ctx ~root:"." ~repo_key:"local/repo" ~change_key:"validation-count-mismatch"
+         ~title:"Generated local diff" ~description:"Local description" ~diff_text ~config ())
+  in
+  match result with
+  | Error msg -> fail msg
+  | Ok markdown ->
+    (check bool) "discarded findings are never reported as LGTM" false (contains_sub ~sub:"LGTM" markdown);
+    (check bool) "says security review did not complete" true
+      (contains_sub ~sub:"Security review did not complete" markdown);
+    (check bool) "states it is not an all-clear" true (contains_sub ~sub:"all-clear" markdown);
+    (check bool) "asks for a re-trigger" true (contains_sub ~sub:"re-trigger the review" markdown);
+    (check bool) "does not repeat the incomplete note" false (contains_sub ~sub:"may not have completed" markdown)
+
+(* The production shape: the general plugin completes cleanly (its scout finds
+   no leads on a security-only change, so it contributes no findings) while the
+   security stage fails and discards its candidates. That reaches the
+   [Completed] arm with an empty finding list — the arm that emitted LGTM. *)
+let test_local_review_validation_failure_with_clean_general_is_not_lgtm () =
+  Test_helpers.reset_test_state ();
+  Api_local.set_agent_response_map
+    [
+      "general_scout", "mock_api_responses/scout/leads_empty.json";
+      "security_triage", "mock_api_responses/security/triage_injection.json";
+      "security_analysis_injection", "mock_api_responses/security/analysis_injection.json";
+      "security_validator", "mock_api_responses/security/validator_count_mismatch.json";
+    ];
+  let ctx = Test_helpers.make_test_context () in
+  let config =
+    Config_types.config_of_json
+      (Melange_json.of_string {|{"review_plugins": {"general": {"enabled": true}, "security": {"enabled": true}}}|})
+  in
+  let diff_text = read_file "mock_api_responses/github/pr_42.diff" in
+  let result =
+    Lwt_main.run
+      (Local_review_test.review_diff_text ~ctx ~root:"." ~repo_key:"local/repo"
+         ~change_key:"validation-mismatch-clean-general" ~title:"Generated local diff" ~description:"Local description"
+         ~diff_text ~config ())
+  in
+  match result with
+  | Error msg -> fail msg
+  | Ok markdown ->
+    (check bool) "a clean general review cannot mask a failed security stage" false (contains_sub ~sub:"LGTM" markdown);
+    (check bool) "says security review did not complete" true
+      (contains_sub ~sub:"Security review did not complete" markdown)
+
+(* The same failure must be machine-detectable, not just human-readable: the
+   local JSON envelope carries ["outcome": "failure"] so automation cannot read
+   a discarded review as a pass. *)
+let test_local_review_validation_failure_reports_failure_outcome () =
+  Test_helpers.reset_test_state ();
+  Api_local.set_agent_response_map
+    [
+      "security_triage", "mock_api_responses/security/triage_injection.json";
+      "security_analysis_injection", "mock_api_responses/security/analysis_injection.json";
+      "security_validator", "mock_api_responses/security/validator_count_mismatch.json";
+    ];
+  let config =
+    Config_types.config_of_json
+      (Melange_json.of_string {|{"review_plugins": {"general": {"enabled": false}, "security": {"enabled": true}}}|})
+  in
+  let state = State.create () in
+  match run_local_failure_report ~config ~state ~change_key:"validation-count-mismatch-json" () with
+  | Error msg -> fail msg
+  | Ok report ->
+    (check bool) "validation failure marks the report failed" true (Review_engine.report_failed report);
+    let json = Local_sink.render_json report in
+    (check bool) "json envelope reports failure" true (contains_sub ~sub:{|"outcome": "failure"|} json);
+    (check bool) "json summary never says LGTM" false (contains_sub ~sub:"LGTM" json);
+    (check bool) "validation failure is not recorded as reviewed" false
+      (State.is_change_reviewed state ~repo_key:"local/repo" ~change_key:"validation-count-mismatch-json")
+
 let security_only_local_config () =
   Config_types.config_of_json
     (Melange_json.of_string {|{"review_plugins": {"general": {"enabled": false}, "security": {"enabled": true}}}|})
@@ -8140,6 +8233,11 @@ let () =
           test_case "all-refuted local review shows LGTM not summary" `Quick
             test_local_review_all_refuted_shows_lgtm_not_summary;
           test_case "security-only empty review is success" `Quick test_local_review_security_only_empty_is_success;
+          test_case "validation failure is not reported as LGTM" `Quick test_local_review_validation_failure_is_not_lgtm;
+          test_case "clean general review does not mask failed security stage" `Quick
+            test_local_review_validation_failure_with_clean_general_is_not_lgtm;
+          test_case "validation failure reports failure outcome" `Quick
+            test_local_review_validation_failure_reports_failure_outcome;
           test_case "policy sudo regression produces finding" `Quick test_local_review_policy_regression_sudo_vulnerable;
           test_case "policy sudo scoped safe produces no finding" `Quick
             test_local_review_policy_regression_sudo_scoped_safe;
