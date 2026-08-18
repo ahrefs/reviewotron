@@ -1216,10 +1216,11 @@ module Sec_test = Security_review_plugin.Make (Api_local.Agent_runner)
     with hunks at [10..14] and [40..43]. *)
 let parsed_anchor_diff = parsed_two_hunk_diff
 
-let mk_validated ~source ~sink ~flow ?(vuln_class = Security_types.Authz) ?(sanitization = Security_types.Missing)
-  ?(verdict = Security_types.Confirmed) ?(evidence_notes = "ok") ?proof_by_construction () :
-  Security_types.validated_finding =
+let mk_validated ?(candidate_id = 0) ~source ~sink ~flow ?(vuln_class = Security_types.Authz)
+  ?(sanitization = Security_types.Missing) ?(verdict = Security_types.Confirmed) ?(evidence_notes = "ok")
+  ?proof_by_construction () : Security_types.validated_finding =
   {
+    candidate_id;
     finding =
       {
         vuln_class;
@@ -1878,6 +1879,7 @@ let test_security_validator_output_roundtrip () =
       results =
         [
           {
+            candidate_id = 0;
             finding =
               {
                 vuln_class = Ssrf;
@@ -2119,6 +2121,7 @@ let test_security_partial_proof_json_downgrades () =
             [
               `Assoc
                 [
+                  "candidate_id", `Int 0;
                   "finding", Security_types.candidate_finding_to_json candidate;
                   "verdict", `String "confirmed";
                   "evidence_notes", `String "partial proof fixture";
@@ -2133,14 +2136,98 @@ let test_security_partial_proof_json_downgrades () =
     (check string) "partial proof downgraded" "rejected" (Security_types.validation_verdict_to_string enforced.verdict)
   | _ -> fail "expected one enforced result"
 
-let test_security_validator_result_count_mismatch_is_error () =
+(* A short validator response must not discard the candidates it did answer
+   for. Previously a count mismatch produced an [Error] that threw away every
+   candidate; now the unanswered candidates are reported as [missing] so the
+   caller can retry them individually. *)
+let test_security_validator_short_response_reports_missing () =
   let candidate = mk_candidate ~vuln_class:Injection ~sink_path:"src/main.ml" ~sink_line:14 () in
   let output : Security_types.validator_output = { results = [] } in
-  match Security_review_plugin.validator_results_for_candidates ~candidate_findings:[ candidate ] output with
-  | Ok _ -> fail "expected validator result-count mismatch to fail"
-  | Error msg ->
-    (check bool) "message includes result count" true (contains_sub ~sub:"returned 0 results" msg);
-    (check bool) "message includes candidate count" true (contains_sub ~sub:"for 1 candidates" msg)
+  let join = Security_review_plugin.validator_results_for_candidates ~candidate_findings:[ candidate ] output in
+  (check int) "no verdicts matched" 0 (List.length join.matched);
+  (check int) "the unanswered candidate is reported missing" 1 (List.length join.missing);
+  (check int) "missing candidate keeps its call-local id" 0 (fst (List.nth join.missing 0));
+  (check int) "no unknown ids" 0 (List.length join.unknown_ids);
+  (check int) "no duplicate ids" 0 (List.length join.duplicate_ids)
+
+(* Results are joined to candidates by [candidate_id], not by position or
+   count, so an out-of-order response still lands each verdict on the right
+   candidate. *)
+let test_security_validator_join_is_keyed_by_candidate_id () =
+  let candidate_a = mk_candidate ~vuln_class:Injection ~sink_path:"src/a.ml" ~sink_line:10 ~tag:"a" () in
+  let candidate_b = mk_candidate ~vuln_class:Authz ~sink_path:"src/b.ml" ~sink_line:20 ~tag:"b" () in
+  let result ~candidate_id ~verdict : Security_types.validated_finding =
+    { candidate_id; finding = candidate_a; verdict; evidence_notes = "note"; proof_by_construction = None }
+  in
+  (* Deliberately out of order: id 1 first, then id 0. *)
+  let output : Security_types.validator_output =
+    { results = [ result ~candidate_id:1 ~verdict:Rejected; result ~candidate_id:0 ~verdict:Rejected ] }
+  in
+  let join =
+    Security_review_plugin.validator_results_for_candidates ~candidate_findings:[ candidate_a; candidate_b ] output
+  in
+  (check int) "both candidates matched" 2 (List.length join.matched);
+  (check int) "nothing missing" 0 (List.length join.missing);
+  let find id = List.find (fun (vf : Security_types.validated_finding) -> Int.equal vf.candidate_id id) join.matched in
+  (check string) "id 0 joined to candidate a" "src/a.ml" (find 0).finding.sink.path;
+  (check string) "id 1 joined to candidate b" "src/b.ml" (find 1).finding.sink.path
+
+(* An unknown id and a duplicate id are noise: they must be reported and
+   dropped, never corrupt or discard the results that are well-formed. *)
+let test_security_validator_join_ignores_unknown_and_duplicate_ids () =
+  let candidate_a = mk_candidate ~vuln_class:Injection ~sink_path:"src/a.ml" ~sink_line:10 ~tag:"a" () in
+  let candidate_b = mk_candidate ~vuln_class:Authz ~sink_path:"src/b.ml" ~sink_line:20 ~tag:"b" () in
+  let result ~candidate_id ~evidence_notes : Security_types.validated_finding =
+    { candidate_id; finding = candidate_a; verdict = Rejected; evidence_notes; proof_by_construction = None }
+  in
+  let output : Security_types.validator_output =
+    {
+      results =
+        [
+          result ~candidate_id:0 ~evidence_notes:"first wins";
+          result ~candidate_id:0 ~evidence_notes:"duplicate loses";
+          result ~candidate_id:99 ~evidence_notes:"unknown";
+          result ~candidate_id:1 ~evidence_notes:"second candidate";
+        ];
+    }
+  in
+  let join =
+    Security_review_plugin.validator_results_for_candidates ~candidate_findings:[ candidate_a; candidate_b ] output
+  in
+  (check int) "unknown id reported" 1 (List.length join.unknown_ids);
+  (check int) "duplicate id reported" 1 (List.length join.duplicate_ids);
+  (check int) "both real candidates still validated" 2 (List.length join.matched);
+  (check int) "nothing wrongly reported missing" 0 (List.length join.missing);
+  let first = List.find (fun (vf : Security_types.validated_finding) -> Int.equal vf.candidate_id 0) join.matched in
+  (check string) "first occurrence of a duplicate id wins" "first wins" first.evidence_notes
+
+(* The model's echoed [finding] is untrusted: it can be paraphrased or mutated.
+   The verdict must be re-attached to the ORIGINAL candidate we asked about. *)
+let test_security_validator_join_uses_original_candidate () =
+  let candidate = mk_candidate ~vuln_class:Injection ~sink_path:"src/real.ml" ~sink_line:42 ~tag:"real" () in
+  let mutated = mk_candidate ~vuln_class:Authz ~sink_path:"src/hallucinated.ml" ~sink_line:999 ~tag:"fake" () in
+  let output : Security_types.validator_output =
+    {
+      results =
+        [
+          {
+            candidate_id = 0;
+            finding = mutated;
+            verdict = Rejected;
+            evidence_notes = "echoed a different finding";
+            proof_by_construction = None;
+          };
+        ];
+    }
+  in
+  let join = Security_review_plugin.validator_results_for_candidates ~candidate_findings:[ candidate ] output in
+  match join.matched with
+  | [ vf ] ->
+    (check string) "original sink path preserved" "src/real.ml" vf.finding.sink.path;
+    (check int) "original sink line preserved" 42 vf.finding.sink.line;
+    (check string) "original vuln class preserved" "injection"
+      (Security_types.vuln_class_to_string vf.finding.vuln_class)
+  | _ -> fail "expected exactly one matched result"
 
 let test_security_enforce_rejected_without_proof_ok () =
   let vf =
@@ -4277,6 +4364,107 @@ let test_local_review_security_only_empty_is_success () =
     (check bool) "has deterministic review body" true (contains_sub ~sub:":robot: **REVIEW**" markdown);
     (check bool) "does not report failure" false (contains_sub ~sub:"Review failed" markdown);
     (check bool) "does not ask for retrigger" false (contains_sub ~sub:"re-trigger the review" markdown)
+
+(* A chunked run: five candidates exceed [max_candidates_per_validator_call],
+   so the validator is called twice. The fifth candidate is only ever offered
+   to the SECOND call, so its finding can appear in the output only if the
+   second call really happened and its results were aggregated with the
+   first's. *)
+let test_local_review_security_validator_chunks_and_aggregates () =
+  Test_helpers.reset_test_state ();
+  Api_local.set_agent_response_map
+    [
+      "security_triage", "mock_api_responses/security/triage_injection.json";
+      "security_analysis_injection", "mock_api_responses/security/analysis_injection_five.json";
+    ];
+  Api_local.set_agent_response_sequence
+    [
+      ( "security_validator",
+        [
+          "mock_api_responses/security/validator_chunk_first_four.json";
+          "mock_api_responses/security/validator_chunk_fifth.json";
+        ] );
+    ];
+  let ctx = Test_helpers.make_test_context () in
+  let config =
+    Config_types.config_of_json
+      (Melange_json.of_string {|{"review_plugins": {"general": {"enabled": false}, "security": {"enabled": true}}}|})
+  in
+  let diff_text = read_file "mock_api_responses/github/pr_42.diff" in
+  let result =
+    Lwt_main.run
+      (Local_review_test.review_diff_text ~ctx ~root:"." ~repo_key:"local/repo" ~change_key:"validator-chunking"
+         ~title:"Generated local diff" ~description:"Local description" ~diff_text ~config ())
+  in
+  match result with
+  | Error msg -> fail msg
+  | Ok markdown ->
+    (* Candidate 0 is answered by the first call, candidate 4 only by the
+       second: both present means both calls ran and were aggregated. *)
+    (check bool) "first chunk's confirmed finding is reported" true (contains_sub ~sub:"Injection path 0" markdown);
+    (check bool) "second chunk's confirmed finding is reported" true (contains_sub ~sub:"Injection path 4" markdown);
+    (check bool) "rejected candidates are not reported" false (contains_sub ~sub:"Injection path 1" markdown);
+    (check bool) "every candidate got a verdict, so no failure is reported" false
+      (contains_sub ~sub:"Security review did not complete" markdown);
+    (* The ids the validator is ASKED for are otherwise untested: fixtures are
+       keyed by agent name, so a response echoes whatever id the join already
+       expects and prompt-side skew would go unnoticed. Five candidates chunk
+       as 4 + 1, and only the last call's input is recorded, so this is the
+       second chunk: its single candidate must be numbered 0, not 4 (ids are
+       call-local, restarting each call) and not 1 (they are zero-based).
+       Without this, printing [index + 1] passes the whole suite while
+       misattributing every verdict to the wrong vulnerability. *)
+    (match Api_local.recorded_agent_input "security_validator" with
+    | None -> fail "expected a recorded validator input"
+    | Some input ->
+      (check bool) "the trailing chunk numbers its candidate from zero" true
+        (contains_sub ~sub:"**candidate_id:** 0" input);
+      (check bool) "call-local ids do not continue the global sequence" false
+        (contains_sub ~sub:"**candidate_id:** 4" input))
+
+(* Partial success: one candidate is validated and one is never answered, even
+   after its individual retry. The confirmed finding must still be reported,
+   and the stage must still be flagged as failed — a single unanswered
+   candidate must never erase unrelated findings. *)
+let test_local_review_security_validator_partial_success () =
+  Test_helpers.reset_test_state ();
+  Api_local.set_agent_response_map
+    [
+      "security_triage", "mock_api_responses/security/triage_injection.json";
+      "security_analysis_injection", "mock_api_responses/security/analysis_injection_two.json";
+    ];
+  (* Call 1 (chunk of two) answers only candidate 0; call 2 (the individual
+     retry of candidate 1) answers nothing at all. *)
+  Api_local.set_agent_response_sequence
+    [
+      ( "security_validator",
+        [
+          "mock_api_responses/security/validator_partial_first_only.json";
+          "mock_api_responses/security/validator_count_mismatch.json";
+        ] );
+    ];
+  let ctx = Test_helpers.make_test_context () in
+  let config =
+    Config_types.config_of_json
+      (Melange_json.of_string {|{"review_plugins": {"general": {"enabled": false}, "security": {"enabled": true}}}|})
+  in
+  let diff_text = read_file "mock_api_responses/github/pr_42.diff" in
+  let result =
+    Lwt_main.run
+      (Local_review_test.review_diff_text ~ctx ~root:"." ~repo_key:"local/repo" ~change_key:"validator-partial"
+         ~title:"Generated local diff" ~description:"Local description" ~diff_text ~config ())
+  in
+  match result with
+  | Error msg -> fail msg
+  | Ok markdown ->
+    (* The surviving finding renders the ORIGINAL candidate's description,
+       taken from the analysis fixture, not the validator's echoed copy. *)
+    (check bool) "the validated finding survives the partial failure" true
+      (contains_sub ~sub:"Injection path 0" markdown);
+    (check bool) "the unanswered candidate is withheld" false (contains_sub ~sub:"Injection path 1" markdown);
+    (check bool) "the incomplete stage is still reported" true
+      (contains_sub ~sub:"Security review did not complete" markdown);
+    (check bool) "a partial result is never an all-clear" false (contains_sub ~sub:"LGTM" markdown)
 
 (* Regression: a security validator that returns fewer results than candidates
    fails the count check, so every candidate finding is discarded. That leaves
@@ -8028,8 +8216,14 @@ let () =
           test_case "policy proof concrete" `Quick test_security_enforce_policy_regression_accepts_concrete_proof;
           test_case "policy proof rejects vague" `Quick test_security_enforce_policy_regression_rejects_vague_proof;
           test_case "partial proof JSON downgrades" `Quick test_security_partial_proof_json_downgrades;
-          test_case "validator result count mismatch is error" `Quick
-            test_security_validator_result_count_mismatch_is_error;
+          test_case "validator short response reports missing" `Quick
+            test_security_validator_short_response_reports_missing;
+          test_case "validator join is keyed by candidate_id" `Quick
+            test_security_validator_join_is_keyed_by_candidate_id;
+          test_case "validator join ignores unknown and duplicate ids" `Quick
+            test_security_validator_join_ignores_unknown_and_duplicate_ids;
+          test_case "validator join uses the original candidate" `Quick
+            test_security_validator_join_uses_original_candidate;
           test_case "rejected does not require proof" `Quick test_security_enforce_rejected_without_proof_ok;
           test_case "proof summaries populate finding fields" `Quick
             test_security_validated_to_finding_uses_proof_summary;
@@ -8234,6 +8428,10 @@ let () =
             test_local_review_all_refuted_shows_lgtm_not_summary;
           test_case "security-only empty review is success" `Quick test_local_review_security_only_empty_is_success;
           test_case "validation failure is not reported as LGTM" `Quick test_local_review_validation_failure_is_not_lgtm;
+          test_case "validator chunks and aggregates results" `Quick
+            test_local_review_security_validator_chunks_and_aggregates;
+          test_case "validator partial success keeps findings" `Quick
+            test_local_review_security_validator_partial_success;
           test_case "clean general review does not mask failed security stage" `Quick
             test_local_review_validation_failure_with_clean_general_is_not_lgtm;
           test_case "validation failure reports failure outcome" `Quick

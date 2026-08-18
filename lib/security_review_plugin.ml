@@ -326,13 +326,82 @@ let enforce_validator_proofs results =
       | Rejected, Some _ | Rejected, None -> vf)
     results
 
+(** Maximum number of candidates sent to the validator in a single call.
+
+    Empirically the validator answers completely for small batches and
+    under-answers for large ones: calls carrying 1, 3 and 4 candidates each
+    returned one result per candidate, while calls carrying 7 and 9 candidates
+    came back with a single well-formed result (valid, complete JSON, not
+    truncated, only 1 of 12 max_steps used) — the model simply ignored the
+    "validate each one" instruction. Chunking keeps every call inside the range
+    where the contract is honoured. *)
+let max_candidates_per_validator_call = 4
+
+(** Outcome of joining one validator response against the candidates of that
+    same call.
+
+    [matched] carries the proof-enforced results for candidates that received a
+    verdict; [missing] carries the candidates the response did not answer for,
+    paired with their call-local id. Representing the outcome this way makes a
+    total discard impossible: an unusable response degrades to "everything is
+    missing", never to "everything is lost". *)
+type validator_join = {
+  matched : Security_types.validated_finding list;
+  missing : (int * Security_types.candidate_finding) list;
+  unknown_ids : int list;
+  duplicate_ids : int list;
+}
+
+(** Join validator results to the candidates of a single call by [candidate_id].
+
+    Candidates are identified by their zero-based position within the list
+    passed to that call, which is exactly what [Validator_agent.format_finding]
+    prints as [candidate_id]. Results whose id matches no candidate are dropped,
+    duplicates keep the first occurrence, and any candidate left without a
+    result is reported as missing rather than discarding the whole batch.
+
+    The verdict is always re-attached to the ORIGINAL candidate: the model's
+    echoed [finding] can be paraphrased or mutated, and proof enforcement must
+    run against the source and sink sites we actually asked about. *)
 let validator_results_for_candidates ~candidate_findings (output : Security_types.validator_output) =
-  let candidate_count = List.length candidate_findings in
-  let result_count = List.length output.results in
-  match Int.equal candidate_count result_count with
-  | false ->
-    Error (Printf.sprintf "security validator returned %d results for %d candidates" result_count candidate_count)
-  | true -> Ok (enforce_validator_proofs output.results)
+  let by_id = Hashtbl.create 16 in
+  List.iteri (fun index candidate -> Hashtbl.replace by_id index candidate) candidate_findings;
+  let seen = Hashtbl.create 16 in
+  let matched, unknown_ids, duplicate_ids =
+    List.fold_left
+      (fun (matched, unknown_ids, duplicate_ids) (vf : Security_types.validated_finding) ->
+        match Hashtbl.find_opt by_id vf.candidate_id with
+        | None -> matched, vf.candidate_id :: unknown_ids, duplicate_ids
+        | Some candidate ->
+        match Hashtbl.mem seen vf.candidate_id with
+        (* First occurrence wins, deliberately. A model that answers the same id
+           twice with opposing verdicts has already broken its contract, and
+           there is no principled way to pick the "real" one; taking the first
+           is at least deterministic across runs. It also means a repeated id
+           counts as answered and is not retried, which biases towards dropping
+           a finding rather than inventing one. *)
+        | true -> matched, unknown_ids, vf.candidate_id :: duplicate_ids
+        | false ->
+          Hashtbl.replace seen vf.candidate_id ();
+          (* Discard the echoed finding; validate against what we sent. *)
+          ({ vf with finding = candidate } : Security_types.validated_finding) :: matched, unknown_ids, duplicate_ids)
+      ([], [], []) output.results
+  in
+  let missing =
+    List.concat
+      (List.mapi
+         (fun index candidate ->
+           match Hashtbl.mem seen index with
+           | true -> []
+           | false -> [ index, candidate ])
+         candidate_findings)
+  in
+  {
+    matched = enforce_validator_proofs (List.rev matched);
+    missing;
+    unknown_ids = List.rev unknown_ids;
+    duplicate_ids = List.rev duplicate_ids;
+  }
 
 type analysis_metrics = {
   actionable_triage_signal_count : int;
@@ -650,44 +719,117 @@ module Make (AI : Api.Agent_runner) = struct
       suggested_fix = f.suggested_fix;
     }
 
-  (** Run the validator agent on candidate findings and parse its output.
+  (** Run one validator call over [candidates] and join the response by id.
 
-      Returns the validated findings, agent costs, and whether the stage
-      failed. Unvalidated findings are never reported. *)
+      [attempt_label] distinguishes the debug artifacts of each call so that
+      chunked runs and retries never overwrite one another — these artifacts are
+      the forensic record for diagnosing under-answering validators.
+
+      A failed agent call or an unparseable response degrades to "every
+      candidate in this call is missing"; it never discards results from other
+      calls. *)
+  let run_validator_call ~ctx ~repo_url ~fetch_file ~agent_config ~diff_text ~candidates ~artifacts ~attempt_label
+    ?debug_dir ?log_context () =
+    let log_prefix = log_context_prefix log_context in
+    let input = Validator_agent.build_input ~diff_text ~candidate_findings:candidates () in
+    Security_artifacts.write_debug_text artifacts ~filename:(Printf.sprintf "validator_input_%s.md" attempt_label) input;
+    let tools = Validator_agent.tools ~fetch_file:(fun path -> fetch_file ~path) in
+    let all_missing = List.mapi (fun index candidate -> index, candidate) candidates in
+    let%lwt result = AI.run ~ctx ~repo_url ~tools ?debug_dir ?log_context ~config:agent_config ~input () in
+    match result with
+    | Error msg ->
+      log#error "%svalidator agent failed (%s): %s" log_prefix attempt_label msg;
+      Lwt.return ([], all_missing, [])
+    | Ok agent_result ->
+      let files_fetched = agent_result.tool_results_count in
+      let cost = Cost_tracking.of_agent_result ?log_context ~agent_name:"validator" ~files_fetched agent_result in
+      Security_artifacts.write_debug_json artifacts
+        ~filename:(Printf.sprintf "validator_output_%s.json" attempt_label)
+        agent_result.output;
+      (try
+         let output = Security_types.validator_output_of_json agent_result.output in
+         let join = validator_results_for_candidates ~candidate_findings:candidates output in
+         (match join.unknown_ids with
+         | [] -> ()
+         | ids ->
+           log#warn "%svalidator (%s): dropped %d result(s) with unknown candidate_id" log_prefix attempt_label
+             (List.length ids));
+         (match join.duplicate_ids with
+         | [] -> ()
+         | ids ->
+           log#warn "%svalidator (%s): ignored %d duplicate candidate_id result(s)" log_prefix attempt_label
+             (List.length ids));
+         (match join.missing with
+         | [] -> ()
+         | missing ->
+           log#warn "%svalidator (%s): %d of %d candidate(s) received no verdict" log_prefix attempt_label
+             (List.length missing) (List.length candidates));
+         let downgraded = count_confirmed output.results - count_confirmed join.matched in
+         (match downgraded > 0 with
+         | true ->
+           log#warn "%svalidator (%s): downgraded %d confirmed result(s) without concrete proof" log_prefix
+             attempt_label downgraded
+         | false -> ());
+         Lwt.return (join.matched, join.missing, [ cost ])
+       with exn ->
+         log#error "%svalidator output parse failed (%s): %s" log_prefix attempt_label (Exn.str exn);
+         Lwt.return ([], all_missing, [ cost ]))
+
+  (** Validate [candidates] in chunks, then retry any unanswered candidate once,
+      individually.
+
+      A single-candidate call cannot under-answer the way a large batch can, so
+      the retry round recovers candidates the chunked pass left without a
+      verdict. Candidates still unanswered after their retry are withheld and
+      raise the failure flag; results obtained for other candidates are always
+      preserved. *)
   let run_validator ~ctx ~repo_url ~fetch_file ~security_config ~diff_text ~candidate_findings ~artifacts ?debug_dir
     ?log_context () =
     let log_prefix = log_context_prefix log_context in
     let model_tier = agent_model_tier security_config.Config_types.validator_model_tier in
     let agent_config = Validator_agent.config ~model_tier in
-    let input = Validator_agent.build_input ~diff_text ~candidate_findings () in
-    Security_artifacts.write_debug_text artifacts ~filename:"validator_input.md" input;
-    let tools = Validator_agent.tools ~fetch_file:(fun path -> fetch_file ~path) in
-    let%lwt result = AI.run ~ctx ~repo_url ~tools ?debug_dir ?log_context ~config:agent_config ~input () in
-    match result with
-    | Error msg ->
-      log#error "%svalidator agent failed: %s" log_prefix msg;
-      Lwt.return ([], [], true)
-    | Ok agent_result ->
-      let files_fetched = agent_result.tool_results_count in
-      let cost = Cost_tracking.of_agent_result ?log_context ~agent_name:"validator" ~files_fetched agent_result in
-      Security_artifacts.write_debug_json artifacts ~filename:"validator_output.json" agent_result.output;
-      (try
-         let output = Security_types.validator_output_of_json agent_result.output in
-         match validator_results_for_candidates ~candidate_findings output with
-         | Error msg ->
-           log#error "%s%s" log_prefix msg;
-           Lwt.return ([], [ cost ], true)
-         | Ok results ->
-           let downgraded = count_confirmed output.results - count_confirmed results in
-           (match downgraded > 0 with
-           | true ->
-             log#warn "%svalidator: downgraded %d confirmed result(s) without concrete proof" log_prefix downgraded
-           | false -> ());
-           log#info "%svalidator: %d results" log_prefix (List.length results);
-           Lwt.return (results, [ cost ], false)
-       with exn ->
-         log#error "%svalidator output parse failed: %s" log_prefix (Exn.str exn);
-         Lwt.return ([], [ cost ], true))
+    let call =
+      run_validator_call ~ctx ~repo_url ~fetch_file ~agent_config ~diff_text ~artifacts ?debug_dir ?log_context
+    in
+    let chunks = CCList.chunks max_candidates_per_validator_call candidate_findings in
+    (* Chunks run sequentially: the validator fetches files through a shared
+       context, and ordering keeps logs and artifacts readable. *)
+    let%lwt chunk_results, chunk_missing, chunk_costs =
+      Lwt_list.fold_left_s
+        (fun (acc_results, acc_missing, acc_costs) (chunk_index, chunk) ->
+          let attempt_label = Printf.sprintf "%d" (chunk_index + 1) in
+          let%lwt results, missing, costs = call ~candidates:chunk ~attempt_label () in
+          let missing = List.map (fun (_, candidate) -> candidate) missing in
+          Lwt.return (acc_results @ results, acc_missing @ missing, acc_costs @ costs))
+        ([], [], [])
+        (List.mapi (fun index chunk -> index, chunk) chunks)
+    in
+    (* Exactly one retry round, one candidate per call. *)
+    let%lwt retry_results, still_missing, retry_costs =
+      Lwt_list.fold_left_s
+        (fun (acc_results, acc_missing, acc_costs) (retry_index, candidate) ->
+          let attempt_label = Printf.sprintf "retry_%d" (retry_index + 1) in
+          let%lwt results, missing, costs = call ~candidates:[ candidate ] ~attempt_label () in
+          let acc_missing =
+            match missing with
+            | [] -> acc_missing
+            | _ :: _ -> acc_missing + 1
+          in
+          Lwt.return (acc_results @ results, acc_missing, acc_costs @ costs))
+        ([], 0, [])
+        (List.mapi (fun index candidate -> index, candidate) chunk_missing)
+    in
+    let results = chunk_results @ retry_results in
+    let costs = chunk_costs @ retry_costs in
+    (* A failed agent call yields no cost entry, so count calls explicitly. *)
+    let call_count = List.length chunks + List.length chunk_missing in
+    let failed = still_missing > 0 in
+    (match failed with
+    | true -> log#error "%svalidator: %d candidate(s) withheld with no verdict after retry" log_prefix still_missing
+    | false -> ());
+    log#info "%svalidator: %d results for %d candidate(s) from %d call(s)" log_prefix (List.length results)
+      (List.length candidate_findings) call_count;
+    Lwt.return (results, costs, failed)
 
   (** Collapse candidate findings that share the same [(sink.path, sink.line)].
 

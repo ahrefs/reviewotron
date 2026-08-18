@@ -200,7 +200,14 @@ emits LGTM; (c) local-JSON (`"outcome":"failure"`) and PR-comment variants.
   The path+line join is robust either way.
 - **10 of 15 sweep logs are truncated to 2 lines**, outcomes unknown. Absence
   of the signature there is not evidence of absence.
-- **Deployment scan not done.** Fingerprint to grep in production logs:
+- **Deployment scan not done.** The deployed build is `fb364dc`, which predates
+  every change here, so use the *old* fingerprint when grepping its logs:
   `security validator returned N results for M candidates`, or in metrics
   `raw_candidates_produced > 0 && confirmed == 0 && rejected == 0` (a legitimate
   rejection satisfies `confirmed + rejected == kept`).
+
+  That string no longer exists after the id-join change. On current builds the
+  equivalent signal is
+  `validator: N candidate(s) withheld with no verdict after retry`, and the
+  metrics invariant `confirmed + rejected == kept` still identifies loss — but
+  loss is now partial (the withheld candidates only) rather than total.

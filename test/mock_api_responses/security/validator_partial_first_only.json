@@ -40,7 +40,9 @@
       "evidence_notes": "Source is user-controllable (Dream.query parameter). Sink is Db.exec with string concatenation. Flow path fully traced with file and line evidence. No sanitization present.",
       "proof_by_construction": {
         "trigger": "GET /?id=' OR '1'='1",
-        "preconditions": ["The reviewed Dream handler is reachable over HTTP"],
+        "preconditions": [
+          "The reviewed Dream handler is reachable over HTTP"
+        ],
         "source_to_sink_trace": [
           "src/main.ml:10 reads id from Dream.query",
           "src/main.ml:12 concatenates id into the SQL string",

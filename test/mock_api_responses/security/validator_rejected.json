@@ -1,6 +1,7 @@
 {
   "results": [
     {
+      "candidate_id": 0,
       "finding": {
         "vuln_class": "injection",
         "source": {

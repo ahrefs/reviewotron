@@ -25,7 +25,37 @@ let reset_agent_response_path () = agent_response_path := "mock_api_responses/cl
 let agent_response_map : (string * string) list ref = ref []
 
 let set_agent_response_map entries = agent_response_map := entries
-let clear_agent_response_map () = agent_response_map := []
+
+(** Per-agent response sequences for tests that trigger several calls to the
+    same agent (e.g. the chunked + retried security validator).
+
+    Successive calls to a named agent consume successive files. Once a
+    sequence is exhausted the last file is served repeatedly, so a test only
+    needs to enumerate the responses it cares about. Sequences take precedence
+    over [agent_response_map]. *)
+let agent_response_sequence : (string * string list ref) list ref = ref []
+
+let set_agent_response_sequence entries =
+  agent_response_sequence := List.map (fun (name, paths) -> name, ref paths) entries
+
+let clear_agent_response_sequence () = agent_response_sequence := []
+
+(** Take the next response path for [name], keeping the last one when the
+    sequence is exhausted. *)
+let next_sequenced_response name =
+  match List.assoc_opt name !agent_response_sequence with
+  | None -> None
+  | Some remaining ->
+  match !remaining with
+  | [] -> None
+  | [ last ] -> Some last
+  | path :: rest ->
+    remaining := rest;
+    Some path
+
+let clear_agent_response_map () =
+  agent_response_map := [];
+  clear_agent_response_sequence ()
 
 (** Records the last [input] string passed to [Agent_runner.run], keyed by
     agent config name. Lets tests assert on what a given agent actually
@@ -355,6 +385,12 @@ module Agent_runner : Api.Agent_runner = struct
   let run ~ctx:_ ~repo_url:_ ?model_id:_ ?tools:_ ?debug_dir:_ ?log_context:_ ~config ~input () =
     recorded_agent_inputs :=
       (config.Agent_runner.name, input) :: List.remove_assoc config.Agent_runner.name !recorded_agent_inputs;
+    match next_sequenced_response config.Agent_runner.name with
+    | Some path ->
+      (match read_mock_file path with
+      | Ok json_str -> Lwt.return (result (Melange_json.of_string json_str))
+      | Error msg -> Lwt.return (Error msg))
+    | None ->
     match List.assoc_opt config.Agent_runner.name !agent_response_map, config.Agent_runner.name with
     | None, "general_validator" -> Lwt.return (result (default_validator_output ()))
     | path_opt, _ ->

@@ -52,13 +52,26 @@ val analysis_step_budget : vuln_class:Config_types.vuln_class -> triage_signals:
     unresolved assumptions must be empty. *)
 val proof_is_concrete : Security_types.exploitation_proof -> bool
 
-(** Validate the security validator's result cardinality and enforce concrete
-    proofs. A malformed validator response is an error rather than a partial
-    validation because omitted candidates must not be silently dropped. *)
+(** Outcome of joining one validator response against that call's candidates. *)
+type validator_join = {
+  matched : Security_types.validated_finding list;
+    (** Proof-enforced results, each re-attached to its ORIGINAL candidate. *)
+  missing : (int * Security_types.candidate_finding) list;
+    (** Candidates that received no verdict, with their call-local id. *)
+  unknown_ids : int list;  (** Ids in the response matching no candidate. *)
+  duplicate_ids : int list;  (** Repeated ids; the first occurrence wins. *)
+}
+
+(** Join validator results to the candidates of a single call by
+    [candidate_id] (the zero-based position within that call's candidate list).
+
+    Unanswered candidates are reported through [missing] so the caller can
+    retry them; a malformed or short response therefore degrades to "these
+    candidates are missing" and never discards results for other candidates.
+    Verdicts are always re-attached to the original candidate, because the
+    model's echoed [finding] may be paraphrased. *)
 val validator_results_for_candidates :
-  candidate_findings:Security_types.candidate_finding list ->
-  Security_types.validator_output ->
-  (Security_types.validated_finding list, string) result
+  candidate_findings:Security_types.candidate_finding list -> Security_types.validator_output -> validator_join
 
 (** Enforce the validator invariant that [Confirmed] results must include a
     concrete [proof_by_construction]. Confirmed results with missing or empty
