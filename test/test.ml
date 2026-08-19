@@ -1076,8 +1076,9 @@ let test_dedup_preserves_plugin_provenance () =
   let out =
     Review_engine.deduplicate_sourced_findings
       [
-        Review_engine.{ source = From_general; plugin_name = "general"; finding = general };
-        Review_engine.{ source = From_security; plugin_name = "security"; finding = security };
+        Review_engine.{ source = From_general; plugin_name = "general"; finding = general; vuln_class = None };
+        Review_engine.
+          { source = From_security; plugin_name = "security"; finding = security; vuln_class = Some Injection };
       ]
   in
   match out with
@@ -4826,7 +4827,7 @@ let test_local_sink_render_json () =
       comments = [];
       inline_findings = [];
       findings = [ finding ];
-      sourced_findings = [];
+      sourced_findings = [ { source = From_security; plugin_name = "security"; finding; vuln_class = Some Injection } ];
       routed_findings = [];
       unchanged_findings = [];
       anchor_failed_findings = [];
@@ -4846,6 +4847,7 @@ let test_local_sink_render_json () =
       (check int) "end_line" 494 (json_int_field fields "end_line");
       (check string) "level" "warning" (json_string_field fields "level");
       (check string) "category" "security" (json_string_field fields "category");
+      (check string) "vuln_class" "injection" (json_string_field fields "vuln_class");
       (check string) "confidence" "high" (json_string_field fields "confidence");
       (check string) "summary" summary (json_string_field fields "summary");
       (check string) "failure_scenario" failure_scenario (json_string_field fields "failure_scenario");
@@ -4854,6 +4856,39 @@ let test_local_sink_render_json () =
         (json_string_field fields "why_now");
       (check string) "suggested_fix" "remove the legacy file before ensure_dir"
         (json_string_field fields "suggested_fix")
+    | Some _ -> fail "expected findings to contain one review finding"
+    | None -> fail "missing JSON field findings")
+  | _ -> fail "expected a JSON review object"
+
+(* A general-plugin finding carries no vuln_class, so the envelope reports null.
+   Guards the field's presence for consumers that read it unconditionally, and
+   pins that a non-security finding never inherits a class. *)
+let test_local_sink_render_json_general_finding_has_null_vuln_class () =
+  let finding = mk_finding ~path:"src/main.ml" ~line:14 ~category:Review_types.Bug ~message:"unhandled exception" () in
+  let report : Review_engine.report =
+    {
+      body = "";
+      comments = [];
+      inline_findings = [];
+      findings = [ finding ];
+      sourced_findings = [ { source = From_general; plugin_name = "general"; finding; vuln_class = None } ];
+      routed_findings = [];
+      unchanged_findings = [];
+      anchor_failed_findings = [];
+      review_costs = [];
+      security_error = false;
+      general_failed = false;
+    }
+  in
+  match Yojson.Basic.from_string (Local_sink.render_json report) with
+  | `Assoc fields ->
+    (match List.assoc_opt "findings" fields with
+    | Some (`List [ `Assoc fields ]) ->
+      (check string) "category" "bug" (json_string_field fields "category");
+      (check bool) "vuln_class is null" true
+        (match List.assoc_opt "vuln_class" fields with
+        | Some `Null -> true
+        | Some _ | None -> false)
     | Some _ -> fail "expected findings to contain one review finding"
     | None -> fail "missing JSON field findings")
   | _ -> fail "expected a JSON review object"
@@ -8551,6 +8586,8 @@ let () =
           test_case "duplicate local change skipped" `Quick test_local_review_skips_duplicate_change;
           test_case "github plugins use captured config" `Quick test_github_review_uses_captured_config_for_plugins;
           test_case "local sink renders json" `Quick test_local_sink_render_json;
+          test_case "local sink renders null vuln_class for general findings" `Quick
+            test_local_sink_render_json_general_finding_has_null_vuln_class;
         ] );
       ( "state_persistence",
         [

@@ -18,6 +18,11 @@ type sourced_finding = {
   source : finding_source;
   plugin_name : string;
   finding : Review_types.finding;
+  vuln_class : Config_types.vuln_class option;
+    (** Vulnerability class for security-plugin findings, [None] for every
+          other source.  Kept beside the finding rather than inside it because
+          {!Review_types.finding} is an LLM output schema: a field there would
+          be demanded of agents that know nothing about vuln classes. *)
 }
 
 type routing_outcome =
@@ -57,7 +62,7 @@ type findings_plugin = {
     log_context:string option ->
     debug_dir:string ->
     memory_dir:string ->
-    (Review_types.finding list * Cost_tracking.agent_cost list * bool) Lwt.t;
+    ((Review_types.finding * Config_types.vuln_class option) list * Cost_tracking.agent_cost list * bool) Lwt.t;
 }
 
 let severity_rank = function
@@ -76,7 +81,8 @@ let same_source a b =
 let same_category a b =
   String.equal (Review_types.finding_category_to_string a) (Review_types.finding_category_to_string b)
 
-let sourced_of_pair (source, finding) = { source; plugin_name = finding_source_to_string source; finding }
+let sourced_of_pair (source, finding) =
+  { source; plugin_name = finding_source_to_string source; finding; vuln_class = None }
 
 let pick_for_same_line a b =
   match a.source, b.source with
@@ -581,12 +587,15 @@ module Make (AI : Api.Agent_runner) = struct
         let plugin_findings =
           List.concat_map
             (fun (plugin, findings, _costs, _errored) ->
-              List.map (fun finding -> { source = plugin.fp_source; plugin_name = plugin.fp_name; finding }) findings)
+              List.map
+                (fun (finding, vuln_class) ->
+                  { source = plugin.fp_source; plugin_name = plugin.fp_name; finding; vuln_class })
+                findings)
             findings_results
         in
         let sourced =
           List.map
-            (fun finding -> { source = From_general; plugin_name = General_plugin.name; finding })
+            (fun finding -> { source = From_general; plugin_name = General_plugin.name; finding; vuln_class = None })
             general_findings
           @ plugin_findings
         in

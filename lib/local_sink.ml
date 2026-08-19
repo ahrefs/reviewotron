@@ -14,7 +14,13 @@ let non_empty_or ~default value =
   | "" -> default
   | value -> value
 
-let finding_to_json (finding : Review_types.finding) =
+(* [vuln_class] is the security plugin's own routing class, carried beside the
+   finding by {!Review_engine.sourced_finding} rather than inside it.  Emitted as
+   null for general findings so the field's presence is stable for consumers.
+   [category] deliberately stays "security" for every security finding: feedback
+   targets are keyed on that string, so narrowing it would orphan them. *)
+let finding_to_json (sourced : Review_engine.sourced_finding) =
+  let finding = sourced.finding in
   `Assoc
     [
       "file", `String finding.path;
@@ -25,6 +31,10 @@ let finding_to_json (finding : Review_types.finding) =
         | None -> `Null );
       "level", `String (Review_types.severity_to_string finding.severity);
       "category", `String (Review_types.finding_category_to_string finding.category);
+      ( "vuln_class",
+        match sourced.vuln_class with
+        | Some vc -> `String (Config_types.vuln_class_to_string vc)
+        | None -> `Null );
       "confidence", `String (Review_types.confidence_to_string finding.confidence);
       "summary", `String finding.message;
       "failure_scenario", `String (non_empty_or ~default:finding.message finding.failure_scenario);
@@ -36,13 +46,16 @@ let finding_to_json (finding : Review_types.finding) =
         | None -> `Null );
     ]
 
-let include_finding_in_json (finding : Review_types.finding) =
-  match finding.severity with
+let include_finding_in_json (sourced : Review_engine.sourced_finding) =
+  match sourced.finding.severity with
   | Praise -> false
   | Critical | Warning | Suggestion | Nitpick | Other _ -> true
 
 let render_json (report : Review_engine.report) =
-  let findings = report.findings |> List.filter include_finding_in_json |> List.map finding_to_json in
+  (* Read [sourced_findings], not [findings]: same list in the same order --
+     [findings] is derived from it by dropping the source wrapper -- but the
+     wrapper carries the vuln_class the envelope reports. *)
+  let findings = report.sourced_findings |> List.filter include_finding_in_json |> List.map finding_to_json in
   let fields = [ "summary", `String (String.trim report.body); "findings", `List findings ] in
   let fields =
     match Review_engine.report_failed report with

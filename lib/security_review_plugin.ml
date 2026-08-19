@@ -1034,7 +1034,13 @@ module Make (AI : Api.Agent_runner) = struct
         in
         log#info "%svalidation complete: %d confirmed, %d rejected" log_prefix (List.length confirmed)
           (List.length validated - List.length confirmed);
-        let findings = List.map (validated_to_finding ?log_context ~diff) confirmed in
+        let classified_findings =
+          List.map
+            (fun (vf : Security_types.validated_finding) ->
+              validated_to_finding ?log_context ~diff vf, Some vf.finding.vuln_class)
+            confirmed
+        in
+        let findings = List.map fst classified_findings in
         Security_artifacts.write_debug_json artifacts ~filename:"final_findings.json"
           (Security_artifacts.final_findings_json findings);
         let metrics =
@@ -1050,7 +1056,7 @@ module Make (AI : Api.Agent_runner) = struct
             class_drops;
           }
         in
-        Lwt.return (findings, analysis_costs @ validator_costs, metrics, analysis_failed || validator_failed))
+        Lwt.return (classified_findings, analysis_costs @ validator_costs, metrics, analysis_failed || validator_failed))
 
   (** Build the architectural observations passed to the memory curator.
 
@@ -1176,7 +1182,7 @@ module Make (AI : Api.Agent_runner) = struct
         Security_artifacts.write_debug_json artifacts ~filename:"final_findings.json" (`List []);
         Lwt.return ([], triage_costs, false)
       | None ->
-        let%lwt findings, analysis_costs, analysis_metrics, analysis_failed =
+        let%lwt classified_findings, analysis_costs, analysis_metrics, analysis_failed =
           run_analysis ~ctx ~repo_url ~fetch_file:metadata.fetch_file ~security_config ~diff ~diff_text ~file_paths
             ~language_hints:triage_output.language_hints ~artifacts ?debug_dir:agent_debug_dir ?log_context
             triage_output.signals
@@ -1189,7 +1195,7 @@ module Make (AI : Api.Agent_runner) = struct
              ~triage_signal_count:(List.length triage_output.signals) ~metrics:analysis_metrics ~costs);
         Security_artifacts.write_fetch_stats artifacts costs;
         Security_artifacts.write_debug_json artifacts ~filename:"final_findings.json"
-          (Security_artifacts.final_findings_json findings);
+          (Security_artifacts.final_findings_json (List.map fst classified_findings));
         let observations = build_observations ~triage_output ~file_paths in
         Security_artifacts.write_debug_json artifacts ~filename:"memory_observations.json"
           (Security_types.architectural_observations_to_json observations);
@@ -1207,5 +1213,5 @@ module Make (AI : Api.Agent_runner) = struct
           with exn ->
             log#error "%smemory curator async task raised: %s" log_prefix (Exn.str exn);
             Lwt.return_unit);
-        Lwt.return (findings, costs, analysis_failed))
+        Lwt.return (classified_findings, costs, analysis_failed))
 end
