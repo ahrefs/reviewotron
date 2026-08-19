@@ -39,6 +39,7 @@
   (glob_files_rec security_corpus/authn/*)
   (glob_files_rec security_corpus/authz/*)
   (glob_files_rec security_corpus/ssrf/*)
+  (glob_files_rec security_corpus/path_traversal/*)
   (glob_files_rec security_corpus/policy_regression/*)))
 
 (test

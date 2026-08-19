@@ -63,6 +63,7 @@ type target = {
   finding_id : string option;
   finding_source : string option;
   plugin_name : string option;
+  vuln_class : string option;
   last_counts : reaction_counts;
 }
 
@@ -82,6 +83,7 @@ type target_input = {
   finding_id : string option;
   finding_source : string option;
   plugin_name : string option;
+  vuln_class : string option;
 }
 
 type review_body_target_input = {

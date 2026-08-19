@@ -42,6 +42,15 @@ Database mutation operations (update, delete) where a user-supplied resource ide
 ### ssrf
 HTTP client calls, URL construction from user inputs, redirect handling, webhook URL configuration, any pattern where user input influences the target of an outbound HTTP request.
 
+### path_traversal
+Filesystem path construction from user input: `open`, `readFile`/`writeFile`, `send_file`, `sendFile`, `os.path.join`, `path.join`, `Filename.concat`, `pathlib.Path` division, static-file serving with a computed path, upload handlers that keep the client-supplied filename, and unsafe tar or custom archive extraction of user-supplied archives.
+
+Flag when a request parameter, upload filename, stored filename, or archive member name can influence which file is read, written, deleted, or served. **High confidence** when a user-controlled value is joined onto a base directory and reaches a file operation with no visible containment check (a resolve-then-verify against the base, a basename reduction, or an allowlist); **medium** when the value is validated by string inspection only (stripping `../`, a `startsWith` prefix check, or normalization without a containment comparison), or when the filename is stored and consumed elsewhere.
+
+Note that `path.join`/`os.path.join`/`Filename.concat` do not confine `..` segments. Absolute inputs behave differently: Python `os.path.join` discards the base, while Node `path.join` and OCaml `Filename.concat` retain it. Node `path.resolve` and `pathlib.Path` division also discard the base for an absolute user value. Writes matter as much as reads — an attacker-chosen write path can overwrite application files.
+
+Do not flag paths built only from constants, configuration, or environment variables, values already reduced to a bare basename, indirect id-to-path lookups, or static-file middleware used with a fixed root and no custom path preprocessing.
+
 ### policy_regression
 Security policy or configuration changes that directly broaden privilege, grant new write/admin/root capabilities, or weaken a named control. These are not source-to-sink user-input bugs; flag them when the diff itself proves a policy/control effect that may now allow an action that was previously constrained.
 
@@ -63,7 +72,7 @@ Do not flag purely administrative refactors, policy comments, or a tightly scope
 
 Produce a JSON object with this structure:
 - `signals`: array of triage signals, each with:
-  - `vuln_class`: one of "injection", "xss", "command_injection", "authn", "authz", "ssrf", "policy_regression"
+  - `vuln_class`: one of "injection", "xss", "command_injection", "authn", "authz", "ssrf", "path_traversal", "policy_regression"
   - `confidence`: one of "high", "medium", "low"
   - `regions`: array of regions, each with `path` (file path), `start_line`, `end_line`. Both line numbers MUST be copied verbatim from the left column of the annotated diff — the exact numbers printed for the first and last lines you want the analysis agent to inspect. Do not count or estimate.
   - `rationale`: brief explanation of why this region is flagged

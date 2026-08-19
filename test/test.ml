@@ -617,7 +617,11 @@ let test_config_review_plugins_defaults () =
   (check bool) "general enabled" true config.review_plugins.general.enabled;
   (check bool) "general prompt override" true (Option.is_none config.review_plugins.general.system_prompt_override);
   (check bool) "security disabled by default" false config.review_plugins.security.enabled;
-  (check int) "vuln_classes count" 7 (List.length config.review_plugins.security.vuln_classes);
+  (check int) "vuln_classes count" 8 (List.length config.review_plugins.security.vuln_classes);
+  (check bool) "path_traversal enabled by default" true
+    (List.exists
+       (Security_review_plugin.vuln_class_equal Config_types.Path_traversal)
+       config.review_plugins.security.vuln_classes);
   (check bool) "policy_regression enabled by default" true
     (List.exists
        (Security_review_plugin.vuln_class_equal Config_types.Policy_regression)
@@ -1076,15 +1080,21 @@ let test_dedup_preserves_plugin_provenance () =
   let out =
     Review_engine.deduplicate_sourced_findings
       [
-        Review_engine.{ source = From_general; plugin_name = "general"; finding = general };
-        Review_engine.{ source = From_security; plugin_name = "security"; finding = security };
+        Review_engine.{ source = From_general; plugin_name = "general"; finding = general; vuln_class = None };
+        Review_engine.
+          { source = From_security; plugin_name = "security"; finding = security; vuln_class = Some Injection };
       ]
   in
   match out with
   | [ sourced ] ->
     (check string) "source" "security" (Review_engine.finding_source_to_string sourced.source);
     (check string) "plugin" "security" sourced.plugin_name;
-    (check string) "finding" "security" sourced.finding.message
+    (check string) "finding" "security" sourced.finding.message;
+    (* The class must survive dedup with the finding it belongs to. *)
+    (check bool) "vuln_class preserved" true
+      (match sourced.vuln_class with
+      | Some Injection -> true
+      | Some (Xss | Command_injection | Authn | Authz | Ssrf | Path_traversal | Policy_regression) | None -> false)
   | _ -> fail "expected one sourced finding"
 
 let test_dedup_same_line_same_source_higher_severity_wins () =
@@ -2762,6 +2772,38 @@ diff --git a/src/client.py b/src/client.py
     (signal_has ~hint:Security_types.Policy_regression ~category:Security_types.Changed_security_control
        ~path:"src/client.py" ~line:40 ~pattern_sub:"security control weakening" signals)
 
+(* Cover supported path sinks and nearby lookalikes in one scan. *)
+let test_security_diff_signal_path_traversal () =
+  let diff_text =
+    {|diff --git a/src/handlers/files.py b/src/handlers/files.py
+--- a/src/handlers/files.py
++++ b/src/handlers/files.py
+@@ -0,0 +1,11 @@
++path = os.path.join(REPORT_DIR, request.args["name"])
++return send_file(request.args["name"])
++p = Path(REPORTS) / request.args["name"]
++q = pathlib.Path(REPORTS).joinpath(request.args["name"])
++await client.send_file(chat_id, doc)
++self.send_files(payload)
++def test_send_file_roundtrip():
++shutil.copyfileobj(src, dst)
++zipfile.ZipFile(upload).extractall(dest)
++root = Path("/tmp")
++shutil.copy2(src, dst)
+|}
+  in
+  let signals = Security_diff_signal.scan (Diff_parser.parse diff_text) in
+  let has_path_signal line =
+    signal_has ~hint:Security_types.Path_traversal ~category:Security_types.Dangerous_api ~path:"src/handlers/files.py"
+      ~line ~pattern_sub:"file path" signals
+  in
+  List.iter
+    (fun line -> (check bool) (Printf.sprintf "line %d is a path sink" line) true (has_path_signal line))
+    [ 1; 2; 3; 4; 11 ];
+  List.iter
+    (fun line -> (check bool) (Printf.sprintf "line %d is not a path sink" line) false (has_path_signal line))
+    [ 5; 6; 7; 8; 9; 10 ]
+
 let test_security_diff_signal_multiline_policy_wildcards () =
   let diff_text =
     {|diff --git a/k8s/rbac.yml b/k8s/rbac.yml
@@ -3115,6 +3157,16 @@ let test_analysis_agent_prompt_contains_class_section () =
   (check bool) "policy section" true (Devkit.Stre.exists policy.system_prompt "Security Policy Regression");
   (check bool) "policy source model" true (Devkit.Stre.exists policy.system_prompt "changed principal")
 
+let test_path_traversal_prompt_runtime_semantics () =
+  let analysis = Analysis_agent.vuln_class_section Path_traversal ~language_hints:[] in
+  let triage = (Triage_agent.config ~model_tier:Fast).system_prompt in
+  (check bool) "analysis distinguishes Node and OCaml absolute paths" true
+    (contains_sub ~sub:"not Node `path.join` or OCaml `Filename.concat`" analysis);
+  (check bool) "analysis treats stdlib ZipFile extraction as sanitized" true
+    (contains_sub ~sub:"stdlib `zipfile.ZipFile.extract` / `extractall` sanitize" analysis);
+  (check bool) "triage distinguishes absolute path behavior" true
+    (contains_sub ~sub:"while Node `path.join` and OCaml `Filename.concat` retain it" triage)
+
 let test_analysis_agent_language_hints () =
   let with_hints =
     Analysis_agent.config ~vuln_class:Injection ~model_tier:Standard ~language_hints:[ "Python"; "JavaScript" ]
@@ -3177,9 +3229,9 @@ let test_analysis_agent_shared_methodology () =
     (Devkit.Stre.exists methodology "Render the sink's actual input")
 
 let test_analysis_agent_vuln_class_section_all_classes () =
-  let classes : Security_types.vuln_class list =
-    [ Injection; Xss; Command_injection; Authn; Authz; Ssrf; Policy_regression ]
-  in
+  (* Derived, not spelled out: a hardcoded list here silently stops covering a
+     newly added class -- the section could return "" and this would still pass. *)
+  let classes : Security_types.vuln_class list = Config_types.all_vuln_classes in
   List.iter
     (fun vc ->
       let section = Analysis_agent.vuln_class_section vc ~language_hints:[] in
@@ -4309,7 +4361,7 @@ let test_local_review_diff_returns_markdown () =
     (check bool) "summary not leaked" false (CCString.find ~sub:"The changes look generally good" markdown >= 0);
     (check bool) "has inline comments section" true (CCString.find ~sub:"### Inline comments" markdown >= 0);
     (check bool) "has local inline location" true (CCString.find ~sub:"src/main.ml:14" markdown >= 0);
-    (check bool) "records generic change review" true
+    (check bool) "does not record the bare change key" false
       (State.is_change_reviewed state ~repo_key:"local/repo" ~change_key:"local-change")
 
 let test_local_review_diff_text_returns_markdown () =
@@ -4333,6 +4385,12 @@ let test_local_review_diff_text_returns_markdown () =
     (check bool) "summary not leaked" false (CCString.find ~sub:"The changes look generally good" markdown >= 0);
     (check bool) "has inline comments section" true (CCString.find ~sub:"### Inline comments" markdown >= 0)
 
+(* State is fresh per test, so record counts prove whether a review was cached. *)
+let recorded_change_review_count state ~repo_key =
+  match List.assoc_opt repo_key (State.data state).repos with
+  | None -> 0
+  | Some (repo_state : State_types.repo_state) -> List.length repo_state.change_reviews
+
 let run_local_failure_report
   ?(config =
     Config_types.config_of_json (Melange_json.of_string {|{"review_plugins": {"security": {"enabled": true}}}|})) ~state
@@ -4342,6 +4400,39 @@ let run_local_failure_report
   Lwt_main.run
     (Local_review_test.review_diff_text_report ~ctx ~root:"." ~repo_key:"local/repo" ~change_key ~title:"Failed review"
        ~description:"Local description" ~diff_text ~config ())
+
+(* Different configs review independently; an identical config still skips. *)
+let test_local_review_dedup_is_config_aware () =
+  Test_helpers.reset_test_state ();
+  let mocks =
+    [
+      "general_scout", "mock_api_responses/scout/leads_two.json";
+      "general_deep_review", "mock_api_responses/claude/review_response.json";
+    ]
+  in
+  Api_local.set_agent_response_map mocks;
+  let state = State.create () in
+  let config_of s = Config_types.config_of_json (Melange_json.of_string s) in
+  (* Vary a review-irrelevant field so only the config digest changes. *)
+  let other_config = config_of {|{"review_plugins": {"security": {"enabled": false}}, "slack_channel": "#reviews"}|} in
+  let security_off = config_of {|{"review_plugins": {"security": {"enabled": false}}}|} in
+  let diff_text = read_file "mock_api_responses/github/pr_42.diff" in
+  let review config =
+    let ctx = Test_helpers.make_test_context ~state () in
+    Lwt_main.run
+      (Local_review_test.review_diff_text_report ~ctx ~root:"." ~repo_key:"local/repo" ~change_key:"shared-key"
+         ~title:"Config aware" ~description:"" ~diff_text ~config ())
+  in
+  let expect_reviewed label = function
+    | Error msg -> fail (Printf.sprintf "%s: expected a review, got %s" label msg)
+    | Ok (_ : Review_engine.report) -> ()
+  in
+  expect_reviewed "first config" (review security_off);
+  expect_reviewed "second config" (review other_config);
+  (check int) "one entry per config" 2 (recorded_change_review_count state ~repo_key:"local/repo");
+  match review security_off with
+  | Ok (_ : Review_engine.report) -> fail "expected a duplicate skip for a repeated config"
+  | Error msg -> (check bool) "repeat of a seen config is skipped" true (Local_review.is_already_reviewed_message msg)
 
 let test_local_review_total_failure_is_retryable () =
   Test_helpers.reset_test_state ();
@@ -4361,8 +4452,7 @@ let test_local_review_total_failure_is_retryable () =
         (contains_sub ~sub:{|"outcome": "failure"|} (Local_sink.render_json report))
   in
   expect_failure (review ());
-  (check bool) "failed change not recorded" false
-    (State.is_change_reviewed state ~repo_key:"local/repo" ~change_key:"total-failure");
+  (check int) "failed change not recorded" 0 (recorded_change_review_count state ~repo_key:"local/repo");
   expect_failure (review ())
 
 let test_local_review_partial_failure_is_retryable () =
@@ -4386,8 +4476,7 @@ let test_local_review_partial_failure_is_retryable () =
     (check bool) "partial failure body preserved" true (contains_sub ~sub:"Review partially failed" report.body);
     (check bool) "JSON partial failure outcome" true
       (contains_sub ~sub:{|"outcome": "failure"|} (Local_sink.render_json report));
-    (check bool) "partially failed change not recorded" false
-      (State.is_change_reviewed state ~repo_key:"local/repo" ~change_key:"partial-failure")
+    (check int) "partially failed change not recorded" 0 (recorded_change_review_count state ~repo_key:"local/repo")
 
 let test_local_review_security_stage_failures_are_retryable () =
   let config =
@@ -4418,8 +4507,7 @@ let test_local_review_security_stage_failures_are_retryable () =
       (match run_local_failure_report ~config ~state ~change_key () with
       | Error msg -> fail msg
       | Ok report -> (check bool) (stage ^ " failure reported") true (Review_engine.report_failed report));
-      (check bool) (stage ^ " failure not recorded") false
-        (State.is_change_reviewed state ~repo_key:"local/repo" ~change_key))
+      (check int) (stage ^ " failure not recorded") 0 (recorded_change_review_count state ~repo_key:"local/repo"))
     cases
 
 (* Regression: the deep reviewer's [summary] is an internal audit trace (one
@@ -4662,8 +4750,8 @@ let test_local_review_validation_failure_reports_failure_outcome () =
     let json = Local_sink.render_json report in
     (check bool) "json envelope reports failure" true (contains_sub ~sub:{|"outcome": "failure"|} json);
     (check bool) "json summary never says LGTM" false (contains_sub ~sub:"LGTM" json);
-    (check bool) "validation failure is not recorded as reviewed" false
-      (State.is_change_reviewed state ~repo_key:"local/repo" ~change_key:"validation-count-mismatch-json")
+    (check int) "validation failure is not recorded as reviewed" 0
+      (recorded_change_review_count state ~repo_key:"local/repo")
 
 let security_only_local_config () =
   Config_types.config_of_json
@@ -4820,13 +4908,20 @@ let test_local_sink_render_json () =
       ~why_now:"The upgrade now calls ensure_dir on the legacy path." ~confidence:Review_types.High
       ~suggested_fix:(Some "remove the legacy file before ensure_dir") ()
   in
+  let general_finding =
+    mk_finding ~path:"src/main.ml" ~line:14 ~category:Review_types.Bug ~message:"unhandled exception" ()
+  in
   let report : Review_engine.report =
     {
       body = "";
       comments = [];
       inline_findings = [];
-      findings = [ finding ];
-      sourced_findings = [];
+      findings = [ finding; general_finding ];
+      sourced_findings =
+        [
+          { source = From_security; plugin_name = "security"; finding; vuln_class = Some Injection };
+          { source = From_general; plugin_name = "general"; finding = general_finding; vuln_class = None };
+        ];
       routed_findings = [];
       unchanged_findings = [];
       anchor_failed_findings = [];
@@ -4840,12 +4935,13 @@ let test_local_sink_render_json () =
     (check string) "review summary" "" (json_string_field fields "summary");
     (check bool) "successful JSON shape unchanged" true (Option.is_none (List.assoc_opt "outcome" fields));
     (match List.assoc_opt "findings" fields with
-    | Some (`List [ `Assoc fields ]) ->
+    | Some (`List [ `Assoc fields; `Assoc general_fields ]) ->
       (check string) "file" "backend/safer-claude-code/safer_claude_code.ml" (json_string_field fields "file");
       (check int) "line" 492 (json_int_field fields "line");
       (check int) "end_line" 494 (json_int_field fields "end_line");
       (check string) "level" "warning" (json_string_field fields "level");
       (check string) "category" "security" (json_string_field fields "category");
+      (check string) "vuln_class" "injection" (json_string_field fields "vuln_class");
       (check string) "confidence" "high" (json_string_field fields "confidence");
       (check string) "summary" summary (json_string_field fields "summary");
       (check string) "failure_scenario" failure_scenario (json_string_field fields "failure_scenario");
@@ -4853,10 +4949,66 @@ let test_local_sink_render_json () =
       (check string) "why_now" "The upgrade now calls ensure_dir on the legacy path."
         (json_string_field fields "why_now");
       (check string) "suggested_fix" "remove the legacy file before ensure_dir"
-        (json_string_field fields "suggested_fix")
-    | Some _ -> fail "expected findings to contain one review finding"
+        (json_string_field fields "suggested_fix");
+      (check string) "general category" "bug" (json_string_field general_fields "category");
+      (check bool) "general vuln_class is null" true
+        (match List.assoc_opt "vuln_class" general_fields with
+        | Some `Null -> true
+        | Some _ | None -> false)
+    | Some _ -> fail "expected security and general review findings"
     | None -> fail "missing JSON field findings")
   | _ -> fail "expected a JSON review object"
+
+(* A duplicate skip must be distinguishable from a failure and a clean review. *)
+let test_local_sink_render_skipped_is_distinguishable () =
+  let skip_message = "change diff/abc in local/repo was already reviewed" in
+  match Yojson.Basic.from_string (Local_sink.render_skipped skip_message) with
+  | `Assoc fields ->
+    (check string) "outcome marks the skip" "skipped" (json_string_field fields "outcome");
+    (check string) "message preserved" skip_message (json_string_field fields "error");
+    (check bool) "message is recognised as a skip" true (Local_review.is_already_reviewed_message skip_message);
+    (match Yojson.Basic.from_string (Local_sink.render_error "local review failed: boom") with
+    | `Assoc error_fields ->
+      (check bool) "failure has no skipped outcome" true (Option.is_none (List.assoc_opt "outcome" error_fields))
+    | _ -> fail "expected a JSON error object")
+  | _ -> fail "expected a JSON skip object"
+
+(* Verify vuln_class through the real security pipeline and JSON renderer. *)
+let test_local_review_security_finding_reports_vuln_class () =
+  Test_helpers.reset_test_state ();
+  Api_local.set_agent_response_map
+    [
+      "security_triage", "mock_api_responses/security/triage_injection.json";
+      "security_analysis_injection", "mock_api_responses/security/analysis_injection.json";
+      "security_validator", "mock_api_responses/security/validator_confirmed.json";
+    ];
+  let ctx = Test_helpers.make_test_context () in
+  let config =
+    Config_types.config_of_json
+      (Melange_json.of_string {|{"review_plugins": {"general": {"enabled": false}, "security": {"enabled": true}}}|})
+  in
+  let diff_text = read_file "mock_api_responses/github/pr_42.diff" in
+  let result =
+    Lwt_main.run
+      (Local_review_test.review_diff_text_report ~ctx ~root:"." ~repo_key:"local/repo" ~change_key:"vuln-class-e2e"
+         ~title:"Generated local diff" ~description:"Local description" ~diff_text ~config ())
+  in
+  match result with
+  | Error msg -> fail msg
+  | Ok report ->
+    (check bool) "the pipeline produced a security finding" true (not (List.is_empty report.sourced_findings));
+    List.iter
+      (fun (sourced : Review_engine.sourced_finding) ->
+        (check bool) "every security finding carries its vuln_class" true (Option.is_some sourced.vuln_class))
+      report.sourced_findings;
+    (match Yojson.Basic.from_string (Local_sink.render_json report) with
+    | `Assoc fields ->
+      (match List.assoc_opt "findings" fields with
+      | Some (`List (`Assoc finding_fields :: _)) ->
+        (check string) "category is still security" "security" (json_string_field finding_fields "category");
+        (check string) "envelope reports the class" "injection" (json_string_field finding_fields "vuln_class")
+      | Some _ | None -> fail "expected at least one finding in the envelope")
+    | _ -> fail "expected a JSON review object")
 
 (** {2 State persistence tests} *)
 
@@ -5051,7 +5203,7 @@ let feedback_comment ?(body = "feedback body") ?(path = "src/main.ml") ?(line = 
     body;
   }
 
-let feedback_input ?(feedback_id = "rvf_test") ?(line = 14) ?(body = "feedback body") () =
+let feedback_input ?(feedback_id = "rvf_test") ?(line = 14) ?(body = "feedback body") ?vuln_class () =
   let finding = mk_finding ~path:"src/main.ml" ~line ~severity:Warning ~category:Security ~confidence:High () in
   let comment = feedback_comment ~line ~body () in
   let comment_body = Feedback_store.append_marker ~feedback_id comment.body in
@@ -5066,6 +5218,7 @@ let feedback_input ?(feedback_id = "rvf_test") ?(line = 14) ?(body = "feedback b
       finding_id = None;
       finding_source = None;
       plugin_name = None;
+      vuln_class;
     }
 
 let record_one_feedback_target ?(feedback_id = "rvf_test") ?(review_id = 1000) ?(line = 14)
@@ -5197,7 +5350,7 @@ let test_feedback_target_roundtrip_and_privacy () =
 
 let remove_json_fields keys fields = List.filter (fun (key, _value) -> not (List.exists (String.equal key) keys)) fields
 
-let test_feedback_target_schema_compatibility_and_v3_fields () =
+let test_feedback_target_schema_compatibility_and_v4_fields () =
   with_temp_feedback_store (fun _state_path _paths store ->
     ignore (record_one_feedback_target store : Feedback_store.target_input);
     let target = single_feedback_target store in
@@ -5206,7 +5359,15 @@ let test_feedback_target_schema_compatibility_and_v3_fields () =
       | `Assoc fields ->
         `Assoc
           (remove_json_fields
-             [ "evidence_dir"; "finding_id"; "finding_source"; "plugin_name"; "review_node_id"; "review_body_sha256" ]
+             [
+               "evidence_dir";
+               "finding_id";
+               "finding_source";
+               "plugin_name";
+               "vuln_class";
+               "review_node_id";
+               "review_body_sha256";
+             ]
              fields)
       | _ -> fail "expected target JSON object"
     in
@@ -5220,7 +5381,8 @@ let test_feedback_target_schema_compatibility_and_v3_fields () =
       (check (option string)) "v1 evidence_dir default" None target.evidence_dir;
       (check (option string)) "v1 finding_id default" None target.finding_id;
       (check (option string)) "v1 finding_source default" None target.finding_source;
-      (check (option string)) "v1 plugin_name default" None target.plugin_name
+      (check (option string)) "v1 plugin_name default" None target.plugin_name;
+      (check (option string)) "v1 vuln_class default" None target.vuln_class
     | [] | _ :: _ :: _ -> fail "expected one decoded v1 target");
   with_temp_feedback_store (fun _state_path _paths store ->
     ignore (record_one_feedback_target store : Feedback_store.target_input);
@@ -5246,6 +5408,7 @@ let test_feedback_target_schema_compatibility_and_v3_fields () =
         finding_id = Some "rvfind_schema";
         finding_source = Some "general";
         plugin_name = Some "general";
+        vuln_class = Some "injection";
       }
     in
     let review_body_target : Feedback_store.review_body_target_input =
@@ -5261,8 +5424,8 @@ let test_feedback_target_schema_compatibility_and_v3_fields () =
          ~head_sha:"abc123def456789012345678901234567890abcd" ~review_id:1000 ~review_batch_id:"rvb_schema"
          ~created_at:feedback_created_at ~review_body_target [ input ]);
     let decoded = Feedback_store.file_of_json (Feedback_store.file_to_json (Feedback_store.data store)) in
-    (check int) "v3 schema" 3 decoded.schema;
-    (check int) "v3 target count" 2 (List.length decoded.targets);
+    (check int) "v4 schema" 4 decoded.schema;
+    (check int) "v4 target count" 2 (List.length decoded.targets);
     let inline_target = find_feedback_target ~kind:"pr_review_comment" decoded.targets in
     let body_target = find_feedback_target ~kind:"pr_review_body" decoded.targets in
     (check (option string)) "body review node id" (Some "PRR_node_schema") body_target.review_node_id;
@@ -5272,11 +5435,12 @@ let test_feedback_target_schema_compatibility_and_v3_fields () =
     match [ inline_target ] with
     | [ target ] ->
       (check (option string))
-        "v3 evidence_dir" (Some "/tmp/reviewotron-feedback-evidence/rvb_schema") target.evidence_dir;
-      (check (option string)) "v3 finding_id" (Some "rvfind_schema") target.finding_id;
-      (check (option string)) "v3 finding_source" (Some "general") target.finding_source;
-      (check (option string)) "v3 plugin_name" (Some "general") target.plugin_name
-    | [] | _ :: _ :: _ -> fail "expected one decoded v3 inline target")
+        "v4 evidence_dir" (Some "/tmp/reviewotron-feedback-evidence/rvb_schema") target.evidence_dir;
+      (check (option string)) "v4 finding_id" (Some "rvfind_schema") target.finding_id;
+      (check (option string)) "v4 finding_source" (Some "general") target.finding_source;
+      (check (option string)) "v4 plugin_name" (Some "general") target.plugin_name;
+      (check (option string)) "v4 vuln_class" (Some "injection") target.vuln_class
+    | [] | _ :: _ :: _ -> fail "expected one decoded v4 inline target")
 
 let test_feedback_deadline_semantics () =
   with_temp_feedback_store (fun _state_path _paths store ->
@@ -5598,7 +5762,7 @@ let test_feedback_report_summarizes_targets_and_evidence () =
     Unix.mkdir evidence_dir 0o700;
     let input_up =
       {
-        (feedback_input ~feedback_id:"rvf_up" ~line:10 ()) with
+        (feedback_input ~feedback_id:"rvf_up" ~line:10 ~vuln_class:"injection" ()) with
         evidence_dir = Some evidence_dir;
         finding_id = Some "rvfind_up";
         finding_source = Some "security";
@@ -5691,6 +5855,7 @@ let test_feedback_report_summarizes_targets_and_evidence () =
         (check int) "review targets" 3 (List.length review.targets);
         let markdown = Feedback_report.render_markdown report in
         (check bool) "markdown includes positive target" true (contains_sub ~sub:"rvf_up" markdown);
+        (check bool) "markdown includes vulnerability class" true (contains_sub ~sub:"security/injection/high" markdown);
         (check bool) "markdown includes negative target" true (contains_sub ~sub:"rvf_down" markdown);
         (check bool) "markdown includes body target" true (contains_sub ~sub:"rvf_body" markdown);
         (check bool) "markdown renders body target at review level" true (contains_sub ~sub:"review body" markdown);
@@ -5709,6 +5874,7 @@ let test_feedback_report_summarizes_targets_and_evidence () =
         let json = Feedback_report.to_json report in
         let json_text = Yojson.Basic.to_string json in
         (check bool) "json includes sentiment" true (contains_sub ~sub:{|"sentiment":"negative"|} json_text);
+        (check bool) "json includes vulnerability class" true (contains_sub ~sub:{|"vuln_class":"injection"|} json_text);
         (check bool) "json includes comment url" true (contains_sub ~sub:{|"github_comment_url"|} json_text);
         (check bool) "json includes body target kind" true
           (contains_sub ~sub:{|"target_kind":"pr_review_body"|} json_text);
@@ -5815,6 +5981,9 @@ let test_feedback_publish_records_targets_and_markers () =
     [
       "general_scout", "mock_api_responses/scout/leads_two.json";
       "general_deep_review", "mock_api_responses/claude/review_response.json";
+      "security_triage", "mock_api_responses/security/triage_injection.json";
+      "security_analysis_injection", "mock_api_responses/security/analysis_injection.json";
+      "security_validator", "mock_api_responses/security/validator_confirmed.json";
     ];
   with_temp_feedback_store (fun state_path paths feedback_store ->
     let config =
@@ -5826,7 +5995,8 @@ let test_feedback_publish_records_targets_and_markers () =
               "review_pushes_to_develop": true,
               "system_prompt_override": "secret top-level prompt",
               "review_plugins": {
-                "general": { "system_prompt_override": "secret nested prompt" }
+                "general": { "system_prompt_override": "secret nested prompt" },
+                "security": { "enabled": true }
               }
             }|})
     in
@@ -5847,8 +6017,9 @@ let test_feedback_publish_records_targets_and_markers () =
     (check (option string)) "body review node id" (Some "PRR_node_1000") body_target.review_node_id;
     (check bool) "body hash stored" true (Option.is_some body_target.review_body_sha256);
     (check string) "repo stored" Test_helpers.test_repo_url inline_target.repo_url;
-    (check (option string)) "finding source stored" (Some "general") inline_target.finding_source;
-    (check (option string)) "plugin stored" (Some "general") inline_target.plugin_name;
+    (check (option string)) "finding source stored" (Some "security") inline_target.finding_source;
+    (check (option string)) "plugin stored" (Some "security") inline_target.plugin_name;
+    (check (option string)) "vulnerability class stored" (Some "injection") inline_target.vuln_class;
     (check bool) "finding id stored" true
       (match inline_target.finding_id with
       | Some id -> CCString.prefix ~pre:"rvfind_" id
@@ -5893,14 +6064,16 @@ let test_feedback_publish_records_targets_and_markers () =
         (contains_sub ~sub:Review_format.feedback_prompt (json_string_field comment_fields "body"));
       (check string) "posted body hash"
         (require_some "inline target missing comment_body_sha256" inline_target.comment_body_sha256)
-        (json_string_field comment_fields "comment_body_sha256")
+        (json_string_field comment_fields "comment_body_sha256");
+      (check string) "posted vulnerability class" "injection" (json_string_field comment_fields "vuln_class")
     | _ -> fail "expected one posted review comment");
     let findings = read_bundle_json "findings.json" in
     (match json_list_field findings "findings" with
     | [ `Assoc finding_fields ] ->
       (check string) "finding routing" "inline" (json_string_field finding_fields "routing_outcome");
-      (check string) "finding source" "general" (json_string_field finding_fields "finding_source");
-      (check string) "finding plugin" "general" (json_string_field finding_fields "plugin_name");
+      (check string) "finding source" "security" (json_string_field finding_fields "finding_source");
+      (check string) "finding plugin" "security" (json_string_field finding_fields "plugin_name");
+      (check string) "finding vulnerability class" "injection" (json_string_field finding_fields "vuln_class");
       (check (option string))
         "finding id linked" inline_target.finding_id
         (Some (json_string_field finding_fields "finding_id"))
@@ -8285,6 +8458,7 @@ let () =
           test_case "path, controls, and stateful signals" `Quick test_security_diff_signal_path_control_and_stateful;
           test_case "sensitive file matching" `Quick test_security_diff_signal_sensitive_files;
           test_case "policy regression patterns" `Quick test_security_diff_signal_policy_regression_patterns;
+          test_case "path traversal signals" `Quick test_security_diff_signal_path_traversal;
           test_case "multiline policy wildcards" `Quick test_security_diff_signal_multiline_policy_wildcards;
           test_case "empty safe diff" `Quick test_security_diff_signal_empty_for_safe_diff;
         ] );
@@ -8422,6 +8596,7 @@ let () =
           test_case "prompt methodology" `Quick test_analysis_agent_prompt_contains_methodology;
           test_case "prompt fetch economy" `Quick test_analysis_agent_prompt_fetch_economy;
           test_case "prompt class section" `Quick test_analysis_agent_prompt_contains_class_section;
+          test_case "path traversal runtime semantics" `Quick test_path_traversal_prompt_runtime_semantics;
           test_case "language hints" `Quick test_analysis_agent_language_hints;
           test_case "build input minimal" `Quick test_analysis_agent_build_input_minimal;
           test_case "tools" `Quick test_analysis_agent_tools;
@@ -8528,6 +8703,7 @@ let () =
             test_local_review_path_filters_generated_before_limits;
           test_case "review diff returns markdown" `Quick test_local_review_diff_returns_markdown;
           test_case "review generated diff text returns markdown" `Quick test_local_review_diff_text_returns_markdown;
+          test_case "dedup cache is config aware" `Quick test_local_review_dedup_is_config_aware;
           test_case "total failure is retryable" `Quick test_local_review_total_failure_is_retryable;
           test_case "partial failure is retryable" `Quick test_local_review_partial_failure_is_retryable;
           test_case "security stage failures are retryable" `Quick
@@ -8535,6 +8711,8 @@ let () =
           test_case "all-refuted local review shows LGTM not summary" `Quick
             test_local_review_all_refuted_shows_lgtm_not_summary;
           test_case "security-only empty review is success" `Quick test_local_review_security_only_empty_is_success;
+          test_case "security finding reports its vuln_class" `Quick
+            test_local_review_security_finding_reports_vuln_class;
           test_case "validation failure is not reported as LGTM" `Quick test_local_review_validation_failure_is_not_lgtm;
           test_case "validator chunks and aggregates results" `Quick
             test_local_review_security_validator_chunks_and_aggregates;
@@ -8551,6 +8729,7 @@ let () =
           test_case "duplicate local change skipped" `Quick test_local_review_skips_duplicate_change;
           test_case "github plugins use captured config" `Quick test_github_review_uses_captured_config_for_plugins;
           test_case "local sink renders json" `Quick test_local_sink_render_json;
+          test_case "local sink marks a duplicate skip" `Quick test_local_sink_render_skipped_is_distinguishable;
         ] );
       ( "state_persistence",
         [
@@ -8571,8 +8750,8 @@ let () =
           test_case "review job log context" `Quick test_review_job_log_context;
           test_case "marker and deterministic ids" `Quick test_feedback_marker_and_id_helpers;
           test_case "target roundtrip and privacy scan" `Quick test_feedback_target_roundtrip_and_privacy;
-          test_case "target schema compatibility and v3 fields" `Quick
-            test_feedback_target_schema_compatibility_and_v3_fields;
+          test_case "target schema compatibility and v4 fields" `Quick
+            test_feedback_target_schema_compatibility_and_v4_fields;
           test_case "deadline semantics" `Quick test_feedback_deadline_semantics;
           test_case "PR close marks final_due" `Quick test_feedback_close_marks_final_due;
           test_case "pollable target selection" `Quick test_feedback_pollable_selection;

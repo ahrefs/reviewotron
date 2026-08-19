@@ -3,6 +3,7 @@ type posted_comment = {
   finding_id : string;
   finding_source : string;
   plugin_name : string;
+  vuln_class : Config_types.vuln_class option;
   comment : Review_comment.t;
   finding : Review_types.finding;
   comment_body : string;
@@ -35,6 +36,9 @@ let json_int name value = name, `Int value
 let json_string_option name = function
   | None -> name, `Null
   | Some value -> name, `String value
+
+let vuln_class_json_field vuln_class =
+  json_string_option "vuln_class" (Option.map Config_types.vuln_class_to_string vuln_class)
 
 let json_int_option name = function
   | None -> name, `Null
@@ -71,6 +75,7 @@ let posted_comment_to_json (posted : posted_comment) =
       json_string "finding_id" posted.finding_id;
       json_string "finding_source" posted.finding_source;
       json_string "plugin_name" posted.plugin_name;
+      vuln_class_json_field posted.vuln_class;
       json_string "path" comment.path;
       json_int "line" comment.line;
       json_string "side" (side_to_string comment.side);
@@ -103,6 +108,7 @@ let routed_finding_to_json ~finding_id (routed : Review_engine.routed_finding) =
       json_string_option "finding_id" finding_id;
       json_string "finding_source" (Review_engine.finding_source_to_string sourced.source);
       json_string "plugin_name" sourced.plugin_name;
+      vuln_class_json_field sourced.vuln_class;
       json_string "routing_outcome" (routing_outcome_to_string routed.outcome);
       json_string "path" finding.path;
       json_int "line" finding.line;

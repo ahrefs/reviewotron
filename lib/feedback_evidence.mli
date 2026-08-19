@@ -9,6 +9,7 @@ type posted_comment = {
   finding_id : string;
   finding_source : string;
   plugin_name : string;
+  vuln_class : Config_types.vuln_class option;
   comment : Review_comment.t;
   finding : Review_types.finding;
   comment_body : string;

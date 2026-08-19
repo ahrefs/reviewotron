@@ -60,6 +60,7 @@ let prepare_feedback_targets ~repo_url ~number ~head_sha ~created_at ~evidence_r
       in
       let finding_source = Review_engine.finding_source_to_string inline.sourced.source in
       let plugin_name = inline.sourced.plugin_name in
+      let vuln_class = Option.map Config_types.vuln_class_to_string inline.sourced.vuln_class in
       let input : Feedback_store.target_input =
         {
           feedback_id;
@@ -70,6 +71,7 @@ let prepare_feedback_targets ~repo_url ~number ~head_sha ~created_at ~evidence_r
           finding_id = Some finding_id;
           finding_source = Some finding_source;
           plugin_name = Some plugin_name;
+          vuln_class;
         }
       in
       let evidence_comment : Feedback_evidence.posted_comment =
@@ -78,6 +80,7 @@ let prepare_feedback_targets ~repo_url ~number ~head_sha ~created_at ~evidence_r
           finding_id;
           finding_source;
           plugin_name;
+          vuln_class = inline.sourced.vuln_class;
           comment = marked_comment;
           finding;
           comment_body = marked_comment.body;

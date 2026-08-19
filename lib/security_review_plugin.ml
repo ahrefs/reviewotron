@@ -20,9 +20,10 @@ let vuln_class_equal a b =
   | Authn, Authn
   | Authz, Authz
   | Ssrf, Ssrf
+  | Path_traversal, Path_traversal
   | Policy_regression, Policy_regression ->
     true
-  | (Injection | Xss | Command_injection | Authn | Authz | Ssrf | Policy_regression), _ -> false
+  | (Injection | Xss | Command_injection | Authn | Authz | Ssrf | Path_traversal | Policy_regression), _ -> false
 
 (** Convert a config model tier to the agent runner's model tier type.
 
@@ -57,7 +58,7 @@ let highest_signal_confidence signals =
 
 let analysis_budget_cap = function
   | Security_types.Authn | Authz | Ssrf -> 12
-  | Injection | Xss | Command_injection -> 10
+  | Injection | Xss | Command_injection | Path_traversal -> 10
   | Policy_regression -> 7
 
 let base_analysis_budget vuln_class confidence =
@@ -67,9 +68,9 @@ let base_analysis_budget vuln_class confidence =
   | (Authn | Authz | Ssrf), Security_types.High -> 12
   | (Authn | Authz | Ssrf), Security_types.Medium -> 9
   | (Authn | Authz | Ssrf), Security_types.Low -> 7
-  | (Injection | Xss | Command_injection), Security_types.High -> 10
-  | (Injection | Xss | Command_injection), Security_types.Medium -> 8
-  | (Injection | Xss | Command_injection), Security_types.Low -> 6
+  | (Injection | Xss | Command_injection | Path_traversal), Security_types.High -> 10
+  | (Injection | Xss | Command_injection | Path_traversal), Security_types.Medium -> 8
+  | (Injection | Xss | Command_injection | Path_traversal), Security_types.Low -> 6
 
 let signal_count_budget_bonus triage_signals =
   match List.length triage_signals with
@@ -192,7 +193,7 @@ let proof_matches_finding (finding : Security_types.candidate_finding) (proof : 
   &&
   match finding.vuln_class with
   | Policy_regression -> policy_proof_is_concrete finding proof
-  | Injection | Xss | Command_injection | Authn | Authz | Ssrf -> true
+  | Injection | Xss | Command_injection | Authn | Authz | Ssrf | Path_traversal -> true
 
 let proof_violation_note =
   "Rejected by Reviewotron after validator parsing: confirmed validator result did not include a concrete \
@@ -257,6 +258,9 @@ let proof_repair_trigger (f : Security_types.candidate_finding) =
   | Ssrf ->
     Printf.sprintf "Submit `http://169.254.169.254/latest/meta-data/` through %s so the server fetches it at %s."
       f.source.description f.sink.description
+  | Path_traversal ->
+    Printf.sprintf "Submit a traversal sequence such as `../../etc/passwd` through %s so it reaches %s."
+      f.source.description f.sink.description
   | Policy_regression ->
     Printf.sprintf
       "Apply the reviewed policy/configuration change at %s and exercise the newly granted capability at %s."
@@ -270,6 +274,8 @@ let proof_repair_impact (f : Security_types.candidate_finding) =
   | Authn -> "An invalid, expired, or otherwise unsafe authentication token can be accepted."
   | Authz -> "The attacker can access or mutate a resource without the required authorization check."
   | Ssrf -> "The server makes an attacker-controlled outbound request to an internal or sensitive URL."
+  | Path_traversal ->
+    "The attacker reads or writes a file outside the intended directory, exposing or corrupting unrelated data."
   | Policy_regression -> "The changed policy or control now permits an action that was previously constrained."
 
 let proof_trace_from_finding (f : Security_types.candidate_finding) =
@@ -1034,7 +1040,13 @@ module Make (AI : Api.Agent_runner) = struct
         in
         log#info "%svalidation complete: %d confirmed, %d rejected" log_prefix (List.length confirmed)
           (List.length validated - List.length confirmed);
-        let findings = List.map (validated_to_finding ?log_context ~diff) confirmed in
+        let classified_findings =
+          List.map
+            (fun (vf : Security_types.validated_finding) ->
+              validated_to_finding ?log_context ~diff vf, Some vf.finding.vuln_class)
+            confirmed
+        in
+        let findings = List.map fst classified_findings in
         Security_artifacts.write_debug_json artifacts ~filename:"final_findings.json"
           (Security_artifacts.final_findings_json findings);
         let metrics =
@@ -1050,7 +1062,7 @@ module Make (AI : Api.Agent_runner) = struct
             class_drops;
           }
         in
-        Lwt.return (findings, analysis_costs @ validator_costs, metrics, analysis_failed || validator_failed))
+        Lwt.return (classified_findings, analysis_costs @ validator_costs, metrics, analysis_failed || validator_failed))
 
   (** Build the architectural observations passed to the memory curator.
 
@@ -1176,7 +1188,7 @@ module Make (AI : Api.Agent_runner) = struct
         Security_artifacts.write_debug_json artifacts ~filename:"final_findings.json" (`List []);
         Lwt.return ([], triage_costs, false)
       | None ->
-        let%lwt findings, analysis_costs, analysis_metrics, analysis_failed =
+        let%lwt classified_findings, analysis_costs, analysis_metrics, analysis_failed =
           run_analysis ~ctx ~repo_url ~fetch_file:metadata.fetch_file ~security_config ~diff ~diff_text ~file_paths
             ~language_hints:triage_output.language_hints ~artifacts ?debug_dir:agent_debug_dir ?log_context
             triage_output.signals
@@ -1189,7 +1201,7 @@ module Make (AI : Api.Agent_runner) = struct
              ~triage_signal_count:(List.length triage_output.signals) ~metrics:analysis_metrics ~costs);
         Security_artifacts.write_fetch_stats artifacts costs;
         Security_artifacts.write_debug_json artifacts ~filename:"final_findings.json"
-          (Security_artifacts.final_findings_json findings);
+          (Security_artifacts.final_findings_json (List.map fst classified_findings));
         let observations = build_observations ~triage_output ~file_paths in
         Security_artifacts.write_debug_json artifacts ~filename:"memory_observations.json"
           (Security_types.architectural_observations_to_json observations);
@@ -1207,5 +1219,5 @@ module Make (AI : Api.Agent_runner) = struct
           with exn ->
             log#error "%smemory curator async task raised: %s" log_prefix (Exn.str exn);
             Lwt.return_unit);
-        Lwt.return (findings, costs, analysis_failed))
+        Lwt.return (classified_findings, costs, analysis_failed))
 end

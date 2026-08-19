@@ -26,6 +26,7 @@ type vuln_class = Config_types.vuln_class =
   | Authn
   | Authz
   | Ssrf
+  | Path_traversal
   | Policy_regression
 
 let vuln_class_to_string = Config_types.vuln_class_to_string
@@ -37,9 +38,11 @@ let vuln_class_jsonschema =
       "type", `String "string";
       "enum", `List (List.map (fun vc -> `String (Config_types.vuln_class_to_string vc)) Config_types.all_vuln_classes);
       ( "description",
+        (* Derived from [all_vuln_classes] rather than spelled out: a hardcoded
+           list here silently goes stale when a class is added. *)
         `String
-          "Security vulnerability class to analyze: injection, xss, command_injection, authn, authz, ssrf, or \
-           policy_regression." );
+          (Printf.sprintf "Security vulnerability class to analyze: %s."
+             (String.concat ", " (List.map Config_types.vuln_class_to_string Config_types.all_vuln_classes))) );
     ]
 
 type confidence = Config_types.confidence =

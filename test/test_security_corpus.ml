@@ -63,8 +63,9 @@ let run_triage ~ctx ~diff_text ~file_paths : Security_types.triage_output =
   try Security_types.triage_output_of_json agent_result.output
   with exn -> failf "failed to parse triage output: %s" (Printexc.to_string exn)
 
-(** Run the full security pipeline on a diff and return the findings. *)
-let run_pipeline ~ctx ~diff_text ~diff =
+(** Run the full security pipeline on a diff and return the findings paired with
+    the vuln_class the pipeline routed each one through. *)
+let run_classified_pipeline ~ctx ~diff_text ~diff =
   let fetch_file ~path:_ = Lwt.return (Ok None) in
   let metadata : Review_plugin.review_metadata =
     { change_title = "corpus test"; change_description = ""; file_contents = []; fetch_file }
@@ -78,6 +79,9 @@ let run_pipeline ~ctx ~diff_text ~diff =
   match failed with
   | true -> fail "security pipeline failed"
   | false -> findings
+
+(** Run the full security pipeline on a diff and return the findings. *)
+let run_pipeline ~ctx ~diff_text ~diff = List.map fst (run_classified_pipeline ~ctx ~diff_text ~diff)
 
 (** Expected outcome of running the pipeline against a corpus diff. *)
 type expected_outcome =
@@ -140,6 +144,12 @@ let corpus_cases : corpus_case list =
       file_path = "src/handlers/webhook.py";
       expected = Vulnerable Security_types.Ssrf;
     };
+    {
+      name = "path_traversal/send_file_user_path";
+      file_path = "src/handlers/export.py";
+      expected = Vulnerable Security_types.Path_traversal;
+    };
+    { name = "path_traversal/send_file_basename_safe"; file_path = "src/handlers/export.py"; expected = Clean };
     {
       name = "policy_regression/sudo_systemctl_nopasswd_vulnerable";
       file_path = "modules/sudo/manifests/deploy.pp";

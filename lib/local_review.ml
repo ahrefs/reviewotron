@@ -3,19 +3,22 @@ let already_reviewed_message ~repo_key ~change_key =
 
 let is_already_reviewed_message message = CCString.suffix ~suf:" was already reviewed" message
 
+(* Keep the user-visible change key stable while deduplicating by review config. *)
+let state_change_key (job : Review_job.t) = Printf.sprintf "%s@%s" job.change_key (Review_job.config_sha256 job)
+
 module Make (AI : Api.Agent_runner) = struct
   module Engine = Review_engine.Make (AI)
 
   let run_prepared_report ~ctx (job : Review_job.t) =
     let state = Context.state ctx in
-    match State.is_change_reviewed state ~repo_key:job.repo_key ~change_key:job.change_key with
+    let change_key = state_change_key job in
+    match State.is_change_reviewed state ~repo_key:job.repo_key ~change_key with
     | true -> Lwt.return (Error (already_reviewed_message ~repo_key:job.repo_key ~change_key:job.change_key))
     | false ->
       let%lwt report = Engine.run_review ~ctx ~job in
       (match Review_engine.report_failed report with
       | false ->
-        State.record_change_review state ~repo_key:job.repo_key ~change_key:job.change_key
-          ~review_costs:report.review_costs;
+        State.record_change_review state ~repo_key:job.repo_key ~change_key ~review_costs:report.review_costs;
         State.save state
       | true -> ());
       Lwt.return (Ok report)

@@ -17,6 +17,10 @@ type sourced_finding = {
   source : finding_source;
   plugin_name : string;
   finding : Review_types.finding;
+  vuln_class : Config_types.vuln_class option;
+    (** Vulnerability class for security-plugin findings, [None] for every other
+        source.  Kept beside the finding rather than inside it because
+        {!Review_types.finding} is an LLM output schema. *)
 }
 
 type routing_outcome =

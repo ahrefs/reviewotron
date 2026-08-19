@@ -18,6 +18,7 @@ type target_summary = {
   finding_id : string option;
   finding_source : string option;
   plugin_name : string option;
+  vuln_class : string option;
   status : string;
   repo_url : string;
   pr_number : int;

@@ -11,6 +11,7 @@ type vuln_class =
   | Authn
   | Authz
   | Ssrf
+  | Path_traversal
   | Policy_regression
 
 let vuln_class_to_string = function
@@ -20,6 +21,7 @@ let vuln_class_to_string = function
   | Authn -> "authn"
   | Authz -> "authz"
   | Ssrf -> "ssrf"
+  | Path_traversal -> "path_traversal"
   | Policy_regression -> "policy_regression"
 
 let vuln_class_to_json vc = `String (vuln_class_to_string vc)
@@ -31,11 +33,12 @@ let vuln_class_of_json = function
   | `String "authn" -> Authn
   | `String "authz" -> Authz
   | `String "ssrf" -> Ssrf
+  | `String "path_traversal" -> Path_traversal
   | `String "policy_regression" -> Policy_regression
   | json -> Melange_json.of_json_error ~json "expected a vuln_class string"
 
 (** All supported vulnerability classes. *)
-let all_vuln_classes = [ Injection; Xss; Command_injection; Authn; Authz; Ssrf; Policy_regression ]
+let all_vuln_classes = [ Injection; Xss; Command_injection; Authn; Authz; Ssrf; Path_traversal; Policy_regression ]
 
 (* Schema for a variant serialized as one of a fixed set of lowercase strings. *)
 let string_enum_jsonschema ~enum ~description : Yojson.Basic.t =

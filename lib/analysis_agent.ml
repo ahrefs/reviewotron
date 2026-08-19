@@ -672,6 +672,60 @@ These are safe patterns that may superficially resemble SSRF but are not exploit
 - Requests routed through a properly configured egress proxy (e.g., Smokescreen, Envoy with egress filtering) that blocks internal destinations at the network level
 - `Dream.redirect` / `res.redirect()` / `redirect()` returning a redirect response to the client (the browser follows the redirect, not the server) — this is an open redirect issue, not SSRF, unless the server subsequently follows the redirect itself|}
 
+let path_traversal_section =
+  {|## Vulnerability Class: Path Traversal and File Exposure
+
+Report only when attacker-controlled input reaches a filesystem operation and the resolved path is not proven to remain inside the intended root. Normalization alone is not confinement: `..`, absolute paths, decoding, and symlinks can change the destination.
+
+### Sources
+
+- Request path, query, body, form, or JSON fields used as filenames (`Dream.param`, `req.query`, Flask `request.args`, Django `request.GET`)
+- Client-supplied upload names (`Dream.upload`, multer `originalname`, Werkzeug `filename`)
+- Stored filenames, manifests, job payloads, or document/export names originally controlled by a user
+- Member names and links from user-supplied archives
+
+### Sinks
+
+- File reads, writes, deletes, moves, copies, stats, and directory creation (`open_*`, `Unix.*`, `Lwt_io.*`, Node `fs.*`, Python `open`/`os.*`/`shutil.*`)
+- File responses and static serving (`Dream.from_filesystem`, Express `sendFile`/`download`, Flask `send_file`, Django `FileResponse`)
+- Dynamic template or module loading and custom archive extraction
+- Path construction immediately feeding an operation: `Filename.concat`, Node `path.join`/`path.resolve`, Python `os.path.join`, or `pathlib.Path(base) / user_input`
+- `tarfile.extract` / `extractall` when its effective filter permits absolute paths, `..`, links, or special files
+
+### Runtime Semantics
+
+- Every listed join permits `..` to escape; joining is not a containment check.
+- An absolute user path discards the base for Python `os.path.join`, Node `path.resolve`, and `pathlib.Path` division, but not Node `path.join` or OCaml `Filename.concat`.
+- `sendFile` confines only with a trusted `root`; `send_from_directory` requires a trusted directory.
+- The stdlib `zipfile.ZipFile.extract` / `extractall` sanitize drive/UNC roots, leading separators, and `.` / `..` components, so do not treat them as traversal sinks by themselves.
+- Tar and custom extractors remain sinks unless every member destination and link target is confined.
+
+### Adequate Controls
+
+- Resolve the base and candidate with `realpath`, then require equality or a path-segment-aware descendant relationship before the operation.
+- Map an opaque id through a server-controlled allowlist or database path; never pass the user's string to the filesystem.
+- Reduce to a basename or reject anything outside a strict filename allowlist before joining to a fixed root.
+- Generate the storage name server-side and retain the client filename only as metadata.
+- Use confinement provided by the API or OS (`sendFile` with `root`, trusted `send_from_directory`, `Dream.from_filesystem`, `openat` with `RESOLVE_BENEATH`).
+- For archives, use stdlib ZipFile extraction or validate every resolved member destination and reject unsafe tar member types (`filter='data'` where supported).
+
+### Inadequate Controls
+
+- Removing or blocklisting `..`, separators, encodings, or absolute-path markers without canonicalizing first
+- Checking before resolution, using a raw string-prefix check, or normalizing without comparing against the base
+- Treating any join operation as confinement
+- Ignoring symlinks or validating archive member names without validating resolved destinations and link targets
+- Trusting framework URL normalization when the proxy, router, and filesystem may decode differently
+
+### Common False Positives — DO NOT REPORT
+
+- All path components are server-controlled, or a user id maps to a server-controlled path.
+- A basename/strict allowlist is applied before a fixed-root join, or a server-generated storage name is used.
+- Static middleware uses a fixed trusted root with no custom user-path preprocessing.
+- Stdlib `zipfile.ZipFile.extract` / `extractall` sanitize traversal components before joining under the destination.
+- The code is attacker-unreachable tooling, or the resolved path is confined to already-public files.
+- Temporary-file APIs generate the complete name and never append user input.|}
+
 let policy_regression_section =
   {|## Vulnerability Class: Security Policy Regression
 
@@ -756,6 +810,7 @@ let vuln_class_section vuln_class ~language_hints =
     | Security_types.Authn -> authn_section
     | Security_types.Authz -> authz_section
     | Security_types.Ssrf -> ssrf_section
+    | Security_types.Path_traversal -> path_traversal_section
     | Security_types.Policy_regression -> policy_regression_section
   in
   base ^ language_note
@@ -801,6 +856,9 @@ let analysis_question = function
   | Ssrf ->
     "Can any flagged externally controlled URL, host, redirect, webhook, or stored URL reach a server-side outbound \
      request without adequate destination controls?"
+  | Path_traversal ->
+    "Can any flagged user-controlled value influence a filesystem path so that the resolved location escapes the \
+     intended base directory, exposing or overwriting an unintended file?"
   | Policy_regression ->
     "Does the flagged policy or configuration change concretely broaden privilege or weaken a named security control?"
 
