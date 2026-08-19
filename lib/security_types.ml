@@ -271,6 +271,9 @@ type exploitation_proof = {
 [@@deriving json, jsonschema] [@@json.allow_extra_fields]
 
 type validated_finding = {
+  candidate_id : int;
+     [@jsonschema.description
+       "Zero-based position of the candidate within this validator call, copied verbatim from the input"]
   finding : candidate_finding; [@jsonschema.description "The candidate finding that was validated"]
   verdict : validation_verdict; [@jsonschema.description "Validation outcome: confirmed, or rejected with reason"]
   evidence_notes : string; [@jsonschema.description "Validator rationale and evidence supporting the verdict"]

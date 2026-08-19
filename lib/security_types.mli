@@ -219,6 +219,10 @@ val exploitation_proof_jsonschema : Yojson.Basic.t
 
 (** A candidate finding after adversarial validation. *)
 type validated_finding = {
+  candidate_id : int;
+    (** Zero-based position of the candidate within the validator call that
+          produced this result. Calls are chunked, so this is {e not} unique
+          across a review: every call restarts numbering at zero. *)
   finding : candidate_finding;
   verdict : validation_verdict;
   evidence_notes : string;

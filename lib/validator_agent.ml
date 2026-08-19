@@ -104,7 +104,8 @@ Do NOT use the tool to search for new vulnerabilities. Your scope is strictly va
 
 ## Output Instructions
 
-Produce a JSON object matching the provided output schema. The `results` array must contain one entry per candidate finding. Each entry includes:
+Produce a JSON object matching the provided output schema. The `results` array must contain exactly one entry per candidate finding — no more, no fewer. Each entry includes:
+- `candidate_id`: the integer `candidate_id` shown in the candidate's block, echoed back exactly as given. This is how results are matched to candidates, so it must be copied verbatim — never renumbered, reordered, or invented.
 - `finding`: the original candidate finding object, reproduced exactly as provided
 - `verdict`: one of the strings `"confirmed"` or `"rejected"`
 - `evidence_notes`: your reasoning — what you checked, what you found, and why you reached your verdict. When the verdict is `"rejected"`, include the concrete reason for rejection here.
@@ -112,7 +113,7 @@ Produce a JSON object matching the provided output schema. The `results` array m
 
 Always emit the `proof_by_construction` key for every result. A `"confirmed"` result with `proof_by_construction: null` or with the key omitted is invalid and will be rejected by the caller.
 
-Every candidate finding in the input MUST appear in your output — do not silently drop findings.
+Every candidate finding in the input MUST appear in your output, each with its own `candidate_id` — do not silently drop findings. Validate every candidate you were given, even when several of them look similar; answering about only one of them is a failure.
 
 Your final response must be a single JSON object matching the schema. Do not wrap it in markdown code fences, and do not include any prose before or after it.
 
@@ -130,6 +131,10 @@ let format_finding buf ~index (f : Security_types.candidate_finding) =
   Printf.bprintf buf "### Finding %d: %s (%s confidence)\n\n" (index + 1)
     (Security_types.vuln_class_to_string f.vuln_class)
     (Security_types.confidence_to_string f.confidence);
+  (* The heading above is 1-based for human readability; [candidate_id] is the
+     0-based identity the model must echo back. Print it literally so the model
+     never has to infer it from the heading. *)
+  Printf.bprintf buf "**candidate_id:** %d\n\n" index;
   Printf.bprintf buf "**Description:** %s\n\n" f.description;
   Printf.bprintf buf "**Source:** %s:%d — %s\n" f.source.path f.source.line f.source.description;
   Printf.bprintf buf "**Sink:** %s:%d — %s\n" f.sink.path f.sink.line f.sink.description;

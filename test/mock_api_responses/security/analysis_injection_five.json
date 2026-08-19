@@ -1,0 +1,153 @@
+{
+  "findings": [
+    {
+      "vuln_class": "injection",
+      "source": {
+        "path": "src/main.ml",
+        "line": 10,
+        "description": "HTTP query parameter 0"
+      },
+      "sink": {
+        "path": "src/main.ml",
+        "line": 14,
+        "description": "SQL concatenation sink 0"
+      },
+      "flow": [
+        {
+          "path": "src/main.ml",
+          "line": 10,
+          "description": "User input read"
+        },
+        {
+          "path": "src/main.ml",
+          "line": 14,
+          "description": "Passed to Db.exec as raw SQL"
+        }
+      ],
+      "sanitization": "missing",
+      "confidence": "high",
+      "description": "Injection path 0: user input concatenated into SQL.",
+      "suggested_fix": "Use Caqti prepared statements with typed parameters instead of string concatenation."
+    },
+    {
+      "vuln_class": "injection",
+      "source": {
+        "path": "src/main.ml",
+        "line": 20,
+        "description": "HTTP query parameter 1"
+      },
+      "sink": {
+        "path": "src/main.ml",
+        "line": 24,
+        "description": "SQL concatenation sink 1"
+      },
+      "flow": [
+        {
+          "path": "src/main.ml",
+          "line": 20,
+          "description": "User input read"
+        },
+        {
+          "path": "src/main.ml",
+          "line": 24,
+          "description": "Passed to Db.exec as raw SQL"
+        }
+      ],
+      "sanitization": "missing",
+      "confidence": "high",
+      "description": "Injection path 1: user input concatenated into SQL.",
+      "suggested_fix": "Use Caqti prepared statements with typed parameters instead of string concatenation."
+    },
+    {
+      "vuln_class": "injection",
+      "source": {
+        "path": "src/main.ml",
+        "line": 30,
+        "description": "HTTP query parameter 2"
+      },
+      "sink": {
+        "path": "src/main.ml",
+        "line": 34,
+        "description": "SQL concatenation sink 2"
+      },
+      "flow": [
+        {
+          "path": "src/main.ml",
+          "line": 30,
+          "description": "User input read"
+        },
+        {
+          "path": "src/main.ml",
+          "line": 34,
+          "description": "Passed to Db.exec as raw SQL"
+        }
+      ],
+      "sanitization": "missing",
+      "confidence": "high",
+      "description": "Injection path 2: user input concatenated into SQL.",
+      "suggested_fix": "Use Caqti prepared statements with typed parameters instead of string concatenation."
+    },
+    {
+      "vuln_class": "injection",
+      "source": {
+        "path": "src/main.ml",
+        "line": 40,
+        "description": "HTTP query parameter 3"
+      },
+      "sink": {
+        "path": "src/main.ml",
+        "line": 44,
+        "description": "SQL concatenation sink 3"
+      },
+      "flow": [
+        {
+          "path": "src/main.ml",
+          "line": 40,
+          "description": "User input read"
+        },
+        {
+          "path": "src/main.ml",
+          "line": 44,
+          "description": "Passed to Db.exec as raw SQL"
+        }
+      ],
+      "sanitization": "missing",
+      "confidence": "high",
+      "description": "Injection path 3: user input concatenated into SQL.",
+      "suggested_fix": "Use Caqti prepared statements with typed parameters instead of string concatenation."
+    },
+    {
+      "vuln_class": "injection",
+      "source": {
+        "path": "src/main.ml",
+        "line": 50,
+        "description": "HTTP query parameter 4"
+      },
+      "sink": {
+        "path": "src/main.ml",
+        "line": 54,
+        "description": "SQL concatenation sink 4"
+      },
+      "flow": [
+        {
+          "path": "src/main.ml",
+          "line": 50,
+          "description": "User input read"
+        },
+        {
+          "path": "src/main.ml",
+          "line": 54,
+          "description": "Passed to Db.exec as raw SQL"
+        }
+      ],
+      "sanitization": "missing",
+      "confidence": "high",
+      "description": "Injection path 4: user input concatenated into SQL.",
+      "suggested_fix": "Use Caqti prepared statements with typed parameters instead of string concatenation."
+    }
+  ],
+  "files_examined": [
+    "src/main.ml"
+  ],
+  "notes": "Five distinct injection paths at separate sinks."
+}
