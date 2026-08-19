@@ -4380,6 +4380,18 @@ let test_local_review_diff_text_returns_markdown () =
     (check bool) "summary not leaked" false (CCString.find ~sub:"The changes look generally good" markdown >= 0);
     (check bool) "has inline comments section" true (CCString.find ~sub:"### Inline comments" markdown >= 0)
 
+(* Count the change reviews recorded for a repo.
+
+   Assertions must not query a bare change_key: local reviews are recorded under
+   the config-aware state key ([Local_review.state_change_key]), so
+   [is_change_reviewed ~change_key:"total-failure"] is now false no matter what
+   the code does and cannot catch a failed review being recorded. Count the
+   records instead -- state is fresh per test. *)
+let recorded_change_review_count state ~repo_key =
+  match List.assoc_opt repo_key (State.data state).repos with
+  | None -> 0
+  | Some (repo_state : State_types.repo_state) -> List.length repo_state.change_reviews
+
 let run_local_failure_report
   ?(config =
     Config_types.config_of_json (Melange_json.of_string {|{"review_plugins": {"security": {"enabled": true}}}|})) ~state
@@ -4407,7 +4419,13 @@ let test_local_review_dedup_is_config_aware () =
   Api_local.set_agent_response_map mocks;
   let state = State.create () in
   let config_of s = Config_types.config_of_json (Melange_json.of_string s) in
-  let security_on = config_of {|{"review_plugins": {"security": {"enabled": true}}}|} in
+  (* Vary [slack_channel]: it cannot change the filtered diff text or which
+     plugins run, so the default digest-based change_key is IDENTICAL across the
+     two runs and only the config digest distinguishes them. That is what makes
+     this test fail when the config is left out of the key. (Varying
+     [max_diff_lines] would change the filtered text and so the digest itself,
+     and enabling security would fail for lack of security mocks.) *)
+  let other_config = config_of {|{"review_plugins": {"security": {"enabled": false}}, "slack_channel": "#reviews"}|} in
   let security_off = config_of {|{"review_plugins": {"security": {"enabled": false}}}|} in
   let diff_text = read_file "mock_api_responses/github/pr_42.diff" in
   let review config =
@@ -4422,7 +4440,22 @@ let test_local_review_dedup_is_config_aware () =
   in
   expect_reviewed "first config" (review security_off);
   (* Same diff, same change_key, different config: must still review. *)
-  expect_reviewed "second config" (review security_on);
+  expect_reviewed "second config" (review other_config);
+  (* Two distinct entries under one user-visible change_key, and the recorded
+     keys are exactly the ones state_change_key derives. *)
+  (check int) "one entry per config" 2 (recorded_change_review_count state ~repo_key:"local/repo");
+  List.iter
+    (fun config ->
+      match
+        Lwt_main.run
+          (Local_source.prepare_review_from_text ~root:"." ~repo_key:"local/repo" ~change_key:"shared-key"
+             ~title:"Config aware" ~description:"" ~diff_text ~config ())
+      with
+      | Error _ -> fail "expected the job to prepare"
+      | Ok job ->
+        (check bool) "recorded under the config-aware key" true
+          (State.is_change_reviewed state ~repo_key:"local/repo" ~change_key:(Local_review.state_change_key job)))
+    [ security_off; other_config ];
   (* Same diff, same change_key, config already seen: must skip. *)
   match review security_off with
   | Ok (_ : Review_engine.report) -> fail "expected a duplicate skip for a repeated config"
@@ -4446,8 +4479,7 @@ let test_local_review_total_failure_is_retryable () =
         (contains_sub ~sub:{|"outcome": "failure"|} (Local_sink.render_json report))
   in
   expect_failure (review ());
-  (check bool) "failed change not recorded" false
-    (State.is_change_reviewed state ~repo_key:"local/repo" ~change_key:"total-failure");
+  (check int) "failed change not recorded" 0 (recorded_change_review_count state ~repo_key:"local/repo");
   expect_failure (review ())
 
 let test_local_review_partial_failure_is_retryable () =
@@ -4471,8 +4503,7 @@ let test_local_review_partial_failure_is_retryable () =
     (check bool) "partial failure body preserved" true (contains_sub ~sub:"Review partially failed" report.body);
     (check bool) "JSON partial failure outcome" true
       (contains_sub ~sub:{|"outcome": "failure"|} (Local_sink.render_json report));
-    (check bool) "partially failed change not recorded" false
-      (State.is_change_reviewed state ~repo_key:"local/repo" ~change_key:"partial-failure")
+    (check int) "partially failed change not recorded" 0 (recorded_change_review_count state ~repo_key:"local/repo")
 
 let test_local_review_security_stage_failures_are_retryable () =
   let config =
@@ -4503,8 +4534,7 @@ let test_local_review_security_stage_failures_are_retryable () =
       (match run_local_failure_report ~config ~state ~change_key () with
       | Error msg -> fail msg
       | Ok report -> (check bool) (stage ^ " failure reported") true (Review_engine.report_failed report));
-      (check bool) (stage ^ " failure not recorded") false
-        (State.is_change_reviewed state ~repo_key:"local/repo" ~change_key))
+      (check int) (stage ^ " failure not recorded") 0 (recorded_change_review_count state ~repo_key:"local/repo"))
     cases
 
 (* Regression: the deep reviewer's [summary] is an internal audit trace (one
@@ -4747,8 +4777,8 @@ let test_local_review_validation_failure_reports_failure_outcome () =
     let json = Local_sink.render_json report in
     (check bool) "json envelope reports failure" true (contains_sub ~sub:{|"outcome": "failure"|} json);
     (check bool) "json summary never says LGTM" false (contains_sub ~sub:"LGTM" json);
-    (check bool) "validation failure is not recorded as reviewed" false
-      (State.is_change_reviewed state ~repo_key:"local/repo" ~change_key:"validation-count-mismatch-json")
+    (check int) "validation failure is not recorded as reviewed" 0
+      (recorded_change_review_count state ~repo_key:"local/repo")
 
 let security_only_local_config () =
   Config_types.config_of_json
