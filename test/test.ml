@@ -2789,11 +2789,6 @@ diff --git a/src/handlers/download.py b/src/handlers/download.py
 +++ b/src/handlers/download.py
 @@ -0,0 +10,1 @@
 +    return send_file(request.args["name"])
-diff --git a/src/handlers/unpack.py b/src/handlers/unpack.py
---- a/src/handlers/unpack.py
-+++ b/src/handlers/unpack.py
-@@ -0,0 +20,1 @@
-+    archive.extractall(dest)
 |}
   in
   let signals = Security_diff_signal.scan (Diff_parser.parse diff_text) in
@@ -2802,10 +2797,36 @@ diff --git a/src/handlers/unpack.py b/src/handlers/unpack.py
        ~path:"src/handlers/export.py" ~line:1 ~pattern_sub:"file path" signals);
   (check bool) "send_file routes to path traversal" true
     (signal_has ~hint:Security_types.Path_traversal ~category:Security_types.Dangerous_api
-       ~path:"src/handlers/download.py" ~line:10 ~pattern_sub:"file path" signals);
-  (check bool) "archive extraction routes to path traversal" true
-    (signal_has ~hint:Security_types.Path_traversal ~category:Security_types.Dangerous_api
-       ~path:"src/handlers/unpack.py" ~line:20 ~pattern_sub:"file path" signals)
+       ~path:"src/handlers/download.py" ~line:10 ~pattern_sub:"file path" signals)
+
+let test_security_diff_signal_path_traversal_precision () =
+  let diff_text =
+    {|diff --git a/src/handlers/files.py b/src/handlers/files.py
+--- a/src/handlers/files.py
++++ b/src/handlers/files.py
+@@ -0,0 +1,9 @@
++p = Path(REPORTS) / request.args["name"]
++q = pathlib.Path(REPORTS).joinpath(request.args["name"])
++await client.send_file(chat_id, doc)
++self.send_files(payload)
++def test_send_file_roundtrip():
++shutil.copyfileobj(src, dst)
++zipfile.ZipFile(upload).extractall(dest)
++root = Path("/tmp")
++shutil.copy2(src, dst)
+|}
+  in
+  let signals = Security_diff_signal.scan (Diff_parser.parse diff_text) in
+  let has_path_signal line =
+    signal_has ~hint:Security_types.Path_traversal ~category:Security_types.Dangerous_api ~path:"src/handlers/files.py"
+      ~line ~pattern_sub:"file path" signals
+  in
+  List.iter
+    (fun line -> (check bool) (Printf.sprintf "line %d is a path sink" line) true (has_path_signal line))
+    [ 1; 2; 9 ];
+  List.iter
+    (fun line -> (check bool) (Printf.sprintf "line %d is not a path sink" line) false (has_path_signal line))
+    [ 3; 4; 5; 6; 7; 8 ]
 
 let test_security_diff_signal_multiline_policy_wildcards () =
   let diff_text =
@@ -3159,6 +3180,16 @@ let test_analysis_agent_prompt_contains_class_section () =
   (check bool) "ssrf section" true (Devkit.Stre.exists ssrf.system_prompt "Server-Side Request Forgery");
   (check bool) "policy section" true (Devkit.Stre.exists policy.system_prompt "Security Policy Regression");
   (check bool) "policy source model" true (Devkit.Stre.exists policy.system_prompt "changed principal")
+
+let test_path_traversal_prompt_runtime_semantics () =
+  let analysis = Analysis_agent.vuln_class_section Path_traversal ~language_hints:[] in
+  let triage = (Triage_agent.config ~model_tier:Fast).system_prompt in
+  (check bool) "analysis distinguishes Node and OCaml absolute paths" true
+    (contains_sub ~sub:"not Node `path.join` or OCaml `Filename.concat`" analysis);
+  (check bool) "analysis treats stdlib ZipFile extraction as sanitized" true
+    (contains_sub ~sub:"stdlib `zipfile.ZipFile.extract` / `extractall` sanitize" analysis);
+  (check bool) "triage distinguishes absolute path behavior" true
+    (contains_sub ~sub:"while Node `path.join` and OCaml `Filename.concat` retain it" triage)
 
 let test_analysis_agent_language_hints () =
   let with_hints =
@@ -5262,7 +5293,7 @@ let feedback_comment ?(body = "feedback body") ?(path = "src/main.ml") ?(line = 
     body;
   }
 
-let feedback_input ?(feedback_id = "rvf_test") ?(line = 14) ?(body = "feedback body") () =
+let feedback_input ?(feedback_id = "rvf_test") ?(line = 14) ?(body = "feedback body") ?vuln_class () =
   let finding = mk_finding ~path:"src/main.ml" ~line ~severity:Warning ~category:Security ~confidence:High () in
   let comment = feedback_comment ~line ~body () in
   let comment_body = Feedback_store.append_marker ~feedback_id comment.body in
@@ -5277,6 +5308,7 @@ let feedback_input ?(feedback_id = "rvf_test") ?(line = 14) ?(body = "feedback b
       finding_id = None;
       finding_source = None;
       plugin_name = None;
+      vuln_class;
     }
 
 let record_one_feedback_target ?(feedback_id = "rvf_test") ?(review_id = 1000) ?(line = 14)
@@ -5408,7 +5440,7 @@ let test_feedback_target_roundtrip_and_privacy () =
 
 let remove_json_fields keys fields = List.filter (fun (key, _value) -> not (List.exists (String.equal key) keys)) fields
 
-let test_feedback_target_schema_compatibility_and_v3_fields () =
+let test_feedback_target_schema_compatibility_and_v4_fields () =
   with_temp_feedback_store (fun _state_path _paths store ->
     ignore (record_one_feedback_target store : Feedback_store.target_input);
     let target = single_feedback_target store in
@@ -5417,7 +5449,15 @@ let test_feedback_target_schema_compatibility_and_v3_fields () =
       | `Assoc fields ->
         `Assoc
           (remove_json_fields
-             [ "evidence_dir"; "finding_id"; "finding_source"; "plugin_name"; "review_node_id"; "review_body_sha256" ]
+             [
+               "evidence_dir";
+               "finding_id";
+               "finding_source";
+               "plugin_name";
+               "vuln_class";
+               "review_node_id";
+               "review_body_sha256";
+             ]
              fields)
       | _ -> fail "expected target JSON object"
     in
@@ -5431,7 +5471,8 @@ let test_feedback_target_schema_compatibility_and_v3_fields () =
       (check (option string)) "v1 evidence_dir default" None target.evidence_dir;
       (check (option string)) "v1 finding_id default" None target.finding_id;
       (check (option string)) "v1 finding_source default" None target.finding_source;
-      (check (option string)) "v1 plugin_name default" None target.plugin_name
+      (check (option string)) "v1 plugin_name default" None target.plugin_name;
+      (check (option string)) "v1 vuln_class default" None target.vuln_class
     | [] | _ :: _ :: _ -> fail "expected one decoded v1 target");
   with_temp_feedback_store (fun _state_path _paths store ->
     ignore (record_one_feedback_target store : Feedback_store.target_input);
@@ -5457,6 +5498,7 @@ let test_feedback_target_schema_compatibility_and_v3_fields () =
         finding_id = Some "rvfind_schema";
         finding_source = Some "general";
         plugin_name = Some "general";
+        vuln_class = Some "injection";
       }
     in
     let review_body_target : Feedback_store.review_body_target_input =
@@ -5472,8 +5514,8 @@ let test_feedback_target_schema_compatibility_and_v3_fields () =
          ~head_sha:"abc123def456789012345678901234567890abcd" ~review_id:1000 ~review_batch_id:"rvb_schema"
          ~created_at:feedback_created_at ~review_body_target [ input ]);
     let decoded = Feedback_store.file_of_json (Feedback_store.file_to_json (Feedback_store.data store)) in
-    (check int) "v3 schema" 3 decoded.schema;
-    (check int) "v3 target count" 2 (List.length decoded.targets);
+    (check int) "v4 schema" 4 decoded.schema;
+    (check int) "v4 target count" 2 (List.length decoded.targets);
     let inline_target = find_feedback_target ~kind:"pr_review_comment" decoded.targets in
     let body_target = find_feedback_target ~kind:"pr_review_body" decoded.targets in
     (check (option string)) "body review node id" (Some "PRR_node_schema") body_target.review_node_id;
@@ -5483,11 +5525,12 @@ let test_feedback_target_schema_compatibility_and_v3_fields () =
     match [ inline_target ] with
     | [ target ] ->
       (check (option string))
-        "v3 evidence_dir" (Some "/tmp/reviewotron-feedback-evidence/rvb_schema") target.evidence_dir;
-      (check (option string)) "v3 finding_id" (Some "rvfind_schema") target.finding_id;
-      (check (option string)) "v3 finding_source" (Some "general") target.finding_source;
-      (check (option string)) "v3 plugin_name" (Some "general") target.plugin_name
-    | [] | _ :: _ :: _ -> fail "expected one decoded v3 inline target")
+        "v4 evidence_dir" (Some "/tmp/reviewotron-feedback-evidence/rvb_schema") target.evidence_dir;
+      (check (option string)) "v4 finding_id" (Some "rvfind_schema") target.finding_id;
+      (check (option string)) "v4 finding_source" (Some "general") target.finding_source;
+      (check (option string)) "v4 plugin_name" (Some "general") target.plugin_name;
+      (check (option string)) "v4 vuln_class" (Some "injection") target.vuln_class
+    | [] | _ :: _ :: _ -> fail "expected one decoded v4 inline target")
 
 let test_feedback_deadline_semantics () =
   with_temp_feedback_store (fun _state_path _paths store ->
@@ -5809,7 +5852,7 @@ let test_feedback_report_summarizes_targets_and_evidence () =
     Unix.mkdir evidence_dir 0o700;
     let input_up =
       {
-        (feedback_input ~feedback_id:"rvf_up" ~line:10 ()) with
+        (feedback_input ~feedback_id:"rvf_up" ~line:10 ~vuln_class:"injection" ()) with
         evidence_dir = Some evidence_dir;
         finding_id = Some "rvfind_up";
         finding_source = Some "security";
@@ -5902,6 +5945,7 @@ let test_feedback_report_summarizes_targets_and_evidence () =
         (check int) "review targets" 3 (List.length review.targets);
         let markdown = Feedback_report.render_markdown report in
         (check bool) "markdown includes positive target" true (contains_sub ~sub:"rvf_up" markdown);
+        (check bool) "markdown includes vulnerability class" true (contains_sub ~sub:"security/injection/high" markdown);
         (check bool) "markdown includes negative target" true (contains_sub ~sub:"rvf_down" markdown);
         (check bool) "markdown includes body target" true (contains_sub ~sub:"rvf_body" markdown);
         (check bool) "markdown renders body target at review level" true (contains_sub ~sub:"review body" markdown);
@@ -5920,6 +5964,7 @@ let test_feedback_report_summarizes_targets_and_evidence () =
         let json = Feedback_report.to_json report in
         let json_text = Yojson.Basic.to_string json in
         (check bool) "json includes sentiment" true (contains_sub ~sub:{|"sentiment":"negative"|} json_text);
+        (check bool) "json includes vulnerability class" true (contains_sub ~sub:{|"vuln_class":"injection"|} json_text);
         (check bool) "json includes comment url" true (contains_sub ~sub:{|"github_comment_url"|} json_text);
         (check bool) "json includes body target kind" true
           (contains_sub ~sub:{|"target_kind":"pr_review_body"|} json_text);
@@ -6026,6 +6071,9 @@ let test_feedback_publish_records_targets_and_markers () =
     [
       "general_scout", "mock_api_responses/scout/leads_two.json";
       "general_deep_review", "mock_api_responses/claude/review_response.json";
+      "security_triage", "mock_api_responses/security/triage_injection.json";
+      "security_analysis_injection", "mock_api_responses/security/analysis_injection.json";
+      "security_validator", "mock_api_responses/security/validator_confirmed.json";
     ];
   with_temp_feedback_store (fun state_path paths feedback_store ->
     let config =
@@ -6037,7 +6085,8 @@ let test_feedback_publish_records_targets_and_markers () =
               "review_pushes_to_develop": true,
               "system_prompt_override": "secret top-level prompt",
               "review_plugins": {
-                "general": { "system_prompt_override": "secret nested prompt" }
+                "general": { "system_prompt_override": "secret nested prompt" },
+                "security": { "enabled": true }
               }
             }|})
     in
@@ -6058,8 +6107,9 @@ let test_feedback_publish_records_targets_and_markers () =
     (check (option string)) "body review node id" (Some "PRR_node_1000") body_target.review_node_id;
     (check bool) "body hash stored" true (Option.is_some body_target.review_body_sha256);
     (check string) "repo stored" Test_helpers.test_repo_url inline_target.repo_url;
-    (check (option string)) "finding source stored" (Some "general") inline_target.finding_source;
-    (check (option string)) "plugin stored" (Some "general") inline_target.plugin_name;
+    (check (option string)) "finding source stored" (Some "security") inline_target.finding_source;
+    (check (option string)) "plugin stored" (Some "security") inline_target.plugin_name;
+    (check (option string)) "vulnerability class stored" (Some "injection") inline_target.vuln_class;
     (check bool) "finding id stored" true
       (match inline_target.finding_id with
       | Some id -> CCString.prefix ~pre:"rvfind_" id
@@ -6104,14 +6154,16 @@ let test_feedback_publish_records_targets_and_markers () =
         (contains_sub ~sub:Review_format.feedback_prompt (json_string_field comment_fields "body"));
       (check string) "posted body hash"
         (require_some "inline target missing comment_body_sha256" inline_target.comment_body_sha256)
-        (json_string_field comment_fields "comment_body_sha256")
+        (json_string_field comment_fields "comment_body_sha256");
+      (check string) "posted vulnerability class" "injection" (json_string_field comment_fields "vuln_class")
     | _ -> fail "expected one posted review comment");
     let findings = read_bundle_json "findings.json" in
     (match json_list_field findings "findings" with
     | [ `Assoc finding_fields ] ->
       (check string) "finding routing" "inline" (json_string_field finding_fields "routing_outcome");
-      (check string) "finding source" "general" (json_string_field finding_fields "finding_source");
-      (check string) "finding plugin" "general" (json_string_field finding_fields "plugin_name");
+      (check string) "finding source" "security" (json_string_field finding_fields "finding_source");
+      (check string) "finding plugin" "security" (json_string_field finding_fields "plugin_name");
+      (check string) "finding vulnerability class" "injection" (json_string_field finding_fields "vuln_class");
       (check (option string))
         "finding id linked" inline_target.finding_id
         (Some (json_string_field finding_fields "finding_id"))
@@ -8497,6 +8549,7 @@ let () =
           test_case "sensitive file matching" `Quick test_security_diff_signal_sensitive_files;
           test_case "policy regression patterns" `Quick test_security_diff_signal_policy_regression_patterns;
           test_case "path traversal hint" `Quick test_security_diff_signal_path_traversal_hint;
+          test_case "path traversal precision" `Quick test_security_diff_signal_path_traversal_precision;
           test_case "multiline policy wildcards" `Quick test_security_diff_signal_multiline_policy_wildcards;
           test_case "empty safe diff" `Quick test_security_diff_signal_empty_for_safe_diff;
         ] );
@@ -8634,6 +8687,7 @@ let () =
           test_case "prompt methodology" `Quick test_analysis_agent_prompt_contains_methodology;
           test_case "prompt fetch economy" `Quick test_analysis_agent_prompt_fetch_economy;
           test_case "prompt class section" `Quick test_analysis_agent_prompt_contains_class_section;
+          test_case "path traversal runtime semantics" `Quick test_path_traversal_prompt_runtime_semantics;
           test_case "language hints" `Quick test_analysis_agent_language_hints;
           test_case "build input minimal" `Quick test_analysis_agent_build_input_minimal;
           test_case "tools" `Quick test_analysis_agent_tools;
@@ -8789,8 +8843,8 @@ let () =
           test_case "review job log context" `Quick test_review_job_log_context;
           test_case "marker and deterministic ids" `Quick test_feedback_marker_and_id_helpers;
           test_case "target roundtrip and privacy scan" `Quick test_feedback_target_roundtrip_and_privacy;
-          test_case "target schema compatibility and v3 fields" `Quick
-            test_feedback_target_schema_compatibility_and_v3_fields;
+          test_case "target schema compatibility and v4 fields" `Quick
+            test_feedback_target_schema_compatibility_and_v4_fields;
           test_case "deadline semantics" `Quick test_feedback_deadline_semantics;
           test_case "PR close marks final_due" `Quick test_feedback_close_marks_final_due;
           test_case "pollable target selection" `Quick test_feedback_pollable_selection;

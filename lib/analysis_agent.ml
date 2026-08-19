@@ -675,7 +675,7 @@ These are safe patterns that may superficially resemble SSRF but are not exploit
 let path_traversal_section =
   {|## Vulnerability Class: Path Traversal and File Exposure
 
-This class covers vulnerabilities where user-controlled input influences a filesystem path, letting an attacker read, write, or overwrite files outside the directory the application intended. The classic payload escapes upward with `../` sequences (`../../etc/passwd`, `..\..\windows\win.ini`), but the class also covers absolute-path injection (the user supplies `/etc/passwd` and the application joins it onto a base directory that is then discarded), symlink following, archive extraction that writes outside the extraction root ("zip slip"), and user-controlled file *writes* that clobber application files. Apply the source→sink→flow→sanitization methodology, and pay special attention to the difference between normalizing a path and confining it: a path can be perfectly normalized and still point outside the intended root.
+This class covers vulnerabilities where user-controlled input influences a filesystem path, letting an attacker read, write, or overwrite files outside the directory the application intended. The classic payload escapes upward with `../` sequences (`../../etc/passwd`, `..\..\windows\win.ini`), but the class also covers absolute-path injection through APIs that replace the base (such as Python `os.path.join`, Node `path.resolve`, and `pathlib.Path` division), symlink following, unsafe tar or custom archive extraction that writes outside the extraction root, and user-controlled file *writes* that clobber application files. Apply the source→sink→flow→sanitization methodology, and pay special attention to the difference between normalizing a path and confining it: a path can be perfectly normalized and still point outside the intended root.
 
 The decisive question is always **containment**: after all normalization, is the resolved absolute path provably inside the intended base directory? A check that inspects the path *before* resolution is usually inadequate, because `..` segments, symlinks, URL-decoding, and Unicode normalization can all change where the path lands.
 
@@ -717,7 +717,7 @@ These are request parameters, stored values, or archive/upload contents that sup
 **OCaml:**
 - `open_in` / `open_in_bin` / `open_out` / `open_out_bin` — stdlib file open on a user-influenced path
 - `Stdlib.really_input_string` after an attacker-influenced `open_in` — the open is the sink
-- `Filename.concat` / `Filename.dirname` / `Filename.basename` — path construction; `Filename.concat base user_input` does NOT confine, because an absolute `user_input` or `..` segments escape `base`
+- `Filename.concat` / `Filename.dirname` / `Filename.basename` — path construction; `Filename.concat base user_input` does NOT confine `..` segments, but unlike Python `os.path.join` it retains `base` for an absolute `user_input`
 - `Unix.openfile` / `Unix.unlink` / `Unix.rename` / `Unix.stat` / `Unix.lstat` — direct syscall wrappers
 - `Lwt_io.open_file` / `Lwt_io.with_file` / `Lwt_unix.openfile` — Lwt file I/O
 - `Dream.from_filesystem` / `Dream.static` — static file serving; safe only when the path argument is confined (see False Positive Patterns)
@@ -740,7 +740,8 @@ These are request parameters, stored values, or archive/upload contents that sup
 - `send_file(path)` / `send_from_directory(dir, filename)` (Flask) — `send_file` with a user-controlled path is a direct sink; `send_from_directory` is safer but historically had bypasses on some versions and still requires a trusted `dir`
 - `django.http.FileResponse(open(path, 'rb'))` — Django file response
 - `pathlib.Path(base) / user_input` — the `/` operator does NOT confine; an absolute `user_input` replaces the base
-- `zipfile.ZipFile.extract` / `extractall` / `tarfile.TarFile.extract` / `extractall` — extraction sinks; without member validation these write anywhere the process can (Python 3.12+ offers `filter='data'`)
+- `tarfile.TarFile.extract` / `extractall` when the effective extraction filter permits absolute paths, `..`, links, or special files; Python 3.12+ supports `filter='data'` and Python 3.14+ uses it by default
+- Custom archive extraction code that writes member names to caller-constructed paths; stdlib `zipfile.ZipFile.extract` / `extractall` sanitize drive/UNC roots, leading separators, and `.` / `..` components and are not traversal sinks by themselves
 - `os.makedirs(path)` — directory creation at a user-influenced location
 
 **Cross-language sink patterns:**
@@ -748,7 +749,7 @@ These are request parameters, stored values, or archive/upload contents that sup
 - Template or partial loading where the template name is user-influenced (can also become SSTI)
 - Log or report writers that build the output filename from user input
 - Upload handlers that store a file under its client-supplied name
-- Archive extraction of user-uploaded zip/tar files
+- Unsafe tar extraction or custom archive extraction of user-uploaded files
 - Backup, import, and export features that accept a path
 - Image/asset resizers that read a source path derived from a request parameter
 
@@ -762,7 +763,7 @@ These are request parameters, stored values, or archive/upload contents that sup
 - A strict character allowlist that rejects (rather than strips) anything outside e.g. `[A-Za-z0-9._-]`, with a separate explicit rejection of `..` as a whole component
 - Generated storage names: uploads are stored under a server-generated name (UUID, content hash) and the client filename is kept only as display metadata, never as a path
 - Serving through an API that confines by construction: `res.sendFile(name, { root: safeDir })`, `Dream.from_filesystem safe_dir`, or `send_from_directory(trusted_dir, name)` where `trusted_dir` is not user-influenced
-- Archive extraction that validates each member's resolved destination is inside the extraction root before writing, and rejects absolute members, `..` members, and symlink/hardlink members (or Python 3.12+ `extractall(filter='data')`)
+- Stdlib `zipfile.ZipFile.extract` / `extractall`, or archive extraction that validates each member's resolved destination is inside the extraction root before writing and rejects absolute members, `..` members, and symlink/hardlink members (including `tarfile` with `filter='data'`)
 - OS-level confinement that the reviewed code genuinely runs under: `chroot`, a mount namespace, or `openat` with `RESOLVE_BENEATH`
 
 **Inadequate — these patterns have traversal weaknesses:**
@@ -770,10 +771,10 @@ These are request parameters, stored values, or archive/upload contents that sup
 - Blocklisting the literal `".."` string without normalizing first: bypassed by URL encoding (`%2e%2e%2f`), double encoding (`%252e%252e%252f`), overlong UTF-8, backslashes on Windows (`..\`), or mixed separators
 - Checking the path *before* normalization or resolution, then operating on the raw value — the check and the operation see different paths (time-of-check/time-of-use)
 - `startsWith` / prefix comparison on strings without a separator boundary: base `/srv/data` also "contains" `/srv/data-evil`, so a sibling directory passes the check
-- `path.join(base, user)` / `os.path.join(base, user)` / `Filename.concat base user` treated as confinement — it is only concatenation; `..` escapes and (for `join`/`resolve` in Node and Python) an absolute `user` discards `base` entirely
+- `path.join(base, user)` / `os.path.join(base, user)` / `Filename.concat base user` treated as confinement — all permit `..` to escape; absolute inputs discard the base only for Python `os.path.join` (and for Node `path.resolve` / `pathlib.Path` division), not Node `path.join` or OCaml `Filename.concat`
 - Normalizing with `path.normalize` / `os.path.normpath` but never comparing the result against the base — normalization resolves `..` textually but does not confine, and `normpath` does not resolve symlinks
 - Validating the filename but appending a user-controlled extension or suffix, or vice versa
-- Rejecting `..` but permitting an absolute path, which needs no `..` to escape
+- Rejecting `..` but permitting an absolute path when the path API replaces the base for absolute inputs
 - Ignoring symlinks: the path contains no `..` and sits inside the base, but a symlink within the base points outside it (`realpath`/`lstat` checks are required, and matter most where users can create files in the base)
 - Relying on the web framework's URL normalization to stop traversal: decoding and normalization differ between the proxy, the framework router, and the filesystem call
 - Null-byte or control-character truncation in FFI or older runtimes, where `safe.txt\0../../etc/passwd` truncates at the null byte in a C call
@@ -787,6 +788,7 @@ These are safe patterns that may superficially resemble path traversal but are n
 - A user-influenced value that has already been reduced to a bare basename (`basename` applied, or a strict `[A-Za-z0-9._-]` allowlist enforced with rejection) before it reaches the join
 - Indirect lookups where the user-supplied id is resolved through a database or fixed mapping to a server-controlled path
 - Static file middleware used as documented with a fixed root and no custom path preprocessing (`express.static(dir)`, `Dream.from_filesystem safe_dir`, `send_from_directory(trusted_dir, name)` on a maintained version)
+- Stdlib `zipfile.ZipFile.extract` / `extractall`, which sanitize traversal components before joining under the destination
 - Uploads stored under a server-generated name where the client filename is retained only as display metadata
 - Build scripts, test fixtures, migrations, and developer tooling that read local paths — not attacker-reachable in production, unless the reviewed change puts them on a request path
 - Reads confined to a directory whose entire contents are already public (e.g. a static asset directory) where the resolved path is verified inside it and the files carry no secrets — disclosure of already-public data is not a finding

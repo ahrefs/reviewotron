@@ -74,6 +74,13 @@ let has_outbound_fetch_shape s =
     [ "fetch("; "http.get"; "http.post"; "requests.get"; "requests.post"; "reqwest"; "curl"; "webhook_url"; "open_uri" ]
     s
 
+let has_path_constructor_shape s = lower_contains ~sub:"path(" s && contains_any [ ") /"; ")/"; ".joinpath(" ] s
+
+let flask_file_serving_re =
+  Re2.create_exn {|(^|[^a-z0-9_.])send_(file|from_directory)[ \t]*\(|flask\.send_(file|from_directory)[ \t]*\(|}
+
+let has_flask_file_serving_shape s = Re2.matches flask_file_serving_re s
+
 let has_path_join_shape s =
   contains_any
     [
@@ -85,16 +92,17 @@ let has_path_join_shape s =
       "sendfile";
       "readfile";
       "writefile";
-      (* Python/Flask file-serving and extraction sinks: the join-only list
+      (* Python file-serving and copy/move sinks: the join-only list
          above never fired on the most direct traversal shapes. *)
-      "send_file";
-      "send_from_directory";
-      "pathlib.path";
-      "extractall";
-      "shutil.copy";
-      "shutil.move";
+      "shutil.copy(";
+      "shutil.copy2(";
+      "shutil.copyfile(";
+      "shutil.copytree(";
+      "shutil.move(";
     ]
     s
+  || has_path_constructor_shape s
+  || has_flask_file_serving_shape s
 
 let has_deserialization_shape s =
   contains_any

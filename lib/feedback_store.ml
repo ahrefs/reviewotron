@@ -61,6 +61,7 @@ type target = {
   finding_id : string option;
   finding_source : string option;
   plugin_name : string option;
+  vuln_class : string option;
   last_counts : reaction_counts;
 }
 
@@ -84,6 +85,7 @@ type target_input = {
   finding_id : string option;
   finding_source : string option;
   plugin_name : string option;
+  vuln_class : string option;
 }
 
 type review_body_target_input = {
@@ -93,7 +95,7 @@ type review_body_target_input = {
   evidence_dir : string option;
 }
 
-let schema_version = 3
+let schema_version = 4
 let targets_filename = "reviewotron-feedback-targets.json"
 let events_filename = "reviewotron-feedback-events.jsonl"
 let evidence_dirname = "reviewotron-feedback-evidence"
@@ -329,6 +331,7 @@ let target_to_json (target : target) =
         json_string_option "finding_id" target.finding_id;
         json_string_option "finding_source" target.finding_source;
         json_string_option "plugin_name" target.plugin_name;
+        json_string_option "vuln_class" target.vuln_class;
       ]
     | Pr_review_body ->
       [
@@ -406,6 +409,7 @@ let target_of_json = function
         finding_id = None;
         finding_source = None;
         plugin_name = None;
+        vuln_class = None;
         last_counts = reaction_counts_of_json (required_field fields "last_counts");
       }
     in
@@ -431,6 +435,7 @@ let target_of_json = function
         finding_id = optional_string fields "finding_id";
         finding_source = optional_string fields "finding_source";
         plugin_name = optional_string fields "plugin_name";
+        vuln_class = optional_string fields "vuln_class";
       }
     | Pr_review_body ->
       {
@@ -605,6 +610,7 @@ let record_posted_pr_review_targets t ~repo_url ~pr_number ~head_sha ~review_id 
               finding_id = input.finding_id;
               finding_source = input.finding_source;
               plugin_name = input.plugin_name;
+              vuln_class = input.vuln_class;
               last_counts = zero_counts;
             })
           inputs
@@ -644,6 +650,7 @@ let record_posted_pr_review_targets t ~repo_url ~pr_number ~head_sha ~review_id 
               finding_id = None;
               finding_source = None;
               plugin_name = None;
+              vuln_class = None;
               last_counts = zero_counts;
             };
           ]

@@ -16,6 +16,7 @@ type target_summary = {
   finding_id : string option;
   finding_source : string option;
   plugin_name : string option;
+  vuln_class : string option;
   status : string;
   repo_url : string;
   pr_number : int;
@@ -156,7 +157,7 @@ let read_json_file path =
 let read_targets path =
   match read_json_file path with
   | Error _ as error -> error
-  | Ok None -> Ok { Feedback_store.schema = 3; targets = [] }
+  | Ok None -> Ok { Feedback_store.schema = 4; targets = [] }
   | Ok (Some json) ->
   try Ok (Feedback_store.file_of_json json)
   with exn -> Error (Printf.sprintf "failed to decode feedback targets from %s: %s" path (Printexc.to_string exn))
@@ -312,6 +313,7 @@ let target_summary evidence_findings (target : Feedback_store.target) =
     finding_id = target.finding_id;
     finding_source = target.finding_source;
     plugin_name = target.plugin_name;
+    vuln_class = target.vuln_class;
     status = Feedback_store.target_status_to_string target.status;
     repo_url = target.repo_url;
     pr_number = target.pr_number;
@@ -579,6 +581,7 @@ let target_to_json (target : target_summary) =
         string_opt "finding_id" target.finding_id;
         string_opt "finding_source" target.finding_source;
         string_opt "plugin_name" target.plugin_name;
+        string_opt "vuln_class" target.vuln_class;
         int_opt "comment_id" target.comment_id;
         string_opt "github_comment_url" target.github_comment_url;
         string_opt "path" target.path;
@@ -649,10 +652,11 @@ let render_body_target buf (target : target_summary) =
   Printf.bprintf buf "\n"
 
 let render_inline_target ~include_messages ~max_message_chars buf (target : target_summary) =
-  Printf.bprintf buf "- [%s] `%s` `%s` %s/%s/%s at `%s:%s` (+1=%d -1=%d)\n" target.sentiment target.feedback_id
+  Printf.bprintf buf "- [%s] `%s` `%s` %s/%s/%s/%s at `%s:%s` (+1=%d -1=%d)\n" target.sentiment target.feedback_id
     (option_string "unknown" target.plugin_name)
     (option_string "unknown" target.severity)
     (option_string "unknown" target.category)
+    (option_string "unclassified" target.vuln_class)
     (option_string "unknown" target.confidence)
     (option_string "unknown" target.path) (option_int "unknown" target.line) target.plus_one target.minus_one;
   Printf.bprintf buf "  comment_id: %s; finding_id: %s\n"

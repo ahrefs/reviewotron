@@ -43,11 +43,11 @@ Database mutation operations (update, delete) where a user-supplied resource ide
 HTTP client calls, URL construction from user inputs, redirect handling, webhook URL configuration, any pattern where user input influences the target of an outbound HTTP request.
 
 ### path_traversal
-Filesystem path construction from user input: `open`, `readFile`/`writeFile`, `send_file`, `sendFile`, `os.path.join`, `path.join`, `Filename.concat`, `pathlib.Path` division, static-file serving with a computed path, upload handlers that keep the client-supplied filename, and archive extraction (`extractall`, `tar -x`) of user-supplied archives.
+Filesystem path construction from user input: `open`, `readFile`/`writeFile`, `send_file`, `sendFile`, `os.path.join`, `path.join`, `Filename.concat`, `pathlib.Path` division, static-file serving with a computed path, upload handlers that keep the client-supplied filename, and unsafe tar or custom archive extraction of user-supplied archives.
 
 Flag when a request parameter, upload filename, stored filename, or archive member name can influence which file is read, written, deleted, or served. **High confidence** when a user-controlled value is joined onto a base directory and reaches a file operation with no visible containment check (a resolve-then-verify against the base, a basename reduction, or an allowlist); **medium** when the value is validated by string inspection only (stripping `../`, a `startsWith` prefix check, or normalization without a containment comparison), or when the filename is stored and consumed elsewhere.
 
-Note that `path.join`/`os.path.join`/`Filename.concat` do not confine a path: `..` segments escape the base, and an absolute user value discards the base entirely. Writes matter as much as reads — an attacker-chosen write path can overwrite application files.
+Note that `path.join`/`os.path.join`/`Filename.concat` do not confine `..` segments. Absolute inputs behave differently: Python `os.path.join` discards the base, while Node `path.join` and OCaml `Filename.concat` retain it. Node `path.resolve` and `pathlib.Path` division also discard the base for an absolute user value. Writes matter as much as reads — an attacker-chosen write path can overwrite application files.
 
 Do not flag paths built only from constants, configuration, or environment variables, values already reduced to a bare basename, indirect id-to-path lookups, or static-file middleware used with a fixed root and no custom path preprocessing.
 
