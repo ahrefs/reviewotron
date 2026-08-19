@@ -7,14 +7,6 @@
     behavior rather than a failed review. *)
 val is_already_reviewed_message : string -> bool
 
-(** The key a local review is recorded under: the job's [change_key] combined
-    with its config digest, so the same diff reviewed under two different
-    configs is two distinct cache entries rather than one.
-
-    Exposed for tests and for callers that need to interrogate the dedup state
-    directly; the [change_key] a user passes stays unchanged. *)
-val state_change_key : Review_job.t -> string
-
 module Make (_ : Api.Agent_runner) : sig
   (** Review a local unified diff, record [change_key] only when every enabled
       plugin completes, and return markdown output. Returns [Error _] if the

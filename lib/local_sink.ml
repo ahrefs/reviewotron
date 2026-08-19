@@ -14,11 +14,7 @@ let non_empty_or ~default value =
   | "" -> default
   | value -> value
 
-(* [vuln_class] is the security plugin's own routing class, carried beside the
-   finding by {!Review_engine.sourced_finding} rather than inside it.  Emitted as
-   null for general findings so the field's presence is stable for consumers.
-   [category] deliberately stays "security" for every security finding: feedback
-   targets are keyed on that string, so narrowing it would orphan them. *)
+(* Keep [category] stable; [vuln_class] carries the narrower security class. *)
 let finding_to_json (sourced : Review_engine.sourced_finding) =
   let finding = sourced.finding in
   `Assoc
@@ -52,9 +48,6 @@ let include_finding_in_json (sourced : Review_engine.sourced_finding) =
   | Critical | Warning | Suggestion | Nitpick | Other _ -> true
 
 let render_json (report : Review_engine.report) =
-  (* Read [sourced_findings], not [findings]: same list in the same order --
-     [findings] is derived from it by dropping the source wrapper -- but the
-     wrapper carries the vuln_class the envelope reports. *)
   let findings = report.sourced_findings |> List.filter include_finding_in_json |> List.map finding_to_json in
   let fields = [ "summary", `String (String.trim report.body); "findings", `List findings ] in
   let fields =
@@ -68,11 +61,6 @@ let render_json (report : Review_engine.report) =
     they requested JSON output: [{ "error": "<message>" }]. *)
 let render_error message = Yojson.Basic.pretty_to_string (`Assoc [ "error", `String message ])
 
-(* A duplicate-skip is not a failure and not a clean review: nothing was
-   reviewed.  Rendering it as a bare [{"error": ...}] with exit 0 made a shard
-   that reviewed nothing look exactly like a shard that found nothing -- the
-   same failure class as the LGTM bug in #34.  Carry [outcome: "skipped"]
-   (reusing the field [render_json] already uses for "failure") so a caller can
-   branch on the shape instead of pattern-matching the message text. *)
+(* A duplicate skip is neither a failure nor a clean review. *)
 let render_skipped message =
   Yojson.Basic.pretty_to_string (`Assoc [ "outcome", `String "skipped"; "error", `String message ])

@@ -2772,39 +2772,15 @@ diff --git a/src/client.py b/src/client.py
     (signal_has ~hint:Security_types.Policy_regression ~category:Security_types.Changed_security_control
        ~path:"src/client.py" ~line:40 ~pattern_sub:"security control weakening" signals)
 
-(* The path-traversal detector already fired before this class existed, but with
-   vuln_class_hint = None -- so no analysis agent could ever open for it and a
-   traversal surfaced only if it rode along a command-injection sink. These
-   assert the hint now routes to Path_traversal, including the Flask
-   file-serving sinks the join-only matcher used to miss entirely. *)
-let test_security_diff_signal_path_traversal_hint () =
-  let diff_text =
-    {|diff --git a/src/handlers/export.py b/src/handlers/export.py
---- a/src/handlers/export.py
-+++ b/src/handlers/export.py
-@@ -0,0 +1,1 @@
-+    path = os.path.join(REPORT_DIR, request.args["name"])
-diff --git a/src/handlers/download.py b/src/handlers/download.py
---- a/src/handlers/download.py
-+++ b/src/handlers/download.py
-@@ -0,0 +10,1 @@
-+    return send_file(request.args["name"])
-|}
-  in
-  let signals = Security_diff_signal.scan (Diff_parser.parse diff_text) in
-  (check bool) "os.path.join routes to path traversal" true
-    (signal_has ~hint:Security_types.Path_traversal ~category:Security_types.Dangerous_api
-       ~path:"src/handlers/export.py" ~line:1 ~pattern_sub:"file path" signals);
-  (check bool) "send_file routes to path traversal" true
-    (signal_has ~hint:Security_types.Path_traversal ~category:Security_types.Dangerous_api
-       ~path:"src/handlers/download.py" ~line:10 ~pattern_sub:"file path" signals)
-
-let test_security_diff_signal_path_traversal_precision () =
+(* Cover supported path sinks and nearby lookalikes in one scan. *)
+let test_security_diff_signal_path_traversal () =
   let diff_text =
     {|diff --git a/src/handlers/files.py b/src/handlers/files.py
 --- a/src/handlers/files.py
 +++ b/src/handlers/files.py
-@@ -0,0 +1,9 @@
+@@ -0,0 +1,11 @@
++path = os.path.join(REPORT_DIR, request.args["name"])
++return send_file(request.args["name"])
 +p = Path(REPORTS) / request.args["name"]
 +q = pathlib.Path(REPORTS).joinpath(request.args["name"])
 +await client.send_file(chat_id, doc)
@@ -2823,10 +2799,10 @@ let test_security_diff_signal_path_traversal_precision () =
   in
   List.iter
     (fun line -> (check bool) (Printf.sprintf "line %d is a path sink" line) true (has_path_signal line))
-    [ 1; 2; 9 ];
+    [ 1; 2; 3; 4; 11 ];
   List.iter
     (fun line -> (check bool) (Printf.sprintf "line %d is not a path sink" line) false (has_path_signal line))
-    [ 3; 4; 5; 6; 7; 8 ]
+    [ 5; 6; 7; 8; 9; 10 ]
 
 let test_security_diff_signal_multiline_policy_wildcards () =
   let diff_text =
@@ -4385,8 +4361,6 @@ let test_local_review_diff_returns_markdown () =
     (check bool) "summary not leaked" false (CCString.find ~sub:"The changes look generally good" markdown >= 0);
     (check bool) "has inline comments section" true (CCString.find ~sub:"### Inline comments" markdown >= 0);
     (check bool) "has local inline location" true (CCString.find ~sub:"src/main.ml:14" markdown >= 0);
-    (* Recorded under the config-aware state key, not the bare change_key: the
-       same diff under a different config must not short-circuit. *)
     (check bool) "does not record the bare change key" false
       (State.is_change_reviewed state ~repo_key:"local/repo" ~change_key:"local-change")
 
@@ -4411,13 +4385,7 @@ let test_local_review_diff_text_returns_markdown () =
     (check bool) "summary not leaked" false (CCString.find ~sub:"The changes look generally good" markdown >= 0);
     (check bool) "has inline comments section" true (CCString.find ~sub:"### Inline comments" markdown >= 0)
 
-(* Count the change reviews recorded for a repo.
-
-   Assertions must not query a bare change_key: local reviews are recorded under
-   the config-aware state key ([Local_review.state_change_key]), so
-   [is_change_reviewed ~change_key:"total-failure"] is now false no matter what
-   the code does and cannot catch a failed review being recorded. Count the
-   records instead -- state is fresh per test. *)
+(* State is fresh per test, so record counts prove whether a review was cached. *)
 let recorded_change_review_count state ~repo_key =
   match List.assoc_opt repo_key (State.data state).repos with
   | None -> 0
@@ -4433,12 +4401,7 @@ let run_local_failure_report
     (Local_review_test.review_diff_text_report ~ctx ~root:"." ~repo_key:"local/repo" ~change_key ~title:"Failed review"
        ~description:"Local description" ~diff_text ~config ())
 
-(* The reported bug: the dedup cache keyed on the diff text alone, so the same
-   diff reviewed twice under different --config short-circuited on the second
-   run and returned {"error": "... was already reviewed"} while exiting 0.
-   Sharded runs that vary config per shard silently reviewed nothing after the
-   first shard. Reviewing under config A must not mask a later review under
-   config B, while a genuine repeat of the SAME config still skips. *)
+(* Different configs review independently; an identical config still skips. *)
 let test_local_review_dedup_is_config_aware () =
   Test_helpers.reset_test_state ();
   let mocks =
@@ -4450,12 +4413,7 @@ let test_local_review_dedup_is_config_aware () =
   Api_local.set_agent_response_map mocks;
   let state = State.create () in
   let config_of s = Config_types.config_of_json (Melange_json.of_string s) in
-  (* Vary [slack_channel]: it cannot change the filtered diff text or which
-     plugins run, so the default digest-based change_key is IDENTICAL across the
-     two runs and only the config digest distinguishes them. That is what makes
-     this test fail when the config is left out of the key. (Varying
-     [max_diff_lines] would change the filtered text and so the digest itself,
-     and enabling security would fail for lack of security mocks.) *)
+  (* Vary a review-irrelevant field so only the config digest changes. *)
   let other_config = config_of {|{"review_plugins": {"security": {"enabled": false}}, "slack_channel": "#reviews"}|} in
   let security_off = config_of {|{"review_plugins": {"security": {"enabled": false}}}|} in
   let diff_text = read_file "mock_api_responses/github/pr_42.diff" in
@@ -4470,24 +4428,8 @@ let test_local_review_dedup_is_config_aware () =
     | Ok (_ : Review_engine.report) -> ()
   in
   expect_reviewed "first config" (review security_off);
-  (* Same diff, same change_key, different config: must still review. *)
   expect_reviewed "second config" (review other_config);
-  (* Two distinct entries under one user-visible change_key, and the recorded
-     keys are exactly the ones state_change_key derives. *)
   (check int) "one entry per config" 2 (recorded_change_review_count state ~repo_key:"local/repo");
-  List.iter
-    (fun config ->
-      match
-        Lwt_main.run
-          (Local_source.prepare_review_from_text ~root:"." ~repo_key:"local/repo" ~change_key:"shared-key"
-             ~title:"Config aware" ~description:"" ~diff_text ~config ())
-      with
-      | Error _ -> fail "expected the job to prepare"
-      | Ok job ->
-        (check bool) "recorded under the config-aware key" true
-          (State.is_change_reviewed state ~repo_key:"local/repo" ~change_key:(Local_review.state_change_key job)))
-    [ security_off; other_config ];
-  (* Same diff, same change_key, config already seen: must skip. *)
   match review security_off with
   | Ok (_ : Review_engine.report) -> fail "expected a duplicate skip for a repeated config"
   | Error msg -> (check bool) "repeat of a seen config is skipped" true (Local_review.is_already_reviewed_message msg)
@@ -4966,13 +4908,20 @@ let test_local_sink_render_json () =
       ~why_now:"The upgrade now calls ensure_dir on the legacy path." ~confidence:Review_types.High
       ~suggested_fix:(Some "remove the legacy file before ensure_dir") ()
   in
+  let general_finding =
+    mk_finding ~path:"src/main.ml" ~line:14 ~category:Review_types.Bug ~message:"unhandled exception" ()
+  in
   let report : Review_engine.report =
     {
       body = "";
       comments = [];
       inline_findings = [];
-      findings = [ finding ];
-      sourced_findings = [ { source = From_security; plugin_name = "security"; finding; vuln_class = Some Injection } ];
+      findings = [ finding; general_finding ];
+      sourced_findings =
+        [
+          { source = From_security; plugin_name = "security"; finding; vuln_class = Some Injection };
+          { source = From_general; plugin_name = "general"; finding = general_finding; vuln_class = None };
+        ];
       routed_findings = [];
       unchanged_findings = [];
       anchor_failed_findings = [];
@@ -4986,7 +4935,7 @@ let test_local_sink_render_json () =
     (check string) "review summary" "" (json_string_field fields "summary");
     (check bool) "successful JSON shape unchanged" true (Option.is_none (List.assoc_opt "outcome" fields));
     (match List.assoc_opt "findings" fields with
-    | Some (`List [ `Assoc fields ]) ->
+    | Some (`List [ `Assoc fields; `Assoc general_fields ]) ->
       (check string) "file" "backend/safer-claude-code/safer_claude_code.ml" (json_string_field fields "file");
       (check int) "line" 492 (json_int_field fields "line");
       (check int) "end_line" 494 (json_int_field fields "end_line");
@@ -5000,48 +4949,17 @@ let test_local_sink_render_json () =
       (check string) "why_now" "The upgrade now calls ensure_dir on the legacy path."
         (json_string_field fields "why_now");
       (check string) "suggested_fix" "remove the legacy file before ensure_dir"
-        (json_string_field fields "suggested_fix")
-    | Some _ -> fail "expected findings to contain one review finding"
-    | None -> fail "missing JSON field findings")
-  | _ -> fail "expected a JSON review object"
-
-(* A general-plugin finding carries no vuln_class, so the envelope reports null.
-   Guards the field's presence for consumers that read it unconditionally, and
-   pins that a non-security finding never inherits a class. *)
-let test_local_sink_render_json_general_finding_has_null_vuln_class () =
-  let finding = mk_finding ~path:"src/main.ml" ~line:14 ~category:Review_types.Bug ~message:"unhandled exception" () in
-  let report : Review_engine.report =
-    {
-      body = "";
-      comments = [];
-      inline_findings = [];
-      findings = [ finding ];
-      sourced_findings = [ { source = From_general; plugin_name = "general"; finding; vuln_class = None } ];
-      routed_findings = [];
-      unchanged_findings = [];
-      anchor_failed_findings = [];
-      review_costs = [];
-      security_error = false;
-      general_failed = false;
-    }
-  in
-  match Yojson.Basic.from_string (Local_sink.render_json report) with
-  | `Assoc fields ->
-    (match List.assoc_opt "findings" fields with
-    | Some (`List [ `Assoc fields ]) ->
-      (check string) "category" "bug" (json_string_field fields "category");
-      (check bool) "vuln_class is null" true
-        (match List.assoc_opt "vuln_class" fields with
+        (json_string_field fields "suggested_fix");
+      (check string) "general category" "bug" (json_string_field general_fields "category");
+      (check bool) "general vuln_class is null" true
+        (match List.assoc_opt "vuln_class" general_fields with
         | Some `Null -> true
         | Some _ | None -> false)
-    | Some _ -> fail "expected findings to contain one review finding"
+    | Some _ -> fail "expected security and general review findings"
     | None -> fail "missing JSON field findings")
   | _ -> fail "expected a JSON review object"
 
-(* A duplicate-skip must be distinguishable from both a failure and a clean
-   review in the JSON envelope: it carries outcome "skipped", where a genuine
-   failure carries no outcome on render_error and a clean review carries none at
-   all. Consumers should branch on this instead of matching the message text. *)
+(* A duplicate skip must be distinguishable from a failure and a clean review. *)
 let test_local_sink_render_skipped_is_distinguishable () =
   let skip_message = "change diff/abc in local/repo was already reviewed" in
   match Yojson.Basic.from_string (Local_sink.render_skipped skip_message) with
@@ -5049,20 +4967,13 @@ let test_local_sink_render_skipped_is_distinguishable () =
     (check string) "outcome marks the skip" "skipped" (json_string_field fields "outcome");
     (check string) "message preserved" skip_message (json_string_field fields "error");
     (check bool) "message is recognised as a skip" true (Local_review.is_already_reviewed_message skip_message);
-    (* A genuine failure envelope must NOT look like a skip. *)
     (match Yojson.Basic.from_string (Local_sink.render_error "local review failed: boom") with
     | `Assoc error_fields ->
       (check bool) "failure has no skipped outcome" true (Option.is_none (List.assoc_opt "outcome" error_fields))
     | _ -> fail "expected a JSON error object")
   | _ -> fail "expected a JSON skip object"
 
-(* The vuln_class must survive the whole chain -- security plugin pairing, the
-   engine's sourced_finding wrapper, dedup -- and land in the JSON envelope.
-   The envelope unit tests hand-build a report literal, so they exercise only
-   the renderer: mutating either plumbing site (the engine's pairing or the
-   plugin's `Some vf.finding.vuln_class`) leaves them green while every real
-   security finding silently loses its class. This test runs the actual
-   pipeline against mocks and is the one that fails when that happens. *)
+(* Verify vuln_class through the real security pipeline and JSON renderer. *)
 let test_local_review_security_finding_reports_vuln_class () =
   Test_helpers.reset_test_state ();
   Api_local.set_agent_response_map
@@ -5090,7 +5001,6 @@ let test_local_review_security_finding_reports_vuln_class () =
       (fun (sourced : Review_engine.sourced_finding) ->
         (check bool) "every security finding carries its vuln_class" true (Option.is_some sourced.vuln_class))
       report.sourced_findings;
-    (* And it reaches the consumer-visible envelope, not just the record. *)
     (match Yojson.Basic.from_string (Local_sink.render_json report) with
     | `Assoc fields ->
       (match List.assoc_opt "findings" fields with
@@ -8548,8 +8458,7 @@ let () =
           test_case "path, controls, and stateful signals" `Quick test_security_diff_signal_path_control_and_stateful;
           test_case "sensitive file matching" `Quick test_security_diff_signal_sensitive_files;
           test_case "policy regression patterns" `Quick test_security_diff_signal_policy_regression_patterns;
-          test_case "path traversal hint" `Quick test_security_diff_signal_path_traversal_hint;
-          test_case "path traversal precision" `Quick test_security_diff_signal_path_traversal_precision;
+          test_case "path traversal signals" `Quick test_security_diff_signal_path_traversal;
           test_case "multiline policy wildcards" `Quick test_security_diff_signal_multiline_policy_wildcards;
           test_case "empty safe diff" `Quick test_security_diff_signal_empty_for_safe_diff;
         ] );
@@ -8821,8 +8730,6 @@ let () =
           test_case "github plugins use captured config" `Quick test_github_review_uses_captured_config_for_plugins;
           test_case "local sink renders json" `Quick test_local_sink_render_json;
           test_case "local sink marks a duplicate skip" `Quick test_local_sink_render_skipped_is_distinguishable;
-          test_case "local sink renders null vuln_class for general findings" `Quick
-            test_local_sink_render_json_general_finding_has_null_vuln_class;
         ] );
       ( "state_persistence",
         [

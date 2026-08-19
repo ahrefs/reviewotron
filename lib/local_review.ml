@@ -3,16 +3,7 @@ let already_reviewed_message ~repo_key ~change_key =
 
 let is_already_reviewed_message message = CCString.suffix ~suf:" was already reviewed" message
 
-(* The dedup key the state is consulted with.  The user-visible [change_key]
-   (default [diff/<digest of diff text>], or whatever [--change-key] passed)
-   describes the *change*; it says nothing about how the change was reviewed.
-   Two runs over the same diff with different [--config] -- different enabled
-   plugins, different vuln classes -- are different reviews, and keying on the
-   diff alone made the second one short-circuit and review nothing.
-
-   Fold the config digest into the *state* key rather than into [change_key]
-   itself, so the key the user passes and sees in logs stays stable while the
-   cache still distinguishes configs. *)
+(* Keep the user-visible change key stable while deduplicating by review config. *)
 let state_change_key (job : Review_job.t) = Printf.sprintf "%s@%s" job.change_key (Review_job.config_sha256 job)
 
 module Make (AI : Api.Agent_runner) = struct
