@@ -233,10 +233,12 @@ let emit_local_result ~output result =
     | false -> ()
     | true -> exit 1)
   | Error msg ->
-    (match output with
-    | Json -> Printf.printf "%s\n" (Local_sink.render_error msg)
-    | Markdown -> log_local_review_error msg);
-    (match Local_review.is_already_reviewed_message msg with
+    let skipped = Local_review.is_already_reviewed_message msg in
+    (match output, skipped with
+    | Json, true -> Printf.printf "%s\n" (Local_sink.render_skipped msg)
+    | Json, false -> Printf.printf "%s\n" (Local_sink.render_error msg)
+    | Markdown, (true | false) -> log_local_review_error msg);
+    (match skipped with
     | true -> ()
     | false -> exit 1)
 

@@ -12,3 +12,8 @@ val render_json : Review_engine.report -> string
     machine-readable counterpart of {!render_json} for callers that requested
     JSON output. *)
 val render_error : string -> string
+
+(** Render a duplicate-skip as [{ "outcome": "skipped", "error": "<message>" }].
+    Distinct from {!render_error} so a caller can tell "nothing was reviewed"
+    from "a review failed" and from a clean review, without parsing the message. *)
+val render_skipped : string -> string

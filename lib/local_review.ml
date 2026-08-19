@@ -3,19 +3,31 @@ let already_reviewed_message ~repo_key ~change_key =
 
 let is_already_reviewed_message message = CCString.suffix ~suf:" was already reviewed" message
 
+(* The dedup key the state is consulted with.  The user-visible [change_key]
+   (default [diff/<digest of diff text>], or whatever [--change-key] passed)
+   describes the *change*; it says nothing about how the change was reviewed.
+   Two runs over the same diff with different [--config] -- different enabled
+   plugins, different vuln classes -- are different reviews, and keying on the
+   diff alone made the second one short-circuit and review nothing.
+
+   Fold the config digest into the *state* key rather than into [change_key]
+   itself, so the key the user passes and sees in logs stays stable while the
+   cache still distinguishes configs. *)
+let state_change_key (job : Review_job.t) = Printf.sprintf "%s@%s" job.change_key (Review_job.config_sha256 job)
+
 module Make (AI : Api.Agent_runner) = struct
   module Engine = Review_engine.Make (AI)
 
   let run_prepared_report ~ctx (job : Review_job.t) =
     let state = Context.state ctx in
-    match State.is_change_reviewed state ~repo_key:job.repo_key ~change_key:job.change_key with
+    let change_key = state_change_key job in
+    match State.is_change_reviewed state ~repo_key:job.repo_key ~change_key with
     | true -> Lwt.return (Error (already_reviewed_message ~repo_key:job.repo_key ~change_key:job.change_key))
     | false ->
       let%lwt report = Engine.run_review ~ctx ~job in
       (match Review_engine.report_failed report with
       | false ->
-        State.record_change_review state ~repo_key:job.repo_key ~change_key:job.change_key
-          ~review_costs:report.review_costs;
+        State.record_change_review state ~repo_key:job.repo_key ~change_key ~review_costs:report.review_costs;
         State.save state
       | true -> ());
       Lwt.return (Ok report)

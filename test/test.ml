@@ -4310,7 +4310,9 @@ let test_local_review_diff_returns_markdown () =
     (check bool) "summary not leaked" false (CCString.find ~sub:"The changes look generally good" markdown >= 0);
     (check bool) "has inline comments section" true (CCString.find ~sub:"### Inline comments" markdown >= 0);
     (check bool) "has local inline location" true (CCString.find ~sub:"src/main.ml:14" markdown >= 0);
-    (check bool) "records generic change review" true
+    (* Recorded under the config-aware state key, not the bare change_key: the
+       same diff under a different config must not short-circuit. *)
+    (check bool) "does not record the bare change key" false
       (State.is_change_reviewed state ~repo_key:"local/repo" ~change_key:"local-change")
 
 let test_local_review_diff_text_returns_markdown () =
@@ -4343,6 +4345,44 @@ let run_local_failure_report
   Lwt_main.run
     (Local_review_test.review_diff_text_report ~ctx ~root:"." ~repo_key:"local/repo" ~change_key ~title:"Failed review"
        ~description:"Local description" ~diff_text ~config ())
+
+(* The reported bug: the dedup cache keyed on the diff text alone, so the same
+   diff reviewed twice under different --config short-circuited on the second
+   run and returned {"error": "... was already reviewed"} while exiting 0.
+   Sharded runs that vary config per shard silently reviewed nothing after the
+   first shard. Reviewing under config A must not mask a later review under
+   config B, while a genuine repeat of the SAME config still skips. *)
+let test_local_review_dedup_is_config_aware () =
+  Test_helpers.reset_test_state ();
+  let mocks =
+    [
+      "general_scout", "mock_api_responses/scout/leads_two.json";
+      "general_deep_review", "mock_api_responses/claude/review_response.json";
+    ]
+  in
+  Api_local.set_agent_response_map mocks;
+  let state = State.create () in
+  let config_of s = Config_types.config_of_json (Melange_json.of_string s) in
+  let security_on = config_of {|{"review_plugins": {"security": {"enabled": true}}}|} in
+  let security_off = config_of {|{"review_plugins": {"security": {"enabled": false}}}|} in
+  let diff_text = read_file "mock_api_responses/github/pr_42.diff" in
+  let review config =
+    let ctx = Test_helpers.make_test_context ~state () in
+    Lwt_main.run
+      (Local_review_test.review_diff_text_report ~ctx ~root:"." ~repo_key:"local/repo" ~change_key:"shared-key"
+         ~title:"Config aware" ~description:"" ~diff_text ~config ())
+  in
+  let expect_reviewed label = function
+    | Error msg -> fail (Printf.sprintf "%s: expected a review, got %s" label msg)
+    | Ok (_ : Review_engine.report) -> ()
+  in
+  expect_reviewed "first config" (review security_off);
+  (* Same diff, same change_key, different config: must still review. *)
+  expect_reviewed "second config" (review security_on);
+  (* Same diff, same change_key, config already seen: must skip. *)
+  match review security_off with
+  | Ok (_ : Review_engine.report) -> fail "expected a duplicate skip for a repeated config"
+  | Error msg -> (check bool) "repeat of a seen config is skipped" true (Local_review.is_already_reviewed_message msg)
 
 let test_local_review_total_failure_is_retryable () =
   Test_helpers.reset_test_state ();
@@ -4892,6 +4932,24 @@ let test_local_sink_render_json_general_finding_has_null_vuln_class () =
     | Some _ -> fail "expected findings to contain one review finding"
     | None -> fail "missing JSON field findings")
   | _ -> fail "expected a JSON review object"
+
+(* A duplicate-skip must be distinguishable from both a failure and a clean
+   review in the JSON envelope: it carries outcome "skipped", where a genuine
+   failure carries no outcome on render_error and a clean review carries none at
+   all. Consumers should branch on this instead of matching the message text. *)
+let test_local_sink_render_skipped_is_distinguishable () =
+  let skip_message = "change diff/abc in local/repo was already reviewed" in
+  match Yojson.Basic.from_string (Local_sink.render_skipped skip_message) with
+  | `Assoc fields ->
+    (check string) "outcome marks the skip" "skipped" (json_string_field fields "outcome");
+    (check string) "message preserved" skip_message (json_string_field fields "error");
+    (check bool) "message is recognised as a skip" true (Local_review.is_already_reviewed_message skip_message);
+    (* A genuine failure envelope must NOT look like a skip. *)
+    (match Yojson.Basic.from_string (Local_sink.render_error "local review failed: boom") with
+    | `Assoc error_fields ->
+      (check bool) "failure has no skipped outcome" true (Option.is_none (List.assoc_opt "outcome" error_fields))
+    | _ -> fail "expected a JSON error object")
+  | _ -> fail "expected a JSON skip object"
 
 (** {2 State persistence tests} *)
 
@@ -8563,6 +8621,7 @@ let () =
             test_local_review_path_filters_generated_before_limits;
           test_case "review diff returns markdown" `Quick test_local_review_diff_returns_markdown;
           test_case "review generated diff text returns markdown" `Quick test_local_review_diff_text_returns_markdown;
+          test_case "dedup cache is config aware" `Quick test_local_review_dedup_is_config_aware;
           test_case "total failure is retryable" `Quick test_local_review_total_failure_is_retryable;
           test_case "partial failure is retryable" `Quick test_local_review_partial_failure_is_retryable;
           test_case "security stage failures are retryable" `Quick
@@ -8586,6 +8645,7 @@ let () =
           test_case "duplicate local change skipped" `Quick test_local_review_skips_duplicate_change;
           test_case "github plugins use captured config" `Quick test_github_review_uses_captured_config_for_plugins;
           test_case "local sink renders json" `Quick test_local_sink_render_json;
+          test_case "local sink marks a duplicate skip" `Quick test_local_sink_render_skipped_is_distinguishable;
           test_case "local sink renders null vuln_class for general findings" `Quick
             test_local_sink_render_json_general_finding_has_null_vuln_class;
         ] );

@@ -67,3 +67,12 @@ let render_json (report : Review_engine.report) =
 (** Render a failure as the machine-readable JSON envelope callers expect when
     they requested JSON output: [{ "error": "<message>" }]. *)
 let render_error message = Yojson.Basic.pretty_to_string (`Assoc [ "error", `String message ])
+
+(* A duplicate-skip is not a failure and not a clean review: nothing was
+   reviewed.  Rendering it as a bare [{"error": ...}] with exit 0 made a shard
+   that reviewed nothing look exactly like a shard that found nothing -- the
+   same failure class as the LGTM bug in #34.  Carry [outcome: "skipped"]
+   (reusing the field [render_json] already uses for "failure") so a caller can
+   branch on the shape instead of pattern-matching the message text. *)
+let render_skipped message =
+  Yojson.Basic.pretty_to_string (`Assoc [ "outcome", `String "skipped"; "error", `String message ])
