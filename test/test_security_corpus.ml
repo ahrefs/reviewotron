@@ -145,6 +145,12 @@ let corpus_cases : corpus_case list =
       expected = Vulnerable Security_types.Ssrf;
     };
     {
+      name = "path_traversal/send_file_user_path";
+      file_path = "src/handlers/export.py";
+      expected = Vulnerable Security_types.Path_traversal;
+    };
+    { name = "path_traversal/send_file_basename_safe"; file_path = "src/handlers/export.py"; expected = Clean };
+    {
       name = "policy_regression/sudo_systemctl_nopasswd_vulnerable";
       file_path = "modules/sudo/manifests/deploy.pp";
       expected = Vulnerable Security_types.Policy_regression;

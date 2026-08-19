@@ -672,6 +672,127 @@ These are safe patterns that may superficially resemble SSRF but are not exploit
 - Requests routed through a properly configured egress proxy (e.g., Smokescreen, Envoy with egress filtering) that blocks internal destinations at the network level
 - `Dream.redirect` / `res.redirect()` / `redirect()` returning a redirect response to the client (the browser follows the redirect, not the server) — this is an open redirect issue, not SSRF, unless the server subsequently follows the redirect itself|}
 
+let path_traversal_section =
+  {|## Vulnerability Class: Path Traversal and File Exposure
+
+This class covers vulnerabilities where user-controlled input influences a filesystem path, letting an attacker read, write, or overwrite files outside the directory the application intended. The classic payload escapes upward with `../` sequences (`../../etc/passwd`, `..\..\windows\win.ini`), but the class also covers absolute-path injection (the user supplies `/etc/passwd` and the application joins it onto a base directory that is then discarded), symlink following, archive extraction that writes outside the extraction root ("zip slip"), and user-controlled file *writes* that clobber application files. Apply the source→sink→flow→sanitization methodology, and pay special attention to the difference between normalizing a path and confining it: a path can be perfectly normalized and still point outside the intended root.
+
+The decisive question is always **containment**: after all normalization, is the resolved absolute path provably inside the intended base directory? A check that inspects the path *before* resolution is usually inadequate, because `..` segments, symlinks, URL-decoding, and Unicode normalization can all change where the path lands.
+
+### Sources (User-Controlled Path Input)
+
+These are request parameters, stored values, or archive/upload contents that supply a filename, path segment, or full path used to build a filesystem operation.
+
+**OCaml / Dream:**
+- `Dream.param` — path segments used as filenames (e.g., `/files/:name`, `/download/:doc`)
+- `Dream.query` — filenames or paths in query parameters (e.g., `?file=...`, `?path=...`, `?template=...`)
+- `Dream.body` / `Dream.form` — paths in POST bodies (export targets, report names, config paths)
+- `Dream.upload` — the client-supplied filename of a multipart upload, used to choose a destination path
+- `Dream.header` — headers used to derive filenames (rare, but `Content-Disposition` values sometimes are)
+
+**JavaScript / Express:**
+- `req.params.filename` / `req.params[0]` — path segments, especially wildcard routes like `/files/*`
+- `req.query.file` / `req.query.path` / `req.query.template` — filenames in query strings
+- `req.body.filename` / `req.body.exportPath` — paths in request bodies
+- `req.file.originalname` / `req.files[].originalname` — client-supplied upload filenames (multer); the client fully controls this string
+- Entry names from archive libraries (`yauzl`, `unzipper`, `tar`) when extracting user-uploaded archives
+
+**Python / Django / Flask:**
+- `request.args['file']` / `request.args['name']` / `request.args['path']` — Flask query parameters
+- `request.GET['file']` / `request.POST['path']` — Django parameters
+- `request.files['upload'].filename` — client-supplied upload filename (Flask/Werkzeug); attacker-controlled
+- Flask/Django URL converters that capture path-like values, especially `<path:...>` which deliberately permits `/`
+- `zipfile.ZipFile.namelist()` / `tarfile.TarFile.getnames()` entries from a user-supplied archive
+- `request.data` / `request.json` fields naming a file, template, or output location
+
+**Cross-language second-order sources:**
+- Filenames stored in a database at upload time and later used to build a read or delete path
+- Paths inside user-supplied manifests, config files, or job payloads consumed by a worker
+- Archive member names during extraction (zip slip / tar slip) — the archive itself is the attacker's input
+- Filenames derived from user-controlled metadata such as document titles or export names
+- Symlinks inside a user-supplied archive or a user-writable directory, resolved later by an unrelated read
+
+### Sinks (Filesystem Operations)
+
+**OCaml:**
+- `open_in` / `open_in_bin` / `open_out` / `open_out_bin` — stdlib file open on a user-influenced path
+- `Stdlib.really_input_string` after an attacker-influenced `open_in` — the open is the sink
+- `Filename.concat` / `Filename.dirname` / `Filename.basename` — path construction; `Filename.concat base user_input` does NOT confine, because an absolute `user_input` or `..` segments escape `base`
+- `Unix.openfile` / `Unix.unlink` / `Unix.rename` / `Unix.stat` / `Unix.lstat` — direct syscall wrappers
+- `Lwt_io.open_file` / `Lwt_io.with_file` / `Lwt_unix.openfile` — Lwt file I/O
+- `Dream.from_filesystem` / `Dream.static` — static file serving; safe only when the path argument is confined (see False Positive Patterns)
+- `Bos.OS.File.read` / `Bos.OS.File.write` / `Bos.OS.Dir.create` — Bos filesystem operations
+
+**JavaScript / Node.js:**
+- `fs.readFile` / `fs.readFileSync` / `fs.createReadStream` — file reads on a user-influenced path
+- `fs.writeFile` / `fs.writeFileSync` / `fs.createWriteStream` / `fs.appendFile` — file writes (overwrite risk, not just disclosure)
+- `fs.unlink` / `fs.rm` / `fs.rmdir` / `fs.rename` — destructive operations
+- `path.join(base, userInput)` / `path.resolve(base, userInput)` — path construction; `path.join` does NOT confine (`..` escapes), and `path.resolve` treats an absolute `userInput` as the whole path, discarding `base` entirely
+- `res.sendFile(userPath)` / `res.download(userPath)` — Express file responses; `sendFile` confines only when a `root` option is supplied
+- `express.static(dir)` — safe by itself; unsafe when combined with custom path handling before it
+- `require(userInput)` / dynamic `import(userInput)` — path-controlled module load (code execution, not just disclosure)
+
+**Python:**
+- `open(path)` — the canonical sink for read and write modes alike
+- `os.path.join(base, user_input)` — does NOT confine: an absolute `user_input` discards `base`, and `..` segments escape it
+- `os.remove` / `os.unlink` / `os.rename` / `os.replace` / `shutil.move` / `shutil.rmtree` — destructive operations
+- `shutil.copy` / `shutil.copyfile` — copy with a user-influenced source or destination
+- `send_file(path)` / `send_from_directory(dir, filename)` (Flask) — `send_file` with a user-controlled path is a direct sink; `send_from_directory` is safer but historically had bypasses on some versions and still requires a trusted `dir`
+- `django.http.FileResponse(open(path, 'rb'))` — Django file response
+- `pathlib.Path(base) / user_input` — the `/` operator does NOT confine; an absolute `user_input` replaces the base
+- `zipfile.ZipFile.extract` / `extractall` / `tarfile.TarFile.extract` / `extractall` — extraction sinks; without member validation these write anywhere the process can (Python 3.12+ offers `filter='data'`)
+- `os.makedirs(path)` — directory creation at a user-influenced location
+
+**Cross-language sink patterns:**
+- Static file / document download endpoints that accept a filename or document id
+- Template or partial loading where the template name is user-influenced (can also become SSTI)
+- Log or report writers that build the output filename from user input
+- Upload handlers that store a file under its client-supplied name
+- Archive extraction of user-uploaded zip/tar files
+- Backup, import, and export features that accept a path
+- Image/asset resizers that read a source path derived from a request parameter
+
+### Sanitization Assessment
+
+**Adequate — these patterns prevent path traversal effectively:**
+- Resolve-then-verify containment: the path is fully resolved to an absolute, symlink-free form (`realpath`, `Unix.realpath`, `fs.realpathSync`, `os.path.realpath`, `Path.resolve`) and then checked to be inside the intended base directory using a **path-segment-aware** comparison (i.e., the resolved path equals the base or starts with base + separator), with the check performed after resolution and before the operation
+- Indirect reference: the user supplies an opaque id, and the application looks the real path up in a database, allowlist, or fixed mapping — the user's string never reaches the filesystem
+- Strict allowlist of permitted filenames or extensions, matched exactly against a fixed set
+- Basename-only extraction combined with a fixed directory: taking `os.path.basename` / `Filename.basename` / `path.basename` (which strips every directory component) and joining it onto a trusted base, so no user-supplied separator survives
+- A strict character allowlist that rejects (rather than strips) anything outside e.g. `[A-Za-z0-9._-]`, with a separate explicit rejection of `..` as a whole component
+- Generated storage names: uploads are stored under a server-generated name (UUID, content hash) and the client filename is kept only as display metadata, never as a path
+- Serving through an API that confines by construction: `res.sendFile(name, { root: safeDir })`, `Dream.from_filesystem safe_dir`, or `send_from_directory(trusted_dir, name)` where `trusted_dir` is not user-influenced
+- Archive extraction that validates each member's resolved destination is inside the extraction root before writing, and rejects absolute members, `..` members, and symlink/hardlink members (or Python 3.12+ `extractall(filter='data')`)
+- OS-level confinement that the reviewed code genuinely runs under: `chroot`, a mount namespace, or `openat` with `RESOLVE_BENEATH`
+
+**Inadequate — these patterns have traversal weaknesses:**
+- Single-pass stripping of `../`: replacing `"../"` with `""` once is bypassed by `....//`, `..././`, or nesting that reassembles a traversal after the replacement
+- Blocklisting the literal `".."` string without normalizing first: bypassed by URL encoding (`%2e%2e%2f`), double encoding (`%252e%252e%252f`), overlong UTF-8, backslashes on Windows (`..\`), or mixed separators
+- Checking the path *before* normalization or resolution, then operating on the raw value — the check and the operation see different paths (time-of-check/time-of-use)
+- `startsWith` / prefix comparison on strings without a separator boundary: base `/srv/data` also "contains" `/srv/data-evil`, so a sibling directory passes the check
+- `path.join(base, user)` / `os.path.join(base, user)` / `Filename.concat base user` treated as confinement — it is only concatenation; `..` escapes and (for `join`/`resolve` in Node and Python) an absolute `user` discards `base` entirely
+- Normalizing with `path.normalize` / `os.path.normpath` but never comparing the result against the base — normalization resolves `..` textually but does not confine, and `normpath` does not resolve symlinks
+- Validating the filename but appending a user-controlled extension or suffix, or vice versa
+- Rejecting `..` but permitting an absolute path, which needs no `..` to escape
+- Ignoring symlinks: the path contains no `..` and sits inside the base, but a symlink within the base points outside it (`realpath`/`lstat` checks are required, and matter most where users can create files in the base)
+- Relying on the web framework's URL normalization to stop traversal: decoding and normalization differ between the proxy, the framework router, and the filesystem call
+- Null-byte or control-character truncation in FFI or older runtimes, where `safe.txt\0../../etc/passwd` truncates at the null byte in a C call
+- Archive extraction that checks member names as strings but not the resolved destination, or that trusts member type (symlink members can redirect later writes)
+
+### Common False Positive Patterns — DO NOT REPORT
+
+These are safe patterns that may superficially resemble path traversal but are not exploitable:
+- Paths built entirely from application constants, environment variables, or configuration set at deployment time — no runtime user control means no traversal
+- `path.join` / `os.path.join` / `Filename.concat` on values that are all server-controlled (a config directory plus a hardcoded filename)
+- A user-influenced value that has already been reduced to a bare basename (`basename` applied, or a strict `[A-Za-z0-9._-]` allowlist enforced with rejection) before it reaches the join
+- Indirect lookups where the user-supplied id is resolved through a database or fixed mapping to a server-controlled path
+- Static file middleware used as documented with a fixed root and no custom path preprocessing (`express.static(dir)`, `Dream.from_filesystem safe_dir`, `send_from_directory(trusted_dir, name)` on a maintained version)
+- Uploads stored under a server-generated name where the client filename is retained only as display metadata
+- Build scripts, test fixtures, migrations, and developer tooling that read local paths — not attacker-reachable in production, unless the reviewed change puts them on a request path
+- Reads confined to a directory whose entire contents are already public (e.g. a static asset directory) where the resolved path is verified inside it and the files carry no secrets — disclosure of already-public data is not a finding
+- Paths derived from an authenticated administrator's input where the application's threat model explicitly trusts that role, and the change does not widen who can reach it
+- Temporary files created with a library that generates its own unpredictable name (`Filename.temp_file`, `tempfile.NamedTemporaryFile`, `fs.mkdtemp`) and never joins user input onto it|}
+
 let policy_regression_section =
   {|## Vulnerability Class: Security Policy Regression
 
@@ -756,6 +877,7 @@ let vuln_class_section vuln_class ~language_hints =
     | Security_types.Authn -> authn_section
     | Security_types.Authz -> authz_section
     | Security_types.Ssrf -> ssrf_section
+    | Security_types.Path_traversal -> path_traversal_section
     | Security_types.Policy_regression -> policy_regression_section
   in
   base ^ language_note
@@ -801,6 +923,9 @@ let analysis_question = function
   | Ssrf ->
     "Can any flagged externally controlled URL, host, redirect, webhook, or stored URL reach a server-side outbound \
      request without adequate destination controls?"
+  | Path_traversal ->
+    "Can any flagged user-controlled value influence a filesystem path so that the resolved location escapes the \
+     intended base directory, exposing or overwriting an unintended file?"
   | Policy_regression ->
     "Does the flagged policy or configuration change concretely broaden privilege or weaken a named security control?"
 

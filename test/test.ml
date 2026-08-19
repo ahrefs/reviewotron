@@ -617,7 +617,11 @@ let test_config_review_plugins_defaults () =
   (check bool) "general enabled" true config.review_plugins.general.enabled;
   (check bool) "general prompt override" true (Option.is_none config.review_plugins.general.system_prompt_override);
   (check bool) "security disabled by default" false config.review_plugins.security.enabled;
-  (check int) "vuln_classes count" 7 (List.length config.review_plugins.security.vuln_classes);
+  (check int) "vuln_classes count" 8 (List.length config.review_plugins.security.vuln_classes);
+  (check bool) "path_traversal enabled by default" true
+    (List.exists
+       (Security_review_plugin.vuln_class_equal Config_types.Path_traversal)
+       config.review_plugins.security.vuln_classes);
   (check bool) "policy_regression enabled by default" true
     (List.exists
        (Security_review_plugin.vuln_class_equal Config_types.Policy_regression)
@@ -1090,7 +1094,7 @@ let test_dedup_preserves_plugin_provenance () =
     (check bool) "vuln_class preserved" true
       (match sourced.vuln_class with
       | Some Injection -> true
-      | Some (Xss | Command_injection | Authn | Authz | Ssrf | Policy_regression) | None -> false)
+      | Some (Xss | Command_injection | Authn | Authz | Ssrf | Path_traversal | Policy_regression) | None -> false)
   | _ -> fail "expected one sourced finding"
 
 let test_dedup_same_line_same_source_higher_severity_wins () =
@@ -2767,6 +2771,41 @@ diff --git a/src/client.py b/src/client.py
   (check bool) "control weakening signal" true
     (signal_has ~hint:Security_types.Policy_regression ~category:Security_types.Changed_security_control
        ~path:"src/client.py" ~line:40 ~pattern_sub:"security control weakening" signals)
+
+(* The path-traversal detector already fired before this class existed, but with
+   vuln_class_hint = None -- so no analysis agent could ever open for it and a
+   traversal surfaced only if it rode along a command-injection sink. These
+   assert the hint now routes to Path_traversal, including the Flask
+   file-serving sinks the join-only matcher used to miss entirely. *)
+let test_security_diff_signal_path_traversal_hint () =
+  let diff_text =
+    {|diff --git a/src/handlers/export.py b/src/handlers/export.py
+--- a/src/handlers/export.py
++++ b/src/handlers/export.py
+@@ -0,0 +1,1 @@
++    path = os.path.join(REPORT_DIR, request.args["name"])
+diff --git a/src/handlers/download.py b/src/handlers/download.py
+--- a/src/handlers/download.py
++++ b/src/handlers/download.py
+@@ -0,0 +10,1 @@
++    return send_file(request.args["name"])
+diff --git a/src/handlers/unpack.py b/src/handlers/unpack.py
+--- a/src/handlers/unpack.py
++++ b/src/handlers/unpack.py
+@@ -0,0 +20,1 @@
++    archive.extractall(dest)
+|}
+  in
+  let signals = Security_diff_signal.scan (Diff_parser.parse diff_text) in
+  (check bool) "os.path.join routes to path traversal" true
+    (signal_has ~hint:Security_types.Path_traversal ~category:Security_types.Dangerous_api
+       ~path:"src/handlers/export.py" ~line:1 ~pattern_sub:"file path" signals);
+  (check bool) "send_file routes to path traversal" true
+    (signal_has ~hint:Security_types.Path_traversal ~category:Security_types.Dangerous_api
+       ~path:"src/handlers/download.py" ~line:10 ~pattern_sub:"file path" signals);
+  (check bool) "archive extraction routes to path traversal" true
+    (signal_has ~hint:Security_types.Path_traversal ~category:Security_types.Dangerous_api
+       ~path:"src/handlers/unpack.py" ~line:20 ~pattern_sub:"file path" signals)
 
 let test_security_diff_signal_multiline_policy_wildcards () =
   let diff_text =
@@ -8427,6 +8466,7 @@ let () =
           test_case "path, controls, and stateful signals" `Quick test_security_diff_signal_path_control_and_stateful;
           test_case "sensitive file matching" `Quick test_security_diff_signal_sensitive_files;
           test_case "policy regression patterns" `Quick test_security_diff_signal_policy_regression_patterns;
+          test_case "path traversal hint" `Quick test_security_diff_signal_path_traversal_hint;
           test_case "multiline policy wildcards" `Quick test_security_diff_signal_multiline_policy_wildcards;
           test_case "empty safe diff" `Quick test_security_diff_signal_empty_for_safe_diff;
         ] );

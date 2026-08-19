@@ -441,7 +441,7 @@ version control. Webhook/server commands do not read the user-global files.
     },
     "security": {
       "enabled": false,
-      "vuln_classes": ["injection", "xss", "command_injection", "authn", "authz", "ssrf", "policy_regression"],
+      "vuln_classes": ["injection", "xss", "command_injection", "authn", "authz", "ssrf", "path_traversal", "policy_regression"],
       "always_analyze_vuln_classes": [],
       "triage_model_tier": "fast",
       "analysis_model_tier": "standard",
@@ -501,7 +501,7 @@ generated-file header markers. Broad folders such as `generated/`, `dist/`,
 | Field | Default | Description |
 |-------|---------|-------------|
 | `enabled` | `false` | Enable/disable security analysis. |
-| `vuln_classes` | All 7 classes | Which vulnerability types to scan for. |
+| `vuln_classes` | All 8 classes | Which vulnerability types to scan for. |
 | `always_analyze_vuln_classes` | `[]` | Vulnerability classes that bypass `confidence_threshold`. Classes listed here are implicitly enabled even if absent from `vuln_classes`. Use sparingly for high-risk repos or temporarily while tuning recall. |
 | `triage_model_tier` | `"fast"` | Model tier for the triage agent. |
 | `analysis_model_tier` | `"standard"` | Model tier for per-class analysis agents. |
@@ -530,6 +530,7 @@ generated-file header markers. Broad folders such as `generated/`, `dist/`,
 | `"authn"` | Authentication bypass, weak token validation, missing expiry |
 | `"authz"` | Authorization flaws, IDOR, missing permission checks |
 | `"ssrf"` | Server-side request forgery via user-controlled URLs |
+| `"path_traversal"` | Path traversal and file exposure: user-controlled paths reaching file reads, writes, or downloads, plus archive extraction that escapes its root |
 | `"policy_regression"` | Security policy/control regressions such as broad sudo, CI/cloud/RBAC permission expansion, privileged Kubernetes workload settings, and disabled TLS/auth/CSRF controls |
 
 ### Skip Behavior
@@ -1173,7 +1174,7 @@ The security pipeline performs **static analysis on the diff and referenced file
 
 ### Security Scope
 
-- 7 vulnerability classes are supported. Other classes (e.g., cryptographic weaknesses, deserialization, path traversal) are not covered.
+- 8 vulnerability classes are supported. Other classes (e.g., cryptographic weaknesses, deserialization) are not covered.
 - The triage agent may miss security signals in unusual code patterns. Bumping `triage_model_tier` to `"standard"` (Sonnet) can improve recall at higher cost.
 - AuthN/AuthZ/SSRF analysis from diff context alone is inherently limited. These classes produce the most false negatives.
 

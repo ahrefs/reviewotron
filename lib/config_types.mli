@@ -10,6 +10,7 @@ type vuln_class =
   | Authn
   | Authz
   | Ssrf
+  | Path_traversal
   | Policy_regression
 
 val vuln_class_to_string : vuln_class -> string

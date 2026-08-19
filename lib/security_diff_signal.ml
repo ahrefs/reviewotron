@@ -85,6 +85,15 @@ let has_path_join_shape s =
       "sendfile";
       "readfile";
       "writefile";
+      (* Python/Flask file-serving and extraction sinks: the join-only list
+         above never fired on the most direct traversal shapes. *)
+      "send_file";
+      "send_from_directory";
+      "os.path.realpath";
+      "pathlib.path";
+      "extractall";
+      "shutil.copy";
+      "shutil.move";
     ]
     s
 
@@ -285,7 +294,7 @@ let dangerous_api_rules =
     };
     {
       category = ST.Dangerous_api;
-      vuln_class_hint = None;
+      vuln_class_hint = Some ST.Path_traversal;
       pattern = "file path join/read/write";
       rationale = "Changed line builds or consumes filesystem paths; review path traversal and file exposure risk.";
       matches = has_path_join_shape;
