@@ -3222,9 +3222,9 @@ let test_analysis_agent_shared_methodology () =
     (Devkit.Stre.exists methodology "Render the sink's actual input")
 
 let test_analysis_agent_vuln_class_section_all_classes () =
-  let classes : Security_types.vuln_class list =
-    [ Injection; Xss; Command_injection; Authn; Authz; Ssrf; Policy_regression ]
-  in
+  (* Derived, not spelled out: a hardcoded list here silently stops covering a
+     newly added class -- the section could return "" and this would still pass. *)
+  let classes : Security_types.vuln_class list = Config_types.all_vuln_classes in
   List.iter
     (fun vc ->
       let section = Analysis_agent.vuln_class_section vc ~language_hints:[] in

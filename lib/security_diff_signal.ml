@@ -89,7 +89,6 @@ let has_path_join_shape s =
          above never fired on the most direct traversal shapes. *)
       "send_file";
       "send_from_directory";
-      "os.path.realpath";
       "pathlib.path";
       "extractall";
       "shutil.copy";
