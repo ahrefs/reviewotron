@@ -106,10 +106,14 @@ publishing, then re-running after each change.
 
 ### Key points
 
-- **No files required.** The Anthropic API key is read from `--anthropic-api-key`,
-  else the `ANTHROPIC_API_KEY` environment variable, else a `--secrets` file if
-  you choose to provide one (in that order). A `secrets.json` is *not* read
-  unless you pass `--secrets` explicitly.
+- **No files required.** The LLM API key is read from `--openrouter-api-key` /
+  `--anthropic-api-key`, else the `OPENROUTER_API_KEY` / `ANTHROPIC_API_KEY`
+  environment variables, else a `--secrets` file if you choose to provide one (in
+  that order). An OpenRouter key is preferred when both are available. A
+  `secrets.json` is *not* read unless you pass `--secrets` explicitly.
+- **Redirectable endpoint.** On an OpenRouter key, `OPENROUTER_BASE_URL` points
+  the provider at an OpenAI-compatible proxy instead of `openrouter.ai` — see
+  [OpenRouter Base URL Override](#openrouter-base-url-override).
 - **Configurable in layers.** Local CLI reviews merge built-in defaults, the
   user-global config, `.reviewotron.json`, `.reviewotron.local.json`, and
   `--config` in that order. Explicit behavior flags such as `--no-security`
@@ -149,7 +153,7 @@ go to stderr; only the JSON object is written to stdout.
 ### Examples
 
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-...
+export OPENROUTER_API_KEY=sk-or-v1-...   # or ANTHROPIC_API_KEY=sk-ant-...
 reviewotron . --output json
 ```
 
@@ -276,10 +280,13 @@ Create a `secrets.json` file (see `secrets.json.example`):
       "gh_hook_secret": "your-webhook-secret"
     }
   ],
-  "anthropic_api_key": "sk-ant-xxxxxxxxxxxx",
+  "openrouter_api_key": "sk-or-v1-xxxxxxxxxxxx",
   "slack_access_token": "xoxb-xxxxxxxxxxxx"
 }
 ```
+
+Either LLM key works; `openrouter_api_key` is used when both are present. Swap in
+`"anthropic_api_key": "sk-ant-xxxxxxxxxxxx"` to call the Anthropic API directly.
 
 **Fields:**
 
@@ -290,14 +297,22 @@ Create a `secrets.json` file (see `secrets.json.example`):
 | `repos[].gh_token` | Yes* | GitHub personal access token with `repo` scope |
 | `repos[].gh_hook_secret` | No | Webhook secret for HMAC signature validation |
 | `repos[].auth` | Yes* | Alternative to `gh_token` — GitHub App installation auth (see below) |
-| `anthropic_api_key` | Yes | Anthropic API key for Claude |
+| `openrouter_api_key` | Yes† | OpenRouter API key; preferred when both keys are set |
+| `anthropic_api_key` | Yes† | Anthropic API key for Claude, used when no OpenRouter key is present |
 | `slack_access_token` | No | Slack bot token for posting messages |
 
 *Either `gh_token` or `auth` must be set per repo. Using `gh_token` is the simpler option.
 
-For local-only `review-diff` usage, `repos` may be an empty list as long as the
-secrets file still provides `anthropic_api_key`. The webhook server still
-requires at least one configured repo by default.
+†At least one LLM key must be resolvable, from either of these fields or the
+`OPENROUTER_API_KEY` / `ANTHROPIC_API_KEY` environment variables. Provider
+selection is credential-driven: an OpenRouter key wins when both are available,
+otherwise the Anthropic key is used. Blank values count as absent. To route
+OpenRouter traffic through a proxy, see
+[OpenRouter Base URL Override](#openrouter-base-url-override).
+
+For local-only `review-diff` usage, `repos` may be an empty list as long as one
+LLM key is resolvable. The webhook server still requires at least one configured
+repo by default.
 
 #### GitHub App Installation Auth
 
@@ -323,6 +338,34 @@ Instead of a personal access token, you can authenticate as a GitHub App install
 ```
 
 App installation tokens are automatically refreshed and cached (55-minute TTL).
+
+#### OpenRouter Base URL Override
+
+When an OpenRouter API key is in use, the endpoint defaults to
+`https://openrouter.ai/api/v1`. Set `OPENROUTER_BASE_URL` to route OpenRouter
+traffic through an OpenAI-compatible proxy instead — for example on a host whose
+egress is firewalled off from `openrouter.ai`, where a local proxy holds the real
+key and substitutes it server-side:
+
+```bash
+export OPENROUTER_API_KEY=sk-or-v1-proxy-placeholder-key-replaced-by-llm-proxy
+export OPENROUTER_BASE_URL=http://127.0.0.1:18080/api/v1
+```
+
+- **Environment variable only.** There is deliberately no CLI flag, secrets-file
+  field, or config-schema field: this is deployment configuration, not review
+  configuration.
+- **No trailing slash.** Request paths are appended directly to the base URL, so
+  the value should end at the API version (`.../api/v1`, not `.../api/v1/`).
+  Trailing slashes are stripped defensively, but do not rely on it.
+- Blank or whitespace-only is treated exactly as unset, leaving the default
+  endpoint in place.
+- Plain `http://` is supported, for proxies on loopback.
+- The key is still required and still only checked for non-emptiness, so a
+  placeholder value is fine when the proxy supplies the real key.
+- Affects the OpenRouter path only. The direct Anthropic path
+  (`ANTHROPIC_API_KEY`) is unchanged, as is the cross-lab fallback routing,
+  which follows whatever base URL is in effect.
 
 ### GitHub Webhook
 
@@ -878,7 +921,7 @@ reviewotron review-diff [OPTIONS]
 
 Runs the same core review engine against a local unified diff and prints the final review to stdout. Logs go to stderr unless `--logfile` is set. The diff can be a file (`--diff FILE`), stdin (`--diff -`), a selected commit (`--commit COMMIT`), or — when `--diff` and `--commit` are omitted — a Git diff generated from the merge-base of `HEAD` and the inferred base ref, including staged, unstaged, and non-ignored untracked changes. Commit mode reviews only the selected commit against its first parent and does not inspect the worktree. This path does not fetch or publish through GitHub; local file-content expansion uses `--root`.
 
-The Anthropic API key is resolved from `--anthropic-api-key`, then the `ANTHROPIC_API_KEY` environment variable, then a `--secrets` file if one is given — no secrets file is required. Configuration uses the layered local CLI precedence described in [Configuration](#configuration). See [Agent Helper Mode](#agent-helper-mode).
+The LLM API key is resolved from `--openrouter-api-key` / `--anthropic-api-key`, then the `OPENROUTER_API_KEY` / `ANTHROPIC_API_KEY` environment variables, then a `--secrets` file if one is given — no secrets file is required. An OpenRouter key is preferred when both are available; set `OPENROUTER_BASE_URL` to route it through a proxy (see [OpenRouter Base URL Override](#openrouter-base-url-override)). Configuration uses the layered local CLI precedence described in [Configuration](#configuration). See [Agent Helper Mode](#agent-helper-mode).
 
 | Option | Default | Description |
 |--------|---------|-------------|
@@ -892,10 +935,11 @@ The Anthropic API key is resolved from `--anthropic-api-key`, then the `ANTHROPI
 | `--description-file` | (none) | Optional file used as the review description |
 | `--config-filename` | `.reviewotron.json` | Config file loaded from `--root`, or absolute config path |
 | `--config` | (none) | Inline config JSON; overrides any config file |
+| `--openrouter-api-key` | (none) | OpenRouter API key (preferred when set); overrides `$OPENROUTER_API_KEY` and any secrets file |
 | `--anthropic-api-key` | (none) | Anthropic API key; overrides `$ANTHROPIC_API_KEY` and any secrets file |
 | `--no-security` | (off) | Disable the security pipeline (on by default in local mode) |
 | `--output` | `markdown` | Output format: `markdown` or `json` |
-| `--secrets` | (none) | Optional secrets file; the API key is taken from `--anthropic-api-key`, then `$ANTHROPIC_API_KEY`, then this file |
+| `--secrets` | (none) | Optional secrets file; the API key is taken from `--openrouter-api-key` / `--anthropic-api-key`, then `$OPENROUTER_API_KEY` / `$ANTHROPIC_API_KEY`, then this file |
 | `--state` | (none — in-memory) | Optional state file updated after a successful review |
 
 JSON output is an object with a review-level summary and a machine-readable findings list:
@@ -936,6 +980,7 @@ binary/oversized files are skipped (see [Agent Helper Mode](#agent-helper-mode))
 |--------|---------|-------------|
 | `PATH` | (required) | File or directory to review |
 | `--config` | (none) | Inline config JSON; overrides any config file |
+| `--openrouter-api-key` | (none) | OpenRouter API key (preferred when set); overrides `$OPENROUTER_API_KEY` and any secrets file |
 | `--anthropic-api-key` | (none) | Anthropic API key; overrides `$ANTHROPIC_API_KEY` and any secrets file |
 | `--no-security` | (off) | Disable the security pipeline (on by default in local mode) |
 | `--output` | `markdown` | Output format: `markdown` or `json` |
@@ -1173,7 +1218,7 @@ Multiple reviews can run concurrently (events are processed via `Lwt.async`). Th
 
 - `"no auth configured for repo ..."` — the repo URL in the webhook doesn't match any entry in `secrets.json`
 - `"failed to fetch config"` — GitHub API error fetching `.reviewotron.json` (check token permissions)
-- `"triage agent failed"` / `"analysis agent failed"` — Claude API error (check `anthropic_api_key`, rate limits)
+- `"triage agent failed"` / `"analysis agent failed"` — provider API error (check the resolved LLM key, rate limits, and `OPENROUTER_BASE_URL` if a proxy is configured)
 - `"failed to post review"` — GitHub API error posting the review (check token scopes: needs `repo` or `pull_request:write`)
 
 ### Security findings not appearing
