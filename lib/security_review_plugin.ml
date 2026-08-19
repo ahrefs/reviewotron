@@ -347,6 +347,7 @@ let max_candidates_per_validator_call = 4
     missing", never to "everything is lost". *)
 type validator_join = {
   matched : Security_types.validated_finding list;
+  confirmed_before_proof_enforcement : int;
   missing : (int * Security_types.candidate_finding) list;
   unknown_ids : int list;
   duplicate_ids : int list;
@@ -396,8 +397,20 @@ let validator_results_for_candidates ~candidate_findings (output : Security_type
            | false -> [ index, candidate ])
          candidate_findings)
   in
+  let joined = List.rev matched in
   {
-    matched = enforce_validator_proofs (List.rev matched);
+    matched = enforce_validator_proofs joined;
+    (* Counted before enforcement so the downgrade tally compares like with
+       like: results dropped as unknown or duplicate never reach [matched] and
+       must not be misreported as proof failures. *)
+    confirmed_before_proof_enforcement =
+      List.length
+        (List.filter
+           (fun (vf : Security_types.validated_finding) ->
+             match vf.verdict with
+             | Confirmed -> true
+             | Rejected -> false)
+           joined);
     missing;
     unknown_ids = List.rev unknown_ids;
     duplicate_ids = List.rev duplicate_ids;
@@ -764,7 +777,7 @@ module Make (AI : Api.Agent_runner) = struct
          | missing ->
            log#warn "%svalidator (%s): %d of %d candidate(s) received no verdict" log_prefix attempt_label
              (List.length missing) (List.length candidates));
-         let downgraded = count_confirmed output.results - count_confirmed join.matched in
+         let downgraded = join.confirmed_before_proof_enforcement - count_confirmed join.matched in
          (match downgraded > 0 with
          | true ->
            log#warn "%svalidator (%s): downgraded %d confirmed result(s) without concrete proof" log_prefix

@@ -56,6 +56,11 @@ val proof_is_concrete : Security_types.exploitation_proof -> bool
 type validator_join = {
   matched : Security_types.validated_finding list;
     (** Proof-enforced results, each re-attached to its ORIGINAL candidate. *)
+  confirmed_before_proof_enforcement : int;
+    (** Confirmed results that joined to a candidate, counted before proof
+        enforcement ran. Subtracting the confirmed count of [matched] from this
+        yields the number downgraded for lacking a concrete proof, without
+        counting results dropped as unknown or duplicate. *)
   missing : (int * Security_types.candidate_finding) list;
     (** Candidates that received no verdict, with their call-local id. *)
   unknown_ids : int list;  (** Ids in the response matching no candidate. *)
