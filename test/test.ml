@@ -1590,6 +1590,58 @@ let test_candidate_structurally_valid_rejects_blank_flow_description () =
   (check bool) "blank flow description is invalid" false
     (Security_review_plugin.candidate_is_structurally_valid candidate)
 
+let grounding_candidate ?(vuln_class = Config_types.Injection) ?(source_path = "src/main.ml") ?(source_line = 10)
+  ?(sink_path = "src/main.ml") ?(sink_line = 14) ?(flow = []) () =
+  let candidate = mk_candidate ~vuln_class ~sink_path ~sink_line ~flow () in
+  { candidate with source = { candidate.source with path = source_path; line = source_line } }
+
+let test_candidate_grounding_rejects_placeholder_at_zero_fetch () =
+  let candidate =
+    grounding_candidate ~source_path:"placeholder" ~source_line:0 ~sink_path:"placeholder" ~sink_line:0 ()
+  in
+  (check bool) "placeholder candidate is ungrounded" false
+    (Security_review_plugin.candidate_is_grounded ~diff:parsed_anchor_diff ~tool_results_count:0 ~vuln_class:Injection
+       candidate)
+
+let test_candidate_grounding_accepts_in_hunk_candidate () =
+  let candidate = grounding_candidate ~flow:[ mk_flow_step ~path:"src/main.ml" ~line:12 "value reaches sink" ] () in
+  (check bool) "in-hunk candidate is grounded" true
+    (Security_review_plugin.candidate_is_grounded ~diff:parsed_anchor_diff ~tool_results_count:0 ~vuln_class:Injection
+       candidate)
+
+let test_candidate_grounding_rejects_off_diff_path_at_zero_fetch () =
+  let candidate = grounding_candidate ~source_path:"src/missing.ml" ~sink_path:"src/missing.ml" () in
+  (check bool) "off-diff path is ungrounded without fetches" false
+    (Security_review_plugin.candidate_is_grounded ~diff:parsed_anchor_diff ~tool_results_count:0 ~vuln_class:Injection
+       candidate)
+
+let test_candidate_grounding_rejects_line_outside_hunks () =
+  let candidate = grounding_candidate ~source_line:30 ~sink_line:30 () in
+  (check bool) "line outside every hunk is ungrounded" false
+    (Security_review_plugin.candidate_is_grounded ~diff:parsed_anchor_diff ~tool_results_count:0 ~vuln_class:Injection
+       candidate)
+
+let test_candidate_grounding_rejects_class_mismatch () =
+  let candidate = grounding_candidate ~vuln_class:Xss () in
+  (check bool) "class mismatch is ungrounded" false
+    (Security_review_plugin.candidate_is_grounded ~diff:parsed_anchor_diff ~tool_results_count:0 ~vuln_class:Injection
+       candidate)
+
+let test_candidate_grounding_bypasses_positive_fetches () =
+  let candidate = grounding_candidate ~source_path:"src/missing.ml" ~sink_path:"src/missing.ml" () in
+  (check bool) "off-diff path is accepted after a fetch" true
+    (Security_review_plugin.candidate_is_grounded ~diff:parsed_anchor_diff ~tool_results_count:1 ~vuln_class:Injection
+       candidate)
+
+let test_candidate_grounding_rejects_deleted_line_at_zero_fetch () =
+  (* Known fail-soft limitation: deletion lines render [annotated_blank] and
+     do not advance [new_line], so a deleted-line candidate cannot resolve to a
+     right-side hunk (plan §5.2, [diff_parser.ml:293]). *)
+  let candidate = grounding_candidate ~source_path:"src/gone.ml" ~sink_path:"src/gone.ml" () in
+  (check bool) "deleted line is ungrounded" false
+    (Security_review_plugin.candidate_is_grounded ~diff:parsed_deletion_only_diff ~tool_results_count:0
+       ~vuln_class:Injection candidate)
+
 (** {2 Review types tests} *)
 
 let test_review_output_roundtrip () =
@@ -8490,6 +8542,16 @@ let () =
             test_candidate_structurally_valid_rejects_blank_finding_description;
           test_case "rejects blank flow description" `Quick
             test_candidate_structurally_valid_rejects_blank_flow_description;
+          test_case "rejects placeholder without fetches" `Quick
+            test_candidate_grounding_rejects_placeholder_at_zero_fetch;
+          test_case "accepts in-hunk evidence without fetches" `Quick test_candidate_grounding_accepts_in_hunk_candidate;
+          test_case "rejects off-diff path without fetches" `Quick
+            test_candidate_grounding_rejects_off_diff_path_at_zero_fetch;
+          test_case "rejects line outside hunks" `Quick test_candidate_grounding_rejects_line_outside_hunks;
+          test_case "rejects class mismatch" `Quick test_candidate_grounding_rejects_class_mismatch;
+          test_case "bypasses grounding after fetch" `Quick test_candidate_grounding_bypasses_positive_fetches;
+          test_case "rejects deleted line without fetches" `Quick
+            test_candidate_grounding_rejects_deleted_line_at_zero_fetch;
         ] );
       ( "security_anchor_snap",
         [

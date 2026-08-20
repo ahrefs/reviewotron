@@ -63,6 +63,17 @@ val candidate_site_is_valid : path:string -> line:int -> bool
     structural output contract. *)
 val candidate_is_structurally_valid : Security_types.candidate_finding -> bool
 
+(** Return [true] when the candidate class matches [vuln_class] and every
+    evidence site resolves to a displayed right-side diff hunk when the agent
+    produced no tool results.  Positive tool-result counts bypass diff
+    resolvability because they may represent failed or not-found fetches. *)
+val candidate_is_grounded :
+  diff:Diff_parser.file_diff list ->
+  tool_results_count:int ->
+  vuln_class:Config_types.vuln_class ->
+  Security_types.candidate_finding ->
+  bool
+
 (** Return [true] when a validator proof has the concrete fields required for
     a confirmed result. Trace steps must contain file:line evidence, and
     unresolved assumptions must be empty. *)

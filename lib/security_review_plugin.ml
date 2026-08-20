@@ -102,6 +102,24 @@ let candidate_is_structurally_valid (candidate : Security_types.candidate_findin
          site_is_valid ~path:step.path ~line:step.line ~description:step.description)
        candidate.flow
 
+let candidate_is_grounded ~diff ~tool_results_count ~vuln_class (candidate : Security_types.candidate_finding) =
+  match vuln_class_equal candidate.vuln_class vuln_class with
+  | false -> false
+  | true ->
+  match tool_results_count > 0 with
+  | true -> true
+  | false ->
+    let site_is_resolvable ~path ~line =
+      match Diff_anchor.find_file_diff_by_path ~diff path with
+      | None -> false
+      | Some file_diff -> Diff_anchor.line_in_right_range file_diff ~line
+    in
+    site_is_resolvable ~path:candidate.source.path ~line:candidate.source.line
+    && site_is_resolvable ~path:candidate.sink.path ~line:candidate.sink.line
+    && List.for_all
+         (fun (step : Security_types.flow_step) -> site_is_resolvable ~path:step.path ~line:step.line)
+         candidate.flow
+
 let proof_trace_site_re = Re2.create_exn {|[A-Za-z0-9_./-]+:[1-9][0-9]*|}
 
 let proof_trace_step_has_site step = Re2.matches proof_trace_site_re step
