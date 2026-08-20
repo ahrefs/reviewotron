@@ -39,8 +39,8 @@
           "The endpoint is reachable by an unauthenticated caller."
         ],
         "source_to_sink_trace": [
-          "src/main.ml:50",
-          "src/main.ml:54"
+          "src/main.ml:13",
+          "src/main.ml:10"
         ],
         "missing_or_inadequate_control": "No parameterized query or escaping on the SQL path.",
         "expected_impact": "Arbitrary SQL executes against the application database.",

@@ -90,6 +90,25 @@ type analysis_outcome =
   | Malformed of { invalid_candidates : int }
   | Failed
 
+type analysis_attempt = {
+  candidates : Security_types.candidate_finding list;
+  invalid_candidates : Security_types.candidate_finding list;
+  tool_results_count : int;
+  raw_candidate_count : int;
+  valid_candidate_count : int;
+  invalid_candidate_count : int;
+  outcome : analysis_outcome;
+  notes : string;
+  costs : Cost_tracking.agent_cost list;
+}
+
+type analysis_result = {
+  candidates : Security_types.candidate_finding list;
+  costs : Cost_tracking.agent_cost list;
+  outcome : analysis_outcome;
+  attempts : analysis_attempt list;
+}
+
 let candidate_site_is_valid ~path ~line = non_empty path && line > 0
 
 let candidate_is_structurally_valid (candidate : Security_types.candidate_finding) =
@@ -119,6 +138,9 @@ let candidate_is_grounded ~diff ~tool_results_count ~vuln_class (candidate : Sec
     && List.for_all
          (fun (step : Security_types.flow_step) -> site_is_resolvable ~path:step.path ~line:step.line)
          candidate.flow
+
+let analysis_result_of_attempt (attempt : analysis_attempt) =
+  { candidates = attempt.candidates; costs = attempt.costs; outcome = attempt.outcome; attempts = [ attempt ] }
 
 let proof_trace_site_re = Re2.create_exn {|[A-Za-z0-9_./-]+:[1-9][0-9]*|}
 
@@ -579,12 +601,89 @@ module Make (AI : Api.Agent_runner) = struct
         (vc, signal :: existing) :: others)
       [] signals
 
+  let analysis_attempt_failure ?(costs = []) () =
+    {
+      candidates = [];
+      invalid_candidates = [];
+      tool_results_count = 0;
+      raw_candidate_count = 0;
+      valid_candidate_count = 0;
+      invalid_candidate_count = 0;
+      outcome = Failed;
+      notes = "";
+      costs;
+    }
+
+  let candidate_sites (candidate : Security_types.candidate_finding) =
+    ("source", candidate.source.path, candidate.source.line)
+    :: ("sink", candidate.sink.path, candidate.sink.line)
+    :: List.mapi
+         (fun index (step : Security_types.flow_step) ->
+           Printf.sprintf "flow step %d" (index + 1), step.path, step.line)
+         candidate.flow
+
+  let retry_correction ~diff ~tool_results_count ~vuln_class invalid_candidates =
+    let candidate_summary index (candidate : Security_types.candidate_finding) =
+      let structural_valid = candidate_is_structurally_valid candidate in
+      let class_valid = vuln_class_equal candidate.vuln_class vuln_class in
+      let grounded = candidate_is_grounded ~diff ~tool_results_count ~vuln_class candidate in
+      let violation =
+        match structural_valid, class_valid, grounded with
+        | false, false, false -> "the structural evidence fields, vulnerability class, and grounding contract"
+        | false, _, _ -> "the structural evidence contract"
+        | true, false, _ -> "the vulnerability-class contract"
+        | true, true, false -> "the zero-fetch diff-resolvability contract"
+        | true, true, true -> "an analysis contract"
+      in
+      let sites =
+        candidate_sites candidate
+        |> List.map (fun (kind, path, line) -> Printf.sprintf "%s=%S:%d" kind path line)
+        |> String.concat ", "
+      in
+      Printf.sprintf "- candidate %d violated %s; sites: %s" (index + 1) violation sites
+    in
+    let summaries = List.mapi candidate_summary invalid_candidates |> String.concat "\n" in
+    Printf.sprintf
+      "The previous response violated invariant checks. Every finding must have a non-blank description, every source, \
+       sink, and flow step must have a non-blank path, a positive line, and a non-blank description, and every finding \
+       must use the requested vulnerability class. When no tool result was returned, every site must resolve to a \
+       displayed right-side diff hunk. Fetch off-diff evidence with get_file_content when it is needed to establish a \
+       real path, or return an empty findings array cleanly. Do not repeat the offending candidates.\n\n\
+       Offending sites:\n\
+       %s"
+      summaries
+
+  let classify_analysis_attempt ~diff ~tool_results_count ~vuln_class (analysis : Security_types.analysis_output) ~costs
+      =
+    let is_valid candidate =
+      candidate_is_structurally_valid candidate && candidate_is_grounded ~diff ~tool_results_count ~vuln_class candidate
+    in
+    let candidates, invalid_candidates = List.partition is_valid analysis.findings in
+    let invalid_candidate_count = List.length invalid_candidates in
+    let outcome =
+      match invalid_candidate_count with
+      | 0 -> Clean
+      | invalid_candidates -> Malformed { invalid_candidates }
+    in
+    {
+      candidates;
+      invalid_candidates;
+      tool_results_count;
+      raw_candidate_count = List.length analysis.findings;
+      valid_candidate_count = List.length candidates;
+      invalid_candidate_count;
+      outcome;
+      notes = analysis.notes;
+      costs;
+    }
+
   (** Run a single analysis agent for one vulnerability class.
 
-      Returns the candidate findings, agent costs, and whether the stage
-      failed. *)
-  let run_single_analysis ~ctx ~repo_url ~fetch_file ~security_config ~diff_text ~file_paths ~language_hints ~vuln_class
-    ~triage_signals ~artifacts ?debug_dir ?log_context () =
+      Candidates are checked before they can reach deduplication or validation.
+      An all-invalid first attempt gets one corrective retry; the returned
+      result always describes the final attempt and retains both attempts. *)
+  let run_single_analysis ~ctx ~repo_url ~fetch_file ~security_config ~diff ~diff_text ~file_paths ~language_hints
+    ~vuln_class ~triage_signals ~artifacts ?debug_dir ?log_context () =
     let log_prefix = log_context_prefix log_context in
     let vc_name = Security_types.vuln_class_to_string vuln_class in
     let model_tier = agent_model_tier security_config.Config_types.analysis_model_tier in
@@ -598,25 +697,59 @@ module Make (AI : Api.Agent_runner) = struct
     in
     log#info "%sanalysis agent %s: using max_steps=%d for %d triage signal(s)" log_prefix vc_name agent_config.max_steps
       (List.length triage_signals);
-    let input = Analysis_agent.build_input ~diff_text ~triage_signals ~file_paths () in
-    Security_artifacts.write_debug_text artifacts ~filename:(Printf.sprintf "analysis_%s_input.md" vc_name) input;
     let tools = Analysis_agent.tools ~fetch_file:(fun path -> fetch_file ~path) in
-    let%lwt result = AI.run ~ctx ~repo_url ~tools ?debug_dir ?log_context ~config:agent_config ~input () in
-    match result with
-    | Error msg ->
-      log#error "%sanalysis agent %s failed: %s" log_prefix vc_name msg;
-      Lwt.return ([], [], true)
-    | Ok agent_result ->
-      let agent_name = Printf.sprintf "%s_analysis" vc_name in
-      let files_fetched = agent_result.tool_results_count in
-      let cost = Cost_tracking.of_agent_result ?log_context ~agent_name ~files_fetched agent_result in
-      Security_artifacts.write_debug_json artifacts
-        ~filename:(Printf.sprintf "analysis_%s_output.json" vc_name)
-        agent_result.output;
-      let analysis = Security_types.analysis_output_of_json agent_result.output in
-      log#info "%sanalysis agent %s: %d findings, %d files examined" log_prefix vc_name (List.length analysis.findings)
-        (List.length analysis.files_examined);
-      Lwt.return (analysis.findings, [ cost ], false)
+    let run_attempt ~attempt_label ?correction () =
+      let input = Analysis_agent.build_input ~diff_text ~triage_signals ~file_paths ?correction () in
+      Security_artifacts.write_debug_text artifacts
+        ~filename:(Printf.sprintf "analysis_%s_input_%s.md" vc_name attempt_label)
+        input;
+      Lwt.catch
+        (fun () ->
+          let%lwt result = AI.run ~ctx ~repo_url ~tools ?debug_dir ?log_context ~config:agent_config ~input () in
+          match result with
+          | Error msg ->
+            log#error "%sanalysis agent %s failed (%s): %s" log_prefix vc_name attempt_label msg;
+            Lwt.return (analysis_attempt_failure ())
+          | Ok agent_result ->
+            let agent_name = Printf.sprintf "%s_analysis" vc_name in
+            let files_fetched = agent_result.tool_results_count in
+            let cost = Cost_tracking.of_agent_result ?log_context ~agent_name ~files_fetched agent_result in
+            Security_artifacts.write_debug_json artifacts
+              ~filename:(Printf.sprintf "analysis_%s_output_%s.json" vc_name attempt_label)
+              agent_result.output;
+            (try
+               let analysis = Security_types.analysis_output_of_json agent_result.output in
+               let attempt =
+                 classify_analysis_attempt ~diff ~tool_results_count:agent_result.tool_results_count ~vuln_class
+                   analysis ~costs:[ cost ]
+               in
+               log#info "%sanalysis agent %s (%s): %d findings, %d valid, %d invalid, %d files examined" log_prefix
+                 vc_name attempt_label attempt.raw_candidate_count attempt.valid_candidate_count
+                 attempt.invalid_candidate_count (List.length analysis.files_examined);
+               Lwt.return attempt
+             with exn ->
+               log#error "%sanalysis output parse failed (%s): %s" log_prefix attempt_label (Exn.str exn);
+               let failed = analysis_attempt_failure ~costs:[ cost ] () in
+               Lwt.return failed))
+        (fun exn ->
+          log#error "%sanalysis agent %s raised (%s): %s" log_prefix vc_name attempt_label (Exn.str exn);
+          Lwt.return (analysis_attempt_failure ()))
+    in
+    let%lwt first = run_attempt ~attempt_label:"1" () in
+    match first.outcome, first.candidates with
+    | Malformed _, [] ->
+      let correction =
+        retry_correction ~diff ~tool_results_count:first.tool_results_count ~vuln_class first.invalid_candidates
+      in
+      let%lwt retry = run_attempt ~attempt_label:"retry_1" ~correction () in
+      Lwt.return
+        {
+          candidates = retry.candidates;
+          costs = first.costs @ retry.costs;
+          outcome = retry.outcome;
+          attempts = [ first; retry ];
+        }
+    | _ -> Lwt.return (analysis_result_of_attempt first)
 
   (** Map confidence from a candidate finding to review severity.
 
@@ -1006,22 +1139,32 @@ module Make (AI : Api.Agent_runner) = struct
           (fun (vuln_class, triage_signals) ->
             Lwt.catch
               (fun () ->
-                run_single_analysis ~ctx ~repo_url ~fetch_file ~security_config ~diff_text ~file_paths ~language_hints
-                  ~vuln_class ~triage_signals ~artifacts ?debug_dir ?log_context ())
+                run_single_analysis ~ctx ~repo_url ~fetch_file ~security_config ~diff ~diff_text ~file_paths
+                  ~language_hints ~vuln_class ~triage_signals ~artifacts ?debug_dir ?log_context ())
               (fun exn ->
                 log#error "%sanalysis agent %s raised: %s" log_prefix
                   (Security_types.vuln_class_to_string vuln_class)
                   (Exn.str exn);
-                Lwt.return ([], [], true)))
+                Lwt.return { candidates = []; costs = []; outcome = Failed; attempts = [] }))
           groups
       in
       let%lwt results = Lwt.all promises in
+      let attempt_count, notes_count =
+        List.fold_left
+          (fun (attempt_count, notes_count) (result : analysis_result) ->
+            List.fold_left
+              (fun (attempt_count, notes_count) (attempt : analysis_attempt) ->
+                attempt_count + 1, notes_count + if non_empty attempt.notes then 1 else 0)
+              (attempt_count, notes_count) result.attempts)
+          (0, 0) results
+      in
+      log#debug "%sanalysis attempts=%d notes_retained=%d" log_prefix attempt_count notes_count;
       let class_drops =
         let rec collect acc groups results =
           match groups, results with
           | [], [] -> List.rev acc
-          | (vuln_class, triage_signals) :: rest_groups, (candidates, _, _) :: rest_results ->
-            (match candidates with
+          | (vuln_class, triage_signals) :: rest_groups, result :: rest_results ->
+            (match result.candidates with
             | [] ->
               let vc_name = Security_types.vuln_class_to_string vuln_class in
               let signal_count = List.length triage_signals in
@@ -1033,9 +1176,16 @@ module Make (AI : Api.Agent_runner) = struct
         in
         collect [] groups results
       in
-      let raw_candidates = List.concat_map (fun (candidates, _, _) -> candidates) results in
-      let analysis_costs = List.concat_map (fun (_, costs, _) -> costs) results in
-      let analysis_failed = List.exists (fun (_, _, failed) -> failed) results in
+      let raw_candidates = List.concat_map (fun result -> result.candidates) results in
+      let analysis_costs = List.concat_map (fun result -> result.costs) results in
+      let analysis_failed =
+        List.exists
+          (fun result ->
+            match result.outcome with
+            | Clean -> false
+            | Malformed _ | Failed -> true)
+          results
+      in
       log#info "%sanalysis complete: %d total candidate findings" log_prefix (List.length raw_candidates);
       let candidates = dedup_candidates ?log_context raw_candidates in
       (match List.compare_lengths candidates raw_candidates < 0 with

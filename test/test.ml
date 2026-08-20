@@ -3293,6 +3293,24 @@ let test_analysis_agent_build_input_minimal () =
     (Devkit.Stre.exists input "Can any flagged externally controlled value");
   (check bool) "no repository security context section" false (Devkit.Stre.exists input "Repository Security Context")
 
+let test_analysis_agent_build_input_corrective_retry () =
+  let signal : Security_types.triage_signal =
+    {
+      vuln_class = Injection;
+      confidence = High;
+      regions = [ { path = "app.py"; start_line = 10; end_line = 20 } ];
+      rationale = "SQL string concatenation";
+    }
+  in
+  let input =
+    Analysis_agent.build_input ~diff_text:"diff content" ~triage_signals:[ signal ] ~file_paths:[ "app.py" ]
+      ~correction:"The previous response violated invariant checks; fetch off-diff evidence or return cleanly."
+      ()
+  in
+  (check bool) "has corrective retry section" true (Devkit.Stre.exists input "Corrective retry");
+  (check bool) "has violated invariant" true (Devkit.Stre.exists input "violated invariant");
+  (check bool) "has retry instruction" true (Devkit.Stre.exists input "fetch off-diff evidence")
+
 let test_analysis_agent_tools () =
   let fetch_file _path = Lwt.return_ok (Some "file content") in
   let tool_list = Analysis_agent.tools ~fetch_file in
@@ -4850,6 +4868,112 @@ let test_local_review_validation_failure_reports_failure_outcome () =
 let security_only_local_config () =
   Config_types.config_of_json
     (Melange_json.of_string {|{"review_plugins": {"general": {"enabled": false}, "security": {"enabled": true}}}|})
+
+let run_security_analysis_contract_case ~change_key ~analysis_responses () =
+  Test_helpers.reset_test_state ();
+  Api_local.set_agent_response_map
+    [
+      "security_triage", "mock_api_responses/security/triage_injection.json";
+      "security_validator", "mock_api_responses/security/validator_confirmed.json";
+    ];
+  Api_local.set_agent_response_sequence [ "security_analysis_injection", analysis_responses ];
+  let state = State.create () in
+  run_local_failure_report ~config:(security_only_local_config ()) ~state ~change_key ()
+
+let test_local_review_security_analysis_outcome_matrix () =
+  let cases =
+    [
+      ( "all-valid-clean",
+        [
+          "mock_api_responses/security/analysis_injection.json";
+          "mock_api_responses/security/analysis_injection_placeholder.json";
+        ],
+        true,
+        false );
+      ( "empty-clean",
+        [
+          "mock_api_responses/security/analysis_injection_empty.json";
+          "mock_api_responses/security/analysis_injection_placeholder.json";
+        ],
+        false,
+        false );
+      ( "mixed-keeps-valid-and-fails",
+        [
+          "mock_api_responses/security/analysis_injection_mixed.json";
+          "mock_api_responses/security/analysis_injection.json";
+        ],
+        true,
+        true );
+      ( "agent-failed",
+        [
+          "mock_api_responses/nonexistent_security_analysis.json"; "mock_api_responses/security/analysis_injection.json";
+        ],
+        false,
+        true );
+      ( "retry-recovers-clean",
+        [
+          "mock_api_responses/security/analysis_injection_placeholder.json";
+          "mock_api_responses/security/analysis_injection.json";
+        ],
+        true,
+        false );
+      ( "retry-cleans-empty",
+        [
+          "mock_api_responses/security/analysis_injection_placeholder.json";
+          "mock_api_responses/security/analysis_injection_empty.json";
+        ],
+        false,
+        false );
+      ( "retry-mixed-keeps-valid-and-fails",
+        [
+          "mock_api_responses/security/analysis_injection_placeholder.json";
+          "mock_api_responses/security/analysis_injection_mixed.json";
+        ],
+        true,
+        true );
+      ( "retry-all-invalid-fails",
+        [
+          "mock_api_responses/security/analysis_injection_placeholder.json";
+          "mock_api_responses/security/analysis_injection_placeholder.json";
+        ],
+        false,
+        true );
+      ( "retry-agent-failed",
+        [
+          "mock_api_responses/security/analysis_injection_placeholder.json";
+          "mock_api_responses/nonexistent_security_analysis.json";
+        ],
+        false,
+        true );
+    ]
+  in
+  List.iter
+    (fun (change_key, responses, expected_findings, expected_failed) ->
+      match run_security_analysis_contract_case ~change_key ~analysis_responses:responses () with
+      | Error msg -> fail (Printf.sprintf "%s: %s" change_key msg)
+      | Ok report ->
+        (check bool) (change_key ^ " finding flow") expected_findings (report.findings <> []);
+        (check bool) (change_key ^ " failure state") expected_failed (Review_engine.report_failed report))
+    cases
+
+let test_local_review_security_analysis_retry_is_corrective () =
+  match
+    run_security_analysis_contract_case ~change_key:"retry-corrective-input"
+      ~analysis_responses:
+        [
+          "mock_api_responses/security/analysis_injection_placeholder.json";
+          "mock_api_responses/security/analysis_injection.json";
+        ]
+      ()
+  with
+  | Error msg -> fail msg
+  | Ok _report ->
+  match Api_local.recorded_agent_input "security_analysis_injection" with
+  | None -> fail "expected recorded retry input"
+  | Some input ->
+    (check bool) "retry input has corrective section" true (contains_sub ~sub:"Corrective retry" input);
+    (check bool) "retry input names violated invariant" true (contains_sub ~sub:"violated invariant" input);
+    (check bool) "retry input names offending placeholder" true (contains_sub ~sub:"placeholder" input)
 
 let test_local_review_policy_regression_sudo_vulnerable () =
   Test_helpers.reset_test_state ();
@@ -7239,8 +7363,8 @@ let test_push_general_failure_with_findings () =
     [
       "general_review", "mock_api_responses/nonexistent_file.json";
       "security_triage", "mock_api_responses/security/triage_injection.json";
-      "security_analysis_injection", "mock_api_responses/security/analysis_injection.json";
-      "security_validator", "mock_api_responses/security/validator_confirmed.json";
+      "security_analysis_injection", "mock_api_responses/security/analysis_backend_injection.json";
+      "security_validator", "mock_api_responses/security/validator_backend_confirmed.json";
     ];
   let config = security_enabled_slack_config in
   let ctx = Test_helpers.make_test_context ~config () in
@@ -8715,6 +8839,7 @@ let () =
           test_case "path traversal runtime semantics" `Quick test_path_traversal_prompt_runtime_semantics;
           test_case "language hints" `Quick test_analysis_agent_language_hints;
           test_case "build input minimal" `Quick test_analysis_agent_build_input_minimal;
+          test_case "build input corrective retry" `Quick test_analysis_agent_build_input_corrective_retry;
           test_case "tools" `Quick test_analysis_agent_tools;
           test_case "output schema" `Quick test_analysis_agent_output_schema;
           test_case "shared methodology" `Quick test_analysis_agent_shared_methodology;
@@ -8834,6 +8959,8 @@ let () =
             test_local_review_security_validator_chunks_and_aggregates;
           test_case "validator partial success keeps findings" `Quick
             test_local_review_security_validator_partial_success;
+          test_case "analysis outcome matrix" `Quick test_local_review_security_analysis_outcome_matrix;
+          test_case "analysis retry is corrective" `Quick test_local_review_security_analysis_retry_is_corrective;
           test_case "clean general review does not mask failed security stage" `Quick
             test_local_review_validation_failure_with_clean_general_is_not_lgtm;
           test_case "validation failure reports failure outcome" `Quick

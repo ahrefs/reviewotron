@@ -894,7 +894,7 @@ let add_analysis_scope buf triage_signals =
         "Because the routing confidence is not high, treat this as a bounded verification pass: inspect changed \
          regions and immediate dependencies first, and stop early if the concrete chain is not emerging.\n\n")
 
-let build_input ~diff_text ~triage_signals ~file_paths () =
+let build_input ~diff_text ~triage_signals ~file_paths ?correction () =
   let buf = Buffer.create (String.length diff_text + 512) in
   add_analysis_scope buf triage_signals;
   Buffer.add_string buf "## Triage Signals\n\n";
@@ -915,6 +915,12 @@ let build_input ~diff_text ~triage_signals ~file_paths () =
   Buffer.add_string buf Review_prompt.annotated_diff_format_explainer;
   Buffer.add_string buf "\n## Diff\n\n";
   Buffer.add_string buf diff_text;
+  (match correction with
+  | None -> ()
+  | Some correction ->
+    Buffer.add_string buf "\n\n## Corrective retry\n\n";
+    Buffer.add_string buf correction;
+    Buffer.add_string buf "\n");
   Buffer.contents buf
 
 let tools ~fetch_file = [ Security_tools.make_get_file_content ~fetch_file ]

@@ -1,0 +1,5 @@
+{
+  "findings": [],
+  "files_examined": [],
+  "notes": "No concrete injection path is supported by the diff."
+}
