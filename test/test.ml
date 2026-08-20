@@ -1584,6 +1584,18 @@ let test_candidate_structurally_valid_rejects_blank_finding_description () =
   (check bool) "blank finding description is invalid" false
     (Security_review_plugin.candidate_is_structurally_valid candidate)
 
+let test_candidate_structurally_valid_rejects_blank_source_description () =
+  let candidate = mk_candidate ~vuln_class:Injection ~sink_path:"src/a.ts" ~sink_line:10 () in
+  let candidate = { candidate with source = { candidate.source with description = "\t " } } in
+  (check bool) "blank source description is invalid" false
+    (Security_review_plugin.candidate_is_structurally_valid candidate)
+
+let test_candidate_structurally_valid_rejects_blank_sink_description () =
+  let candidate = mk_candidate ~vuln_class:Injection ~sink_path:"src/a.ts" ~sink_line:10 () in
+  let candidate = { candidate with sink = { candidate.sink with description = "\n  " } } in
+  (check bool) "blank sink description is invalid" false
+    (Security_review_plugin.candidate_is_structurally_valid candidate)
+
 let test_candidate_structurally_valid_rejects_blank_flow_description () =
   let flow = [ mk_flow_step ~path:"src/a.ts" ~line:5 " \t" ] in
   let candidate = { (mk_candidate ~vuln_class:Injection ~sink_path:"src/a.ts" ~sink_line:10 ()) with flow } in
@@ -1618,6 +1630,14 @@ let test_candidate_grounding_rejects_off_diff_path_at_zero_fetch () =
 let test_candidate_grounding_rejects_line_outside_hunks () =
   let candidate = grounding_candidate ~source_line:30 ~sink_line:30 () in
   (check bool) "line outside every hunk is ungrounded" false
+    (Security_review_plugin.candidate_is_grounded ~diff:parsed_anchor_diff ~tool_results_count:0 ~vuln_class:Injection
+       candidate)
+
+let test_candidate_grounding_rejects_off_diff_flow_at_zero_fetch () =
+  let candidate =
+    grounding_candidate ~flow:[ mk_flow_step ~path:"src/missing.ml" ~line:1 "value leaves the changed code" ] ()
+  in
+  (check bool) "off-diff flow step is ungrounded without fetches" false
     (Security_review_plugin.candidate_is_grounded ~diff:parsed_anchor_diff ~tool_results_count:0 ~vuln_class:Injection
        candidate)
 
@@ -3302,11 +3322,17 @@ let test_analysis_agent_build_input_corrective_retry () =
       rationale = "SQL string concatenation";
     }
   in
+  let original_input =
+    Analysis_agent.build_input ~diff_text:"diff content" ~triage_signals:[ signal ] ~file_paths:[ "app.py" ] ()
+  in
+  let correction = "The previous response violated invariant checks; fetch off-diff evidence or return cleanly." in
   let input =
-    Analysis_agent.build_input ~diff_text:"diff content" ~triage_signals:[ signal ] ~file_paths:[ "app.py" ]
-      ~correction:"The previous response violated invariant checks; fetch off-diff evidence or return cleanly."
+    Analysis_agent.build_input ~diff_text:"diff content" ~triage_signals:[ signal ] ~file_paths:[ "app.py" ] ~correction
       ()
   in
+  (check bool) "retry input differs from original" true (not (String.equal original_input input));
+  (check bool) "original input has no corrective invariant" false
+    (Devkit.Stre.exists original_input "violated invariant");
   (check bool) "has corrective retry section" true (Devkit.Stre.exists input "Corrective retry");
   (check bool) "has violated invariant" true (Devkit.Stre.exists input "violated invariant");
   (check bool) "has retry instruction" true (Devkit.Stre.exists input "fetch off-diff evidence")
@@ -4505,10 +4531,14 @@ let recorded_change_review_count state ~repo_key =
 
 let run_local_failure_report
   ?(config =
-    Config_types.config_of_json (Melange_json.of_string {|{"review_plugins": {"security": {"enabled": true}}}|})) ~state
-  ~change_key () =
+    Config_types.config_of_json (Melange_json.of_string {|{"review_plugins": {"security": {"enabled": true}}}|}))
+  ?diff_text ~state ~change_key () =
   let ctx = Test_helpers.make_test_context ~state () in
-  let diff_text = read_file "mock_api_responses/github/pr_42.diff" in
+  let diff_text =
+    match diff_text with
+    | Some diff_text -> diff_text
+    | None -> read_file "mock_api_responses/github/pr_42.diff"
+  in
   Lwt_main.run
     (Local_review_test.review_diff_text_report ~ctx ~root:"." ~repo_key:"local/repo" ~change_key ~title:"Failed review"
        ~description:"Local description" ~diff_text ~config ())
@@ -4975,6 +5005,50 @@ let test_local_review_security_analysis_retry_is_corrective () =
     (check bool) "retry input names violated invariant" true (contains_sub ~sub:"violated invariant" input);
     (check bool) "retry input names offending placeholder" true (contains_sub ~sub:"placeholder" input)
 
+let test_local_review_security_analysis_retains_attempt_notes () =
+  Test_helpers.reset_test_state ();
+  Api_local.set_agent_response_sequence
+    [
+      ( "security_analysis_injection",
+        [
+          "mock_api_responses/security/analysis_injection_placeholder.json";
+          "mock_api_responses/security/analysis_injection.json";
+        ] );
+    ];
+  let diff_text = read_file "mock_api_responses/github/pr_42.diff" in
+  let diff = Diff_parser.parse diff_text in
+  let triage_output =
+    Security_types.triage_output_of_json (read_json "mock_api_responses/security/triage_injection.json")
+  in
+  let signal =
+    match triage_output.signals with
+    | [ signal ] -> signal
+    | [] -> fail "expected one injection triage signal"
+    | _ :: _ :: _ -> fail "expected exactly one injection triage signal"
+  in
+  let config = (security_only_local_config ()).review_plugins.security in
+  let artifacts =
+    Security_artifacts.create ~debug_dir:"test-disabled-security-artifacts" ~metrics_artifacts:false
+      ~debug_artifacts:false
+  in
+  let observations =
+    Lwt_main.run
+      (Sec_test.run_single_analysis_for_testing ~ctx:(Test_helpers.make_test_context ()) ~repo_url:"local/repo"
+         ~fetch_file:(fun ~path:_ -> Lwt.return_ok None)
+         ~security_config:config ~diff ~diff_text
+         ~file_paths:(List.map (fun (file_diff : Diff_parser.file_diff) -> file_diff.path) diff)
+         ~language_hints:triage_output.language_hints ~vuln_class:Injection ~triage_signals:[ signal ] ~artifacts ())
+  in
+  match observations with
+  | [ first; retry ] ->
+    (check string) "first attempt notes are retained" "first attempt emitted an ungrounded placeholder" first.notes;
+    (check string) "retry notes are retained"
+      "Single injection path identified. No parameterization or escaping observed." retry.notes;
+    (check int) "first attempt has one cost" 1 (List.length first.costs);
+    (check int) "retry has one cost" 1 (List.length retry.costs)
+  | [] -> fail "expected first and retry observations"
+  | [ _ ] | _ :: _ :: _ -> fail "expected exactly first and retry observations"
+
 let test_local_review_policy_regression_sudo_vulnerable () =
   Test_helpers.reset_test_state ();
   Api_local.set_agent_response_map
@@ -5019,6 +5093,34 @@ let test_local_review_policy_regression_sudo_scoped_safe () =
     (check bool) "has deterministic review body" true (contains_sub ~sub:":robot: **REVIEW**" markdown);
     (check bool) "no security finding" false (contains_sub ~sub:"**[critical]** security" markdown);
     (check bool) "no review failure" false (contains_sub ~sub:"Review failed" markdown)
+
+let test_local_review_policy_regression_deleted_line_fails_soft () =
+  Test_helpers.reset_test_state ();
+  Api_local.set_agent_response_map
+    [ "security_triage", "mock_api_responses/security/triage_policy_regression_sudo.json" ];
+  Api_local.set_agent_response_sequence
+    [
+      ( "security_analysis_policy_regression",
+        [
+          "mock_api_responses/security/analysis_policy_regression_deleted.json";
+          "mock_api_responses/security/analysis_policy_regression_deleted.json";
+        ] );
+    ];
+  let state = State.create () in
+  match
+    run_local_failure_report ~config:(security_only_local_config ()) ~state ~change_key:"policy-deleted-line"
+      ~diff_text:deletion_only_diff_text ()
+  with
+  | Error msg -> fail msg
+  | Ok report ->
+    (* Known fail-soft limitation: [Deletion] renders no right-side gutter line
+       and does not advance [new_line], so a zero-fetch policy candidate citing
+       the deleted line is withheld after retry exhaustion (plan §5.2). *)
+    (check bool) "deleted-line candidate marks review incomplete" true (Review_engine.report_failed report);
+    (check bool) "deleted-line candidate is withheld" true (report.findings = []);
+    (check bool) "deleted-line candidate is not LGTM" false (contains_sub ~sub:"LGTM" report.body);
+    (check bool) "deleted-line candidate renders incomplete notice" true
+      (contains_sub ~sub:"Security review did not complete" report.body)
 
 let test_local_review_uses_supplied_config_for_plugins () =
   Test_helpers.reset_test_state ();
@@ -5413,7 +5515,12 @@ let security_metrics_config () =
     (Melange_json.of_string
        {|{"review_plugins": {"general": {"enabled": false}, "security": {"enabled": true, "metrics_artifacts": true}}}|})
 
-let with_security_metrics_case ~analysis_responses f =
+let security_debug_metrics_config () =
+  Config_types.config_of_json
+    (Melange_json.of_string
+       {|{"review_plugins": {"general": {"enabled": false}, "security": {"enabled": true, "metrics_artifacts": true, "debug_artifacts": true}}}|})
+
+let with_security_metrics_case ?(config = security_metrics_config ()) ?debug_assertions ~analysis_responses f =
   with_temp_feedback_store_dir (fun _state_path paths store ->
     Test_helpers.reset_test_state ();
     Api_local.set_agent_response_map
@@ -5428,7 +5535,7 @@ let with_security_metrics_case ~analysis_responses f =
     let result =
       Lwt_main.run
         (Local_review_test.review_diff_text_report ~ctx ~root:"." ~repo_key:"local/repo" ~change_key:"analysis-metrics"
-           ~title:"Analysis metrics" ~description:"" ~diff_text ~config:(security_metrics_config ()) ())
+           ~title:"Analysis metrics" ~description:"" ~diff_text ~config ())
     in
     let report =
       match result with
@@ -5446,7 +5553,11 @@ let with_security_metrics_case ~analysis_responses f =
       ~finally:(fun () ->
         remove_tree_if_exists debug_root;
         remove_tree_if_exists memory_root)
-      (fun () -> f report (read_json metrics_path)))
+      (fun () ->
+        (match debug_assertions with
+        | Some check_debug -> check_debug debug_root
+        | None -> ());
+        f report (read_json metrics_path)))
 
 let metric_fields json =
   match json with
@@ -5486,6 +5597,13 @@ let test_local_review_analysis_metrics_retry_recovery () =
     (check int) "cumulative malformed candidates" 1 (json_int_field fields "malformed_candidates");
     (check int) "retry attempts" 2 (json_int_field fields "attempt_count");
     (check string) "final outcome is clean" "clean" (json_string_field fields "outcome");
+    let analysis_costs =
+      json_list_field (metric_fields metrics) "agent_costs"
+      |> List.filter (function
+        | `Assoc fields -> String.equal (json_string_field fields "agent_name") "injection_analysis"
+        | `List _ | `Bool _ | `Float _ | `Int _ | `Null | `String _ -> false)
+    in
+    (check int) "both attempt costs are retained" 2 (List.length analysis_costs);
     (check (list string)) "recovery has no degenerate drop" [] (drop_reasons metrics))
 
 let test_local_review_analysis_metrics_retry_exhaustion () =
@@ -5521,7 +5639,32 @@ let test_local_review_analysis_metrics_mixed_output () =
     (check int) "mixed malformed candidates" 1 (json_int_field fields "malformed_candidates");
     (check int) "mixed output has one attempt" 1 (json_int_field fields "attempt_count");
     (check string) "mixed outcome is malformed" "malformed" (json_string_field fields "outcome");
+    (match Api_local.recorded_agent_input "security_validator" with
+    | None -> fail "expected validator input for mixed output"
+    | Some input ->
+      (check int) "validator receives only the valid candidate" 1 (count_sub ~sub:"**candidate_id:**" input);
+      (check bool) "validator input omits malformed placeholder" false (contains_sub ~sub:"placeholder" input);
+      (check bool) "validator input retains valid candidate" true (contains_sub ~sub:"src/main.ml:14" input));
     (check (list string)) "mixed output is not a class drop" [] (drop_reasons metrics))
+
+let test_local_review_analysis_debug_artifacts_are_distinct () =
+  let assert_artifact root filename =
+    match find_file_named root filename with
+    | Some _ -> ()
+    | None -> fail (Printf.sprintf "missing debug artifact %s" filename)
+  in
+  with_security_metrics_case ~config:(security_debug_metrics_config ())
+    ~analysis_responses:
+      [
+        "mock_api_responses/security/analysis_injection_placeholder.json";
+        "mock_api_responses/security/analysis_injection_placeholder.json";
+      ]
+    ~debug_assertions:(fun debug_root ->
+      assert_artifact debug_root "analysis_injection_input_1.md";
+      assert_artifact debug_root "analysis_injection_output_1.json";
+      assert_artifact debug_root "analysis_injection_input_retry_1.md";
+      assert_artifact debug_root "analysis_injection_output_retry_1.json")
+    (fun _report _metrics -> ())
 
 let test_local_review_analysis_failure_drop_reason () =
   with_security_metrics_case ~analysis_responses:[ "mock_api_responses/nonexistent_security_analysis.json" ]
@@ -8805,6 +8948,10 @@ let () =
             test_candidate_structurally_valid_rejects_any_invalid_flow_step;
           test_case "rejects blank finding description" `Quick
             test_candidate_structurally_valid_rejects_blank_finding_description;
+          test_case "rejects blank source description" `Quick
+            test_candidate_structurally_valid_rejects_blank_source_description;
+          test_case "rejects blank sink description" `Quick
+            test_candidate_structurally_valid_rejects_blank_sink_description;
           test_case "rejects blank flow description" `Quick
             test_candidate_structurally_valid_rejects_blank_flow_description;
           test_case "rejects placeholder without fetches" `Quick
@@ -8813,6 +8960,8 @@ let () =
           test_case "rejects off-diff path without fetches" `Quick
             test_candidate_grounding_rejects_off_diff_path_at_zero_fetch;
           test_case "rejects line outside hunks" `Quick test_candidate_grounding_rejects_line_outside_hunks;
+          test_case "rejects off-diff flow without fetches" `Quick
+            test_candidate_grounding_rejects_off_diff_flow_at_zero_fetch;
           test_case "rejects class mismatch" `Quick test_candidate_grounding_rejects_class_mismatch;
           test_case "bypasses grounding after fetch" `Quick test_candidate_grounding_bypasses_positive_fetches;
           test_case "rejects deleted line without fetches" `Quick
@@ -9102,9 +9251,12 @@ let () =
             test_local_review_security_validator_partial_success;
           test_case "analysis outcome matrix" `Quick test_local_review_security_analysis_outcome_matrix;
           test_case "analysis retry is corrective" `Quick test_local_review_security_analysis_retry_is_corrective;
+          test_case "analysis retains attempt notes" `Quick test_local_review_security_analysis_retains_attempt_notes;
           test_case "analysis metrics retry recovery" `Quick test_local_review_analysis_metrics_retry_recovery;
           test_case "analysis metrics retry exhaustion" `Quick test_local_review_analysis_metrics_retry_exhaustion;
           test_case "analysis metrics mixed output" `Quick test_local_review_analysis_metrics_mixed_output;
+          test_case "analysis debug artifacts are distinct" `Quick
+            test_local_review_analysis_debug_artifacts_are_distinct;
           test_case "analysis failure drop reason" `Quick test_local_review_analysis_failure_drop_reason;
           test_case "clean general review does not mask failed security stage" `Quick
             test_local_review_validation_failure_with_clean_general_is_not_lgtm;
@@ -9113,6 +9265,7 @@ let () =
           test_case "policy sudo regression produces finding" `Quick test_local_review_policy_regression_sudo_vulnerable;
           test_case "policy sudo scoped safe produces no finding" `Quick
             test_local_review_policy_regression_sudo_scoped_safe;
+          test_case "policy deleted line fails soft" `Quick test_local_review_policy_regression_deleted_line_fails_soft;
           test_case "review plugins use supplied config" `Quick test_local_review_uses_supplied_config_for_plugins;
           test_case "duplicate local change skipped" `Quick test_local_review_skips_duplicate_change;
           test_case "github plugins use captured config" `Quick test_github_review_uses_captured_config_for_plugins;

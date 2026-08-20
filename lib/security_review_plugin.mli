@@ -55,6 +55,13 @@ type analysis_outcome =
   | Malformed of { invalid_candidates : int }
   | Failed
 
+(** Minimal test seam for verifying that each corrective-retry attempt retains
+    its own notes and cost record. *)
+type analysis_attempt_observation = {
+  notes : string;
+  costs : Cost_tracking.agent_cost list;
+}
+
 (** Return [true] when an evidence site has a non-blank path and a positive
     line number. *)
 val candidate_site_is_valid : path:string -> line:int -> bool
@@ -115,6 +122,25 @@ val enforce_validator_proofs : Security_types.validated_finding list -> Security
     specific source adapter. *)
 module Make (_ : Api.Agent_runner) : sig
   val name : string
+
+  (** Run one analysis class and expose only the per-attempt notes and costs
+      needed to verify corrective-retry retention. *)
+  val run_single_analysis_for_testing :
+    ctx:Context.t ->
+    repo_url:string ->
+    fetch_file:Review_job.fetch_file ->
+    security_config:Config_types.security_plugin_config ->
+    diff:Diff_parser.file_diff list ->
+    diff_text:string ->
+    file_paths:string list ->
+    language_hints:string list ->
+    vuln_class:Config_types.vuln_class ->
+    triage_signals:Security_types.triage_signal list ->
+    artifacts:Security_artifacts.t ->
+    ?debug_dir:string ->
+    ?log_context:string ->
+    unit ->
+    analysis_attempt_observation list Lwt.t
 
   (** Run the security pipeline, returning findings, costs, and whether any
       required stage failed. *)

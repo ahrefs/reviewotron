@@ -90,6 +90,11 @@ type analysis_outcome =
   | Malformed of { invalid_candidates : int }
   | Failed
 
+type analysis_attempt_observation = {
+  notes : string;
+  costs : Cost_tracking.agent_cost list;
+}
+
 type analysis_attempt = {
   candidates : Security_types.candidate_finding list;
   invalid_candidates : Security_types.candidate_finding list;
@@ -796,6 +801,17 @@ module Make (AI : Api.Agent_runner) = struct
           attempts = [ first; retry ];
         }
     | _ -> Lwt.return (analysis_result_of_attempt first)
+
+  (** Test-only view of the per-attempt data returned by [run_single_analysis].
+      Keeping this seam limited to notes and costs lets tests verify that a
+      corrective retry does not discard either attempt's result. *)
+  let run_single_analysis_for_testing ~ctx ~repo_url ~fetch_file ~security_config ~diff ~diff_text ~file_paths
+    ~language_hints ~vuln_class ~triage_signals ~artifacts ?debug_dir ?log_context () =
+    let%lwt result =
+      run_single_analysis ~ctx ~repo_url ~fetch_file ~security_config ~diff ~diff_text ~file_paths ~language_hints
+        ~vuln_class ~triage_signals ~artifacts ?debug_dir ?log_context ()
+    in
+    Lwt.return (List.map (fun attempt -> { notes = attempt.notes; costs = attempt.costs }) result.attempts)
 
   (** Map confidence from a candidate finding to review severity.
 

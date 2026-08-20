@@ -1,0 +1,30 @@
+{
+  "findings": [
+    {
+      "vuln_class": "policy_regression",
+      "source": {
+        "path": "src/gone.ml",
+        "line": 1,
+        "description": "deleted policy entry changed the privileged boundary"
+      },
+      "sink": {
+        "path": "src/gone.ml",
+        "line": 1,
+        "description": "deleted policy entry granted a privileged capability"
+      },
+      "flow": [
+        {
+          "path": "src/gone.ml",
+          "line": 1,
+          "description": "the deleted policy line enabled the privileged action"
+        }
+      ],
+      "sanitization": "missing",
+      "confidence": "high",
+      "description": "The deleted policy line broadened a privileged capability without a compensating control.",
+      "suggested_fix": null
+    }
+  ],
+  "files_examined": [],
+  "notes": "A policy regression candidate cites the deleted line only."
+}
