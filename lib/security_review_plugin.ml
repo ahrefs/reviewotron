@@ -479,6 +479,15 @@ let validator_results_for_candidates ~candidate_findings (output : Security_type
     duplicate_ids = List.rev duplicate_ids;
   }
 
+type analysis_class_metric = {
+  vuln_class : string;
+  raw_candidates : int;
+  valid_candidates : int;
+  malformed_candidates : int;
+  outcome : analysis_outcome;
+  attempt_count : int;
+}
+
 type analysis_metrics = {
   actionable_triage_signal_count : int;
   analysis_agents_run : int;
@@ -488,8 +497,32 @@ type analysis_metrics = {
   validator_confirmed : int;
   validator_rejected : int;
   final_findings_produced : int;
+  analysis_class_metrics : analysis_class_metric list;
   class_drops : (string * int * string) list;
 }
+
+let analysis_outcome_to_string = function
+  | Clean -> "clean"
+  | Malformed _ -> "malformed"
+  | Failed -> "failed"
+
+let analysis_class_metric_of_result ~vuln_class (result : analysis_result) =
+  let raw_candidates, valid_candidates, malformed_candidates =
+    List.fold_left
+      (fun (raw_candidates, valid_candidates, malformed_candidates) (attempt : analysis_attempt) ->
+        ( raw_candidates + attempt.raw_candidate_count,
+          valid_candidates + attempt.valid_candidate_count,
+          malformed_candidates + attempt.invalid_candidate_count ))
+      (0, 0, 0) result.attempts
+  in
+  {
+    vuln_class = Security_types.vuln_class_to_string vuln_class;
+    raw_candidates;
+    valid_candidates;
+    malformed_candidates;
+    outcome = result.outcome;
+    attempt_count = List.length result.attempts;
+  }
 
 let empty_analysis_metrics ~actionable_triage_signal_count =
   {
@@ -501,6 +534,7 @@ let empty_analysis_metrics ~actionable_triage_signal_count =
     validator_confirmed = 0;
     validator_rejected = 0;
     final_findings_produced = 0;
+    analysis_class_metrics = [];
     class_drops = [];
   }
 
@@ -522,6 +556,17 @@ let metrics_json ~changed_file_count ~deterministic_signals ~triage_signal_count
   let class_drop_json (vuln_class, signal_count, reason) =
     `Assoc [ "vuln_class", `String vuln_class; "triage_signal_count", `Int signal_count; "reason", `String reason ]
   in
+  let class_metric_json (metric : analysis_class_metric) =
+    `Assoc
+      [
+        "vuln_class", `String metric.vuln_class;
+        "raw_candidates", `Int metric.raw_candidates;
+        "valid_candidates", `Int metric.valid_candidates;
+        "malformed_candidates", `Int metric.malformed_candidates;
+        "outcome", `String (analysis_outcome_to_string metric.outcome);
+        "attempt_count", `Int metric.attempt_count;
+      ]
+  in
   `Assoc
     [
       "changed_file_count", `Int changed_file_count;
@@ -535,6 +580,7 @@ let metrics_json ~changed_file_count ~deterministic_signals ~triage_signal_count
       "validator_results_confirmed", `Int metrics.validator_confirmed;
       "validator_results_rejected", `Int metrics.validator_rejected;
       "final_findings_produced", `Int metrics.final_findings_produced;
+      "analysis_class_metrics", `List (List.map class_metric_json metrics.analysis_class_metrics);
       "analysis_class_drops", `List (List.map class_drop_json metrics.class_drops);
       ( "finding_routing",
         `Assoc
@@ -1159,28 +1205,42 @@ module Make (AI : Api.Agent_runner) = struct
           (0, 0) results
       in
       log#debug "%sanalysis attempts=%d notes_retained=%d" log_prefix attempt_count notes_count;
-      let class_drops =
-        let rec collect acc groups results =
+      let analysis_class_metrics, class_drops =
+        let rec collect metrics drops groups results =
           match groups, results with
-          | [], [] -> List.rev acc
+          | [], [] -> List.rev metrics, List.rev drops
           | (vuln_class, triage_signals) :: rest_groups, result :: rest_results ->
-            (match result.candidates with
-            | [] ->
-              let vc_name = Security_types.vuln_class_to_string vuln_class in
-              let signal_count = List.length triage_signals in
-              log#info "%sanalysis drop: %s had %d actionable triage signal(s) but produced no candidates" log_prefix
-                vc_name signal_count;
-              collect ((vc_name, signal_count, "analysis_returned_no_candidates") :: acc) rest_groups rest_results
-            | _ :: _ -> collect acc rest_groups rest_results)
-          | [], _ :: _ | _ :: _, [] -> List.rev acc
+            let metric = analysis_class_metric_of_result ~vuln_class result in
+            let vc_name = Security_types.vuln_class_to_string vuln_class in
+            let signal_count = List.length triage_signals in
+            let drops =
+              match result.outcome, result.candidates with
+              | Clean, [] ->
+                log#info "%sanalysis drop: %s had %d actionable triage signal(s) but produced no candidates" log_prefix
+                  vc_name signal_count;
+                (vc_name, signal_count, "analysis_returned_no_candidates") :: drops
+              | Clean, _ :: _ -> drops
+              | Malformed _, [] ->
+                log#info "%sanalysis drop: %s returned only degenerate candidates after retry" log_prefix vc_name;
+                (vc_name, signal_count, "analysis_returned_degenerate_candidates") :: drops
+              | Malformed _, _ :: _ ->
+                log#info "%sanalysis malformed output: %s kept %d valid candidate(s), %d malformed candidate(s)"
+                  log_prefix vc_name metric.valid_candidates metric.malformed_candidates;
+                drops
+              | Failed, [] | Failed, _ :: _ ->
+                log#info "%sanalysis drop: %s agent failed" log_prefix vc_name;
+                (vc_name, signal_count, "analysis_agent_failed") :: drops
+            in
+            collect (metric :: metrics) drops rest_groups rest_results
+          | [], _ :: _ | _ :: _, [] -> List.rev metrics, List.rev drops
         in
-        collect [] groups results
+        collect [] [] groups results
       in
-      let raw_candidates = List.concat_map (fun result -> result.candidates) results in
-      let analysis_costs = List.concat_map (fun result -> result.costs) results in
+      let raw_candidates = List.concat_map (fun (result : analysis_result) -> result.candidates) results in
+      let analysis_costs = List.concat_map (fun (result : analysis_result) -> result.costs) results in
       let analysis_failed =
         List.exists
-          (fun result ->
+          (fun (result : analysis_result) ->
             match result.outcome with
             | Clean -> false
             | Malformed _ | Failed -> true)
@@ -1205,6 +1265,7 @@ module Make (AI : Api.Agent_runner) = struct
             validator_confirmed = 0;
             validator_rejected = 0;
             final_findings_produced = 0;
+            analysis_class_metrics;
             class_drops;
           }
         in
@@ -1244,6 +1305,7 @@ module Make (AI : Api.Agent_runner) = struct
             validator_confirmed = List.length confirmed;
             validator_rejected = List.length validated - List.length confirmed;
             final_findings_produced = List.length findings;
+            analysis_class_metrics;
             class_drops;
           }
         in

@@ -5394,6 +5394,147 @@ let test_memory_dir_with_feedback_store_uses_feedback_sibling () =
     let dir = Engine_debug_test.memory_dir_for_context ~ctx in
     (check string) "feedback sibling memory dir" (Filename.concat (Filename.dirname paths.evidence_root) "memory") dir)
 
+let rec find_file_named root filename =
+  match Sys.file_exists root with
+  | false -> None
+  | true ->
+  match (Unix.lstat root).Unix.st_kind with
+  | Unix.S_DIR ->
+    Sys.readdir root
+    |> Array.to_list
+    |> List.find_map (fun child -> find_file_named (Filename.concat root child) filename)
+  | Unix.S_REG | Unix.S_CHR | Unix.S_BLK | Unix.S_LNK | Unix.S_FIFO | Unix.S_SOCK ->
+  match String.equal (Filename.basename root) filename with
+  | true -> Some root
+  | false -> None
+
+let security_metrics_config () =
+  Config_types.config_of_json
+    (Melange_json.of_string
+       {|{"review_plugins": {"general": {"enabled": false}, "security": {"enabled": true, "metrics_artifacts": true}}}|})
+
+let with_security_metrics_case ~analysis_responses f =
+  with_temp_feedback_store_dir (fun _state_path paths store ->
+    Test_helpers.reset_test_state ();
+    Api_local.set_agent_response_map
+      [
+        "security_triage", "mock_api_responses/security/triage_injection.json";
+        "security_validator", "mock_api_responses/security/validator_confirmed.json";
+      ];
+    Api_local.set_agent_response_sequence [ "security_analysis_injection", analysis_responses ];
+    let state = State.create () in
+    let ctx = Test_helpers.make_test_context ~state ~feedback_store:store () in
+    let diff_text = read_file "mock_api_responses/github/pr_42.diff" in
+    let result =
+      Lwt_main.run
+        (Local_review_test.review_diff_text_report ~ctx ~root:"." ~repo_key:"local/repo" ~change_key:"analysis-metrics"
+           ~title:"Analysis metrics" ~description:"" ~diff_text ~config:(security_metrics_config ()) ())
+    in
+    let report =
+      match result with
+      | Error msg -> fail msg
+      | Ok report -> report
+    in
+    let metrics_path =
+      match find_file_named (Filename.dirname paths.evidence_root) "metrics.json" with
+      | Some path -> path
+      | None -> fail "expected security metrics artifact"
+    in
+    let debug_root = Filename.concat (Filename.dirname paths.evidence_root) "debug" in
+    let memory_root = Filename.concat (Filename.dirname paths.evidence_root) "memory" in
+    Fun.protect
+      ~finally:(fun () ->
+        remove_tree_if_exists debug_root;
+        remove_tree_if_exists memory_root)
+      (fun () -> f report (read_json metrics_path)))
+
+let metric_fields json =
+  match json with
+  | `Assoc fields -> fields
+  | `List _ | `Bool _ | `Float _ | `Int _ | `Null | `String _ -> fail "expected metrics object"
+
+let metric_for_injection metrics =
+  let class_metrics = json_list_field (metric_fields metrics) "analysis_class_metrics" in
+  match
+    List.find_opt
+      (function
+        | `Assoc fields -> String.equal (json_string_field fields "vuln_class") "injection"
+        | `List _ | `Bool _ | `Float _ | `Int _ | `Null | `String _ -> false)
+      class_metrics
+  with
+  | Some (`Assoc fields) -> fields
+  | Some (`List _ | `Bool _ | `Float _ | `Int _ | `Null | `String _) | None -> fail "missing injection class metrics"
+
+let drop_reasons metrics =
+  json_list_field (metric_fields metrics) "analysis_class_drops"
+  |> List.filter_map (function
+    | `Assoc fields -> Some (json_string_field fields "reason")
+    | `List _ | `Bool _ | `Float _ | `Int _ | `Null | `String _ -> None)
+
+let test_local_review_analysis_metrics_retry_recovery () =
+  with_security_metrics_case
+    ~analysis_responses:
+      [
+        "mock_api_responses/security/analysis_injection_placeholder.json";
+        "mock_api_responses/security/analysis_injection.json";
+      ] (fun report metrics ->
+    (check bool) "recovered analysis is not failed" false (Review_engine.report_failed report);
+    (check bool) "recovered finding survives" true (report.findings <> []);
+    let fields = metric_for_injection metrics in
+    (check int) "cumulative raw candidates" 2 (json_int_field fields "raw_candidates");
+    (check int) "cumulative valid candidates" 1 (json_int_field fields "valid_candidates");
+    (check int) "cumulative malformed candidates" 1 (json_int_field fields "malformed_candidates");
+    (check int) "retry attempts" 2 (json_int_field fields "attempt_count");
+    (check string) "final outcome is clean" "clean" (json_string_field fields "outcome");
+    (check (list string)) "recovery has no degenerate drop" [] (drop_reasons metrics))
+
+let test_local_review_analysis_metrics_retry_exhaustion () =
+  with_security_metrics_case
+    ~analysis_responses:
+      [
+        "mock_api_responses/security/analysis_injection_placeholder.json";
+        "mock_api_responses/security/analysis_injection_placeholder.json";
+      ] (fun report metrics ->
+    (check bool) "exhausted retry marks report failed" true (Review_engine.report_failed report);
+    (check bool) "exhausted retry is incomplete, not LGTM" false (contains_sub ~sub:"LGTM" report.body);
+    (check bool) "exhausted retry has incomplete notice" true
+      (contains_sub ~sub:"Security review did not complete" report.body);
+    (check bool) "local JSON carries failure outcome" true
+      (contains_sub ~sub:{|"outcome": "failure"|} (Local_sink.render_json report));
+    let fields = metric_for_injection metrics in
+    (check int) "cumulative exhausted raw candidates" 2 (json_int_field fields "raw_candidates");
+    (check int) "cumulative exhausted malformed candidates" 2 (json_int_field fields "malformed_candidates");
+    (check string) "exhausted outcome is malformed" "malformed" (json_string_field fields "outcome");
+    (check (list string))
+      "degenerate drop is recorded"
+      [ "analysis_returned_degenerate_candidates" ]
+      (drop_reasons metrics))
+
+let test_local_review_analysis_metrics_mixed_output () =
+  with_security_metrics_case ~analysis_responses:[ "mock_api_responses/security/analysis_injection_mixed.json" ]
+    (fun report metrics ->
+    (check bool) "mixed analysis marks report failed" true (Review_engine.report_failed report);
+    (check bool) "mixed analysis keeps valid finding" true (report.findings <> []);
+    let fields = metric_for_injection metrics in
+    (check int) "mixed raw candidates" 2 (json_int_field fields "raw_candidates");
+    (check int) "mixed valid candidates" 1 (json_int_field fields "valid_candidates");
+    (check int) "mixed malformed candidates" 1 (json_int_field fields "malformed_candidates");
+    (check int) "mixed output has one attempt" 1 (json_int_field fields "attempt_count");
+    (check string) "mixed outcome is malformed" "malformed" (json_string_field fields "outcome");
+    (check (list string)) "mixed output is not a class drop" [] (drop_reasons metrics))
+
+let test_local_review_analysis_failure_drop_reason () =
+  with_security_metrics_case ~analysis_responses:[ "mock_api_responses/nonexistent_security_analysis.json" ]
+    (fun report metrics ->
+    (check bool) "failed analysis marks report failed" true (Review_engine.report_failed report);
+    let reasons = drop_reasons metrics in
+    (check bool) "failed reason is recorded" true (List.exists (String.equal "analysis_agent_failed") reasons);
+    (check bool) "failed analysis is not a clean drop" false
+      (List.exists (String.equal "analysis_returned_no_candidates") reasons);
+    let fields = metric_for_injection metrics in
+    (check string) "failed outcome is distinct from clean" "failed" (json_string_field fields "outcome");
+    (check int) "failed attempt is counted" 1 (json_int_field fields "attempt_count"))
+
 let test_review_job_log_context () =
   let context = Review_job.log_context (debug_dir_test_job ()) in
   (check string) "PR log context" "[org-monorepo/#1/fb15a13a]" context;
@@ -8961,6 +9102,10 @@ let () =
             test_local_review_security_validator_partial_success;
           test_case "analysis outcome matrix" `Quick test_local_review_security_analysis_outcome_matrix;
           test_case "analysis retry is corrective" `Quick test_local_review_security_analysis_retry_is_corrective;
+          test_case "analysis metrics retry recovery" `Quick test_local_review_analysis_metrics_retry_recovery;
+          test_case "analysis metrics retry exhaustion" `Quick test_local_review_analysis_metrics_retry_exhaustion;
+          test_case "analysis metrics mixed output" `Quick test_local_review_analysis_metrics_mixed_output;
+          test_case "analysis failure drop reason" `Quick test_local_review_analysis_failure_drop_reason;
           test_case "clean general review does not mask failed security stage" `Quick
             test_local_review_validation_failure_with_clean_general_is_not_lgtm;
           test_case "validation failure reports failure outcome" `Quick
