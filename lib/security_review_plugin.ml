@@ -85,6 +85,23 @@ let analysis_step_budget ~vuln_class ~triage_signals =
 
 let non_empty s = String.length (String.trim s) > 0
 
+type analysis_outcome =
+  | Clean
+  | Malformed of { invalid_candidates : int }
+  | Failed
+
+let candidate_site_is_valid ~path ~line = non_empty path && line > 0
+
+let candidate_is_structurally_valid (candidate : Security_types.candidate_finding) =
+  let site_is_valid ~path ~line ~description = candidate_site_is_valid ~path ~line && non_empty description in
+  non_empty candidate.description
+  && site_is_valid ~path:candidate.source.path ~line:candidate.source.line ~description:candidate.source.description
+  && site_is_valid ~path:candidate.sink.path ~line:candidate.sink.line ~description:candidate.sink.description
+  && List.for_all
+       (fun (step : Security_types.flow_step) ->
+         site_is_valid ~path:step.path ~line:step.line ~description:step.description)
+       candidate.flow
+
 let proof_trace_site_re = Re2.create_exn {|[A-Za-z0-9_./-]+:[1-9][0-9]*|}
 
 let proof_trace_step_has_site step = Re2.matches proof_trace_site_re step

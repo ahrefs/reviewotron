@@ -47,6 +47,22 @@ val should_analyze : security_config:Config_types.security_plugin_config -> Secu
     pass so speculative routes do not consume the full global agent budget. *)
 val analysis_step_budget : vuln_class:Config_types.vuln_class -> triage_signals:Security_types.triage_signal list -> int
 
+(** Result of one per-class analysis attempt.  A malformed response records how
+    many candidates violated the structural contract; [Clean] cannot carry a
+    malformed count. *)
+type analysis_outcome =
+  | Clean
+  | Malformed of { invalid_candidates : int }
+  | Failed
+
+(** Return [true] when an evidence site has a non-blank path and a positive
+    line number. *)
+val candidate_site_is_valid : path:string -> line:int -> bool
+
+(** Return [true] when a candidate and every evidence site satisfy the
+    structural output contract. *)
+val candidate_is_structurally_valid : Security_types.candidate_finding -> bool
+
 (** Return [true] when a validator proof has the concrete fields required for
     a confirmed result. Trace steps must contain file:line evidence, and
     unresolved assumptions must be empty. *)

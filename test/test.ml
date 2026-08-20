@@ -1548,6 +1548,48 @@ let test_dedup_single_candidate_passthrough () =
   let deduped = Sec_test.dedup_candidates [ c ] in
   (check int) "single candidate passes through" 1 (List.length deduped)
 
+let test_candidate_structurally_valid_accepts_all_evidence () =
+  let candidate =
+    mk_candidate ~vuln_class:Injection ~sink_path:"src/a.ts" ~sink_line:10
+      ~flow:[ mk_flow_step ~path:"src/a.ts" ~line:5 "value reaches sink" ]
+      ()
+  in
+  (check bool) "all evidence is structurally valid" true
+    (Security_review_plugin.candidate_is_structurally_valid candidate)
+
+let test_candidate_structurally_valid_rejects_empty_source_path () =
+  let candidate = mk_candidate ~vuln_class:Injection ~sink_path:"src/a.ts" ~sink_line:10 () in
+  let candidate = { candidate with source = { candidate.source with path = "  " } } in
+  (check bool) "empty source path is invalid" false (Security_review_plugin.candidate_is_structurally_valid candidate)
+
+let test_candidate_structurally_valid_rejects_zero_sink_line () =
+  let candidate = mk_candidate ~vuln_class:Injection ~sink_path:"src/a.ts" ~sink_line:0 () in
+  (check bool) "zero sink line is invalid" false (Security_review_plugin.candidate_is_structurally_valid candidate)
+
+let test_candidate_structurally_valid_rejects_any_invalid_flow_step () =
+  let valid_step = mk_flow_step ~path:"src/a.ts" ~line:5 "value reaches helper" in
+  let invalid_step = { valid_step with line = 0 } in
+  let candidate =
+    {
+      (mk_candidate ~vuln_class:Injection ~sink_path:"src/a.ts" ~sink_line:10 ()) with
+      flow = [ valid_step; invalid_step ];
+    }
+  in
+  (check bool) "one invalid flow step rejects the whole candidate" false
+    (Security_review_plugin.candidate_is_structurally_valid candidate)
+
+let test_candidate_structurally_valid_rejects_blank_finding_description () =
+  let candidate = mk_candidate ~vuln_class:Injection ~sink_path:"src/a.ts" ~sink_line:10 () in
+  let candidate = { candidate with description = "\n  " } in
+  (check bool) "blank finding description is invalid" false
+    (Security_review_plugin.candidate_is_structurally_valid candidate)
+
+let test_candidate_structurally_valid_rejects_blank_flow_description () =
+  let flow = [ mk_flow_step ~path:"src/a.ts" ~line:5 " \t" ] in
+  let candidate = { (mk_candidate ~vuln_class:Injection ~sink_path:"src/a.ts" ~sink_line:10 ()) with flow } in
+  (check bool) "blank flow description is invalid" false
+    (Security_review_plugin.candidate_is_structurally_valid candidate)
+
 (** {2 Review types tests} *)
 
 let test_review_output_roundtrip () =
@@ -8436,6 +8478,18 @@ let () =
           test_case "tie on confidence and flow, first-seen wins" `Quick test_dedup_tiebreak_first_seen_when_fully_tied;
           test_case "empty input" `Quick test_dedup_empty;
           test_case "single candidate passthrough" `Quick test_dedup_single_candidate_passthrough;
+        ] );
+      ( "security_analysis_contract",
+        [
+          test_case "accepts all valid evidence" `Quick test_candidate_structurally_valid_accepts_all_evidence;
+          test_case "rejects empty source path" `Quick test_candidate_structurally_valid_rejects_empty_source_path;
+          test_case "rejects zero sink line" `Quick test_candidate_structurally_valid_rejects_zero_sink_line;
+          test_case "rejects any invalid flow step" `Quick
+            test_candidate_structurally_valid_rejects_any_invalid_flow_step;
+          test_case "rejects blank finding description" `Quick
+            test_candidate_structurally_valid_rejects_blank_finding_description;
+          test_case "rejects blank flow description" `Quick
+            test_candidate_structurally_valid_rejects_blank_flow_description;
         ] );
       ( "security_anchor_snap",
         [
