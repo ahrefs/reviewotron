@@ -1,0 +1,49 @@
+{
+  "results": [
+    {
+      "candidate_id": 0,
+      "finding": {
+        "vuln_class": "injection",
+        "source": {
+          "path": "backend/api/src/request_handler.ml",
+          "line": 17,
+          "description": "Request body reaches the webhook handler"
+        },
+        "sink": {
+          "path": "backend/api/src/request_handler.ml",
+          "line": 18,
+          "description": "Webhook body is passed to processing code"
+        },
+        "flow": [
+          {
+            "path": "backend/api/src/request_handler.ml",
+            "line": 17,
+            "description": "The request body is read from the POST request"
+          },
+          {
+            "path": "backend/api/src/request_handler.ml",
+            "line": 18,
+            "description": "The body reaches the webhook processing sink"
+          }
+        ],
+        "sanitization": "missing",
+        "confidence": "high",
+        "description": "The webhook request body reaches a dangerous processing sink without validation.",
+        "suggested_fix": null
+      },
+      "verdict": "confirmed",
+      "evidence_notes": "The request body reaches the processing sink without validation.",
+      "proof_by_construction": {
+        "trigger": "POST /api/v2/webhook with attacker-controlled body",
+        "preconditions": ["The webhook endpoint is reachable."],
+        "source_to_sink_trace": [
+          "backend/api/src/request_handler.ml:17 reads the request body",
+          "backend/api/src/request_handler.ml:18 passes it to processing"
+        ],
+        "missing_or_inadequate_control": "No request validation is applied before processing.",
+        "expected_impact": "An attacker can control the webhook processing input.",
+        "assumptions": []
+      }
+    }
+  ]
+}

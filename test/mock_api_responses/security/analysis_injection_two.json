@@ -38,23 +38,23 @@
       "vuln_class": "injection",
       "source": {
         "path": "src/main.ml",
-        "line": 20,
+        "line": 11,
         "description": "HTTP request parameter 'name' from Dream.query"
       },
       "sink": {
         "path": "src/main.ml",
-        "line": 24,
+        "line": 13,
         "description": "String concatenation into a second SQL query passed to Db.exec"
       },
       "flow": [
         {
           "path": "src/main.ml",
-          "line": 20,
+          "line": 11,
           "description": "User input read from query parameter"
         },
         {
           "path": "src/main.ml",
-          "line": 24,
+          "line": 13,
           "description": "Passed to Db.exec as raw SQL"
         }
       ],

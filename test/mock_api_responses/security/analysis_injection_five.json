@@ -33,23 +33,23 @@
       "vuln_class": "injection",
       "source": {
         "path": "src/main.ml",
-        "line": 20,
+        "line": 10,
         "description": "HTTP query parameter 1"
       },
       "sink": {
         "path": "src/main.ml",
-        "line": 24,
+        "line": 13,
         "description": "SQL concatenation sink 1"
       },
       "flow": [
         {
           "path": "src/main.ml",
-          "line": 20,
+          "line": 10,
           "description": "User input read"
         },
         {
           "path": "src/main.ml",
-          "line": 24,
+          "line": 13,
           "description": "Passed to Db.exec as raw SQL"
         }
       ],
@@ -62,23 +62,23 @@
       "vuln_class": "injection",
       "source": {
         "path": "src/main.ml",
-        "line": 30,
+        "line": 11,
         "description": "HTTP query parameter 2"
       },
       "sink": {
         "path": "src/main.ml",
-        "line": 34,
+        "line": 12,
         "description": "SQL concatenation sink 2"
       },
       "flow": [
         {
           "path": "src/main.ml",
-          "line": 30,
+          "line": 11,
           "description": "User input read"
         },
         {
           "path": "src/main.ml",
-          "line": 34,
+          "line": 12,
           "description": "Passed to Db.exec as raw SQL"
         }
       ],
@@ -91,23 +91,23 @@
       "vuln_class": "injection",
       "source": {
         "path": "src/main.ml",
-        "line": 40,
+        "line": 12,
         "description": "HTTP query parameter 3"
       },
       "sink": {
         "path": "src/main.ml",
-        "line": 44,
+        "line": 11,
         "description": "SQL concatenation sink 3"
       },
       "flow": [
         {
           "path": "src/main.ml",
-          "line": 40,
+          "line": 12,
           "description": "User input read"
         },
         {
           "path": "src/main.ml",
-          "line": 44,
+          "line": 11,
           "description": "Passed to Db.exec as raw SQL"
         }
       ],
@@ -120,23 +120,23 @@
       "vuln_class": "injection",
       "source": {
         "path": "src/main.ml",
-        "line": 50,
+        "line": 13,
         "description": "HTTP query parameter 4"
       },
       "sink": {
         "path": "src/main.ml",
-        "line": 54,
+        "line": 10,
         "description": "SQL concatenation sink 4"
       },
       "flow": [
         {
           "path": "src/main.ml",
-          "line": 50,
+          "line": 13,
           "description": "User input read"
         },
         {
           "path": "src/main.ml",
-          "line": 54,
+          "line": 10,
           "description": "Passed to Db.exec as raw SQL"
         }
       ],

@@ -1,0 +1,30 @@
+{
+  "findings": [
+    {
+      "vuln_class": "injection",
+      "source": {
+        "path": "placeholder",
+        "line": 0,
+        "description": "placeholder"
+      },
+      "sink": {
+        "path": "placeholder",
+        "line": 0,
+        "description": "placeholder"
+      },
+      "flow": [
+        {
+          "path": "placeholder",
+          "line": 0,
+          "description": "placeholder"
+        }
+      ],
+      "sanitization": "missing",
+      "confidence": "high",
+      "description": "placeholder",
+      "suggested_fix": null
+    }
+  ],
+  "files_examined": [],
+  "notes": "first attempt emitted an ungrounded placeholder"
+}

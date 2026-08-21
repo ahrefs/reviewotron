@@ -47,6 +47,40 @@ val should_analyze : security_config:Config_types.security_plugin_config -> Secu
     pass so speculative routes do not consume the full global agent budget. *)
 val analysis_step_budget : vuln_class:Config_types.vuln_class -> triage_signals:Security_types.triage_signal list -> int
 
+(** Result of one per-class analysis attempt.  A malformed response records how
+    many candidates violated the structural contract; [Clean] cannot carry a
+    malformed count. *)
+type analysis_outcome =
+  | Clean
+  | Malformed of { invalid_candidates : int }
+  | Failed
+
+(** Minimal test seam for verifying that each corrective-retry attempt retains
+    its own notes and cost record. *)
+type analysis_attempt_observation = {
+  notes : string;
+  costs : Cost_tracking.agent_cost list;
+}
+
+(** Return [true] when an evidence site has a non-blank path and a positive
+    line number. *)
+val candidate_site_is_valid : path:string -> line:int -> bool
+
+(** Return [true] when a candidate and every evidence site satisfy the
+    structural output contract. *)
+val candidate_is_structurally_valid : Security_types.candidate_finding -> bool
+
+(** Return [true] when the candidate class matches [vuln_class] and every
+    evidence site resolves to a displayed right-side diff hunk when the agent
+    produced no tool results.  Positive tool-result counts bypass diff
+    resolvability because they may represent failed or not-found fetches. *)
+val candidate_is_grounded :
+  diff:Diff_parser.file_diff list ->
+  tool_results_count:int ->
+  vuln_class:Config_types.vuln_class ->
+  Security_types.candidate_finding ->
+  bool
+
 (** Return [true] when a validator proof has the concrete fields required for
     a confirmed result. Trace steps must contain file:line evidence, and
     unresolved assumptions must be empty. *)
@@ -88,6 +122,25 @@ val enforce_validator_proofs : Security_types.validated_finding list -> Security
     specific source adapter. *)
 module Make (_ : Api.Agent_runner) : sig
   val name : string
+
+  (** Run one analysis class and expose only the per-attempt notes and costs
+      needed to verify corrective-retry retention. *)
+  val run_single_analysis_for_testing :
+    ctx:Context.t ->
+    repo_url:string ->
+    fetch_file:Review_job.fetch_file ->
+    security_config:Config_types.security_plugin_config ->
+    diff:Diff_parser.file_diff list ->
+    diff_text:string ->
+    file_paths:string list ->
+    language_hints:string list ->
+    vuln_class:Config_types.vuln_class ->
+    triage_signals:Security_types.triage_signal list ->
+    artifacts:Security_artifacts.t ->
+    ?debug_dir:string ->
+    ?log_context:string ->
+    unit ->
+    analysis_attempt_observation list Lwt.t
 
   (** Run the security pipeline, returning findings, costs, and whether any
       required stage failed. *)

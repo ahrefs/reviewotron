@@ -1,0 +1,48 @@
+{
+  "findings": [
+    {
+      "vuln_class": "injection",
+      "source": {
+        "path": "src/main.ml",
+        "line": 10,
+        "description": "HTTP request parameter"
+      },
+      "sink": {
+        "path": "src/main.ml",
+        "line": 14,
+        "description": "SQL query construction"
+      },
+      "flow": [
+        {
+          "path": "src/main.ml",
+          "line": 12,
+          "description": "Input reaches the query string"
+        }
+      ],
+      "sanitization": "missing",
+      "confidence": "high",
+      "description": "A user-controlled value reaches a SQL query without parameterization.",
+      "suggested_fix": null
+    },
+    {
+      "vuln_class": "injection",
+      "source": {
+        "path": "placeholder",
+        "line": 0,
+        "description": "placeholder"
+      },
+      "sink": {
+        "path": "placeholder",
+        "line": 0,
+        "description": "placeholder"
+      },
+      "flow": [],
+      "sanitization": "missing",
+      "confidence": "high",
+      "description": "placeholder",
+      "suggested_fix": null
+    }
+  ],
+  "files_examined": ["src/main.ml"],
+  "notes": "one grounded candidate and one malformed candidate"
+}
