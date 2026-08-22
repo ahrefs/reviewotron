@@ -8398,10 +8398,10 @@ let test_messages_of_steps_multi_turn_ordering () =
 
 (** {2 Agent thinking-config plumbing}
 
-    The agent_config carries an optional thinking-budget knob; when set, the
-    runner injects the model's supported thinking config into the provider
-    options that go on the wire. Tests interrogate the pure helper that builds
-    the provider_options so we don't need a live network call. *)
+    The runner maps the agent's optional thinking budget and effort to the
+    model's supported thinking config, including explicit disabled semantics.
+    Tests interrogate the pure provider-options helper and selected SDK paths
+    without a live network call. *)
 
 let mk_agent_config ?thinking_budget ?effort () : Agent_runner.agent_config =
   {
@@ -8414,11 +8414,34 @@ let mk_agent_config ?thinking_budget ?effort () : Agent_runner.agent_config =
     effort;
   }
 
-let test_provider_options_empty_when_no_thinking_budget () =
+let test_provider_options_disables_thinking_without_config () =
   let cfg = mk_agent_config () in
-  let po = Agent_runner.build_provider_options ~provider:Llm_provider.Anthropic ~model_id:"claude-sonnet-5" cfg in
-  (check bool) "no Anthropic options when thinking_budget = None" true
-    (Option.is_none (Ai_provider_anthropic.Anthropic_options.of_provider_options po))
+  List.iter
+    (fun model_id ->
+      let po = Agent_runner.build_provider_options ~provider:Llm_provider.Anthropic ~model_id cfg in
+      match Ai_provider_anthropic.Anthropic_options.of_provider_options po with
+      | Some { thinking = Some Disabled; effort = None; _ } -> ()
+      | None
+      | Some { thinking = None | Some (Enabled _ | Adaptive _); _ }
+      | Some { thinking = Some Disabled; effort = Some _; _ } ->
+        failf "expected thinking disabled without effort for %s" model_id)
+    [ "claude-sonnet-5"; "claude-opus-5" ]
+
+let test_provider_options_omits_disabled_for_unsupported_models () =
+  let cfg = mk_agent_config () in
+  List.iter
+    (fun model_id ->
+      let po = Agent_runner.build_provider_options ~provider:Llm_provider.Anthropic ~model_id cfg in
+      (check bool) model_id true (Option.is_none (Ai_provider_anthropic.Anthropic_options.of_provider_options po)))
+    [ "claude-fable-5"; "claude-custom" ]
+
+let test_provider_options_keeps_openrouter_default_without_config () =
+  let po =
+    Agent_runner.build_provider_options ~provider:Llm_provider.Openrouter ~model_id:"anthropic/claude-sonnet-5"
+      (mk_agent_config ())
+  in
+  (check bool) "no OpenRouter options without config" true
+    (Option.is_none (Ai_provider_openrouter.Openrouter_options.of_provider_options po))
 
 let test_provider_options_carries_manual_thinking_when_set () =
   let cfg = mk_agent_config ~thinking_budget:4096 () in
@@ -8447,6 +8470,37 @@ let test_provider_options_uses_adaptive_thinking_when_required () =
         failf "expected adaptive thinking for %s" model_id)
     [ "claude-sonnet-5"; "claude-opus-4-8" ]
 
+let test_provider_options_carries_native_anthropic_effort () =
+  List.iter
+    (fun effort ->
+      let po =
+        Agent_runner.build_provider_options ~provider:Llm_provider.Anthropic ~model_id:"claude-opus-4-8"
+          (mk_agent_config ~effort ())
+      in
+      match Ai_provider_anthropic.Anthropic_options.of_provider_options po with
+      | None -> fail "expected Anthropic effort options"
+      | Some opts ->
+        (match opts.thinking with
+        | Some (Adaptive { display = None }) -> ()
+        | Some (Adaptive { display = Some (Summarized | Omitted) }) | Some (Enabled _ | Disabled) | None ->
+          fail "expected adaptive thinking with native effort");
+        (match opts.effort with
+        | Some actual ->
+          (check string) "native effort" (Config_types.Effort.to_string effort)
+            (Ai_provider_anthropic.Effort.to_string actual)
+        | None -> fail "expected native Anthropic effort"))
+    Config_types.Effort.[ Low; Medium; High; Xhigh ]
+
+let test_provider_options_omits_unsupported_anthropic_effort () =
+  List.iter
+    (fun model_id ->
+      let po =
+        Agent_runner.build_provider_options ~provider:Llm_provider.Anthropic ~model_id
+          (mk_agent_config ~effort:Config_types.Effort.Medium ())
+      in
+      (check bool) model_id true (Option.is_none (Ai_provider_anthropic.Anthropic_options.of_provider_options po)))
+    [ "claude-haiku-4-5-20251001"; "claude-custom" ]
+
 let test_provider_options_omits_thinking_for_custom_model () =
   let cfg = mk_agent_config ~thinking_budget:4096 () in
   let po = Agent_runner.build_provider_options ~provider:Llm_provider.Anthropic ~model_id:"claude-custom" cfg in
@@ -8463,44 +8517,45 @@ let test_provider_options_preserves_openrouter_thinking_budget () =
   | Some { reasoning = Some { enabled = Some true; exclude = None; budget = Max_tokens 4096 }; _ } -> ()
   | None | Some _ -> fail "expected OpenRouter reasoning.max_tokens=4096"
 
-let test_provider_options_reach_anthropic_fetch_for_all_tiers () =
+let test_provider_options_reach_anthropic_fetch () =
+  let check_reaches_fetch ~model_id cfg =
+    let reached_fetch = ref false in
+    let fetch ~url:_ ~headers:_ ~body:_ =
+      reached_fetch := true;
+      Lwt.return
+        (`Assoc
+           [
+             "id", `String "msg_test";
+             "model", `String model_id;
+             "content", `List [];
+             "stop_reason", `String "end_turn";
+             "usage", `Assoc [ "input_tokens", `Int 0; "output_tokens", `Int 0 ];
+           ])
+    in
+    let model =
+      Ai_provider_anthropic.Anthropic_model.create
+        ~config:(Ai_provider_anthropic.Config.create ~api_key:"test" ~fetch ())
+        ~model:model_id
+    in
+    let provider_options = Agent_runner.build_provider_options ~provider:Llm_provider.Anthropic ~model_id cfg in
+    let call =
+      Ai_provider.Call_options.default
+        ~prompt:
+          [
+            Ai_provider.Prompt.User
+              { content = [ Text { text = "ping"; provider_options = Ai_provider.Provider_options.empty } ] };
+          ]
+    in
+    let call = { call with provider_options } in
+    ignore (Lwt_main.run (Ai_provider.Language_model.generate model call) : Ai_provider.Generate_result.t);
+    (check bool) model_id true !reached_fetch
+  in
   List.iter
     (fun tier ->
-      let model_id = Agent_runner.default_model_id tier in
-      let reached_fetch = ref false in
-      let fetch ~url:_ ~headers:_ ~body:_ =
-        reached_fetch := true;
-        Lwt.return
-          (`Assoc
-             [
-               "id", `String "msg_test";
-               "model", `String model_id;
-               "content", `List [];
-               "stop_reason", `String "end_turn";
-               "usage", `Assoc [ "input_tokens", `Int 0; "output_tokens", `Int 0 ];
-             ])
-      in
-      let model =
-        Ai_provider_anthropic.Anthropic_model.create
-          ~config:(Ai_provider_anthropic.Config.create ~api_key:"test" ~fetch ())
-          ~model:model_id
-      in
-      let provider_options =
-        Agent_runner.build_provider_options ~provider:Llm_provider.Anthropic ~model_id
-          (mk_agent_config ~thinking_budget:4096 ())
-      in
-      let call =
-        Ai_provider.Call_options.default
-          ~prompt:
-            [
-              Ai_provider.Prompt.User
-                { content = [ Text { text = "ping"; provider_options = Ai_provider.Provider_options.empty } ] };
-            ]
-      in
-      let call = { call with provider_options } in
-      ignore (Lwt_main.run (Ai_provider.Language_model.generate model call) : Ai_provider.Generate_result.t);
-      (check bool) model_id true !reached_fetch)
-    [ Agent_runner.Fast; Standard; Strong ]
+      check_reaches_fetch ~model_id:(Agent_runner.default_model_id tier) (mk_agent_config ~thinking_budget:4096 ()))
+    [ Agent_runner.Fast; Standard; Strong ];
+  check_reaches_fetch ~model_id:"claude-sonnet-5" (mk_agent_config ());
+  check_reaches_fetch ~model_id:"claude-opus-4-8" (mk_agent_config ~effort:Config_types.Effort.Medium ())
 
 let test_provider_options_carries_openrouter_medium_effort () =
   let cfg = mk_agent_config ~effort:Config_types.Effort.Medium () in
@@ -9539,18 +9594,25 @@ let () =
         ] );
       ( "agent_thinking",
         [
-          test_case "provider_options is empty when thinking_budget is None" `Quick
-            test_provider_options_empty_when_no_thinking_budget;
+          test_case "provider_options disables thinking without config" `Quick
+            test_provider_options_disables_thinking_without_config;
+          test_case "provider_options omits unsupported disabled thinking" `Quick
+            test_provider_options_omits_disabled_for_unsupported_models;
+          test_case "provider_options keeps OpenRouter default without config" `Quick
+            test_provider_options_keeps_openrouter_default_without_config;
           test_case "provider_options carries manual thinking when set" `Quick
             test_provider_options_carries_manual_thinking_when_set;
           test_case "provider_options uses adaptive thinking when required" `Quick
             test_provider_options_uses_adaptive_thinking_when_required;
+          test_case "provider_options carries native Anthropic effort" `Quick
+            test_provider_options_carries_native_anthropic_effort;
+          test_case "provider_options omits unsupported Anthropic effort" `Quick
+            test_provider_options_omits_unsupported_anthropic_effort;
           test_case "provider_options omits thinking for custom model" `Quick
             test_provider_options_omits_thinking_for_custom_model;
           test_case "provider_options preserves OpenRouter thinking budget" `Quick
             test_provider_options_preserves_openrouter_thinking_budget;
-          test_case "provider_options reach Anthropic fetch for all tiers" `Quick
-            test_provider_options_reach_anthropic_fetch_for_all_tiers;
+          test_case "provider_options reach Anthropic fetch" `Quick test_provider_options_reach_anthropic_fetch;
           test_case "provider_options carries OpenRouter medium effort" `Quick
             test_provider_options_carries_openrouter_medium_effort;
           test_case "provider_options clamps budget to 1024 minimum" `Quick test_provider_options_clamps_below_minimum;

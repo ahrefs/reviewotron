@@ -49,10 +49,14 @@ val normalize_model_id : t -> string -> string
     OpenRouter always emits its existing budgeted reasoning configuration. *)
 val thinking_options : t -> model_id:string -> budget_tokens:int -> Ai_provider.Provider_options.t
 
-(** OpenRouter reasoning-effort options. On the direct Anthropic path this
-    returns empty options because ocaml-ai-sdk 0.4 cannot encode native
-    [output_config.effort] yet. *)
-val effort_options : t -> effort:Config_types.Effort.t -> Ai_provider.Provider_options.t
+(** Reasoning-effort options for [model_id]. Direct Anthropic emits native
+    effort with adaptive thinking only when the SDK catalog supports both;
+    OpenRouter emits its existing reasoning-effort configuration. *)
+val effort_options : t -> model_id:string -> effort:Config_types.Effort.t -> Ai_provider.Provider_options.t
+
+(** Explicitly disable thinking for direct Anthropic models whose catalog entry
+    permits it. Unknown and unsupported models, and OpenRouter, emit no option. *)
+val disabled_thinking_options : t -> model_id:string -> Ai_provider.Provider_options.t
 
 (** Cache-control marker for the cached input prefix. *)
 val cached_input_options : t -> Ai_provider.Provider_options.t

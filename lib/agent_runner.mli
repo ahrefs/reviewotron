@@ -23,16 +23,18 @@ type agent_config = {
   output_schema : Yojson.Basic.t;
   max_steps : int;
   thinking_budget : int option;
-    (** Extended-thinking budget for this agent. [None] omits the option and
-        preserves the provider default. On direct Anthropic, [Some] is honored
-        on catalog-known manual models and enables adaptive thinking on
-        catalog-known adaptive-only models. Unknown or unsupported model IDs
-        omit the option; sub-1024 values are clamped to the Anthropic minimum. *)
+    (** Extended-thinking budget for this agent. On direct Anthropic, [None]
+        with no [effort] explicitly disables thinking when the SDK catalog
+        permits it; [Some] is honored on catalog-known manual models and enables
+        adaptive thinking on catalog-known adaptive-only models. Unknown or
+        unsupported semantics are omitted with a warning. OpenRouter [None]
+        preserves its default; sub-1024 [Some] values are clamped to the
+        Anthropic minimum. *)
   effort : Config_types.Effort.t option;
-    (** OpenRouter reasoning effort. [None] preserves the provider default.
-        The direct Anthropic path logs a warning and uses its provider default
-        until ocaml-ai-sdk exposes typed native [output_config.effort] support.
-        Mutually exclusive with [thinking_budget]. *)
+    (** Reasoning effort. Direct Anthropic emits native effort with adaptive
+        thinking when the SDK catalog supports the requested level; unsupported
+        semantics are omitted with a warning. OpenRouter uses its reasoning
+        effort encoding. Mutually exclusive with [thinking_budget]. *)
 }
 
 (** Result of a successful agent run. *)

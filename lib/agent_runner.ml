@@ -35,9 +35,9 @@ let clamp_thinking_budget n = max anthropic_min_thinking_budget n
 
 let build_provider_options ~provider ~model_id (config : agent_config) : Ai_provider.Provider_options.t =
   match config.effort, config.thinking_budget with
-  | None, None -> Ai_provider.Provider_options.empty
+  | None, None -> Llm_provider.disabled_thinking_options provider ~model_id
   | None, Some n -> Llm_provider.thinking_options provider ~model_id ~budget_tokens:(clamp_thinking_budget n)
-  | Some effort, None -> Llm_provider.effort_options provider ~effort
+  | Some effort, None -> Llm_provider.effort_options provider ~model_id ~effort
   | Some _, Some _ -> invalid_arg "agent effort cannot be combined with thinking_budget"
 
 (* Anthropic prompt caching is opt-in: without an explicit [cache_control]
@@ -383,16 +383,29 @@ let run_agent_untraced ~provider ~model ?tools ?(max_retries = 2) ?debug_dir ?lo
   let output_spec = Ai_core.Output.object_ ~name:(config.name ^ "_output") ~schema:config.output_schema () in
   let requested_model_id = Ai_provider.Language_model.model_id model in
   let provider_options = build_provider_options ~provider ~model_id:requested_model_id config in
-  (match provider, config.thinking_budget with
-  | Llm_provider.Anthropic, Some _ ->
-    (match Ai_provider_anthropic.Anthropic_options.of_provider_options provider_options with
-    | None ->
+  (match provider with
+  | Llm_provider.Openrouter -> ()
+  | Anthropic ->
+    let options_omitted =
+      Option.is_none (Ai_provider_anthropic.Anthropic_options.of_provider_options provider_options)
+    in
+    (match config.effort, config.thinking_budget, options_omitted with
+    | None, Some _, true ->
       log#warn
         "%sagent %s: configured thinking budget omitted for model %s because the installed SDK catalog does not \
          declare supported thinking"
         log_prefix config.name requested_model_id
-    | Some _ -> ())
-  | Anthropic, None | Openrouter, None | Openrouter, Some _ -> ());
+    | Some effort, None, true ->
+      log#warn
+        "%sagent %s: configured effort=%s omitted for model %s because the installed SDK catalog does not declare \
+         supported adaptive thinking at that effort"
+        log_prefix config.name (Config_types.Effort.to_string effort) requested_model_id
+    | None, None, true ->
+      log#warn
+        "%sagent %s: explicit thinking disable omitted for model %s because the installed SDK catalog does not declare \
+         that thinking can be disabled"
+        log_prefix config.name requested_model_id
+    | None, None, false | None, Some _, false | Some _, None, false | Some _, Some _, false | Some _, Some _, true -> ()));
   let model = retry_generic_openrouter_403_model ~log_prefix ~agent_name:config.name model in
   let thinking_budget_str =
     match config.thinking_budget with
@@ -406,11 +419,6 @@ let run_agent_untraced ~provider ~model ?tools ?(max_retries = 2) ?debug_dir ?lo
   in
   log#info "%sagent %s: starting (provider=%s, model=%s, max_steps=%d, thinking_budget_config=%s, effort=%s)" log_prefix
     config.name (provider_name provider) requested_model_id config.max_steps thinking_budget_str effort_str;
-  (match provider, config.effort with
-  | Llm_provider.Anthropic, Some effort ->
-    log#warn "%sagent %s: direct Anthropic cannot encode effort=%s with installed ocaml-ai-sdk; using provider default"
-      log_prefix config.name (Config_types.Effort.to_string effort)
-  | Anthropic, None | Openrouter, None | Openrouter, Some _ -> ());
   let tools = Option.default [] tools in
   (* Hand-build the [messages] list (instead of using [~prompt:input]) so we
      can attach a [cache_control] marker to the input text block.  The
