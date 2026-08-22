@@ -8396,12 +8396,74 @@ let test_messages_of_steps_multi_turn_ordering () =
   in
   (check (list string)) "interleaved order" [ "a"; "t"; "a"; "t" ] roles
 
+let recovery_test_steps () =
+  let completed =
+    mk_step ~text:"examined first file"
+      ~tool_calls:[ mk_tool_call ~id:"tc1" ~name:"get_file_content" ~args:(`Assoc [ "path", `String "a.ml" ]) ]
+      ~tool_results:[ mk_tool_result ~id:"tc1" ~name:"get_file_content" ~result:(`String "file body") ]
+      ()
+  in
+  let completed = { completed with reasoning = "unsigned flattened reasoning" } in
+  let unfulfilled =
+    mk_step ~text:"let me also check b.ml"
+      ~tool_calls:[ mk_tool_call ~id:"tc2" ~name:"get_file_content" ~args:(`Assoc [ "path", `String "b.ml" ]) ]
+      ~finish_reason:Ai_provider.Finish_reason.Tool_calls ()
+  in
+  [ completed; unfulfilled ]
+
+let single_user_text = function
+  | [ Ai_provider.Prompt.User { content = [ Text { text; _ } ] } ] -> text
+  | [] | _ :: _ -> fail "expected exactly one user evidence message"
+
+let test_anthropic_recovery_flattens_completed_evidence () =
+  let messages = Agent_runner.recovery_messages_of_steps ~provider:Llm_provider.Anthropic (recovery_test_steps ()) in
+  let assistants, tools = count_roles messages in
+  (check int) "no assistant protocol messages" 0 assistants;
+  (check int) "no tool protocol messages" 0 tools;
+  let evidence = single_user_text messages in
+  List.iter
+    (fun expected -> (check bool) expected true (CCString.mem ~sub:expected evidence))
+    [ "examined first file"; "call_id=tc1"; "name=get_file_content"; "path"; "a.ml"; "file body" ];
+  List.iter
+    (fun omitted -> (check bool) omitted false (CCString.mem ~sub:omitted evidence))
+    [ "check b.ml"; "tc2"; "unsigned flattened reasoning" ]
+
+let test_anthropic_recovery_flattens_partial_step () =
+  let step =
+    mk_step ~text:"completed one call"
+      ~tool_calls:
+        [
+          mk_tool_call ~id:"matched" ~name:"get_file_content" ~args:(`Assoc [ "path", `String "a.ml" ]);
+          mk_tool_call ~id:"unmatched" ~name:"get_file_content" ~args:(`Assoc [ "path", `String "b.ml" ]);
+        ]
+      ~tool_results:[ mk_tool_result ~id:"matched" ~name:"get_file_content" ~result:(`String "file body") ]
+      ()
+  in
+  let evidence = single_user_text (Agent_runner.recovery_messages_of_steps ~provider:Llm_provider.Anthropic [ step ]) in
+  List.iter
+    (fun expected -> (check bool) expected true (CCString.mem ~sub:expected evidence))
+    [ "matched"; "a.ml"; "file body" ];
+  List.iter (fun omitted -> (check bool) omitted false (CCString.mem ~sub:omitted evidence)) [ "unmatched"; "b.ml" ]
+
+let test_anthropic_recovery_replaces_empty_text () =
+  let evidence =
+    single_user_text (Agent_runner.recovery_messages_of_steps ~provider:Llm_provider.Anthropic [ mk_step () ])
+  in
+  (check bool) "evidence text is non-empty" true (not (String.equal evidence ""));
+  (check bool) "empty text is represented" true (CCString.mem ~sub:"(none)" evidence)
+
+let test_openrouter_recovery_keeps_structured_messages () =
+  let messages = Agent_runner.recovery_messages_of_steps ~provider:Llm_provider.Openrouter (recovery_test_steps ()) in
+  let assistants, tools = count_roles messages in
+  (check int) "one assistant message" 1 assistants;
+  (check int) "one tool message" 1 tools
+
 (** {2 Agent thinking-config plumbing}
 
-    The agent_config carries an optional thinking-budget knob; when set, the
-    runner injects an Anthropic [Thinking] config into the provider options
-    that go on the wire.  Tests interrogate the pure helper that builds the
-    provider_options so we don't need a live network call. *)
+    The runner maps the agent's optional thinking budget and effort to the
+    model's supported thinking config, including explicit disabled semantics.
+    Tests interrogate the pure provider-options helper and selected SDK paths
+    without a live network call. *)
 
 let mk_agent_config ?thinking_budget ?effort () : Agent_runner.agent_config =
   {
@@ -8414,15 +8476,40 @@ let mk_agent_config ?thinking_budget ?effort () : Agent_runner.agent_config =
     effort;
   }
 
-let test_provider_options_empty_when_no_thinking_budget () =
+let test_provider_options_disables_thinking_without_config () =
   let cfg = mk_agent_config () in
-  let po = Agent_runner.build_provider_options ~provider:Llm_provider.Anthropic cfg in
-  (check bool) "no Anthropic options when thinking_budget = None" true
-    (Option.is_none (Ai_provider_anthropic.Anthropic_options.of_provider_options po))
+  List.iter
+    (fun model_id ->
+      let po = Agent_runner.build_provider_options ~provider:Llm_provider.Anthropic ~model_id cfg in
+      match Ai_provider_anthropic.Anthropic_options.of_provider_options po with
+      | Some { thinking = Some Disabled; effort = None; _ } -> ()
+      | None
+      | Some { thinking = None | Some (Enabled _ | Adaptive _); _ }
+      | Some { thinking = Some Disabled; effort = Some _; _ } ->
+        failf "expected thinking disabled without effort for %s" model_id)
+    [ "claude-sonnet-5"; "claude-opus-5" ]
 
-let test_provider_options_carries_thinking_when_set () =
+let test_provider_options_omits_disabled_for_unsupported_models () =
+  let cfg = mk_agent_config () in
+  List.iter
+    (fun model_id ->
+      let po = Agent_runner.build_provider_options ~provider:Llm_provider.Anthropic ~model_id cfg in
+      (check bool) model_id true (Option.is_none (Ai_provider_anthropic.Anthropic_options.of_provider_options po)))
+    [ "claude-fable-5"; "claude-custom" ]
+
+let test_provider_options_keeps_openrouter_default_without_config () =
+  let po =
+    Agent_runner.build_provider_options ~provider:Llm_provider.Openrouter ~model_id:"anthropic/claude-sonnet-5"
+      (mk_agent_config ())
+  in
+  (check bool) "no OpenRouter options without config" true
+    (Option.is_none (Ai_provider_openrouter.Openrouter_options.of_provider_options po))
+
+let test_provider_options_carries_manual_thinking_when_set () =
   let cfg = mk_agent_config ~thinking_budget:4096 () in
-  let po = Agent_runner.build_provider_options ~provider:Llm_provider.Anthropic cfg in
+  let po =
+    Agent_runner.build_provider_options ~provider:Llm_provider.Anthropic ~model_id:"claude-haiku-4-5-20251001" cfg
+  in
   match Ai_provider_anthropic.Anthropic_options.of_provider_options po with
   | None -> fail "expected Anthropic options to be present when thinking_budget is set"
   | Some opts ->
@@ -8432,9 +8519,115 @@ let test_provider_options_carries_thinking_when_set () =
     (check int) "thinking budget matches" 4096 (Ai_provider_anthropic.Thinking.to_int budget_tokens)
   | Some (Adaptive _ | Disabled) -> fail "expected thinking to be enabled with an explicit budget"
 
+let test_provider_options_uses_adaptive_thinking_when_required () =
+  let cfg = mk_agent_config ~thinking_budget:4096 () in
+  List.iter
+    (fun model_id ->
+      let po = Agent_runner.build_provider_options ~provider:Llm_provider.Anthropic ~model_id cfg in
+      match Ai_provider_anthropic.Anthropic_options.of_provider_options po with
+      | Some { thinking = Some (Adaptive { display = None }); _ } -> ()
+      | Some { thinking = Some (Adaptive { display = Some (Summarized | Omitted) }); _ }
+      | None
+      | Some { thinking = None | Some (Enabled _ | Disabled); _ } ->
+        failf "expected adaptive thinking for %s" model_id)
+    [ "claude-sonnet-5"; "claude-opus-4-8" ]
+
+let test_provider_options_carries_native_anthropic_effort () =
+  List.iter
+    (fun effort ->
+      let po =
+        Agent_runner.build_provider_options ~provider:Llm_provider.Anthropic ~model_id:"claude-opus-4-8"
+          (mk_agent_config ~effort ())
+      in
+      match Ai_provider_anthropic.Anthropic_options.of_provider_options po with
+      | None -> fail "expected Anthropic effort options"
+      | Some opts ->
+        (match opts.thinking with
+        | Some (Adaptive { display = None }) -> ()
+        | Some (Adaptive { display = Some (Summarized | Omitted) }) | Some (Enabled _ | Disabled) | None ->
+          fail "expected adaptive thinking with native effort");
+        (match opts.effort with
+        | Some actual ->
+          (check string) "native effort" (Config_types.Effort.to_string effort)
+            (Ai_provider_anthropic.Effort.to_string actual)
+        | None -> fail "expected native Anthropic effort"))
+    Config_types.Effort.[ Low; Medium; High; Xhigh ]
+
+let test_provider_options_omits_unsupported_anthropic_effort () =
+  List.iter
+    (fun model_id ->
+      let po =
+        Agent_runner.build_provider_options ~provider:Llm_provider.Anthropic ~model_id
+          (mk_agent_config ~effort:Config_types.Effort.Medium ())
+      in
+      (check bool) model_id true (Option.is_none (Ai_provider_anthropic.Anthropic_options.of_provider_options po)))
+    [ "claude-haiku-4-5-20251001"; "claude-custom" ]
+
+let test_provider_options_omits_thinking_for_custom_model () =
+  let cfg = mk_agent_config ~thinking_budget:4096 () in
+  let po = Agent_runner.build_provider_options ~provider:Llm_provider.Anthropic ~model_id:"claude-custom" cfg in
+  (check bool) "no Anthropic options for custom model" true
+    (Option.is_none (Ai_provider_anthropic.Anthropic_options.of_provider_options po))
+
+let test_provider_options_preserves_openrouter_thinking_budget () =
+  let cfg = mk_agent_config ~thinking_budget:4096 () in
+  let po =
+    Agent_runner.build_provider_options ~provider:Llm_provider.Openrouter ~model_id:"anthropic/claude-sonnet-5" cfg
+  in
+  let open Ai_provider_openrouter.Openrouter_options in
+  match of_provider_options po with
+  | Some { reasoning = Some { enabled = Some true; exclude = None; budget = Max_tokens 4096 }; _ } -> ()
+  | None | Some _ -> fail "expected OpenRouter reasoning.max_tokens=4096"
+
+let test_provider_options_reach_anthropic_fetch () =
+  let check_reaches_fetch ?recovery_steps ~model_id cfg =
+    let reached_fetch = ref false in
+    let fetch ~url:_ ~headers:_ ~body:_ =
+      reached_fetch := true;
+      Lwt.return
+        (`Assoc
+           [
+             "id", `String "msg_test";
+             "model", `String model_id;
+             "content", `List [];
+             "stop_reason", `String "end_turn";
+             "usage", `Assoc [ "input_tokens", `Int 0; "output_tokens", `Int 0 ];
+           ])
+    in
+    let model =
+      Ai_provider_anthropic.Anthropic_model.create
+        ~config:(Ai_provider_anthropic.Config.create ~api_key:"test" ~fetch ())
+        ~model:model_id
+    in
+    let provider_options = Agent_runner.build_provider_options ~provider:Llm_provider.Anthropic ~model_id cfg in
+    let prompt =
+      match recovery_steps with
+      | None ->
+        [
+          Ai_provider.Prompt.User
+            { content = [ Text { text = "ping"; provider_options = Ai_provider.Provider_options.empty } ] };
+        ]
+      | Some steps -> Agent_runner.recovery_messages_of_steps ~provider:Llm_provider.Anthropic steps
+    in
+    let call = Ai_provider.Call_options.default ~prompt in
+    let call = { call with provider_options } in
+    ignore (Lwt_main.run (Ai_provider.Language_model.generate model call) : Ai_provider.Generate_result.t);
+    (check bool) model_id true !reached_fetch
+  in
+  List.iter
+    (fun tier ->
+      check_reaches_fetch ~model_id:(Agent_runner.default_model_id tier) (mk_agent_config ~thinking_budget:4096 ()))
+    [ Agent_runner.Fast; Standard; Strong ];
+  check_reaches_fetch ~recovery_steps:(recovery_test_steps ()) ~model_id:"claude-sonnet-5" (mk_agent_config ());
+  check_reaches_fetch ~model_id:"claude-opus-4-8" (mk_agent_config ~effort:Config_types.Effort.Medium ());
+  check_reaches_fetch ~recovery_steps:(recovery_test_steps ()) ~model_id:"claude-sonnet-5"
+    (mk_agent_config ~thinking_budget:4096 ())
+
 let test_provider_options_carries_openrouter_medium_effort () =
   let cfg = mk_agent_config ~effort:Config_types.Effort.Medium () in
-  let po = Agent_runner.build_provider_options ~provider:Llm_provider.Openrouter cfg in
+  let po =
+    Agent_runner.build_provider_options ~provider:Llm_provider.Openrouter ~model_id:"anthropic/claude-sonnet-5" cfg
+  in
   let open Ai_provider_openrouter.Openrouter_options in
   match of_provider_options po with
   | None -> fail "expected OpenRouter options to be present"
@@ -8792,7 +8985,9 @@ let test_provider_options_clamps_below_minimum () =
      the runner must either reject or clamp; we choose to clamp up to 1024 so
      misconfiguration does not crash the agent loop. *)
   let cfg = mk_agent_config ~thinking_budget:500 () in
-  let po = Agent_runner.build_provider_options ~provider:Llm_provider.Anthropic cfg in
+  let po =
+    Agent_runner.build_provider_options ~provider:Llm_provider.Anthropic ~model_id:"claude-haiku-4-5-20251001" cfg
+  in
   match Ai_provider_anthropic.Anthropic_options.of_provider_options po with
   | None -> fail "expected Anthropic options to be present"
   | Some { thinking = Some (Enabled { budget_tokens; _ }); _ } ->
@@ -9462,13 +9657,34 @@ let () =
             test_messages_of_steps_drops_unfulfilled_final_turn;
           test_case "messages_of_steps: preserves Assistant/Tool interleaving" `Quick
             test_messages_of_steps_multi_turn_ordering;
+          test_case "Anthropic recovery flattens completed evidence" `Quick
+            test_anthropic_recovery_flattens_completed_evidence;
+          test_case "Anthropic recovery flattens partial steps" `Quick test_anthropic_recovery_flattens_partial_step;
+          test_case "Anthropic recovery replaces empty text" `Quick test_anthropic_recovery_replaces_empty_text;
+          test_case "OpenRouter recovery keeps structured messages" `Quick
+            test_openrouter_recovery_keeps_structured_messages;
         ] );
       ( "agent_thinking",
         [
-          test_case "provider_options is empty when thinking_budget is None" `Quick
-            test_provider_options_empty_when_no_thinking_budget;
-          test_case "provider_options carries thinking config when set" `Quick
-            test_provider_options_carries_thinking_when_set;
+          test_case "provider_options disables thinking without config" `Quick
+            test_provider_options_disables_thinking_without_config;
+          test_case "provider_options omits unsupported disabled thinking" `Quick
+            test_provider_options_omits_disabled_for_unsupported_models;
+          test_case "provider_options keeps OpenRouter default without config" `Quick
+            test_provider_options_keeps_openrouter_default_without_config;
+          test_case "provider_options carries manual thinking when set" `Quick
+            test_provider_options_carries_manual_thinking_when_set;
+          test_case "provider_options uses adaptive thinking when required" `Quick
+            test_provider_options_uses_adaptive_thinking_when_required;
+          test_case "provider_options carries native Anthropic effort" `Quick
+            test_provider_options_carries_native_anthropic_effort;
+          test_case "provider_options omits unsupported Anthropic effort" `Quick
+            test_provider_options_omits_unsupported_anthropic_effort;
+          test_case "provider_options omits thinking for custom model" `Quick
+            test_provider_options_omits_thinking_for_custom_model;
+          test_case "provider_options preserves OpenRouter thinking budget" `Quick
+            test_provider_options_preserves_openrouter_thinking_budget;
+          test_case "provider_options reach Anthropic fetch" `Quick test_provider_options_reach_anthropic_fetch;
           test_case "provider_options carries OpenRouter medium effort" `Quick
             test_provider_options_carries_openrouter_medium_effort;
           test_case "provider_options clamps budget to 1024 minimum" `Quick test_provider_options_clamps_below_minimum;

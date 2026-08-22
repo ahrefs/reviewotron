@@ -23,15 +23,18 @@ type agent_config = {
   output_schema : Yojson.Basic.t;
   max_steps : int;
   thinking_budget : int option;
-    (** Anthropic extended-thinking budget for this agent.  Set to give the
-          model a private reasoning channel that does not leak into structured
-          output.  [None] keeps the agent single-pass; sub-1024 values are
-          clamped to the Anthropic minimum. *)
+    (** Extended-thinking budget for this agent. On direct Anthropic, [None]
+        with no [effort] explicitly disables thinking when the SDK catalog
+        permits it; [Some] is honored on catalog-known manual models and enables
+        adaptive thinking on catalog-known adaptive-only models. Unknown or
+        unsupported semantics are omitted with a warning. OpenRouter [None]
+        preserves its default; sub-1024 [Some] values are clamped to the
+        Anthropic minimum. *)
   effort : Config_types.Effort.t option;
-    (** OpenRouter reasoning effort. [None] preserves the provider default.
-        The direct Anthropic path logs a warning and uses its provider default
-        until ocaml-ai-sdk exposes typed native [output_config.effort] support.
-        Mutually exclusive with [thinking_budget]. *)
+    (** Reasoning effort. Direct Anthropic emits native effort with adaptive
+        thinking when the SDK catalog supports the requested level; unsupported
+        semantics are omitted with a warning. OpenRouter uses its reasoning
+        effort encoding. Mutually exclusive with [thinking_budget]. *)
 }
 
 (** Result of a successful agent run. *)
@@ -96,7 +99,8 @@ val write_debug_dump :
     payload for [Ai_core.Generate_text.generate_text].  The [provider] selects
     which backend's option encoding is emitted.  Exposed so the plumbing is
     unit-testable without dispatching a live agent run. *)
-val build_provider_options : provider:Llm_provider.t -> agent_config -> Ai_provider.Provider_options.t
+val build_provider_options :
+  provider:Llm_provider.t -> model_id:string -> agent_config -> Ai_provider.Provider_options.t
 
 (** [Provider_options.t] carrying the [provider]'s ephemeral [cache_control]
     breakpoint.  Attached to the long, stable user-input text block so that
@@ -165,7 +169,15 @@ val run_agent :
     multi-turn conversation back together.  Steps whose tool calls were never
     executed (typically the final step when [max_steps] is exhausted) are
     dropped — re-sending an Assistant turn with unanswered [tool_use] blocks
-    would be a protocol violation at the Anthropic API layer.
+    would be a protocol violation at the provider API layer. This structured
+    replay is used for OpenRouter.
 
     Exposed for unit testing the budget-exhaustion recovery path. *)
 val messages_of_steps : Ai_core.Generate_text_result.step list -> Ai_provider.Prompt.message list
+
+(** Select the provider's safe recovery transcript. Direct Anthropic flattens
+    completed visible text and tool results into fresh [User] messages because
+    steps can omit reasoning and tool protocol state. OpenRouter preserves
+    {!messages_of_steps}. *)
+val recovery_messages_of_steps :
+  provider:Llm_provider.t -> Ai_core.Generate_text_result.step list -> Ai_provider.Prompt.message list

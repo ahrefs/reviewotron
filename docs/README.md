@@ -505,7 +505,7 @@ generated-file header markers. Broad folders such as `generated/`, `dist/`,
 | `always_analyze_vuln_classes` | `[]` | Vulnerability classes that bypass `confidence_threshold`. Classes listed here are implicitly enabled even if absent from `vuln_classes`. Use sparingly for high-risk repos or temporarily while tuning recall. |
 | `triage_model_tier` | `"fast"` | Model tier for the triage agent. |
 | `analysis_model_tier` | `"standard"` | Model tier for per-class analysis agents. |
-| `analysis_effort` | `"medium"` | OpenRouter-only analysis effort: `"low"`, `"medium"`, `"high"`, or `"xhigh"`. Set to `null` for the provider default. |
+| `analysis_effort` | `"medium"` | Analysis effort: `"low"`, `"medium"`, `"high"`, or `"xhigh"`. Direct Anthropic uses native effort with adaptive thinking when supported; OpenRouter uses reasoning effort. Set to `null` to disable direct-Anthropic thinking when supported or keep the OpenRouter default. |
 | `validator_model_tier` | `"standard"` | Model tier for the adversarial validator. |
 | `confidence_threshold` | `"medium"` | Minimum triage confidence to trigger analysis for enabled classes. `"high"` = only high-confidence signals. `"medium"` = high + medium. `"low"` = all signals. |
 | `memory_max_tokens` | `5000` | Target size limit for the repo's security memory file. |

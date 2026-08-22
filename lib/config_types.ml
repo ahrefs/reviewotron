@@ -111,11 +111,8 @@ let model_tier_jsonschema =
     ~enum:(List.map model_tier_to_string all_model_tiers)
     ~description:"Model tier: fast (Haiku), standard (Sonnet), or strong (Opus)."
 
-(** OpenRouter reasoning-effort levels supported by the installed SDK.
-
-    [Max] is intentionally absent: ocaml-ai-sdk 0.4 cannot encode it yet.
-    Direct Anthropic support will use its own native [output_config] path once
-    the SDK exposes that field. *)
+(** Reasoning-effort levels shared by the configured providers. [Max] is
+    intentionally absent because it is not available on both paths. *)
 module Effort = struct
   type t =
     | Low
@@ -143,7 +140,7 @@ module Effort = struct
   let of_json = t_of_json
 
   let t_jsonschema =
-    string_enum_jsonschema ~enum:[ "low"; "medium"; "high"; "xhigh" ] ~description:"OpenRouter reasoning effort level."
+    string_enum_jsonschema ~enum:[ "low"; "medium"; "high"; "xhigh" ] ~description:"Reasoning effort level."
 end
 
 (** Configuration for the general review plugin.
@@ -224,8 +221,8 @@ type security_plugin_config = {
   analysis_effort : Effort.t option;
      [@json.option]
      [@jsonschema.description
-       "OpenRouter reasoning effort for per-class analysis agents. Defaults to medium; set null to keep the provider \
-        default. Direct Anthropic calls cannot encode this until ocaml-ai-sdk adds native effort support."]
+       "Reasoning effort for per-class analysis agents. Defaults to medium; set null to disable thinking on direct \
+        Anthropic when supported, or to keep the OpenRouter provider default."]
   validator_model_tier : model_tier;
      [@json.default Standard] [@jsonschema.description "Model tier for the adversarial validator."]
   confidence_threshold : confidence;

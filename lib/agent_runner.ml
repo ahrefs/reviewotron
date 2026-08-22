@@ -33,11 +33,11 @@ let anthropic_min_thinking_budget = 1024
    misconfiguration cannot crash the agent loop. *)
 let clamp_thinking_budget n = max anthropic_min_thinking_budget n
 
-let build_provider_options ~provider (config : agent_config) : Ai_provider.Provider_options.t =
+let build_provider_options ~provider ~model_id (config : agent_config) : Ai_provider.Provider_options.t =
   match config.effort, config.thinking_budget with
-  | None, None -> Ai_provider.Provider_options.empty
-  | None, Some n -> Llm_provider.thinking_options provider ~budget_tokens:(clamp_thinking_budget n)
-  | Some effort, None -> Llm_provider.effort_options provider ~effort
+  | None, None -> Llm_provider.disabled_thinking_options provider ~model_id
+  | None, Some n -> Llm_provider.thinking_options provider ~model_id ~budget_tokens:(clamp_thinking_budget n)
+  | Some effort, None -> Llm_provider.effort_options provider ~model_id ~effort
   | Some _, Some _ -> invalid_arg "agent effort cannot be combined with thinking_budget"
 
 (* Anthropic prompt caching is opt-in: without an explicit [cache_control]
@@ -309,6 +309,53 @@ let messages_of_steps (steps : Ai_core.Generate_text_result.step list) =
         ])
     steps
 
+(** Anthropic can reject reconstructed assistant turns when their reasoning or
+    tool protocol state is incomplete. Preserve completed evidence as fresh
+    user text instead of fabricating protocol history. *)
+let evidence_messages_of_steps (steps : Ai_core.Generate_text_result.step list) =
+  List.filter_map
+    (fun (step : Ai_core.Generate_text_result.step) ->
+      match step.tool_calls, step.tool_results with
+      | _ :: _, [] -> None
+      | [], _ | _ :: _, _ :: _ ->
+        let assistant_text =
+          match step.text with
+          | "" -> "(none)"
+          | text -> text
+        in
+        let tool_results =
+          step.tool_results
+          |> List.map (fun (result : Ai_core.Generate_text_result.tool_result) ->
+            (* ponytail: tool calls per step are tiny; index by ID if this ever becomes hot. *)
+            let args =
+              match
+                List.find_opt
+                  (fun (call : Ai_core.Generate_text_result.tool_call) ->
+                    String.equal call.tool_call_id result.tool_call_id)
+                  step.tool_calls
+              with
+              | Some call -> Yojson.Basic.to_string call.args
+              | None -> "(unavailable)"
+            in
+            Printf.sprintf "call_id=%s name=%s is_error=%b args=%s result=%s" result.tool_call_id result.tool_name
+              result.is_error args (Yojson.Basic.to_string result.result))
+          |> String.concat "\n"
+        in
+        let text =
+          match tool_results with
+          | "" -> Printf.sprintf "Completed assistant turn evidence:\n%s" assistant_text
+          | tool_results ->
+            Printf.sprintf "Completed assistant turn evidence:\n%s\nCompleted tool results:\n%s" assistant_text
+              tool_results
+        in
+        Some (Ai_provider.Prompt.User { content = [ Text { text; provider_options = po } ] }))
+    steps
+
+let recovery_messages_of_steps ~provider steps =
+  match provider with
+  | Llm_provider.Openrouter -> messages_of_steps steps
+  | Anthropic -> evidence_messages_of_steps steps
+
 let finalization_instruction ~reason =
   Printf.sprintf
     "Your previous response stopped because %s. Do NOT request any more tool calls. Based solely on the evidence you \
@@ -324,7 +371,9 @@ let finalization_instruction ~reason =
 (** Attempt structured-output recovery: when a tool-use agent returns no
     structured output because it exhausted a budget, replay the completed turns
     plus a trailing user instruction asking the model to produce its JSON from
-    what it has, and run a single no-tools turn.
+    what it has, and run a single no-tools turn. Direct Anthropic uses a fresh
+    user-role evidence transcript because step results can omit protocol state
+    required to replay assistant turns.
 
     Returns [Some finalized_result] on success with combined usage/steps,
     [None] when the recovery itself fails (the caller then errors out as
@@ -340,7 +389,7 @@ let finalize_after_budget_exhaustion ~log_prefix ~provider ~model ~config ~provi
   let base_messages =
     Ai_provider.Prompt.User
       { content = [ Text { text = input; provider_options = cached_input_provider_options provider } ] }
-    :: messages_of_steps first.steps
+    :: recovery_messages_of_steps ~provider first.steps
   in
   let follow_up =
     let text = finalization_instruction ~reason in
@@ -382,25 +431,43 @@ let run_agent_untraced ~provider ~model ?tools ?(max_retries = 2) ?debug_dir ?lo
   in
   let output_spec = Ai_core.Output.object_ ~name:(config.name ^ "_output") ~schema:config.output_schema () in
   let requested_model_id = Ai_provider.Language_model.model_id model in
-  let provider_options = build_provider_options ~provider config in
+  let provider_options = build_provider_options ~provider ~model_id:requested_model_id config in
+  (match provider with
+  | Llm_provider.Openrouter -> ()
+  | Anthropic ->
+    let options_omitted =
+      Option.is_none (Ai_provider_anthropic.Anthropic_options.of_provider_options provider_options)
+    in
+    (match config.effort, config.thinking_budget, options_omitted with
+    | None, Some _, true ->
+      log#warn
+        "%sagent %s: configured thinking budget omitted for model %s because the installed SDK catalog does not \
+         declare supported thinking"
+        log_prefix config.name requested_model_id
+    | Some effort, None, true ->
+      log#warn
+        "%sagent %s: configured effort=%s omitted for model %s because the installed SDK catalog does not declare \
+         supported adaptive thinking at that effort"
+        log_prefix config.name (Config_types.Effort.to_string effort) requested_model_id
+    | None, None, true ->
+      log#warn
+        "%sagent %s: explicit thinking disable omitted for model %s because the installed SDK catalog does not declare \
+         that thinking can be disabled"
+        log_prefix config.name requested_model_id
+    | None, None, false | None, Some _, false | Some _, None, false | Some _, Some _, false | Some _, Some _, true -> ()));
   let model = retry_generic_openrouter_403_model ~log_prefix ~agent_name:config.name model in
   let thinking_budget_str =
     match config.thinking_budget with
-    | None -> "off"
-    | Some n -> string_of_int (clamp_thinking_budget n)
+    | None -> "default"
+    | Some n -> string_of_int n
   in
   let effort_str =
     match config.effort with
     | None -> "default"
     | Some effort -> Config_types.Effort.to_string effort
   in
-  log#info "%sagent %s: starting (provider=%s, model=%s, max_steps=%d, thinking_budget=%s, effort=%s)" log_prefix
-    config.name (provider_name provider) requested_model_id config.max_steps thinking_budget_str effort_str;
-  (match provider, config.effort with
-  | Llm_provider.Anthropic, Some effort ->
-    log#warn "%sagent %s: direct Anthropic cannot encode effort=%s with installed ocaml-ai-sdk; using provider default"
-      log_prefix config.name (Config_types.Effort.to_string effort)
-  | Anthropic, None | Openrouter, None | Openrouter, Some _ -> ());
+  log#info "%sagent %s: starting (provider=%s, model=%s, max_steps=%d, thinking_budget_config=%s, effort_config=%s)"
+    log_prefix config.name (provider_name provider) requested_model_id config.max_steps thinking_budget_str effort_str;
   let tools = Option.default [] tools in
   (* Hand-build the [messages] list (instead of using [~prompt:input]) so we
      can attach a [cache_control] marker to the input text block.  The
@@ -537,20 +604,20 @@ let run_agent ~provider ~model ?tools ?(max_retries = 2) ?debug_dir ?log_context
   let requested_model_id = Ai_provider.Language_model.model_id model in
   let thinking_attrs =
     match config.thinking_budget with
-    | None -> [ "reviewotron.agent.thinking_budget.enabled", `Bool false ]
+    | None -> [ "reviewotron.agent.thinking_budget.configured", `Bool false ]
     | Some budget ->
       [
-        "reviewotron.agent.thinking_budget.enabled", `Bool true;
-        "reviewotron.agent.thinking_budget", `Int (clamp_thinking_budget budget);
+        "reviewotron.agent.thinking_budget.configured", `Bool true;
+        "reviewotron.agent.thinking_budget.configured_tokens", `Int budget;
       ]
   in
   let effort_attrs =
     match config.effort with
-    | None -> [ "reviewotron.agent.effort.enabled", `Bool false ]
+    | None -> [ "reviewotron.agent.effort.configured", `Bool false ]
     | Some effort ->
       [
-        "reviewotron.agent.effort.enabled", `Bool true;
-        "reviewotron.agent.effort", `String (Config_types.Effort.to_string effort);
+        "reviewotron.agent.effort.configured", `Bool true;
+        "reviewotron.agent.effort.configured_value", `String (Config_types.Effort.to_string effort);
       ]
   in
   let attrs =
