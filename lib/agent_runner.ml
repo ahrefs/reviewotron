@@ -33,10 +33,10 @@ let anthropic_min_thinking_budget = 1024
    misconfiguration cannot crash the agent loop. *)
 let clamp_thinking_budget n = max anthropic_min_thinking_budget n
 
-let build_provider_options ~provider (config : agent_config) : Ai_provider.Provider_options.t =
+let build_provider_options ~provider ~model_id (config : agent_config) : Ai_provider.Provider_options.t =
   match config.effort, config.thinking_budget with
   | None, None -> Ai_provider.Provider_options.empty
-  | None, Some n -> Llm_provider.thinking_options provider ~budget_tokens:(clamp_thinking_budget n)
+  | None, Some n -> Llm_provider.thinking_options provider ~model_id ~budget_tokens:(clamp_thinking_budget n)
   | Some effort, None -> Llm_provider.effort_options provider ~effort
   | Some _, Some _ -> invalid_arg "agent effort cannot be combined with thinking_budget"
 
@@ -382,11 +382,11 @@ let run_agent_untraced ~provider ~model ?tools ?(max_retries = 2) ?debug_dir ?lo
   in
   let output_spec = Ai_core.Output.object_ ~name:(config.name ^ "_output") ~schema:config.output_schema () in
   let requested_model_id = Ai_provider.Language_model.model_id model in
-  let provider_options = build_provider_options ~provider config in
+  let provider_options = build_provider_options ~provider ~model_id:requested_model_id config in
   let model = retry_generic_openrouter_403_model ~log_prefix ~agent_name:config.name model in
   let thinking_budget_str =
     match config.thinking_budget with
-    | None -> "off"
+    | None -> "default"
     | Some n -> string_of_int (clamp_thinking_budget n)
   in
   let effort_str =

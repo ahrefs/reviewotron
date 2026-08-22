@@ -141,14 +141,22 @@ let language_model provider ~(secrets : Config_types.secrets) ~model_id =
     let base = Ai_provider_openrouter.language_model ~api_key ?base_url ~model:model_id () in
     route_openrouter_model base
 
-let thinking_options provider ~budget_tokens =
+let thinking_options provider ~model_id ~budget_tokens =
   match provider with
   | Anthropic ->
-    let thinking : Ai_provider_anthropic.Thinking.t =
-      Enabled { budget_tokens = Ai_provider_anthropic.Thinking.budget_exn budget_tokens; display = None }
+    let capabilities = Ai_provider_anthropic.Model_catalog.(capabilities (of_model_id model_id)) in
+    let thinking : Ai_provider_anthropic.Thinking.t option =
+      match capabilities.thinking with
+      | Some { manual = true; adaptive = true; _ } | Some { manual = true; adaptive = false; _ } ->
+        Some (Enabled { budget_tokens = Ai_provider_anthropic.Thinking.budget_exn budget_tokens; display = None })
+      | Some { manual = false; adaptive = true; _ } -> Some (Adaptive { display = None })
+      | Some { manual = false; adaptive = false; _ } | None -> None
     in
-    let opts = { Ai_provider_anthropic.Anthropic_options.default with thinking = Some thinking } in
-    Ai_provider_anthropic.Anthropic_options.to_provider_options opts
+    (match thinking with
+    | None -> Ai_provider.Provider_options.empty
+    | Some thinking ->
+      let opts = { Ai_provider_anthropic.Anthropic_options.default with thinking = Some thinking } in
+      Ai_provider_anthropic.Anthropic_options.to_provider_options opts)
   | Openrouter ->
     let reasoning : Ai_provider_openrouter.Openrouter_options.reasoning_config =
       { enabled = Some true; exclude = None; budget = Max_tokens budget_tokens }

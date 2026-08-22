@@ -23,10 +23,10 @@ type agent_config = {
   output_schema : Yojson.Basic.t;
   max_steps : int;
   thinking_budget : int option;
-    (** Anthropic extended-thinking budget for this agent.  Set to give the
-          model a private reasoning channel that does not leak into structured
-          output.  [None] keeps the agent single-pass; sub-1024 values are
-          clamped to the Anthropic minimum. *)
+    (** Extended-thinking budget for this agent. [None] omits the option and
+        preserves the provider default. On direct Anthropic, [Some] is honored
+        on manual models and enables adaptive thinking on adaptive-only models;
+        sub-1024 values are clamped to the Anthropic minimum. *)
   effort : Config_types.Effort.t option;
     (** OpenRouter reasoning effort. [None] preserves the provider default.
         The direct Anthropic path logs a warning and uses its provider default
@@ -96,7 +96,8 @@ val write_debug_dump :
     payload for [Ai_core.Generate_text.generate_text].  The [provider] selects
     which backend's option encoding is emitted.  Exposed so the plumbing is
     unit-testable without dispatching a live agent run. *)
-val build_provider_options : provider:Llm_provider.t -> agent_config -> Ai_provider.Provider_options.t
+val build_provider_options :
+  provider:Llm_provider.t -> model_id:string -> agent_config -> Ai_provider.Provider_options.t
 
 (** [Provider_options.t] carrying the [provider]'s ephemeral [cache_control]
     breakpoint.  Attached to the long, stable user-input text block so that

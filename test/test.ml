@@ -8399,9 +8399,9 @@ let test_messages_of_steps_multi_turn_ordering () =
 (** {2 Agent thinking-config plumbing}
 
     The agent_config carries an optional thinking-budget knob; when set, the
-    runner injects an Anthropic [Thinking] config into the provider options
-    that go on the wire.  Tests interrogate the pure helper that builds the
-    provider_options so we don't need a live network call. *)
+    runner injects the model's supported thinking config into the provider
+    options that go on the wire. Tests interrogate the pure helper that builds
+    the provider_options so we don't need a live network call. *)
 
 let mk_agent_config ?thinking_budget ?effort () : Agent_runner.agent_config =
   {
@@ -8416,13 +8416,15 @@ let mk_agent_config ?thinking_budget ?effort () : Agent_runner.agent_config =
 
 let test_provider_options_empty_when_no_thinking_budget () =
   let cfg = mk_agent_config () in
-  let po = Agent_runner.build_provider_options ~provider:Llm_provider.Anthropic cfg in
+  let po = Agent_runner.build_provider_options ~provider:Llm_provider.Anthropic ~model_id:"claude-sonnet-5" cfg in
   (check bool) "no Anthropic options when thinking_budget = None" true
     (Option.is_none (Ai_provider_anthropic.Anthropic_options.of_provider_options po))
 
-let test_provider_options_carries_thinking_when_set () =
+let test_provider_options_carries_manual_thinking_when_set () =
   let cfg = mk_agent_config ~thinking_budget:4096 () in
-  let po = Agent_runner.build_provider_options ~provider:Llm_provider.Anthropic cfg in
+  let po =
+    Agent_runner.build_provider_options ~provider:Llm_provider.Anthropic ~model_id:"claude-haiku-4-5-20251001" cfg
+  in
   match Ai_provider_anthropic.Anthropic_options.of_provider_options po with
   | None -> fail "expected Anthropic options to be present when thinking_budget is set"
   | Some opts ->
@@ -8432,9 +8434,40 @@ let test_provider_options_carries_thinking_when_set () =
     (check int) "thinking budget matches" 4096 (Ai_provider_anthropic.Thinking.to_int budget_tokens)
   | Some (Adaptive _ | Disabled) -> fail "expected thinking to be enabled with an explicit budget"
 
+let test_provider_options_uses_adaptive_thinking_when_required () =
+  let cfg = mk_agent_config ~thinking_budget:4096 () in
+  List.iter
+    (fun model_id ->
+      let po = Agent_runner.build_provider_options ~provider:Llm_provider.Anthropic ~model_id cfg in
+      match Ai_provider_anthropic.Anthropic_options.of_provider_options po with
+      | Some { thinking = Some (Adaptive { display = None }); _ } -> ()
+      | Some { thinking = Some (Adaptive { display = Some (Summarized | Omitted) }); _ }
+      | None
+      | Some { thinking = None | Some (Enabled _ | Disabled); _ } ->
+        failf "expected adaptive thinking for %s" model_id)
+    [ "claude-sonnet-5"; "claude-opus-4-8" ]
+
+let test_provider_options_omits_thinking_for_custom_model () =
+  let cfg = mk_agent_config ~thinking_budget:4096 () in
+  let po = Agent_runner.build_provider_options ~provider:Llm_provider.Anthropic ~model_id:"claude-custom" cfg in
+  (check bool) "no Anthropic options for custom model" true
+    (Option.is_none (Ai_provider_anthropic.Anthropic_options.of_provider_options po))
+
+let test_provider_options_preserves_openrouter_thinking_budget () =
+  let cfg = mk_agent_config ~thinking_budget:4096 () in
+  let po =
+    Agent_runner.build_provider_options ~provider:Llm_provider.Openrouter ~model_id:"anthropic/claude-sonnet-5" cfg
+  in
+  let open Ai_provider_openrouter.Openrouter_options in
+  match of_provider_options po with
+  | Some { reasoning = Some { enabled = Some true; exclude = None; budget = Max_tokens 4096 }; _ } -> ()
+  | None | Some _ -> fail "expected OpenRouter reasoning.max_tokens=4096"
+
 let test_provider_options_carries_openrouter_medium_effort () =
   let cfg = mk_agent_config ~effort:Config_types.Effort.Medium () in
-  let po = Agent_runner.build_provider_options ~provider:Llm_provider.Openrouter cfg in
+  let po =
+    Agent_runner.build_provider_options ~provider:Llm_provider.Openrouter ~model_id:"anthropic/claude-sonnet-5" cfg
+  in
   let open Ai_provider_openrouter.Openrouter_options in
   match of_provider_options po with
   | None -> fail "expected OpenRouter options to be present"
@@ -8792,7 +8825,9 @@ let test_provider_options_clamps_below_minimum () =
      the runner must either reject or clamp; we choose to clamp up to 1024 so
      misconfiguration does not crash the agent loop. *)
   let cfg = mk_agent_config ~thinking_budget:500 () in
-  let po = Agent_runner.build_provider_options ~provider:Llm_provider.Anthropic cfg in
+  let po =
+    Agent_runner.build_provider_options ~provider:Llm_provider.Anthropic ~model_id:"claude-haiku-4-5-20251001" cfg
+  in
   match Ai_provider_anthropic.Anthropic_options.of_provider_options po with
   | None -> fail "expected Anthropic options to be present"
   | Some { thinking = Some (Enabled { budget_tokens; _ }); _ } ->
@@ -9467,8 +9502,14 @@ let () =
         [
           test_case "provider_options is empty when thinking_budget is None" `Quick
             test_provider_options_empty_when_no_thinking_budget;
-          test_case "provider_options carries thinking config when set" `Quick
-            test_provider_options_carries_thinking_when_set;
+          test_case "provider_options carries manual thinking when set" `Quick
+            test_provider_options_carries_manual_thinking_when_set;
+          test_case "provider_options uses adaptive thinking when required" `Quick
+            test_provider_options_uses_adaptive_thinking_when_required;
+          test_case "provider_options omits thinking for custom model" `Quick
+            test_provider_options_omits_thinking_for_custom_model;
+          test_case "provider_options preserves OpenRouter thinking budget" `Quick
+            test_provider_options_preserves_openrouter_thinking_budget;
           test_case "provider_options carries OpenRouter medium effort" `Quick
             test_provider_options_carries_openrouter_medium_effort;
           test_case "provider_options clamps budget to 1024 minimum" `Quick test_provider_options_clamps_below_minimum;

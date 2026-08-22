@@ -43,8 +43,11 @@ val language_model : t -> secrets:Config_types.secrets -> model_id:string -> Ai_
     OpenRouter's Anthropic slugs, and preserve already-prefixed custom slugs. *)
 val normalize_model_id : t -> string -> string
 
-(** Extended-thinking / reasoning options carrying [budget_tokens]. *)
-val thinking_options : t -> budget_tokens:int -> Ai_provider.Provider_options.t
+(** Extended-thinking / reasoning options for [model_id]. Direct Anthropic uses
+    a manual [budget_tokens] value where supported, enables adaptive thinking on
+    adaptive-only models, and emits no option for unknown or unsupported models.
+    OpenRouter always emits its existing budgeted reasoning configuration. *)
+val thinking_options : t -> model_id:string -> budget_tokens:int -> Ai_provider.Provider_options.t
 
 (** OpenRouter reasoning-effort options. On the direct Anthropic path this
     returns empty options because ocaml-ai-sdk 0.4 cannot encode native
