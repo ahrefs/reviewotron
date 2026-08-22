@@ -8396,6 +8396,71 @@ let test_messages_of_steps_multi_turn_ordering () =
   in
   (check (list string)) "interleaved order" [ "a"; "t"; "a"; "t" ] roles
 
+let recovery_test_steps () =
+  let completed =
+    mk_step ~text:"examined first file"
+      ~tool_calls:[ mk_tool_call ~id:"tc1" ~name:"get_file_content" ~args:(`Assoc [ "path", `String "a.ml" ]) ]
+      ~tool_results:[ mk_tool_result ~id:"tc1" ~name:"get_file_content" ~result:(`String "file body") ]
+      ()
+  in
+  let completed = { completed with reasoning = "unsigned flattened reasoning" } in
+  let unfulfilled =
+    mk_step ~text:"let me also check b.ml"
+      ~tool_calls:[ mk_tool_call ~id:"tc2" ~name:"get_file_content" ~args:(`Assoc [ "path", `String "b.ml" ]) ]
+      ~finish_reason:Ai_provider.Finish_reason.Tool_calls ()
+  in
+  [ completed; unfulfilled ]
+
+let test_active_anthropic_recovery_flattens_completed_evidence () =
+  let cases =
+    [
+      ( "claude-haiku-4-5-20251001",
+        Llm_provider.thinking_options Llm_provider.Anthropic ~model_id:"claude-haiku-4-5-20251001" ~budget_tokens:4096 );
+      ( "claude-sonnet-5",
+        Llm_provider.thinking_options Llm_provider.Anthropic ~model_id:"claude-sonnet-5" ~budget_tokens:4096 );
+      "claude-fable-5", Llm_provider.disabled_thinking_options Llm_provider.Anthropic ~model_id:"claude-fable-5";
+    ]
+  in
+  List.iter
+    (fun (model_id, provider_options) ->
+      let messages =
+        Agent_runner.recovery_messages_of_steps ~provider:Llm_provider.Anthropic ~provider_options
+          (recovery_test_steps ())
+      in
+      let assistants, tools = count_roles messages in
+      (check int) (Printf.sprintf "%s has no assistant protocol messages" model_id) 0 assistants;
+      (check int) (Printf.sprintf "%s has no tool protocol messages" model_id) 0 tools;
+      let user_texts =
+        List.filter_map
+          (function
+            | Ai_provider.Prompt.User { content = [ Text { text; _ } ] } -> Some text
+            | User _ | Assistant _ | Tool _ | System _ -> None)
+          messages
+      in
+      (check int) "one completed evidence turn" 1 (List.length user_texts);
+      let evidence =
+        match user_texts with
+        | [ evidence ] -> evidence
+        | [] | _ :: _ :: _ -> fail "expected exactly one completed evidence turn"
+      in
+      List.iter
+        (fun expected -> (check bool) expected true (CCString.mem ~sub:expected evidence))
+        [ "examined first file"; "call_id=tc1"; "name=get_file_content"; "path"; "a.ml"; "file body" ];
+      List.iter
+        (fun omitted -> (check bool) omitted false (CCString.mem ~sub:omitted evidence))
+        [ "check b.ml"; "tc2"; "unsigned flattened reasoning" ])
+    cases
+
+let test_safe_recovery_modes_keep_structured_messages () =
+  let disabled = Llm_provider.disabled_thinking_options Llm_provider.Anthropic ~model_id:"claude-sonnet-5" in
+  List.iter
+    (fun (provider, provider_options) ->
+      let messages = Agent_runner.recovery_messages_of_steps ~provider ~provider_options (recovery_test_steps ()) in
+      let assistants, tools = count_roles messages in
+      (check int) "one assistant message" 1 assistants;
+      (check int) "one tool message" 1 tools)
+    [ Llm_provider.Anthropic, disabled; Openrouter, Ai_provider.Provider_options.empty ]
+
 (** {2 Agent thinking-config plumbing}
 
     The runner maps the agent's optional thinking budget and effort to the
@@ -8518,7 +8583,7 @@ let test_provider_options_preserves_openrouter_thinking_budget () =
   | None | Some _ -> fail "expected OpenRouter reasoning.max_tokens=4096"
 
 let test_provider_options_reach_anthropic_fetch () =
-  let check_reaches_fetch ~model_id cfg =
+  let check_reaches_fetch ?recovery_steps ~model_id cfg =
     let reached_fetch = ref false in
     let fetch ~url:_ ~headers:_ ~body:_ =
       reached_fetch := true;
@@ -8538,14 +8603,16 @@ let test_provider_options_reach_anthropic_fetch () =
         ~model:model_id
     in
     let provider_options = Agent_runner.build_provider_options ~provider:Llm_provider.Anthropic ~model_id cfg in
-    let call =
-      Ai_provider.Call_options.default
-        ~prompt:
-          [
-            Ai_provider.Prompt.User
-              { content = [ Text { text = "ping"; provider_options = Ai_provider.Provider_options.empty } ] };
-          ]
+    let prompt =
+      match recovery_steps with
+      | None ->
+        [
+          Ai_provider.Prompt.User
+            { content = [ Text { text = "ping"; provider_options = Ai_provider.Provider_options.empty } ] };
+        ]
+      | Some steps -> Agent_runner.recovery_messages_of_steps ~provider:Llm_provider.Anthropic ~provider_options steps
     in
+    let call = Ai_provider.Call_options.default ~prompt in
     let call = { call with provider_options } in
     ignore (Lwt_main.run (Ai_provider.Language_model.generate model call) : Ai_provider.Generate_result.t);
     (check bool) model_id true !reached_fetch
@@ -8555,7 +8622,9 @@ let test_provider_options_reach_anthropic_fetch () =
       check_reaches_fetch ~model_id:(Agent_runner.default_model_id tier) (mk_agent_config ~thinking_budget:4096 ()))
     [ Agent_runner.Fast; Standard; Strong ];
   check_reaches_fetch ~model_id:"claude-sonnet-5" (mk_agent_config ());
-  check_reaches_fetch ~model_id:"claude-opus-4-8" (mk_agent_config ~effort:Config_types.Effort.Medium ())
+  check_reaches_fetch ~model_id:"claude-opus-4-8" (mk_agent_config ~effort:Config_types.Effort.Medium ());
+  check_reaches_fetch ~recovery_steps:(recovery_test_steps ()) ~model_id:"claude-sonnet-5"
+    (mk_agent_config ~thinking_budget:4096 ())
 
 let test_provider_options_carries_openrouter_medium_effort () =
   let cfg = mk_agent_config ~effort:Config_types.Effort.Medium () in
@@ -9591,6 +9660,10 @@ let () =
             test_messages_of_steps_drops_unfulfilled_final_turn;
           test_case "messages_of_steps: preserves Assistant/Tool interleaving" `Quick
             test_messages_of_steps_multi_turn_ordering;
+          test_case "active Anthropic recovery flattens completed evidence" `Quick
+            test_active_anthropic_recovery_flattens_completed_evidence;
+          test_case "safe recovery modes keep structured messages" `Quick
+            test_safe_recovery_modes_keep_structured_messages;
         ] );
       ( "agent_thinking",
         [
