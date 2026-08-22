@@ -383,6 +383,16 @@ let run_agent_untraced ~provider ~model ?tools ?(max_retries = 2) ?debug_dir ?lo
   let output_spec = Ai_core.Output.object_ ~name:(config.name ^ "_output") ~schema:config.output_schema () in
   let requested_model_id = Ai_provider.Language_model.model_id model in
   let provider_options = build_provider_options ~provider ~model_id:requested_model_id config in
+  (match provider, config.thinking_budget with
+  | Llm_provider.Anthropic, Some _ ->
+    (match Ai_provider_anthropic.Anthropic_options.of_provider_options provider_options with
+    | None ->
+      log#warn
+        "%sagent %s: configured thinking budget omitted for model %s because the installed SDK catalog does not \
+         declare supported thinking"
+        log_prefix config.name requested_model_id
+    | Some _ -> ())
+  | Anthropic, None | Openrouter, None | Openrouter, Some _ -> ());
   let model = retry_generic_openrouter_403_model ~log_prefix ~agent_name:config.name model in
   let thinking_budget_str =
     match config.thinking_budget with
@@ -394,7 +404,7 @@ let run_agent_untraced ~provider ~model ?tools ?(max_retries = 2) ?debug_dir ?lo
     | None -> "default"
     | Some effort -> Config_types.Effort.to_string effort
   in
-  log#info "%sagent %s: starting (provider=%s, model=%s, max_steps=%d, thinking_budget=%s, effort=%s)" log_prefix
+  log#info "%sagent %s: starting (provider=%s, model=%s, max_steps=%d, thinking_budget_config=%s, effort=%s)" log_prefix
     config.name (provider_name provider) requested_model_id config.max_steps thinking_budget_str effort_str;
   (match provider, config.effort with
   | Llm_provider.Anthropic, Some effort ->
@@ -537,11 +547,11 @@ let run_agent ~provider ~model ?tools ?(max_retries = 2) ?debug_dir ?log_context
   let requested_model_id = Ai_provider.Language_model.model_id model in
   let thinking_attrs =
     match config.thinking_budget with
-    | None -> [ "reviewotron.agent.thinking_budget.enabled", `Bool false ]
+    | None -> [ "reviewotron.agent.thinking_budget.configured", `Bool false ]
     | Some budget ->
       [
-        "reviewotron.agent.thinking_budget.enabled", `Bool true;
-        "reviewotron.agent.thinking_budget", `Int (clamp_thinking_budget budget);
+        "reviewotron.agent.thinking_budget.configured", `Bool true;
+        "reviewotron.agent.thinking_budget.requested", `Int (clamp_thinking_budget budget);
       ]
   in
   let effort_attrs =

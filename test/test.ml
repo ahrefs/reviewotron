@@ -8463,6 +8463,45 @@ let test_provider_options_preserves_openrouter_thinking_budget () =
   | Some { reasoning = Some { enabled = Some true; exclude = None; budget = Max_tokens 4096 }; _ } -> ()
   | None | Some _ -> fail "expected OpenRouter reasoning.max_tokens=4096"
 
+let test_provider_options_reach_anthropic_fetch_for_all_tiers () =
+  List.iter
+    (fun tier ->
+      let model_id = Agent_runner.default_model_id tier in
+      let reached_fetch = ref false in
+      let fetch ~url:_ ~headers:_ ~body:_ =
+        reached_fetch := true;
+        Lwt.return
+          (`Assoc
+             [
+               "id", `String "msg_test";
+               "model", `String model_id;
+               "content", `List [];
+               "stop_reason", `String "end_turn";
+               "usage", `Assoc [ "input_tokens", `Int 0; "output_tokens", `Int 0 ];
+             ])
+      in
+      let model =
+        Ai_provider_anthropic.Anthropic_model.create
+          ~config:(Ai_provider_anthropic.Config.create ~api_key:"test" ~fetch ())
+          ~model:model_id
+      in
+      let provider_options =
+        Agent_runner.build_provider_options ~provider:Llm_provider.Anthropic ~model_id
+          (mk_agent_config ~thinking_budget:4096 ())
+      in
+      let call =
+        Ai_provider.Call_options.default
+          ~prompt:
+            [
+              Ai_provider.Prompt.User
+                { content = [ Text { text = "ping"; provider_options = Ai_provider.Provider_options.empty } ] };
+            ]
+      in
+      let call = { call with provider_options } in
+      ignore (Lwt_main.run (Ai_provider.Language_model.generate model call) : Ai_provider.Generate_result.t);
+      (check bool) model_id true !reached_fetch)
+    [ Agent_runner.Fast; Standard; Strong ]
+
 let test_provider_options_carries_openrouter_medium_effort () =
   let cfg = mk_agent_config ~effort:Config_types.Effort.Medium () in
   let po =
@@ -9510,6 +9549,8 @@ let () =
             test_provider_options_omits_thinking_for_custom_model;
           test_case "provider_options preserves OpenRouter thinking budget" `Quick
             test_provider_options_preserves_openrouter_thinking_budget;
+          test_case "provider_options reach Anthropic fetch for all tiers" `Quick
+            test_provider_options_reach_anthropic_fetch_for_all_tiers;
           test_case "provider_options carries OpenRouter medium effort" `Quick
             test_provider_options_carries_openrouter_medium_effort;
           test_case "provider_options clamps budget to 1024 minimum" `Quick test_provider_options_clamps_below_minimum;

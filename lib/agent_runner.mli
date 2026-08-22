@@ -25,8 +25,9 @@ type agent_config = {
   thinking_budget : int option;
     (** Extended-thinking budget for this agent. [None] omits the option and
         preserves the provider default. On direct Anthropic, [Some] is honored
-        on manual models and enables adaptive thinking on adaptive-only models;
-        sub-1024 values are clamped to the Anthropic minimum. *)
+        on catalog-known manual models and enables adaptive thinking on
+        catalog-known adaptive-only models. Unknown or unsupported model IDs
+        omit the option; sub-1024 values are clamped to the Anthropic minimum. *)
   effort : Config_types.Effort.t option;
     (** OpenRouter reasoning effort. [None] preserves the provider default.
         The direct Anthropic path logs a warning and uses its provider default
