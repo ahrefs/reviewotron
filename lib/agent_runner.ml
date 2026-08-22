@@ -309,10 +309,9 @@ let messages_of_steps (steps : Ai_core.Generate_text_result.step list) =
         ])
     steps
 
-(** Anthropic thinking requires signed reasoning blocks on reconstructed
-    assistant turns, but [Generate_text_result.step] retains only flattened
-    reasoning text. Preserve completed evidence as fresh user text unless
-    thinking was explicitly disabled. *)
+(** Anthropic can reject reconstructed assistant turns when their reasoning or
+    tool protocol state is incomplete. Preserve completed evidence as fresh
+    user text instead of fabricating protocol history. *)
 let evidence_messages_of_steps (steps : Ai_core.Generate_text_result.step list) =
   List.filter_map
     (fun (step : Ai_core.Generate_text_result.step) ->
@@ -352,13 +351,10 @@ let evidence_messages_of_steps (steps : Ai_core.Generate_text_result.step list) 
         Some (Ai_provider.Prompt.User { content = [ Text { text; provider_options = po } ] }))
     steps
 
-let recovery_messages_of_steps ~provider ~provider_options steps =
+let recovery_messages_of_steps ~provider steps =
   match provider with
   | Llm_provider.Openrouter -> messages_of_steps steps
-  | Anthropic ->
-  match Ai_provider_anthropic.Anthropic_options.of_provider_options provider_options with
-  | Some { thinking = Some Disabled; _ } -> messages_of_steps steps
-  | None | Some { thinking = None | Some (Enabled _ | Adaptive _); _ } -> evidence_messages_of_steps steps
+  | Anthropic -> evidence_messages_of_steps steps
 
 let finalization_instruction ~reason =
   Printf.sprintf
@@ -376,9 +372,8 @@ let finalization_instruction ~reason =
     structured output because it exhausted a budget, replay the completed turns
     plus a trailing user instruction asking the model to produce its JSON from
     what it has, and run a single no-tools turn. Direct Anthropic uses a fresh
-    user-role evidence transcript unless thinking was explicitly disabled,
-    because step results do not retain the signed reasoning blocks required to
-    replay assistant turns.
+    user-role evidence transcript because step results can omit protocol state
+    required to replay assistant turns.
 
     Returns [Some finalized_result] on success with combined usage/steps,
     [None] when the recovery itself fails (the caller then errors out as
@@ -394,7 +389,7 @@ let finalize_after_budget_exhaustion ~log_prefix ~provider ~model ~config ~provi
   let base_messages =
     Ai_provider.Prompt.User
       { content = [ Text { text = input; provider_options = cached_input_provider_options provider } ] }
-    :: recovery_messages_of_steps ~provider ~provider_options first.steps
+    :: recovery_messages_of_steps ~provider first.steps
   in
   let follow_up =
     let text = finalization_instruction ~reason in

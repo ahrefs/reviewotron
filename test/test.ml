@@ -8411,55 +8411,52 @@ let recovery_test_steps () =
   in
   [ completed; unfulfilled ]
 
-let test_active_anthropic_recovery_flattens_completed_evidence () =
-  let cases =
-    [
-      ( "claude-haiku-4-5-20251001",
-        Llm_provider.thinking_options Llm_provider.Anthropic ~model_id:"claude-haiku-4-5-20251001" ~budget_tokens:4096 );
-      ( "claude-sonnet-5",
-        Llm_provider.thinking_options Llm_provider.Anthropic ~model_id:"claude-sonnet-5" ~budget_tokens:4096 );
-      "claude-fable-5", Llm_provider.disabled_thinking_options Llm_provider.Anthropic ~model_id:"claude-fable-5";
-    ]
-  in
-  List.iter
-    (fun (model_id, provider_options) ->
-      let messages =
-        Agent_runner.recovery_messages_of_steps ~provider:Llm_provider.Anthropic ~provider_options
-          (recovery_test_steps ())
-      in
-      let assistants, tools = count_roles messages in
-      (check int) (Printf.sprintf "%s has no assistant protocol messages" model_id) 0 assistants;
-      (check int) (Printf.sprintf "%s has no tool protocol messages" model_id) 0 tools;
-      let user_texts =
-        List.filter_map
-          (function
-            | Ai_provider.Prompt.User { content = [ Text { text; _ } ] } -> Some text
-            | User _ | Assistant _ | Tool _ | System _ -> None)
-          messages
-      in
-      (check int) "one completed evidence turn" 1 (List.length user_texts);
-      let evidence =
-        match user_texts with
-        | [ evidence ] -> evidence
-        | [] | _ :: _ :: _ -> fail "expected exactly one completed evidence turn"
-      in
-      List.iter
-        (fun expected -> (check bool) expected true (CCString.mem ~sub:expected evidence))
-        [ "examined first file"; "call_id=tc1"; "name=get_file_content"; "path"; "a.ml"; "file body" ];
-      List.iter
-        (fun omitted -> (check bool) omitted false (CCString.mem ~sub:omitted evidence))
-        [ "check b.ml"; "tc2"; "unsigned flattened reasoning" ])
-    cases
+let single_user_text = function
+  | [ Ai_provider.Prompt.User { content = [ Text { text; _ } ] } ] -> text
+  | [] | _ :: _ -> fail "expected exactly one user evidence message"
 
-let test_safe_recovery_modes_keep_structured_messages () =
-  let disabled = Llm_provider.disabled_thinking_options Llm_provider.Anthropic ~model_id:"claude-sonnet-5" in
+let test_anthropic_recovery_flattens_completed_evidence () =
+  let messages = Agent_runner.recovery_messages_of_steps ~provider:Llm_provider.Anthropic (recovery_test_steps ()) in
+  let assistants, tools = count_roles messages in
+  (check int) "no assistant protocol messages" 0 assistants;
+  (check int) "no tool protocol messages" 0 tools;
+  let evidence = single_user_text messages in
   List.iter
-    (fun (provider, provider_options) ->
-      let messages = Agent_runner.recovery_messages_of_steps ~provider ~provider_options (recovery_test_steps ()) in
-      let assistants, tools = count_roles messages in
-      (check int) "one assistant message" 1 assistants;
-      (check int) "one tool message" 1 tools)
-    [ Llm_provider.Anthropic, disabled; Openrouter, Ai_provider.Provider_options.empty ]
+    (fun expected -> (check bool) expected true (CCString.mem ~sub:expected evidence))
+    [ "examined first file"; "call_id=tc1"; "name=get_file_content"; "path"; "a.ml"; "file body" ];
+  List.iter
+    (fun omitted -> (check bool) omitted false (CCString.mem ~sub:omitted evidence))
+    [ "check b.ml"; "tc2"; "unsigned flattened reasoning" ]
+
+let test_anthropic_recovery_flattens_partial_step () =
+  let step =
+    mk_step ~text:"completed one call"
+      ~tool_calls:
+        [
+          mk_tool_call ~id:"matched" ~name:"get_file_content" ~args:(`Assoc [ "path", `String "a.ml" ]);
+          mk_tool_call ~id:"unmatched" ~name:"get_file_content" ~args:(`Assoc [ "path", `String "b.ml" ]);
+        ]
+      ~tool_results:[ mk_tool_result ~id:"matched" ~name:"get_file_content" ~result:(`String "file body") ]
+      ()
+  in
+  let evidence = single_user_text (Agent_runner.recovery_messages_of_steps ~provider:Llm_provider.Anthropic [ step ]) in
+  List.iter
+    (fun expected -> (check bool) expected true (CCString.mem ~sub:expected evidence))
+    [ "matched"; "a.ml"; "file body" ];
+  List.iter (fun omitted -> (check bool) omitted false (CCString.mem ~sub:omitted evidence)) [ "unmatched"; "b.ml" ]
+
+let test_anthropic_recovery_replaces_empty_text () =
+  let evidence =
+    single_user_text (Agent_runner.recovery_messages_of_steps ~provider:Llm_provider.Anthropic [ mk_step () ])
+  in
+  (check bool) "evidence text is non-empty" true (not (String.equal evidence ""));
+  (check bool) "empty text is represented" true (CCString.mem ~sub:"(none)" evidence)
+
+let test_openrouter_recovery_keeps_structured_messages () =
+  let messages = Agent_runner.recovery_messages_of_steps ~provider:Llm_provider.Openrouter (recovery_test_steps ()) in
+  let assistants, tools = count_roles messages in
+  (check int) "one assistant message" 1 assistants;
+  (check int) "one tool message" 1 tools
 
 (** {2 Agent thinking-config plumbing}
 
@@ -8610,7 +8607,7 @@ let test_provider_options_reach_anthropic_fetch () =
           Ai_provider.Prompt.User
             { content = [ Text { text = "ping"; provider_options = Ai_provider.Provider_options.empty } ] };
         ]
-      | Some steps -> Agent_runner.recovery_messages_of_steps ~provider:Llm_provider.Anthropic ~provider_options steps
+      | Some steps -> Agent_runner.recovery_messages_of_steps ~provider:Llm_provider.Anthropic steps
     in
     let call = Ai_provider.Call_options.default ~prompt in
     let call = { call with provider_options } in
@@ -8621,7 +8618,7 @@ let test_provider_options_reach_anthropic_fetch () =
     (fun tier ->
       check_reaches_fetch ~model_id:(Agent_runner.default_model_id tier) (mk_agent_config ~thinking_budget:4096 ()))
     [ Agent_runner.Fast; Standard; Strong ];
-  check_reaches_fetch ~model_id:"claude-sonnet-5" (mk_agent_config ());
+  check_reaches_fetch ~recovery_steps:(recovery_test_steps ()) ~model_id:"claude-sonnet-5" (mk_agent_config ());
   check_reaches_fetch ~model_id:"claude-opus-4-8" (mk_agent_config ~effort:Config_types.Effort.Medium ());
   check_reaches_fetch ~recovery_steps:(recovery_test_steps ()) ~model_id:"claude-sonnet-5"
     (mk_agent_config ~thinking_budget:4096 ())
@@ -9660,10 +9657,12 @@ let () =
             test_messages_of_steps_drops_unfulfilled_final_turn;
           test_case "messages_of_steps: preserves Assistant/Tool interleaving" `Quick
             test_messages_of_steps_multi_turn_ordering;
-          test_case "active Anthropic recovery flattens completed evidence" `Quick
-            test_active_anthropic_recovery_flattens_completed_evidence;
-          test_case "safe recovery modes keep structured messages" `Quick
-            test_safe_recovery_modes_keep_structured_messages;
+          test_case "Anthropic recovery flattens completed evidence" `Quick
+            test_anthropic_recovery_flattens_completed_evidence;
+          test_case "Anthropic recovery flattens partial steps" `Quick test_anthropic_recovery_flattens_partial_step;
+          test_case "Anthropic recovery replaces empty text" `Quick test_anthropic_recovery_replaces_empty_text;
+          test_case "OpenRouter recovery keeps structured messages" `Quick
+            test_openrouter_recovery_keeps_structured_messages;
         ] );
       ( "agent_thinking",
         [

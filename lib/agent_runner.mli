@@ -169,20 +169,15 @@ val run_agent :
     multi-turn conversation back together.  Steps whose tool calls were never
     executed (typically the final step when [max_steps] is exhausted) are
     dropped — re-sending an Assistant turn with unanswered [tool_use] blocks
-    would be a protocol violation at the Anthropic API layer. This structured
-    replay is used for OpenRouter and direct Anthropic with thinking explicitly
-    disabled.
+    would be a protocol violation at the provider API layer. This structured
+    replay is used for OpenRouter.
 
     Exposed for unit testing the budget-exhaustion recovery path. *)
 val messages_of_steps : Ai_core.Generate_text_result.step list -> Ai_provider.Prompt.message list
 
-(** Select the safe recovery transcript for the resolved provider options.
-    Direct Anthropic flattens completed visible text and tool results into fresh
-    [User] messages because steps do not retain signed reasoning blocks, unless
-    thinking is explicitly disabled. OpenRouter preserves
+(** Select the provider's safe recovery transcript. Direct Anthropic flattens
+    completed visible text and tool results into fresh [User] messages because
+    steps can omit reasoning and tool protocol state. OpenRouter preserves
     {!messages_of_steps}. *)
 val recovery_messages_of_steps :
-  provider:Llm_provider.t ->
-  provider_options:Ai_provider.Provider_options.t ->
-  Ai_core.Generate_text_result.step list ->
-  Ai_provider.Prompt.message list
+  provider:Llm_provider.t -> Ai_core.Generate_text_result.step list -> Ai_provider.Prompt.message list
