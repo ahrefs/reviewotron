@@ -397,7 +397,7 @@ let run_agent_untraced ~provider ~model ?tools ?(max_retries = 2) ?debug_dir ?lo
   let thinking_budget_str =
     match config.thinking_budget with
     | None -> "default"
-    | Some n -> string_of_int (clamp_thinking_budget n)
+    | Some n -> string_of_int n
   in
   let effort_str =
     match config.effort with
@@ -551,7 +551,7 @@ let run_agent ~provider ~model ?tools ?(max_retries = 2) ?debug_dir ?log_context
     | Some budget ->
       [
         "reviewotron.agent.thinking_budget.configured", `Bool true;
-        "reviewotron.agent.thinking_budget.requested", `Int (clamp_thinking_budget budget);
+        "reviewotron.agent.thinking_budget.configured_tokens", `Int budget;
       ]
   in
   let effort_attrs =
