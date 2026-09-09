@@ -310,14 +310,10 @@ let messages_of_steps (steps : Ai_core.Generate_text_result.step list) =
     steps
 
 (** Flatten completed turns into fresh user text rather than rebuilding
-    Assistant/Tool protocol messages.
-
-    A replayed Assistant turn has to carry back everything the provider sent,
-    and [step] does not preserve enough to do that faithfully: signed thinking
-    blocks are absent, and a step can hold tool calls whose results never
-    arrived. Rebuilding one means guessing at protocol state. Evidence text
-    sidesteps the question — it claims to be nothing but a user message. Steps
-    whose tool calls all went unanswered are dropped entirely. *)
+    Assistant/Tool protocol messages, as {!messages_of_steps} does for
+    OpenRouter. A replayed Assistant turn has to carry back everything the
+    provider sent, and [step] does not preserve that: signed thinking blocks
+    are absent, and a step can hold tool calls whose results never arrived. *)
 let evidence_messages_of_steps (steps : Ai_core.Generate_text_result.step list) =
   List.filter_map
     (fun (step : Ai_core.Generate_text_result.step) ->
