@@ -309,9 +309,15 @@ let messages_of_steps (steps : Ai_core.Generate_text_result.step list) =
         ])
     steps
 
-(** Anthropic can reject reconstructed assistant turns when their reasoning or
-    tool protocol state is incomplete. Preserve completed evidence as fresh
-    user text instead of fabricating protocol history. *)
+(** Flatten completed turns into fresh user text rather than rebuilding
+    Assistant/Tool protocol messages.
+
+    A replayed Assistant turn has to carry back everything the provider sent,
+    and [step] does not preserve enough to do that faithfully: signed thinking
+    blocks are absent, and a step can hold tool calls whose results never
+    arrived. Rebuilding one means guessing at protocol state. Evidence text
+    sidesteps the question — it claims to be nothing but a user message. Steps
+    whose tool calls all went unanswered are dropped entirely. *)
 let evidence_messages_of_steps (steps : Ai_core.Generate_text_result.step list) =
   List.filter_map
     (fun (step : Ai_core.Generate_text_result.step) ->
@@ -326,7 +332,6 @@ let evidence_messages_of_steps (steps : Ai_core.Generate_text_result.step list) 
         let tool_results =
           step.tool_results
           |> List.map (fun (result : Ai_core.Generate_text_result.tool_result) ->
-            (* ponytail: tool calls per step are tiny; index by ID if this ever becomes hot. *)
             let args =
               match
                 List.find_opt
