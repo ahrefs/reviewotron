@@ -148,21 +148,35 @@ let anthropic_options ?effort thinking =
   let opts = { Ai_provider_anthropic.Anthropic_options.default with thinking = Some thinking; effort } in
   Ai_provider_anthropic.Anthropic_options.to_provider_options opts
 
+(* Adaptive-generation Anthropic models reject manual [budget_tokens] with a 400,
+   so a configured budget cannot reach them as a budget.  The SDK is explicit
+   that no faithful budget-to-effort conversion exists, so rather than let a
+   configured budget evaporate we translate it here, in the only branch that
+   needs it, against the two budgets the general-review agents actually use: the
+   scout's 2048 and the 4096 shared by the general review and deep reviewer.
+   Keeping the table in this module means agent definitions and the OpenRouter
+   encoding stay untouched: OpenRouter still receives the raw budget as
+   [reasoning.max_tokens]. *)
+let anthropic_effort_for_budget budget_tokens =
+  match budget_tokens <= 2048 with
+  | true -> Ai_provider_anthropic.Effort.Low
+  | false -> Ai_provider_anthropic.Effort.Medium
+
 let thinking_options provider ~model_id ~budget_tokens =
   match provider with
   | Anthropic ->
-    let thinking =
-      match anthropic_thinking_capabilities model_id with
-      | Some { manual = true; adaptive = true; _ } | Some { manual = true; adaptive = false; _ } ->
-        Some
-          (Ai_provider_anthropic.Thinking.Enabled
-             { budget_tokens = Ai_provider_anthropic.Thinking.budget_exn budget_tokens; display = None })
-      | Some { manual = false; adaptive = true; _ } -> Some (Ai_provider_anthropic.Thinking.Adaptive { display = None })
-      | Some { manual = false; adaptive = false; _ } | None -> None
-    in
-    (match thinking with
-    | None -> Ai_provider.Provider_options.empty
-    | Some thinking -> anthropic_options thinking)
+    (match anthropic_thinking_capabilities model_id with
+    | Some { manual = true; _ } ->
+      anthropic_options
+        (Ai_provider_anthropic.Thinking.Enabled
+           { budget_tokens = Ai_provider_anthropic.Thinking.budget_exn budget_tokens; display = None })
+    | Some { manual = false; adaptive = true; effort_levels; _ } ->
+      let effort = anthropic_effort_for_budget budget_tokens in
+      let thinking = Ai_provider_anthropic.Thinking.Adaptive { display = None } in
+      (match List.mem effort effort_levels with
+      | true -> anthropic_options ~effort thinking
+      | false -> anthropic_options thinking)
+    | Some { manual = false; adaptive = false; _ } | None -> Ai_provider.Provider_options.empty)
   | Openrouter ->
     let reasoning : Ai_provider_openrouter.Openrouter_options.reasoning_config =
       { enabled = Some true; exclude = None; budget = Max_tokens budget_tokens }
@@ -187,13 +201,7 @@ let effort_options provider ~model_id ~effort =
   | Anthropic ->
     let effort = anthropic_effort effort in
     (match anthropic_thinking_capabilities model_id with
-    | Some { adaptive = true; effort_levels; _ }
-      when List.exists
-             (fun allowed ->
-               String.equal
-                 (Ai_provider_anthropic.Effort.to_string allowed)
-                 (Ai_provider_anthropic.Effort.to_string effort))
-             effort_levels ->
+    | Some { adaptive = true; effort_levels; _ } when List.mem effort effort_levels ->
       anthropic_options ~effort (Ai_provider_anthropic.Thinking.Adaptive { display = None })
     | Some { adaptive = true; _ } | Some { adaptive = false; _ } | None -> Ai_provider.Provider_options.empty)
   | Openrouter ->
@@ -202,17 +210,6 @@ let effort_options provider ~model_id ~effort =
     in
     let opts = { Ai_provider_openrouter.Openrouter_options.default with reasoning = Some reasoning } in
     Ai_provider_openrouter.Openrouter_options.to_provider_options opts
-
-let disabled_thinking_options provider ~model_id =
-  match provider with
-  | Anthropic ->
-    (match anthropic_thinking_capabilities model_id with
-    | Some { disabled = Ai_provider_anthropic.Model_catalog.Allowed; _ }
-    | Some { disabled = Ai_provider_anthropic.Model_catalog.Up_to_high; _ } ->
-      anthropic_options Ai_provider_anthropic.Thinking.Disabled
-    | Some { disabled = Ai_provider_anthropic.Model_catalog.Unsupported; _ } | None ->
-      Ai_provider.Provider_options.empty)
-  | Openrouter -> Ai_provider.Provider_options.empty
 
 let cached_input_options provider =
   match provider with

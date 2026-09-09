@@ -35,7 +35,7 @@ let clamp_thinking_budget n = max anthropic_min_thinking_budget n
 
 let build_provider_options ~provider ~model_id (config : agent_config) : Ai_provider.Provider_options.t =
   match config.effort, config.thinking_budget with
-  | None, None -> Llm_provider.disabled_thinking_options provider ~model_id
+  | None, None -> Ai_provider.Provider_options.empty
   | None, Some n -> Llm_provider.thinking_options provider ~model_id ~budget_tokens:(clamp_thinking_budget n)
   | Some effort, None -> Llm_provider.effort_options provider ~model_id ~effort
   | Some _, Some _ -> invalid_arg "agent effort cannot be combined with thinking_budget"
@@ -449,12 +449,13 @@ let run_agent_untraced ~provider ~model ?tools ?(max_retries = 2) ?debug_dir ?lo
         "%sagent %s: configured effort=%s omitted for model %s because the installed SDK catalog does not declare \
          supported adaptive thinking at that effort"
         log_prefix config.name (Config_types.Effort.to_string effort) requested_model_id
-    | None, None, true ->
-      log#warn
-        "%sagent %s: explicit thinking disable omitted for model %s because the installed SDK catalog does not declare \
-         that thinking can be disabled"
-        log_prefix config.name requested_model_id
-    | None, None, false | None, Some _, false | Some _, None, false | Some _, Some _, false | Some _, Some _, true -> ()));
+    | None, None, true
+    | None, None, false
+    | None, Some _, false
+    | Some _, None, false
+    | Some _, Some _, false
+    | Some _, Some _, true ->
+      ()));
   let model = retry_generic_openrouter_403_model ~log_prefix ~agent_name:config.name model in
   let thinking_budget_str =
     match config.thinking_budget with

@@ -8476,26 +8476,24 @@ let mk_agent_config ?thinking_budget ?effort () : Agent_runner.agent_config =
     effort;
   }
 
-let test_provider_options_disables_thinking_without_config () =
-  let cfg = mk_agent_config () in
-  List.iter
-    (fun model_id ->
-      let po = Agent_runner.build_provider_options ~provider:Llm_provider.Anthropic ~model_id cfg in
-      match Ai_provider_anthropic.Anthropic_options.of_provider_options po with
-      | Some { thinking = Some Disabled; effort = None; _ } -> ()
-      | None
-      | Some { thinking = None | Some (Enabled _ | Adaptive _); _ }
-      | Some { thinking = Some Disabled; effort = Some _; _ } ->
-        failf "expected thinking disabled without effort for %s" model_id)
-    [ "claude-sonnet-5"; "claude-opus-5" ]
-
-let test_provider_options_omits_disabled_for_unsupported_models () =
+(* Neither knob set must leave the provider default alone on every model: the
+   pre-adaptive generation, the adaptive generation, and unknown custom IDs.
+   Sending an explicit [Disabled] here would silently switch reasoning off for
+   the agents that carry no thinking config. *)
+let test_provider_options_empty_when_no_thinking_config () =
   let cfg = mk_agent_config () in
   List.iter
     (fun model_id ->
       let po = Agent_runner.build_provider_options ~provider:Llm_provider.Anthropic ~model_id cfg in
       (check bool) model_id true (Option.is_none (Ai_provider_anthropic.Anthropic_options.of_provider_options po)))
-    [ "claude-fable-5"; "claude-custom" ]
+    [
+      "claude-sonnet-5";
+      "claude-opus-5";
+      "claude-opus-4-8";
+      "claude-haiku-4-5-20251001";
+      "claude-fable-5";
+      "claude-custom";
+    ]
 
 let test_provider_options_keeps_openrouter_default_without_config () =
   let po =
@@ -8519,18 +8517,34 @@ let test_provider_options_carries_manual_thinking_when_set () =
     (check int) "thinking budget matches" 4096 (Ai_provider_anthropic.Thinking.to_int budget_tokens)
   | Some (Adaptive _ | Disabled) -> fail "expected thinking to be enabled with an explicit budget"
 
+(* Adaptive-only models reject manual budgets, so a configured budget must
+   arrive as adaptive thinking carrying the mapped effort level rather than
+   evaporating.  The thresholds mirror the budgets the general-review agents
+   actually use. *)
 let test_provider_options_uses_adaptive_thinking_when_required () =
-  let cfg = mk_agent_config ~thinking_budget:4096 () in
   List.iter
-    (fun model_id ->
+    (fun (model_id, budget, expected_effort) ->
+      let cfg = mk_agent_config ~thinking_budget:budget () in
       let po = Agent_runner.build_provider_options ~provider:Llm_provider.Anthropic ~model_id cfg in
       match Ai_provider_anthropic.Anthropic_options.of_provider_options po with
-      | Some { thinking = Some (Adaptive { display = None }); _ } -> ()
+      | Some { thinking = Some (Adaptive { display = None }); effort = Some actual; _ } ->
+        (check string)
+          (Printf.sprintf "%s budget %d maps to effort" model_id budget)
+          expected_effort
+          (Ai_provider_anthropic.Effort.to_string actual)
       | Some { thinking = Some (Adaptive { display = Some (Summarized | Omitted) }); _ }
+      | Some { thinking = Some (Adaptive _); effort = None; _ }
       | None
       | Some { thinking = None | Some (Enabled _ | Disabled); _ } ->
-        failf "expected adaptive thinking for %s" model_id)
-    [ "claude-sonnet-5"; "claude-opus-4-8" ]
+        failf "expected adaptive thinking with mapped effort for %s" model_id)
+    [
+      (* scout *)
+      "claude-sonnet-5", 2048, "low";
+      (* general review *)
+      "claude-sonnet-5", 4096, "medium";
+      (* deep reviewer *)
+      "claude-opus-4-8", 4096, "medium";
+    ]
 
 let test_provider_options_carries_native_anthropic_effort () =
   List.iter
@@ -8636,6 +8650,24 @@ let test_provider_options_carries_openrouter_medium_effort () =
     | `Assoc fields -> (check string) "serialized effort" "medium" (json_string_field fields "effort")
     | _ -> fail "expected OpenRouter reasoning JSON object")
   | Some _ -> fail "expected OpenRouter reasoning.effort=medium"
+
+(* The Anthropic thinking rework must not reach OpenRouter users.  The three
+   general-review agents keep their tuned budgets, so OpenRouter must still
+   receive each one verbatim as [reasoning.max_tokens] — the budget-to-effort
+   translation is confined to the direct-Anthropic branch. *)
+let test_openrouter_budgets_unaffected_by_anthropic_mapping () =
+  List.iter
+    (fun (label, budget) ->
+      let po =
+        Agent_runner.build_provider_options ~provider:Llm_provider.Openrouter ~model_id:"anthropic/claude-sonnet-5"
+          (mk_agent_config ~thinking_budget:budget ())
+      in
+      let open Ai_provider_openrouter.Openrouter_options in
+      match of_provider_options po with
+      | Some { reasoning = Some { enabled = Some true; exclude = None; budget = Max_tokens actual }; _ } ->
+        (check int) label budget actual
+      | None | Some _ -> failf "expected OpenRouter reasoning.max_tokens=%d for %s" budget label)
+    [ "scout", 2048; "general review", 4096; "deep reviewer", 4096 ]
 
 (** The general review agent must opt into Anthropic extended thinking.
     This is what gives the model a real reasoning channel instead of leaking
@@ -9666,10 +9698,8 @@ let () =
         ] );
       ( "agent_thinking",
         [
-          test_case "provider_options disables thinking without config" `Quick
-            test_provider_options_disables_thinking_without_config;
-          test_case "provider_options omits unsupported disabled thinking" `Quick
-            test_provider_options_omits_disabled_for_unsupported_models;
+          test_case "provider_options is empty without thinking config" `Quick
+            test_provider_options_empty_when_no_thinking_config;
           test_case "provider_options keeps OpenRouter default without config" `Quick
             test_provider_options_keeps_openrouter_default_without_config;
           test_case "provider_options carries manual thinking when set" `Quick
@@ -9688,6 +9718,8 @@ let () =
           test_case "provider_options carries OpenRouter medium effort" `Quick
             test_provider_options_carries_openrouter_medium_effort;
           test_case "provider_options clamps budget to 1024 minimum" `Quick test_provider_options_clamps_below_minimum;
+          test_case "OpenRouter budgets unaffected by Anthropic mapping" `Quick
+            test_openrouter_budgets_unaffected_by_anthropic_mapping;
           test_case "general review agent_config enables thinking" `Quick
             test_general_review_agent_config_enables_thinking;
         ] );

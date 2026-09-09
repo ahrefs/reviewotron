@@ -23,13 +23,15 @@ type agent_config = {
   output_schema : Yojson.Basic.t;
   max_steps : int;
   thinking_budget : int option;
-    (** Extended-thinking budget for this agent. On direct Anthropic, [None]
-        with no [effort] explicitly disables thinking when the SDK catalog
-        permits it; [Some] is honored on catalog-known manual models and enables
-        adaptive thinking on catalog-known adaptive-only models. Unknown or
-        unsupported semantics are omitted with a warning. OpenRouter [None]
-        preserves its default; sub-1024 [Some] values are clamped to the
-        Anthropic minimum. *)
+    (** Extended-thinking budget for this agent.  Set to give the model a private
+        reasoning channel that does not leak into structured output.  [None]
+        leaves the provider default untouched on both backends.
+
+        OpenRouter sends the budget verbatim. Direct Anthropic honors it as a
+        manual budget on catalog-known models that accept one, and translates it
+        to the nearest adaptive effort level on adaptive-only models, which
+        reject manual budgets. Sub-1024 values are clamped to the Anthropic
+        minimum. *)
   effort : Config_types.Effort.t option;
     (** Reasoning effort. Direct Anthropic emits native effort with adaptive
         thinking when the SDK catalog supports the requested level; unsupported

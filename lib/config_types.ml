@@ -221,8 +221,7 @@ type security_plugin_config = {
   analysis_effort : Effort.t option;
      [@json.option]
      [@jsonschema.description
-       "Reasoning effort for per-class analysis agents. Defaults to medium; set null to disable thinking on direct \
-        Anthropic when supported, or to keep the OpenRouter provider default."]
+       "Reasoning effort for per-class analysis agents. Defaults to medium; set null to keep the provider default."]
   validator_model_tier : model_tier;
      [@json.default Standard] [@jsonschema.description "Model tier for the adversarial validator."]
   confidence_threshold : confidence;
