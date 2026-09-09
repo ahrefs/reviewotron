@@ -4,7 +4,7 @@
 
 (name reviewotron)
 
-(version 0.8.1)
+(version 0.8.2)
 
 (source
  (github ahrefs/reviewotron))
@@ -41,7 +41,7 @@
   (mirage-crypto-pk
    (< 2.1.0))
   (ocaml-ai-sdk
-   (>= 0.6.1))
+   (>= 0.6.3))
   opentelemetry
   opentelemetry-lwt
   opentelemetry-client-ocurl-lwt

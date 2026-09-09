@@ -48,7 +48,7 @@ val model_tier_to_string : model_tier -> string
 val model_tier_to_json : model_tier -> Yojson.Basic.t
 val model_tier_of_json : Yojson.Basic.t -> model_tier
 
-(** OpenRouter reasoning-effort levels available in the installed SDK. *)
+(** Reasoning-effort levels shared by the configured providers. *)
 module Effort : sig
   type t =
     | Low
