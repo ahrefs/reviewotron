@@ -68,6 +68,13 @@
  (preprocess
   (pps lwt_ppx)))
 
+(executable
+ (name jev_noul_benchmark)
+ (modules jev_noul_benchmark)
+ (libraries reviewotron_lib lwt lwt.unix yojson)
+ (preprocess
+  (pps lwt_ppx)))
+
 (test
  (name test_local_cli)
  (modules test_local_cli)
