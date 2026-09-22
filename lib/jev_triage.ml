@@ -37,6 +37,17 @@ type noul_output = {
   cost : Cost_tracking.agent_cost;
 }
 
+type graded_question = {
+  instructions : string;
+  criteria : string list;
+}
+
+type graded_output = {
+  score : float;
+  confidence : float;
+  cost : Cost_tracking.agent_cost;
+}
+
 let question = function
   | Config_types.Injection ->
     ( "Does `annotated_diff` warrant dedicated injection analysis because changed code may let untrusted data alter a \
@@ -114,6 +125,14 @@ let noul_question_json { instructions; true_criteria; false_criteria } =
       "criteria", `Assoc [ "true", `String true_criteria; "false", `String false_criteria ];
     ]
 
+let graded_question_json { instructions; criteria } =
+  `Assoc
+    [
+      "type", `String "score";
+      "instructions", `String instructions;
+      "criteria", `List (List.map (fun criterion -> `String criterion) criteria);
+    ]
+
 let status_string = function
   | Diff_parser.Added -> "added"
   | Deleted -> "deleted"
@@ -131,6 +150,10 @@ let request_body ~vuln_classes ~path ~status ~annotated_diff =
 
 let noul_request_body ~state ~question =
   `Assoc [ "state", state; "model", `String model; "questions", `Assoc [ "decision", noul_question_json question ] ]
+  |> Yojson.Basic.to_string
+
+let graded_request_body ~state ~question =
+  `Assoc [ "state", state; "model", `String model; "questions", `Assoc [ "decision", graded_question_json question ] ]
   |> Yojson.Basic.to_string
 
 let regions (file_diff : Diff_parser.file_diff) =
@@ -163,6 +186,14 @@ let int_value name json =
   match value with
   | `Int value -> Ok value
   | _ -> Error (Printf.sprintf "Jev response field %S must be an integer" name)
+
+let float_value name json =
+  let open Result in
+  let* value = assoc name json in
+  match value with
+  | `Float value -> Ok value
+  | `Int value -> Ok (Float.of_int value)
+  | _ -> Error (Printf.sprintf "Jev response field %S must be a number" name)
 
 let probability_value json =
   let open Result in
@@ -249,6 +280,23 @@ let noul_of_response body =
   let* probability = probability_value answer in
   Ok { probability; cost }
 
+let graded_output_of_response ~levels body =
+  let open Result in
+  let* answers, cost = response_parts body in
+  let* answer = assoc "decision" answers in
+  let* answer_type = string_value "type" answer in
+  if not (String.equal answer_type "score") then Error (Printf.sprintf "Jev answer has unexpected type %S" answer_type)
+  else
+    let* score = float_value "score" answer in
+    let* confidence = float_value "confidence" answer in
+    let max_score = Float.of_int (levels - 1) in
+    match () with
+    | () when Float.is_nan score || score < 0.0 || score > max_score ->
+      Error (Printf.sprintf "Jev returned out-of-range Score %.4f" score)
+    | () when Float.is_nan confidence || confidence < 0.0 || confidence > 1.0 ->
+      Error (Printf.sprintf "Jev returned out-of-range Score confidence %.4f" confidence)
+    | () -> Ok { score; confidence; cost }
+
 let signals_of_response ~threshold ~vuln_classes ~file_diff body =
   let open Result in
   let* { scores; cost } = scores_of_response ~vuln_classes body in
@@ -288,6 +336,14 @@ let score_noul ~api_key ~state ~question =
   let body = noul_request_body ~state ~question in
   let%lwt response = request ~api_key ~body 0 in
   Lwt.return (Result.bind response noul_of_response)
+
+let score_dimension ~api_key ~state ~question =
+  let levels = List.length question.criteria in
+  if levels < 2 || levels > 10 then Lwt.return (Error "Jev Score criteria must contain between 2 and 10 levels")
+  else (
+    let body = graded_request_body ~state ~question in
+    let%lwt response = request ~api_key ~body 0 in
+    Lwt.return (Result.bind response (graded_output_of_response ~levels)))
 
 let evaluate_file ~api_key ~threshold ~vuln_classes file_diff =
   let%lwt result =

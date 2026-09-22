@@ -11,6 +11,15 @@ let response =
     "usage": {"input_tokens": 500, "output_tokens": 40}
   }|}
 
+let graded_response =
+  {|{
+    "model": "jev-1.13.0",
+    "answers": {
+      "decision": {"type": "score", "score": 2.4, "confidence": 0.6}
+    },
+    "usage": {"input_tokens": 300, "output_tokens": 30}
+  }|}
+
 let test_response_routes_only_probable_classes () =
   let diff =
     Diff_parser.parse
@@ -47,6 +56,14 @@ let test_score_context_response_contract () =
     check int "input tokens" 500 cost.input_tokens
   | Ok _ -> fail "expected two raw scores"
 
+let test_graded_response_contract () =
+  match Jev_triage.graded_output_of_response ~levels:4 graded_response with
+  | Error error -> fail error
+  | Ok output ->
+    check (float 0.0001) "score" 2.4 output.score;
+    check (float 0.0001) "confidence" 0.6 output.confidence;
+    check int "input tokens" 300 output.cost.input_tokens
+
 let () =
   run "jev_triage"
     [
@@ -54,5 +71,6 @@ let () =
         [
           test_case "routes probable classes" `Quick test_response_routes_only_probable_classes;
           test_case "preserves raw probabilities" `Quick test_score_context_response_contract;
+          test_case "parses graded output" `Quick test_graded_response_contract;
         ] );
     ]
