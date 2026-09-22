@@ -87,6 +87,8 @@ type security_plugin_config = {
   analysis_effort : Effort.t option;
   validator_model_tier : model_tier;
   confidence_threshold : confidence;
+  jev_triage_enabled : bool;
+  jev_triage_threshold : float;
   memory_max_tokens : int;
   metrics_artifacts : bool;
   debug_artifacts : bool;
@@ -161,6 +163,7 @@ type secrets = {
   repos : repo_config list;
   anthropic_api_key : string option;
   openrouter_api_key : string option;
+  typesafe_api_key : string option;
   slack_access_token : string option;
 }
 [@@deriving json]

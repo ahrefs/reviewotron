@@ -110,7 +110,9 @@ publishing, then re-running after each change.
   `--anthropic-api-key`, else the `OPENROUTER_API_KEY` / `ANTHROPIC_API_KEY`
   environment variables, else a `--secrets` file if you choose to provide one (in
   that order). An OpenRouter key is preferred when both are available. A
-  `secrets.json` is *not* read unless you pass `--secrets` explicitly.
+  `secrets.json` is *not* read unless you pass `--secrets` explicitly. Jev triage
+  separately reads `TYPESAFE_API_KEY`, then `typesafe_api_key` from that secrets
+  file.
 - **Redirectable endpoint.** On an OpenRouter key, `OPENROUTER_BASE_URL` points
   the provider at an OpenAI-compatible proxy instead of `openrouter.ai` — see
   [OpenRouter Base URL Override](#openrouter-base-url-override).
@@ -281,6 +283,7 @@ Create a `secrets.json` file (see `secrets.json.example`):
     }
   ],
   "openrouter_api_key": "sk-or-v1-xxxxxxxxxxxx",
+  "typesafe_api_key": "ts-xxxxxxxxxxxx",
   "slack_access_token": "xoxb-xxxxxxxxxxxx"
 }
 ```
@@ -299,6 +302,7 @@ Either LLM key works; `openrouter_api_key` is used when both are present. Swap i
 | `repos[].auth` | Yes* | Alternative to `gh_token` — GitHub App installation auth (see below) |
 | `openrouter_api_key` | Yes† | OpenRouter API key; preferred when both keys are set |
 | `anthropic_api_key` | Yes† | Anthropic API key for Claude, used when no OpenRouter key is present |
+| `typesafe_api_key` | No | TypeSafe API key for Jev security triage. Required when `jev_triage_enabled` is true. |
 | `slack_access_token` | No | Slack bot token for posting messages |
 
 *Either `gh_token` or `auth` must be set per repo. Using `gh_token` is the simpler option.
@@ -448,6 +452,8 @@ version control. Webhook/server commands do not read the user-global files.
       "analysis_effort": "medium",
       "validator_model_tier": "standard",
       "confidence_threshold": "medium",
+      "jev_triage_enabled": false,
+      "jev_triage_threshold": 0.8,
       "memory_max_tokens": 5000,
       "metrics_artifacts": false,
       "debug_artifacts": false
@@ -508,6 +514,8 @@ generated-file header markers. Broad folders such as `generated/`, `dist/`,
 | `analysis_effort` | `"medium"` | Analysis effort: `"low"`, `"medium"`, `"high"`, or `"xhigh"`. OpenRouter sends it as reasoning effort; direct Anthropic sends native effort with adaptive thinking where the model supports that level. Set to `null` for the provider default. |
 | `validator_model_tier` | `"standard"` | Model tier for the adversarial validator. |
 | `confidence_threshold` | `"medium"` | Minimum triage confidence to trigger analysis for enabled classes. `"high"` = only high-confidence signals. `"medium"` = high + medium. `"low"` = all signals. |
+| `jev_triage_enabled` | `false` | Replace the generative triage call with TypeSafe Jev. If the key is absent, the service fails, or any file is not evaluated, Reviewotron falls back to the primary triage agent. Local reviews read `TYPESAFE_API_KEY` before `typesafe_api_key` in the secrets file. |
+| `jev_triage_threshold` | `0.8` | Minimum Jev Noul probability that routes a file to per-class analysis. Must be between 0 and 1. Tune against labeled repository changes. |
 | `memory_max_tokens` | `5000` | Target size limit for the repo's security memory file. |
 | `metrics_artifacts` | `false` | Write compact security metrics artifacts under the review debug dir's `security/` subdirectory. These omit source code and prompt bodies. |
 | `debug_artifacts` | `false` | Write full redacted per-stage security debug artifacts under the review debug dir's `security/` subdirectory. Sensitive and opt-in. |
@@ -552,11 +560,13 @@ Reviewotron skips events in these cases:
 
 When the security plugin is enabled, every diff goes through a multi-agent pipeline:
 
-### 1. Triage (Haiku, single-shot)
+### 1. Triage (Haiku or Jev)
 
 Before triage, Reviewotron runs a deterministic scan over changed paths and added hunk lines for advisory security signals such as dangerous APIs, risky paths, sensitive files, changed security controls, and stateful operations. These signals are hints only: they are summarized by category, vulnerability hint, and affected file for triage, with only the strongest exact hints included. They never become findings and never route directly to analysis.
 
-The triage agent scans the diff for security-relevant patterns and classifies them by vulnerability type. This is intentionally biased toward **over-flagging** — it's cheap to run an analysis agent that finds nothing, costly to miss a real issue.
+By default, the triage agent scans the diff for security-relevant patterns and classifies them by vulnerability type. This is intentionally biased toward **over-flagging** — it's cheap to run an analysis agent that finds nothing, costly to miss a real issue.
+
+When `jev_triage_enabled` is true, Jev instead asks one independent Noul question per enabled vulnerability class for every changed file. Scores at or above `jev_triage_threshold` route that file and class to analysis. The model version is pinned so a calibrated threshold cannot change silently. Reviewotron falls back to the default triager if Jev is unavailable or fails to evaluate every file.
 
 The triage agent outputs signals with confidence levels (`high`, `medium`, `low`). The `confidence_threshold` config controls which signals proceed to analysis for enabled vulnerability classes. `always_analyze_vuln_classes` is the explicit override that bypasses the threshold; classes listed there are implicitly enabled even if absent from `vuln_classes`.
 

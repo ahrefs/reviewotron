@@ -621,6 +621,36 @@ module Make (AI : Api.Agent_runner) = struct
 
   let run_agent ~config f = run_stage ~stage:(Printf.sprintf "agent %s" config.Agent_runner.name) f
 
+  let run_jev_triage ~ctx ~security_config ~diff ~artifacts ?log_context () =
+    let log_prefix = log_context_prefix log_context in
+    match security_config.Config_types.jev_triage_enabled with
+    | false -> Lwt.return_none
+    | true ->
+    match (Context.secrets ctx).typesafe_api_key with
+    | None ->
+      log#warn "%sJev triage is enabled but no TypeSafe API key is configured" log_prefix;
+      Lwt.return_none
+    | Some api_key ->
+      let vuln_classes =
+        List.fold_left
+          (fun classes vuln_class ->
+            match List.exists (vuln_class_equal vuln_class) classes with
+            | true -> classes
+            | false -> vuln_class :: classes)
+          security_config.vuln_classes security_config.always_analyze_vuln_classes
+      in
+      let%lwt result =
+        Jev_triage.run ?log_context ~api_key ~threshold:security_config.jev_triage_threshold ~vuln_classes ~diff ()
+      in
+      (match result with
+      | Error error ->
+        log#warn "%sJev triage failed: %s" log_prefix error;
+        Lwt.return_none
+      | Ok output ->
+        log#info "%sJev triage: %d signal(s)" log_prefix (List.length output.signals);
+        Security_artifacts.write_debug_json artifacts ~filename:"jev_triage_signals.json"
+          (`List (List.map Security_types.triage_signal_to_json output.signals));
+        Lwt.return_some output)
   (** Run the triage agent and parse its structured output.
       Returns the parsed output (if successful) and any agent costs incurred. *)
   let run_triage ~ctx ~repo_url ~security_config ~diff_text ~file_paths ~deterministic_signals ~artifacts
@@ -1434,11 +1464,41 @@ module Make (AI : Api.Agent_runner) = struct
     log#info "%sdeterministic signals: %d signal(s)" log_prefix (List.length deterministic_signals);
     Security_artifacts.write_debug_json artifacts ~filename:"deterministic_signals.json"
       (`List (List.map Security_types.candidate_signal_to_json deterministic_signals));
-    let%lwt triage_result, triage_costs =
+    let run_primary_triage () =
       run_stage ~stage:"security_triage" (fun () ->
         run_triage ~ctx ~repo_url ~security_config ~diff_text ~file_paths ~deterministic_signals ~artifacts
           ?security_memory ?debug_dir:agent_debug_dir ?log_context ())
     in
+    let jev_triage_output (output : Jev_triage.output) =
+      {
+        Security_types.signals = output.signals;
+        language_hints = Triage_agent.detect_languages file_paths;
+        skip_reason = None;
+      }
+    in
+    let%lwt jev_output = run_jev_triage ~ctx ~security_config ~diff ~artifacts ?log_context () in
+    let%lwt triage_result, primary_triage_costs =
+      match jev_output with
+      | Some output when output.complete -> Lwt.return (Some (jev_triage_output output), [])
+      | Some output ->
+        log#warn "%sJev triage did not evaluate every file; falling back to primary triage" log_prefix;
+        let%lwt primary_result, primary_costs = run_primary_triage () in
+        let triage_result =
+          match primary_result, output.signals with
+          | None, [] -> None
+          | None, _ :: _ -> Some (jev_triage_output output)
+          | Some primary, [] -> Some primary
+          | Some primary, _ :: _ -> Some { primary with signals = primary.signals @ output.signals; skip_reason = None }
+        in
+        Lwt.return (triage_result, primary_costs)
+      | None -> run_primary_triage ()
+    in
+    let jev_costs =
+      match jev_output with
+      | Some output -> output.costs
+      | None -> []
+    in
+    let triage_costs = primary_triage_costs @ jev_costs in
     match triage_result with
     | None ->
       let metrics = empty_analysis_metrics ~actionable_triage_signal_count:0 in

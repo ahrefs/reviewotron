@@ -226,6 +226,14 @@ type security_plugin_config = {
      [@json.default Standard] [@jsonschema.description "Model tier for the adversarial validator."]
   confidence_threshold : confidence;
      [@json.default Medium] [@jsonschema.description "Minimum triage confidence to trigger analysis."]
+  jev_triage_enabled : bool;
+     [@json.default false]
+     [@jsonschema.description
+       "Use TypeSafe Jev for security triage, falling back to the primary triage agent if Jev is unavailable. Requires \
+        typesafe_api_key in secrets or TYPESAFE_API_KEY for local reviews."]
+  jev_triage_threshold : float;
+     [@json.default 0.8]
+     [@jsonschema.description "Minimum Jev Noul probability, from 0 to 1, that triggers deeper security analysis."]
   memory_max_tokens : int;
      [@json.default 5000] [@jsonschema.description "Target size limit for the repo security memory."]
   metrics_artifacts : bool;
@@ -261,6 +269,8 @@ let default_security_plugin_config =
     analysis_effort = Some Effort.Medium;
     validator_model_tier = Standard;
     confidence_threshold = Medium;
+    jev_triage_enabled = false;
+    jev_triage_threshold = 0.8;
     memory_max_tokens = 5000;
     metrics_artifacts = false;
     debug_artifacts = false;
@@ -363,6 +373,13 @@ let ignored_file_regex_probe_paths = [ "a"; "a/b"; "src/main.ml"; "src/security.
 
 let regex_matches_all_probe_paths regex = List.for_all (Re2.matches regex) ignored_file_regex_probe_paths
 
+let validate_jev_triage_threshold ~json threshold =
+  match threshold with
+  | threshold when Float.is_nan threshold || threshold < 0.0 || threshold > 1.0 ->
+    Melange_json.of_json_error ~json
+      (Printf.sprintf "jev_triage_threshold must be between 0 and 1 (got %.4f)" threshold)
+  | _ -> ()
+
 let validate_ignored_file_regex ~json pattern =
   match Re2.create pattern with
   | Error _ ->
@@ -378,6 +395,7 @@ let validate_ignored_file_regex ~json pattern =
 let config_of_json (json : Yojson.Basic.t) : config =
   let config = Config_codec.of_json json in
   List.iter (validate_ignored_file_regex ~json) config.ignored_file_regexes;
+  validate_jev_triage_threshold ~json config.review_plugins.security.jev_triage_threshold;
   config
 
 let config_help_json () = Yojson.Basic.pretty_to_string config_jsonschema
@@ -452,6 +470,7 @@ type secrets = {
   repos : repo_config list;
   anthropic_api_key : string option; [@json.option]
   openrouter_api_key : string option; [@json.option]
+  typesafe_api_key : string option; [@json.option]
   slack_access_token : string option; [@json.option]
 }
 [@@deriving json] [@@json.allow_extra_fields]
