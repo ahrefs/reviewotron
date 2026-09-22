@@ -16,6 +16,17 @@ type score_output = {
   cost : Cost_tracking.agent_cost;
 }
 
+type noul_question = {
+  instructions : string;
+  true_criteria : string;
+  false_criteria : string;
+}
+
+type noul_output = {
+  probability : float;
+  cost : Cost_tracking.agent_cost;
+}
+
 (** Parse raw scores and usage from one successful System One response. *)
 val scores_of_response : vuln_classes:Config_types.vuln_class list -> string -> (score_output, string) result
 
@@ -28,6 +39,10 @@ val score_context :
   status:string ->
   annotated_diff:string ->
   (score_output, string) result Lwt.t
+
+(** Ask one arbitrary binary semantic question. Experiment harnesses use this
+    to test Jev applications without adding them to Reviewotron's pipeline. *)
+val score_noul : api_key:string -> state:Yojson.Basic.t -> question:noul_question -> (noul_output, string) result Lwt.t
 
 (** Convert one successful System One response into routing signals and cost.
     Exposed so the third-party response contract can be tested without network

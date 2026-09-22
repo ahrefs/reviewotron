@@ -61,6 +61,13 @@
  (preprocess
   (pps lwt_ppx)))
 
+(executable
+ (name jev_dedup_benchmark)
+ (modules jev_dedup_benchmark)
+ (libraries reviewotron_lib lwt lwt.unix yojson)
+ (preprocess
+  (pps lwt_ppx)))
+
 (test
  (name test_local_cli)
  (modules test_local_cli)

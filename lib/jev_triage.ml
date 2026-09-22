@@ -26,6 +26,17 @@ type score_output = {
   cost : Cost_tracking.agent_cost;
 }
 
+type noul_question = {
+  instructions : string;
+  true_criteria : string;
+  false_criteria : string;
+}
+
+type noul_output = {
+  probability : float;
+  cost : Cost_tracking.agent_cost;
+}
+
 let question = function
   | Config_types.Injection ->
     ( "Does `annotated_diff` warrant dedicated injection analysis because changed code may let untrusted data alter a \
@@ -95,6 +106,14 @@ let question_json vuln_class =
         "criteria", `Assoc [ "true", `String yes_criteria; "false", `String no_criteria ];
       ] )
 
+let noul_question_json { instructions; true_criteria; false_criteria } =
+  `Assoc
+    [
+      "type", `String "noul";
+      "instructions", `String instructions;
+      "criteria", `Assoc [ "true", `String true_criteria; "false", `String false_criteria ];
+    ]
+
 let status_string = function
   | Diff_parser.Added -> "added"
   | Deleted -> "deleted"
@@ -108,6 +127,10 @@ let request_body ~vuln_classes ~path ~status ~annotated_diff =
       "model", `String model;
       "questions", `Assoc (List.map question_json vuln_classes);
     ]
+  |> Yojson.Basic.to_string
+
+let noul_request_body ~state ~question =
+  `Assoc [ "state", state; "model", `String model; "questions", `Assoc [ "decision", noul_question_json question ] ]
   |> Yojson.Basic.to_string
 
 let regions (file_diff : Diff_parser.file_diff) =
@@ -177,7 +200,7 @@ let signal ~threshold ~file_diff { vuln_class; probability } =
            rationale = Printf.sprintf "Jev %s routed this file to %s analysis (Noul %.3f)." model id probability;
          }))
 
-let scores_of_response ~vuln_classes body =
+let response_parts body =
   let open Result in
   let* json =
     match Yojson.Basic.from_string body with
@@ -189,16 +212,6 @@ let scores_of_response ~vuln_classes body =
   let* usage = assoc "usage" json in
   let* input_tokens = int_value "input_tokens" usage in
   let* output_tokens = int_value "output_tokens" usage in
-  let* scores =
-    List.fold_left
-      (fun result vuln_class ->
-        let* scores = result in
-        let id = Security_types.vuln_class_to_string vuln_class in
-        let* answer = assoc id answers in
-        let* probability = probability_value answer in
-        Ok ({ vuln_class; probability } :: scores))
-      (Ok []) vuln_classes
-  in
   let cost : Cost_tracking.agent_cost =
     {
       agent_name = "jev_triage";
@@ -212,7 +225,29 @@ let scores_of_response ~vuln_classes body =
       estimated_cost_usd = Float.of_int input_tokens *. input_price_per_million /. 1_000_000.0;
     }
   in
+  Ok (answers, cost)
+
+let scores_of_response ~vuln_classes body =
+  let open Result in
+  let* answers, cost = response_parts body in
+  let* scores =
+    List.fold_left
+      (fun result vuln_class ->
+        let* scores = result in
+        let id = Security_types.vuln_class_to_string vuln_class in
+        let* answer = assoc id answers in
+        let* probability = probability_value answer in
+        Ok ({ vuln_class; probability } :: scores))
+      (Ok []) vuln_classes
+  in
   Ok { scores = List.rev scores; cost }
+
+let noul_of_response body =
+  let open Result in
+  let* answers, cost = response_parts body in
+  let* answer = assoc "decision" answers in
+  let* probability = probability_value answer in
+  Ok { probability; cost }
 
 let signals_of_response ~threshold ~vuln_classes ~file_diff body =
   let open Result in
@@ -248,6 +283,11 @@ let score_context ~api_key ~vuln_classes ~path ~status ~annotated_diff =
   let body = request_body ~vuln_classes ~path ~status ~annotated_diff in
   let%lwt response = request ~api_key ~body 0 in
   Lwt.return (Result.bind response (scores_of_response ~vuln_classes))
+
+let score_noul ~api_key ~state ~question =
+  let body = noul_request_body ~state ~question in
+  let%lwt response = request ~api_key ~body 0 in
+  Lwt.return (Result.bind response noul_of_response)
 
 let evaluate_file ~api_key ~threshold ~vuln_classes file_diff =
   let%lwt result =

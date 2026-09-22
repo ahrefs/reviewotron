@@ -1,0 +1,326 @@
+[
+  {
+    "name": "idor_anchor_shift",
+    "duplicate": true,
+    "finding_a": {
+      "class": "authz",
+      "source": {"path": "src/projects.ts", "line": 14, "description": "project id from route parameter"},
+      "sink": {"path": "src/projects.ts", "line": 18, "description": "archive route without an ownership check"},
+      "flow": "request id reaches the archive handler and selects a project",
+      "repair": "constrain the project update by current user id"
+    },
+    "finding_b": {
+      "class": "authz",
+      "source": {"path": "src/projects.ts", "line": 15, "description": "attacker-controlled projectId"},
+      "sink": {"path": "src/projects.ts", "line": 24, "description": "database update filters only by project id"},
+      "flow": "projectId is passed unchanged to the update query",
+      "repair": "add owner_id = currentUser.id to this update"
+    }
+  },
+  {
+    "name": "sql_anchor_shift",
+    "duplicate": true,
+    "finding_a": {
+      "class": "injection",
+      "source": {"path": "src/reports.ts", "line": 34, "description": "owner query parameter"},
+      "sink": {"path": "src/reports.ts", "line": 40, "description": "owner interpolated into SQL string"},
+      "flow": "owner is inserted into the reports query",
+      "repair": "parameterize owner in the reports query"
+    },
+    "finding_b": {
+      "class": "injection",
+      "source": {"path": "src/reports.ts", "line": 35, "description": "untrusted owner value"},
+      "sink": {"path": "src/reports.ts", "line": 42, "description": "db.query executes the interpolated reports SQL"},
+      "flow": "the helper-built SQL reaches db.query",
+      "repair": "execute the reports query with a bound owner parameter"
+    }
+  },
+  {
+    "name": "policy_anchor_shift",
+    "duplicate": true,
+    "finding_a": {
+      "class": "policy_regression",
+      "source": {"path": "infra/unix_users.pp", "line": 92, "description": "passwordless systemctl grant"},
+      "sink": {"path": "infra/unix_users.pp", "line": 94, "description": "unrestricted systemctl command supplied to sudoers"},
+      "flow": "the new resource grants every systemctl subcommand",
+      "repair": "restrict the grant to named units and actions"
+    },
+    "finding_b": {
+      "class": "policy_regression",
+      "source": {"path": "infra/unix_users.pp", "line": 92, "description": "new user_systemctl resource"},
+      "sink": {"path": "infra/sudoers.pp", "line": 28, "description": "generated NOPASSWD sudoers entry"},
+      "flow": "the resource renders an unrestricted root systemctl capability",
+      "repair": "scope the user_systemctl command allowlist"
+    }
+  },
+  {
+    "name": "ssrf_helper_and_fetch",
+    "duplicate": true,
+    "finding_a": {
+      "class": "ssrf",
+      "source": {"path": "src/preview.ts", "line": 12, "description": "url query parameter"},
+      "sink": {"path": "src/preview.ts", "line": 18, "description": "normalizeDestination accepts any host"},
+      "flow": "the normalized destination is returned for fetching",
+      "repair": "allowlist destinations before returning the URL"
+    },
+    "finding_b": {
+      "class": "ssrf",
+      "source": {"path": "src/preview.ts", "line": 12, "description": "attacker-selected destination"},
+      "sink": {"path": "src/preview.ts", "line": 24, "description": "fetch follows redirects to the destination"},
+      "flow": "normalizeDestination output reaches fetch without an allowlist",
+      "repair": "validate destination and redirects before fetch"
+    }
+  },
+  {
+    "name": "traversal_join_and_read",
+    "duplicate": true,
+    "finding_a": {
+      "class": "path_traversal",
+      "source": {"path": "src/download.ts", "line": 10, "description": "file query parameter decoded twice"},
+      "sink": {"path": "src/download.ts", "line": 94, "description": "path.join accepts the decoded traversal"},
+      "flow": "requested is joined beneath the export directory",
+      "repair": "resolve and verify containment before using requested"
+    },
+    "finding_b": {
+      "class": "path_traversal",
+      "source": {"path": "src/download.ts", "line": 10, "description": "attacker-controlled requested path"},
+      "sink": {"path": "src/download.ts", "line": 95, "description": "fs.readFile reads the joined path"},
+      "flow": "the unconstrained joined path is read",
+      "repair": "reject paths outside the export directory before readFile"
+    }
+  },
+  {
+    "name": "xss_cookie_flow",
+    "duplicate": true,
+    "finding_a": {
+      "class": "xss",
+      "source": {"path": "src/api/profile.ts", "line": 5, "description": "displayName cookie"},
+      "sink": {"path": "src/api/profile.ts", "line": 9, "description": "cookie value returned in profile JSON consumed by the profile page"},
+      "flow": "cookie becomes profile.displayName and is rendered as HTML",
+      "repair": "render displayName as text"
+    },
+    "finding_b": {
+      "class": "xss",
+      "source": {"path": "src/api/profile.ts", "line": 5, "description": "attacker-set displayName cookie"},
+      "sink": {"path": "src/web/profile.ts", "line": 8, "description": "profile.displayName assigned to innerHTML"},
+      "flow": "profile JSON is fetched and displayName reaches innerHTML",
+      "repair": "replace innerHTML with textContent"
+    }
+  },
+  {
+    "name": "exact_authz_duplicate",
+    "duplicate": true,
+    "finding_a": {
+      "class": "authz",
+      "source": {"path": "src/docs.ts", "line": 20, "description": "document id parameter"},
+      "sink": {"path": "src/docs.ts", "line": 25, "description": "update without owner filter"},
+      "flow": "document id selects the updated row",
+      "repair": "filter by document id and owner id"
+    },
+    "finding_b": {
+      "class": "authz",
+      "source": {"path": "src/docs.ts", "line": 20, "description": "document id parameter"},
+      "sink": {"path": "src/docs.ts", "line": 25, "description": "update without owner filter"},
+      "flow": "document id selects the updated row",
+      "repair": "filter by document id and owner id"
+    }
+  },
+  {
+    "name": "authn_paraphrase",
+    "duplicate": true,
+    "finding_a": {
+      "class": "authn",
+      "source": {"path": "src/auth/token.ts", "line": 10, "description": "bearer token"},
+      "sink": {"path": "src/auth/token.ts", "line": 14, "description": "signature verification ignores expiration"},
+      "flow": "expired signed claims are returned as authenticated",
+      "repair": "verify token expiration"
+    },
+    "finding_b": {
+      "class": "authn",
+      "source": {"path": "src/auth/middleware.ts", "line": 28, "description": "Authorization header"},
+      "sink": {"path": "src/auth/middleware.ts", "line": 31, "description": "middleware accepts claims from expiration-blind verifier"},
+      "flow": "verifyToken accepts an expired token and middleware trusts its subject",
+      "repair": "make verifyToken reject expired claims"
+    }
+  },
+  {
+    "name": "command_and_generic_injection",
+    "duplicate": true,
+    "finding_a": {
+      "class": "command_injection",
+      "source": {"path": "src/preview.ts", "line": 11, "description": "filename parameter"},
+      "sink": {"path": "src/preview.ts", "line": 16, "description": "child_process.exec command string"},
+      "flow": "filename is concatenated into the shell command",
+      "repair": "use execFile with a separate argument"
+    },
+    "finding_b": {
+      "class": "injection",
+      "source": {"path": "src/preview.ts", "line": 11, "description": "untrusted filename"},
+      "sink": {"path": "src/preview.ts", "line": 16, "description": "shell interpreter receives attacker syntax"},
+      "flow": "metacharacters in filename alter the command",
+      "repair": "avoid the shell and pass filename as an argument"
+    }
+  },
+  {
+    "name": "adjacent_sql_queries",
+    "duplicate": false,
+    "finding_a": {
+      "class": "injection",
+      "source": {"path": "src/admin.ts", "line": 40, "description": "user name parameter"},
+      "sink": {"path": "src/admin.ts", "line": 44, "description": "user lookup SQL concatenation"},
+      "flow": "name reaches the users query",
+      "repair": "parameterize the users query"
+    },
+    "finding_b": {
+      "class": "injection",
+      "source": {"path": "src/admin.ts", "line": 41, "description": "audit search parameter"},
+      "sink": {"path": "src/admin.ts", "line": 47, "description": "audit log SQL concatenation"},
+      "flow": "search reaches a separate audit query",
+      "repair": "parameterize the audit query"
+    }
+  },
+  {
+    "name": "authz_and_sql_same_call",
+    "duplicate": false,
+    "finding_a": {
+      "class": "authz",
+      "source": {"path": "src/docs.ts", "line": 20, "description": "document id"},
+      "sink": {"path": "src/docs.ts", "line": 28, "description": "document update lacks owner filter"},
+      "flow": "any authenticated user can select another user's document",
+      "repair": "add an owner predicate"
+    },
+    "finding_b": {
+      "class": "injection",
+      "source": {"path": "src/docs.ts", "line": 21, "description": "document title"},
+      "sink": {"path": "src/docs.ts", "line": 28, "description": "same update call executes concatenated title SQL"},
+      "flow": "title alters the SQL statement",
+      "repair": "bind title as a query parameter"
+    }
+  },
+  {
+    "name": "header_injection_and_body_xss",
+    "duplicate": false,
+    "finding_a": {
+      "class": "injection",
+      "source": {"path": "src/export.ts", "line": 8, "description": "format parameter"},
+      "sink": {"path": "src/export.ts", "line": 10, "description": "attacker controls Content-Type header"},
+      "flow": "format is copied to the response header",
+      "repair": "allowlist response content types"
+    },
+    "finding_b": {
+      "class": "xss",
+      "source": {"path": "src/export.ts", "line": 7, "description": "markdown note parameter"},
+      "sink": {"path": "src/export.ts", "line": 11, "description": "rendered markdown HTML returned in response body"},
+      "flow": "attacker markdown becomes executable HTML when the content type is HTML",
+      "repair": "sanitize rendered markdown before returning it"
+    }
+  },
+  {
+    "name": "two_innerhtml_sinks",
+    "duplicate": false,
+    "finding_a": {
+      "class": "xss",
+      "source": {"path": "src/profile.ts", "line": 12, "description": "profile display name"},
+      "sink": {"path": "src/profile.ts", "line": 18, "description": "display name assigned to innerHTML"},
+      "flow": "profile name reaches profile card HTML",
+      "repair": "use textContent for the profile name"
+    },
+    "finding_b": {
+      "class": "xss",
+      "source": {"path": "src/admin-log.ts", "line": 30, "description": "request user agent"},
+      "sink": {"path": "src/admin-log.ts", "line": 38, "description": "user agent assigned to innerHTML"},
+      "flow": "logged user agent reaches the admin log page",
+      "repair": "use textContent in the admin log renderer"
+    }
+  },
+  {
+    "name": "traversal_read_and_delete",
+    "duplicate": false,
+    "finding_a": {
+      "class": "path_traversal",
+      "source": {"path": "src/files.ts", "line": 12, "description": "download path parameter"},
+      "sink": {"path": "src/files.ts", "line": 20, "description": "readFile uses unconfined path"},
+      "flow": "download path reaches readFile",
+      "repair": "confine download paths"
+    },
+    "finding_b": {
+      "class": "path_traversal",
+      "source": {"path": "src/files.ts", "line": 34, "description": "delete path parameter"},
+      "sink": {"path": "src/files.ts", "line": 41, "description": "unlink uses a separate unconfined path"},
+      "flow": "delete path reaches unlink",
+      "repair": "confine delete paths"
+    }
+  },
+  {
+    "name": "authn_and_authz",
+    "duplicate": false,
+    "finding_a": {
+      "class": "authn",
+      "source": {"path": "src/auth.ts", "line": 10, "description": "expired bearer token"},
+      "sink": {"path": "src/auth.ts", "line": 16, "description": "token accepted without expiry validation"},
+      "flow": "expired identity is authenticated",
+      "repair": "validate token expiration"
+    },
+    "finding_b": {
+      "class": "authz",
+      "source": {"path": "src/projects.ts", "line": 24, "description": "project id"},
+      "sink": {"path": "src/projects.ts", "line": 29, "description": "project update lacks owner check"},
+      "flow": "authenticated identity can update another user's project",
+      "repair": "enforce project ownership"
+    }
+  },
+  {
+    "name": "ssrf_and_open_redirect",
+    "duplicate": false,
+    "finding_a": {
+      "class": "ssrf",
+      "source": {"path": "src/url.ts", "line": 8, "description": "next URL parameter"},
+      "sink": {"path": "src/url.ts", "line": 14, "description": "server fetches next URL"},
+      "flow": "next controls a server-side request",
+      "repair": "allowlist server fetch destinations"
+    },
+    "finding_b": {
+      "class": "authz",
+      "source": {"path": "src/url.ts", "line": 8, "description": "same next URL parameter"},
+      "sink": {"path": "src/url.ts", "line": 20, "description": "next copied to browser Location header"},
+      "flow": "next controls a client redirect",
+      "repair": "restrict redirects to local paths"
+    }
+  },
+  {
+    "name": "two_idor_endpoints",
+    "duplicate": false,
+    "finding_a": {
+      "class": "authz",
+      "source": {"path": "src/docs.ts", "line": 10, "description": "update document id"},
+      "sink": {"path": "src/docs.ts", "line": 16, "description": "update endpoint lacks owner filter"},
+      "flow": "id selects an updated document",
+      "repair": "enforce ownership in update"
+    },
+    "finding_b": {
+      "class": "authz",
+      "source": {"path": "src/docs.ts", "line": 50, "description": "delete document id"},
+      "sink": {"path": "src/docs.ts", "line": 56, "description": "delete endpoint lacks owner filter"},
+      "flow": "id selects a deleted document",
+      "repair": "enforce ownership in delete"
+    }
+  },
+  {
+    "name": "two_policy_grants",
+    "duplicate": false,
+    "finding_a": {
+      "class": "policy_regression",
+      "source": {"path": "infra/build.tf", "line": 20, "description": "new build role policy"},
+      "sink": {"path": "infra/build.tf", "line": 28, "description": "build role receives s3:* on every bucket"},
+      "flow": "the build principal gains unrestricted object storage access",
+      "repair": "scope the build role to its artifact bucket"
+    },
+    "finding_b": {
+      "class": "policy_regression",
+      "source": {"path": "infra/deploy.tf", "line": 44, "description": "new deploy role policy"},
+      "sink": {"path": "infra/deploy.tf", "line": 52, "description": "deploy role receives kms:* on every key"},
+      "flow": "the deploy principal gains unrestricted key management access",
+      "repair": "scope the deploy role to its release key"
+    }
+  }
+]
