@@ -645,6 +645,8 @@ let test_config_review_plugins_defaults () =
   | Some Config_types.Effort.Low | Some High | Some Xhigh | None -> fail "expected medium analysis effort by default");
   (check bool) "Jev triage default off" false config.review_plugins.security.jev_triage_enabled;
   (check (float 0.0001)) "Jev threshold default" 0.8 config.review_plugins.security.jev_triage_threshold;
+  (check bool) "Jev dedup default off" false config.review_plugins.security.jev_dedup_enabled;
+  (check (float 0.0001)) "Jev dedup threshold default" 0.5 config.review_plugins.security.jev_dedup_threshold;
   (check int) "memory_max_tokens" 5000 config.review_plugins.security.memory_max_tokens;
   (check bool) "metrics_artifacts default off" false config.review_plugins.security.metrics_artifacts;
   (check bool) "debug_artifacts default off" false config.review_plugins.security.debug_artifacts;
@@ -669,6 +671,8 @@ let test_config_review_plugins_explicit () =
         "triage_model_tier": "standard",
         "analysis_effort": "medium",
         "confidence_threshold": "high",
+        "jev_dedup_enabled": true,
+        "jev_dedup_threshold": 0.55,
         "memory_max_tokens": 10000,
         "metrics_artifacts": true,
         "debug_artifacts": true
@@ -692,6 +696,8 @@ let test_config_review_plugins_explicit () =
   (match config.review_plugins.security.analysis_effort with
   | Some Config_types.Effort.Medium -> ()
   | Some Config_types.Effort.Low | Some High | Some Xhigh | None -> fail "expected medium analysis effort");
+  (check bool) "Jev dedup" true config.review_plugins.security.jev_dedup_enabled;
+  (check (float 0.0001)) "Jev dedup threshold" 0.55 config.review_plugins.security.jev_dedup_threshold;
   (check int) "memory_max_tokens" 10000 config.review_plugins.security.memory_max_tokens;
   (check bool) "metrics_artifacts" true config.review_plugins.security.metrics_artifacts;
   (check bool) "debug_artifacts" true config.review_plugins.security.debug_artifacts
@@ -721,6 +727,15 @@ let test_config_rejects_invalid_jev_threshold () =
   | (_ : Config_types.config) -> fail "expected out-of-range Jev threshold to be rejected"
   | exception Melange_json.Of_json_error (Melange_json.Json_error msg) ->
     (check bool) "error names Jev threshold" true (contains_sub ~sub:"jev_triage_threshold" msg)
+
+let test_config_rejects_invalid_jev_dedup_threshold () =
+  match
+    Config_types.config_of_json
+      (Melange_json.of_string {|{"review_plugins":{"security":{"jev_dedup_threshold":-0.1}}}|})
+  with
+  | (_ : Config_types.config) -> fail "expected out-of-range Jev dedup threshold to be rejected"
+  | exception Melange_json.Of_json_error (Melange_json.Json_error msg) ->
+    (check bool) "error names Jev dedup threshold" true (contains_sub ~sub:"jev_dedup_threshold" msg)
 
 let test_config_general_scout_defaults () =
   let config = Config_types.config_of_json (Melange_json.of_string {|{}|}) in
@@ -871,6 +886,8 @@ let test_security_plugin_config_roundtrip () =
       confidence_threshold = High;
       jev_triage_enabled = true;
       jev_triage_threshold = 0.6;
+      jev_dedup_enabled = true;
+      jev_dedup_threshold = 0.55;
       memory_max_tokens = 3000;
       metrics_artifacts = true;
       debug_artifacts = false;
@@ -881,6 +898,8 @@ let test_security_plugin_config_roundtrip () =
   (check bool) "enabled" true parsed.enabled;
   (check bool) "Jev triage" true parsed.jev_triage_enabled;
   (check (float 0.0001)) "Jev threshold" 0.6 parsed.jev_triage_threshold;
+  (check bool) "Jev dedup" true parsed.jev_dedup_enabled;
+  (check (float 0.0001)) "Jev dedup threshold" 0.55 parsed.jev_dedup_threshold;
   (check int) "vuln_classes" 2 (List.length parsed.vuln_classes);
   (check int) "always_analyze_vuln_classes" 1 (List.length parsed.always_analyze_vuln_classes);
   (check int) "memory_max_tokens" 3000 parsed.memory_max_tokens;
@@ -9428,6 +9447,7 @@ let () =
           test_case "invalid ignored file regex rejected" `Quick test_config_rejects_invalid_ignored_file_regex;
           test_case "broad ignored file regex rejected" `Quick test_config_rejects_broad_ignored_file_regex;
           test_case "invalid Jev threshold rejected" `Quick test_config_rejects_invalid_jev_threshold;
+          test_case "invalid Jev dedup threshold rejected" `Quick test_config_rejects_invalid_jev_dedup_threshold;
           test_case "general scout config defaults" `Quick test_config_general_scout_defaults;
           test_case "general scout config explicit" `Quick test_config_general_scout_explicit;
           test_case "max_leads = 0 rejected" `Quick test_config_max_leads_zero_rejected;

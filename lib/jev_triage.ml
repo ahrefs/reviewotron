@@ -218,6 +218,8 @@ let confidence probability =
   | probability when probability >= 0.8 -> Security_types.High
   | _ -> Medium
 
+let semantic_duplicate ~threshold ~forward ~reverse = (forward +. reverse) /. 2.0 >= threshold
+
 let signal ~threshold ~file_diff { vuln_class; probability } =
   if probability < threshold then Ok None
   else (

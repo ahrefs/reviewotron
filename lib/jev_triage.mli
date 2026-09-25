@@ -58,6 +58,9 @@ val score_noul : api_key:string -> state:Yojson.Basic.t -> question:noul_questio
 (** Parse one successful Score response. *)
 val graded_output_of_response : levels:int -> string -> (graded_output, string) result
 
+(** Return [true] when the mean of the two orderings reaches [threshold]. *)
+val semantic_duplicate : threshold:float -> forward:float -> reverse:float -> bool
+
 (** Rate state along one ordered semantic dimension. *)
 val score_dimension :
   api_key:string -> state:Yojson.Basic.t -> question:graded_question -> (graded_output, string) result Lwt.t

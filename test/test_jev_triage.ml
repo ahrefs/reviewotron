@@ -64,6 +64,10 @@ let test_graded_response_contract () =
     check (float 0.0001) "confidence" 0.6 output.confidence;
     check int "input tokens" 300 output.cost.input_tokens
 
+let test_semantic_duplicate_uses_symmetric_mean () =
+  check bool "at threshold" true (Jev_triage.semantic_duplicate ~threshold:0.5 ~forward:0.61 ~reverse:0.39);
+  check bool "below threshold" false (Jev_triage.semantic_duplicate ~threshold:0.5 ~forward:0.58 ~reverse:0.39)
+
 let () =
   run "jev_triage"
     [
@@ -72,5 +76,6 @@ let () =
           test_case "routes probable classes" `Quick test_response_routes_only_probable_classes;
           test_case "preserves raw probabilities" `Quick test_score_context_response_contract;
           test_case "parses graded output" `Quick test_graded_response_contract;
+          test_case "semantic duplicate uses symmetric mean" `Quick test_semantic_duplicate_uses_symmetric_mean;
         ] );
     ]

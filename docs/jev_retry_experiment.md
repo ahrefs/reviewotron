@@ -34,3 +34,15 @@ gate could prevent accepted false negatives while avoiding unconditional costly
 analysis retries. The corpus is curated from Reviewotron failure modes; captured
 production analysis outputs remain necessary as a held-out evaluation before
 integration.
+
+## 2026-09-25 production-output evaluation
+
+The same question was evaluated five times against 24 captured first-pass
+analysis outputs whose labels were frozen first: 3 needed retry and 21 were
+correctly resolved. At the planned 0.70 threshold it produced 0 true retries, 15
+misses, 5 false retries, and 100 correct accepts across 120 decisions. A diagnostic
+rewrite caught only one of the three missed cases at that threshold.
+
+The failures were confident but incomplete semantic conclusions, which a single
+binary judgment over the existing evidence could not distinguish reliably. The
+retry gate is therefore not integrated.

@@ -36,3 +36,13 @@ confirmed candidate without pretending the evidence was unambiguous.
 The conservative integration is to sort candidates before validator batching
 while still validating all of them. A hard cutoff would trade recall for cost and
 needs captured validator outcomes from real reviews as a held-out evaluation.
+
+## 2026-09-25 production-output evaluation
+
+We scored 26 captured post-dedup candidates five times against frozen validator
+outcomes: 20 confirmed and 6 rejected. AUC ranged from 0.713 to 0.742, with
+substantial overlap between confirmed and rejected scores. The 130 judgments had
+no service errors and cost $0.019680.
+
+That separation is too weak to change validator ordering or impose a cutoff, so
+candidate ranking is not integrated.

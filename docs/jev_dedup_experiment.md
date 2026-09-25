@@ -38,3 +38,22 @@ These are hand-authored pairs based on Reviewotron's observed failure modes. The
 result shows that semantic dedup is technically plausible and materially stronger
 than line heuristics on these cases. A held-out set of real analysis outputs is
 still required before changing production deduplication.
+
+## 2026-09-25 production-output evaluation
+
+We replayed the security pipeline for 14 recent reviews and captured 26 real
+post-dedup analysis candidates. Labels and thresholds were frozen before Jev
+scoring. The development and held-out sets each contained an equal number of
+duplicate and distinct pairs.
+
+| Set | Exact sink | Jev at symmetric mean 0.50 | False merges |
+| --- | ---: | ---: | ---: |
+| Development, 18 pairs | 9/18 | 85/90 repeated decisions | 0/45 |
+| Held out, 12 pairs | 6/12 | 50/60 repeated decisions | 0/30 |
+| Combined unique patterns | 15/30 | 27/30 | 0/15 distinct pairs |
+
+Across the combined sets, Jev recovered 12 of 15 duplicate patterns with
+different anchors; exact sink matching recovered none. The 300 judgments had no
+service errors and cost $0.017657. This evidence supports the opt-in integration
+at a 0.50 threshold. The source review corpus remains private and is not vendored
+with the repository.
