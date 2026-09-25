@@ -47,7 +47,12 @@ type inline_finding = {
     review body; every other plugin only emits findings, and they are uniform.
     Adding a findings plugin is: implement its run function (a [Review_plugin.S]
     plus the engine-managed data dirs), give it a config slice, and add one
-    entry to the [findings_plugins] list inside {!Make}. *)
+    entry to the [findings_plugins] list inside {!Make}.
+
+    An unexpected exception is fail-closed for that plugin: findings still in
+    flight are discarded because they may not have completed the plugin's own
+    validation. Each plugin is isolated so completed sibling-plugin findings
+    remain publishable. *)
 type findings_plugin = {
   fp_name : string;  (** Plugin name; used for cost attribution and logs. *)
   fp_source : finding_source;  (** How dedup treats this plugin's findings on a line collision. *)
@@ -530,22 +535,31 @@ module Make (AI : Api.Agent_runner) = struct
               ]
             "reviewotron.review.plugin"
             (fun () ->
-              if plugins_config.general.enabled then begin
-                let%lwt result, costs =
-                  General_plugin.run_review ~ctx ~repo_url ~config ~diff_text:job.diff_text ~metadata ~debug_dir
-                    ~log_context ()
-                in
-                (match result with
-                | General_review_plugin.Completed _ -> ()
-                (* [validate_review] already logged the count and reason with
-                   the same context prefix; only telemetry is owed here. *)
-                | General_review_plugin.Validation_failed { reason; _ } -> Telemetry.set_error reason
-                | General_review_plugin.Failed msg ->
-                  Telemetry.set_error msg;
-                  log#error "%sgeneral review plugin failed: %s" log_prefix msg);
-                Lwt.return (Some result, costs)
-              end
-              else Lwt.return (None, []))
+              Lwt.catch
+                (fun () ->
+                  if plugins_config.general.enabled then begin
+                    let%lwt result, costs =
+                      General_plugin.run_review ~ctx ~repo_url ~config ~diff_text:job.diff_text ~metadata ~debug_dir
+                        ~log_context ()
+                    in
+                    (match result with
+                    | General_review_plugin.Completed _ -> ()
+                    (* [validate_review] already logged the count and reason with
+                       the same context prefix; only telemetry is owed here. *)
+                    | General_review_plugin.Validation_failed { reason; _ } -> Telemetry.set_error reason
+                    | General_review_plugin.Failed msg ->
+                      Telemetry.set_error msg;
+                      log#error "%sgeneral review plugin failed: %s" log_prefix msg);
+                    Lwt.return (Some result, costs)
+                  end
+                  else Lwt.return (None, []))
+                (function
+                  | Lwt.Canceled -> Lwt.fail Lwt.Canceled
+                  | exn ->
+                    let reason = Exn.str exn in
+                    Telemetry.set_error reason;
+                    log#error "%sgeneral review plugin raised: %s" log_prefix reason;
+                    Lwt.return (Some (General_review_plugin.Failed reason), [])))
         in
         let run_findings_plugin (plugin : findings_plugin) =
           let enabled = plugin.fp_enabled config in
@@ -563,10 +577,15 @@ module Make (AI : Api.Agent_runner) = struct
                         ~log_context:(Some log_context) ~debug_dir ~memory_dir
                     in
                     Lwt.return (plugin, findings, costs, failed))
-                  (fun exn ->
-                    Telemetry.set_error (Exn.str exn);
-                    log#error "%s%s review plugin raised: %s" log_prefix plugin.fp_name (Exn.str exn);
-                    Lwt.return (plugin, [], [], true)))
+                  (function
+                    | Lwt.Canceled -> Lwt.fail Lwt.Canceled
+                    | exn ->
+                      (* Fail closed: an exception aborts this plugin's
+                         in-flight pipeline, but [Lwt.both] can still publish
+                         results returned by the sibling plugin. *)
+                      Telemetry.set_error (Exn.str exn);
+                      log#error "%s%s review plugin raised: %s" log_prefix plugin.fp_name (Exn.str exn);
+                      Lwt.return (plugin, [], [], true)))
         in
         let%lwt (general_output, general_costs), findings_results =
           Lwt.both general_promise (Lwt.all (List.map run_findings_plugin findings_plugins))

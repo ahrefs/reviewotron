@@ -10,8 +10,11 @@ type error =
 (** Render an {!error} for logging. *)
 val error_to_string : error -> string
 
+(** [timeout] is the total request timeout in seconds and defaults to 60.
+    Connections have a separate 10-second timeout. *)
 val http_request :
   ?verbose:bool ->
+  ?timeout:int ->
   ?headers:string list ->
   ?body:[ `Form of (string * string) list | `Raw of string * string ] ->
   Devkit.Web.http_action ->

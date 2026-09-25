@@ -614,6 +614,13 @@ let log_stage_metrics ~log_context ~changed_file_count ~deterministic_signals ~t
 module Make (AI : Api.Agent_runner) = struct
   let name = "security"
 
+  let run_stage ~stage f =
+    Lwt.catch f (function
+      | Lwt.Canceled -> Lwt.fail Lwt.Canceled
+      | exn -> Lwt.fail (Failure (Printf.sprintf "stage %s raised: %s" stage (Exn.str exn))))
+
+  let run_agent ~config f = run_stage ~stage:(Printf.sprintf "agent %s" config.Agent_runner.name) f
+
   (** Run the triage agent and parse its structured output.
       Returns the parsed output (if successful) and any agent costs incurred. *)
   let run_triage ~ctx ~repo_url ~security_config ~diff_text ~file_paths ~deterministic_signals ~artifacts
@@ -624,7 +631,10 @@ module Make (AI : Api.Agent_runner) = struct
     in
     let triage_input = Triage_agent.build_input ~diff_text ~file_paths ?security_memory ~deterministic_signals () in
     Security_artifacts.write_debug_text artifacts ~filename:"triage_input.md" triage_input;
-    let%lwt result = AI.run ~ctx ~repo_url ?debug_dir ?log_context ~config:triage_config ~input:triage_input () in
+    let%lwt result =
+      run_agent ~config:triage_config (fun () ->
+        AI.run ~ctx ~repo_url ?debug_dir ?log_context ~config:triage_config ~input:triage_input ())
+    in
     match result with
     | Error msg ->
       log#error "%striage agent failed: %s" log_prefix msg;
@@ -756,7 +766,10 @@ module Make (AI : Api.Agent_runner) = struct
         input;
       Lwt.catch
         (fun () ->
-          let%lwt result = AI.run ~ctx ~repo_url ~tools ?debug_dir ?log_context ~config:agent_config ~input () in
+          let%lwt result =
+            run_agent ~config:agent_config (fun () ->
+              AI.run ~ctx ~repo_url ~tools ?debug_dir ?log_context ~config:agent_config ~input ())
+          in
           match result with
           | Error msg ->
             log#error "%sanalysis agent %s failed (%s): %s" log_prefix vc_name attempt_label msg;
@@ -782,9 +795,11 @@ module Make (AI : Api.Agent_runner) = struct
                log#error "%sanalysis output parse failed (%s): %s" log_prefix attempt_label (Exn.str exn);
                let failed = analysis_attempt_failure ~costs:[ cost ] () in
                Lwt.return failed))
-        (fun exn ->
-          log#error "%sanalysis agent %s raised (%s): %s" log_prefix vc_name attempt_label (Exn.str exn);
-          Lwt.return (analysis_attempt_failure ()))
+        (function
+          | Lwt.Canceled -> Lwt.fail Lwt.Canceled
+          | exn ->
+            log#error "%sanalysis agent %s raised (%s): %s" log_prefix vc_name attempt_label (Exn.str exn);
+            Lwt.return (analysis_attempt_failure ()))
     in
     let%lwt first = run_attempt ~attempt_label:"1" () in
     match first.outcome, first.candidates with
@@ -984,7 +999,10 @@ module Make (AI : Api.Agent_runner) = struct
     Security_artifacts.write_debug_text artifacts ~filename:(Printf.sprintf "validator_input_%s.md" attempt_label) input;
     let tools = Validator_agent.tools ~fetch_file:(fun path -> fetch_file ~path) in
     let all_missing = List.mapi (fun index candidate -> index, candidate) candidates in
-    let%lwt result = AI.run ~ctx ~repo_url ~tools ?debug_dir ?log_context ~config:agent_config ~input () in
+    let%lwt result =
+      run_agent ~config:agent_config (fun () ->
+        AI.run ~ctx ~repo_url ~tools ?debug_dir ?log_context ~config:agent_config ~input ())
+    in
     match result with
     | Error msg ->
       log#error "%svalidator agent failed (%s): %s" log_prefix attempt_label msg;
@@ -1203,11 +1221,13 @@ module Make (AI : Api.Agent_runner) = struct
               (fun () ->
                 run_single_analysis ~ctx ~repo_url ~fetch_file ~security_config ~diff ~diff_text ~file_paths
                   ~language_hints ~vuln_class ~triage_signals ~artifacts ?debug_dir ?log_context ())
-              (fun exn ->
-                log#error "%sanalysis agent %s raised: %s" log_prefix
-                  (Security_types.vuln_class_to_string vuln_class)
-                  (Exn.str exn);
-                Lwt.return { candidates = []; costs = []; outcome = Failed; attempts = [] }))
+              (function
+                | Lwt.Canceled -> Lwt.fail Lwt.Canceled
+                | exn ->
+                  log#error "%sanalysis agent %s raised: %s" log_prefix
+                    (Security_types.vuln_class_to_string vuln_class)
+                    (Exn.str exn);
+                  Lwt.return { candidates = []; costs = []; outcome = Failed; attempts = [] }))
           groups
       in
       let%lwt results = Lwt.all promises in
@@ -1288,8 +1308,9 @@ module Make (AI : Api.Agent_runner) = struct
         Lwt.return ([], analysis_costs, metrics, analysis_failed)
       | _ :: _ ->
         let%lwt validated, validator_costs, validator_failed =
-          run_validator ~ctx ~repo_url ~fetch_file ~security_config ~diff_text ~candidate_findings:candidates ~artifacts
-            ?debug_dir ?log_context ()
+          run_stage ~stage:"security_validator" (fun () ->
+            run_validator ~ctx ~repo_url ~fetch_file ~security_config ~diff_text ~candidate_findings:candidates
+              ~artifacts ?debug_dir ?log_context ())
         in
         log_rejected ?log_context validated;
         let confirmed =
@@ -1372,7 +1393,10 @@ module Make (AI : Api.Agent_runner) = struct
     let repo_name = Security_memory.repo_slug repo_url in
     let curator_config = Memory_curator_agent.config ~model_tier:(agent_model_tier security_config.triage_model_tier) in
     let input = Memory_curator_agent.build_input ~repo_name ~memory_max_tokens ~observations ?current_memory () in
-    let%lwt result = AI.run ~ctx ~repo_url ?debug_dir ?log_context ~config:curator_config ~input () in
+    let%lwt result =
+      run_agent ~config:curator_config (fun () ->
+        AI.run ~ctx ~repo_url ?debug_dir ?log_context ~config:curator_config ~input ())
+    in
     match result with
     | Error msg ->
       log#error "%smemory curator agent failed: %s" log_prefix msg;
@@ -1411,8 +1435,9 @@ module Make (AI : Api.Agent_runner) = struct
     Security_artifacts.write_debug_json artifacts ~filename:"deterministic_signals.json"
       (`List (List.map Security_types.candidate_signal_to_json deterministic_signals));
     let%lwt triage_result, triage_costs =
-      run_triage ~ctx ~repo_url ~security_config ~diff_text ~file_paths ~deterministic_signals ~artifacts
-        ?security_memory ?debug_dir:agent_debug_dir ?log_context ()
+      run_stage ~stage:"security_triage" (fun () ->
+        run_triage ~ctx ~repo_url ~security_config ~diff_text ~file_paths ~deterministic_signals ~artifacts
+          ?security_memory ?debug_dir:agent_debug_dir ?log_context ())
     in
     match triage_result with
     | None ->
@@ -1452,9 +1477,10 @@ module Make (AI : Api.Agent_runner) = struct
         Lwt.return ([], triage_costs, false)
       | None ->
         let%lwt classified_findings, analysis_costs, analysis_metrics, analysis_failed =
-          run_analysis ~ctx ~repo_url ~fetch_file:metadata.fetch_file ~security_config ~diff ~diff_text ~file_paths
-            ~language_hints:triage_output.language_hints ~artifacts ?debug_dir:agent_debug_dir ?log_context
-            triage_output.signals
+          run_stage ~stage:"security_analysis" (fun () ->
+            run_analysis ~ctx ~repo_url ~fetch_file:metadata.fetch_file ~security_config ~diff ~diff_text ~file_paths
+              ~language_hints:triage_output.language_hints ~artifacts ?debug_dir:agent_debug_dir ?log_context
+              triage_output.signals)
         in
         let costs = triage_costs @ analysis_costs in
         log_stage_metrics ~log_context ~changed_file_count:(List.length file_paths) ~deterministic_signals
