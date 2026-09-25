@@ -61,6 +61,9 @@ val graded_output_of_response : levels:int -> string -> (graded_output, string) 
 (** Return [true] when the mean of the two orderings reaches [threshold]. *)
 val semantic_duplicate : threshold:float -> forward:float -> reverse:float -> bool
 
+(** Return [true] only when both orderings reach [threshold]. *)
+val relationship_proposed : threshold:float -> forward:float -> reverse:float -> bool
+
 (** Rate state along one ordered semantic dimension. *)
 val score_dimension :
   api_key:string -> state:Yojson.Basic.t -> question:graded_question -> (graded_output, string) result Lwt.t

@@ -234,15 +234,16 @@ type security_plugin_config = {
   jev_triage_threshold : float;
      [@json.default 0.8]
      [@jsonschema.description "Minimum Jev Noul probability, from 0 to 1, that triggers deeper security analysis."]
-  jev_dedup_enabled : bool;
+  jev_grouping_enabled : bool;
      [@json.default false]
      [@jsonschema.description
-       "Use TypeSafe Jev to merge semantically duplicate security candidates before validation. Requires \
-        typesafe_api_key in secrets or TYPESAFE_API_KEY for local reviews."]
-  jev_dedup_threshold : float;
-     [@json.default 0.5]
+       "Use TypeSafe Jev to propose related confirmed security findings for lossless consolidation experiments. \
+        Requires typesafe_api_key in secrets or TYPESAFE_API_KEY for local reviews."]
+  jev_grouping_threshold : float;
+     [@json.default 0.7]
      [@jsonschema.description
-       "Minimum mean probability, from symmetric Jev judgments, that merges two security candidates."]
+       "Minimum probability required in both Jev orientations to propose two confirmed findings for shared \
+        verification."]
   memory_max_tokens : int;
      [@json.default 5000] [@jsonschema.description "Target size limit for the repo security memory."]
   metrics_artifacts : bool;
@@ -280,8 +281,8 @@ let default_security_plugin_config =
     confidence_threshold = Medium;
     jev_triage_enabled = false;
     jev_triage_threshold = 0.8;
-    jev_dedup_enabled = false;
-    jev_dedup_threshold = 0.5;
+    jev_grouping_enabled = false;
+    jev_grouping_threshold = 0.7;
     memory_max_tokens = 5000;
     metrics_artifacts = false;
     debug_artifacts = false;
@@ -406,7 +407,8 @@ let config_of_json (json : Yojson.Basic.t) : config =
   let config = Config_codec.of_json json in
   List.iter (validate_ignored_file_regex ~json) config.ignored_file_regexes;
   validate_probability_threshold ~json ~name:"jev_triage_threshold" config.review_plugins.security.jev_triage_threshold;
-  validate_probability_threshold ~json ~name:"jev_dedup_threshold" config.review_plugins.security.jev_dedup_threshold;
+  validate_probability_threshold ~json ~name:"jev_grouping_threshold"
+    config.review_plugins.security.jev_grouping_threshold;
   config
 
 let config_help_json () = Yojson.Basic.pretty_to_string config_jsonschema

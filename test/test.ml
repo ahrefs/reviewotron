@@ -645,8 +645,8 @@ let test_config_review_plugins_defaults () =
   | Some Config_types.Effort.Low | Some High | Some Xhigh | None -> fail "expected medium analysis effort by default");
   (check bool) "Jev triage default off" false config.review_plugins.security.jev_triage_enabled;
   (check (float 0.0001)) "Jev threshold default" 0.8 config.review_plugins.security.jev_triage_threshold;
-  (check bool) "Jev dedup default off" false config.review_plugins.security.jev_dedup_enabled;
-  (check (float 0.0001)) "Jev dedup threshold default" 0.5 config.review_plugins.security.jev_dedup_threshold;
+  (check bool) "Jev grouping default off" false config.review_plugins.security.jev_grouping_enabled;
+  (check (float 0.0001)) "Jev grouping threshold default" 0.7 config.review_plugins.security.jev_grouping_threshold;
   (check int) "memory_max_tokens" 5000 config.review_plugins.security.memory_max_tokens;
   (check bool) "metrics_artifacts default off" false config.review_plugins.security.metrics_artifacts;
   (check bool) "debug_artifacts default off" false config.review_plugins.security.debug_artifacts;
@@ -671,8 +671,8 @@ let test_config_review_plugins_explicit () =
         "triage_model_tier": "standard",
         "analysis_effort": "medium",
         "confidence_threshold": "high",
-        "jev_dedup_enabled": true,
-        "jev_dedup_threshold": 0.55,
+        "jev_grouping_enabled": true,
+        "jev_grouping_threshold": 0.75,
         "memory_max_tokens": 10000,
         "metrics_artifacts": true,
         "debug_artifacts": true
@@ -696,8 +696,8 @@ let test_config_review_plugins_explicit () =
   (match config.review_plugins.security.analysis_effort with
   | Some Config_types.Effort.Medium -> ()
   | Some Config_types.Effort.Low | Some High | Some Xhigh | None -> fail "expected medium analysis effort");
-  (check bool) "Jev dedup" true config.review_plugins.security.jev_dedup_enabled;
-  (check (float 0.0001)) "Jev dedup threshold" 0.55 config.review_plugins.security.jev_dedup_threshold;
+  (check bool) "Jev grouping" true config.review_plugins.security.jev_grouping_enabled;
+  (check (float 0.0001)) "Jev grouping threshold" 0.75 config.review_plugins.security.jev_grouping_threshold;
   (check int) "memory_max_tokens" 10000 config.review_plugins.security.memory_max_tokens;
   (check bool) "metrics_artifacts" true config.review_plugins.security.metrics_artifacts;
   (check bool) "debug_artifacts" true config.review_plugins.security.debug_artifacts
@@ -728,14 +728,14 @@ let test_config_rejects_invalid_jev_threshold () =
   | exception Melange_json.Of_json_error (Melange_json.Json_error msg) ->
     (check bool) "error names Jev threshold" true (contains_sub ~sub:"jev_triage_threshold" msg)
 
-let test_config_rejects_invalid_jev_dedup_threshold () =
+let test_config_rejects_invalid_jev_grouping_threshold () =
   match
     Config_types.config_of_json
-      (Melange_json.of_string {|{"review_plugins":{"security":{"jev_dedup_threshold":-0.1}}}|})
+      (Melange_json.of_string {|{"review_plugins":{"security":{"jev_grouping_threshold":-0.1}}}|})
   with
-  | (_ : Config_types.config) -> fail "expected out-of-range Jev dedup threshold to be rejected"
+  | (_ : Config_types.config) -> fail "expected out-of-range Jev grouping threshold to be rejected"
   | exception Melange_json.Of_json_error (Melange_json.Json_error msg) ->
-    (check bool) "error names Jev dedup threshold" true (contains_sub ~sub:"jev_dedup_threshold" msg)
+    (check bool) "error names Jev grouping threshold" true (contains_sub ~sub:"jev_grouping_threshold" msg)
 
 let test_config_general_scout_defaults () =
   let config = Config_types.config_of_json (Melange_json.of_string {|{}|}) in
@@ -886,8 +886,8 @@ let test_security_plugin_config_roundtrip () =
       confidence_threshold = High;
       jev_triage_enabled = true;
       jev_triage_threshold = 0.6;
-      jev_dedup_enabled = true;
-      jev_dedup_threshold = 0.55;
+      jev_grouping_enabled = true;
+      jev_grouping_threshold = 0.75;
       memory_max_tokens = 3000;
       metrics_artifacts = true;
       debug_artifacts = false;
@@ -898,8 +898,8 @@ let test_security_plugin_config_roundtrip () =
   (check bool) "enabled" true parsed.enabled;
   (check bool) "Jev triage" true parsed.jev_triage_enabled;
   (check (float 0.0001)) "Jev threshold" 0.6 parsed.jev_triage_threshold;
-  (check bool) "Jev dedup" true parsed.jev_dedup_enabled;
-  (check (float 0.0001)) "Jev dedup threshold" 0.55 parsed.jev_dedup_threshold;
+  (check bool) "Jev grouping" true parsed.jev_grouping_enabled;
+  (check (float 0.0001)) "Jev grouping threshold" 0.75 parsed.jev_grouping_threshold;
   (check int) "vuln_classes" 2 (List.length parsed.vuln_classes);
   (check int) "always_analyze_vuln_classes" 1 (List.length parsed.always_analyze_vuln_classes);
   (check int) "memory_max_tokens" 3000 parsed.memory_max_tokens;
@@ -1142,6 +1142,12 @@ let test_dedup_preserves_plugin_provenance () =
       | Some Injection -> true
       | Some (Xss | Command_injection | Authn | Authz | Ssrf | Path_traversal | Policy_regression) | None -> false)
   | _ -> fail "expected one sourced finding"
+
+let test_dedup_preserves_same_line_security_findings () =
+  let authz = mk_finding ~path:"a.ml" ~line:10 ~message:"missing authorization" () in
+  let injection = mk_finding ~path:"a.ml" ~line:10 ~message:"query injection" () in
+  let out = Reviewer.deduplicate_findings [ From_security, authz; From_security, injection ] in
+  (check int) "both validated security findings survive" 2 (List.length out)
 
 let test_dedup_same_line_same_source_higher_severity_wins () =
   let low = mk_finding ~path:"a.ml" ~line:10 ~severity:Suggestion ~message:"low" () in
@@ -1492,13 +1498,7 @@ let test_anchor_end_line_derived_from_anchor_not_sink () =
   (check int) "snapped line" 10 f.line;
   (check (option int)) "end_line extends to 14" (Some 14) f.end_line
 
-(** {2 Candidate finding deduplication tests}
-
-    Per-class analysis agents independently flag the same defect under different
-    vuln_class labels (e.g. SQL injection in a [/search] endpoint also smells
-    like authn or authz to neighbouring agents).  [dedup_candidates] collapses
-    candidates that share the same [(sink.path, sink.line)] so the validator
-    sees the strongest framing of each defect, exactly once. *)
+(** {2 Candidate finding tests} *)
 
 let mk_candidate ~vuln_class ~sink_path ~sink_line ?(confidence = Security_types.High) ?(flow = []) ?(tag = "") () :
   Security_types.candidate_finding =
@@ -1514,85 +1514,6 @@ let mk_candidate ~vuln_class ~sink_path ~sink_line ?(confidence = Security_types
   }
 
 let mk_flow_step ~path ~line description : Security_types.flow_step = { path; line; description }
-
-let test_dedup_collapses_same_sink_across_vuln_classes () =
-  let candidates =
-    [
-      mk_candidate ~vuln_class:Injection ~sink_path:"src/routes/notes.ts" ~sink_line:99 ~confidence:Medium
-        ~tag:"injection" ();
-      mk_candidate ~vuln_class:Authn ~sink_path:"src/routes/notes.ts" ~sink_line:99 ~confidence:Low ~tag:"authn" ();
-      mk_candidate ~vuln_class:Authz ~sink_path:"src/routes/notes.ts" ~sink_line:99 ~confidence:Medium ~tag:"authz" ();
-      mk_candidate ~vuln_class:Xss ~sink_path:"src/routes/notes.ts" ~sink_line:99 ~confidence:High ~tag:"xss" ();
-    ]
-  in
-  let deduped = Sec_test.dedup_candidates candidates in
-  (check int) "collapses 4 → 1" 1 (List.length deduped);
-  match deduped with
-  | [ kept ] ->
-    (check string) "highest confidence wins (xss High > Medium > Low)" "xss"
-      (Security_types.vuln_class_to_string kept.vuln_class)
-  | _ -> Alcotest.fail "expected exactly one finding after dedup"
-
-let test_dedup_preserves_distinct_sinks () =
-  (* Two real, separate defects: command-injection sources at admin.ts:19 *and*
-     the actual exec call at debug.ts:7.  Both should survive. *)
-  let candidates =
-    [
-      mk_candidate ~vuln_class:Command_injection ~sink_path:"src/lib/debug.ts" ~sink_line:7 ~tag:"exec" ();
-      mk_candidate ~vuln_class:Command_injection ~sink_path:"src/routes/admin.ts" ~sink_line:19 ~tag:"route" ();
-    ]
-  in
-  let deduped = Sec_test.dedup_candidates candidates in
-  (check int) "two distinct sinks preserved" 2 (List.length deduped)
-
-let test_dedup_tiebreak_prefers_longer_flow () =
-  let short_flow = [ mk_flow_step ~path:"src/a.ts" ~line:5 "step 1" ] in
-  let long_flow =
-    [
-      mk_flow_step ~path:"src/a.ts" ~line:5 "step 1";
-      mk_flow_step ~path:"src/a.ts" ~line:9 "step 2";
-      mk_flow_step ~path:"src/a.ts" ~line:14 "step 3";
-    ]
-  in
-  let candidates =
-    [
-      mk_candidate ~vuln_class:Injection ~sink_path:"src/a.ts" ~sink_line:42 ~confidence:Medium ~flow:short_flow
-        ~tag:"short" ();
-      mk_candidate ~vuln_class:Authz ~sink_path:"src/a.ts" ~sink_line:42 ~confidence:Medium ~flow:long_flow ~tag:"long"
-        ();
-    ]
-  in
-  let deduped = Sec_test.dedup_candidates candidates in
-  (check int) "collapses to one" 1 (List.length deduped);
-  match deduped with
-  | [ kept ] ->
-    (check int) "longer flow wins on confidence tie" 3 (List.length kept.flow);
-    (check string) "kept the longer-flow candidate" "authz" (Security_types.vuln_class_to_string kept.vuln_class)
-  | _ -> Alcotest.fail "expected exactly one finding after dedup"
-
-let test_dedup_tiebreak_first_seen_when_fully_tied () =
-  let flow = [ mk_flow_step ~path:"src/a.ts" ~line:5 "step 1" ] in
-  let candidates =
-    [
-      mk_candidate ~vuln_class:Injection ~sink_path:"src/a.ts" ~sink_line:42 ~confidence:High ~flow ~tag:"first" ();
-      mk_candidate ~vuln_class:Authz ~sink_path:"src/a.ts" ~sink_line:42 ~confidence:High ~flow ~tag:"second" ();
-    ]
-  in
-  let deduped = Sec_test.dedup_candidates candidates in
-  match deduped with
-  | [ kept ] ->
-    (check string) "first-seen wins when confidence and flow tied" "injection"
-      (Security_types.vuln_class_to_string kept.vuln_class)
-  | _ -> Alcotest.fail "expected exactly one finding after dedup"
-
-let test_dedup_empty () =
-  let deduped = Sec_test.dedup_candidates [] in
-  (check int) "empty in, empty out" 0 (List.length deduped)
-
-let test_dedup_single_candidate_passthrough () =
-  let c = mk_candidate ~vuln_class:Injection ~sink_path:"src/a.ts" ~sink_line:1 ~tag:"only" () in
-  let deduped = Sec_test.dedup_candidates [ c ] in
-  (check int) "single candidate passes through" 1 (List.length deduped)
 
 let test_candidate_structurally_valid_accepts_all_evidence () =
   let candidate =
@@ -9447,7 +9368,7 @@ let () =
           test_case "invalid ignored file regex rejected" `Quick test_config_rejects_invalid_ignored_file_regex;
           test_case "broad ignored file regex rejected" `Quick test_config_rejects_broad_ignored_file_regex;
           test_case "invalid Jev threshold rejected" `Quick test_config_rejects_invalid_jev_threshold;
-          test_case "invalid Jev dedup threshold rejected" `Quick test_config_rejects_invalid_jev_dedup_threshold;
+          test_case "invalid Jev grouping threshold rejected" `Quick test_config_rejects_invalid_jev_grouping_threshold;
           test_case "general scout config defaults" `Quick test_config_general_scout_defaults;
           test_case "general scout config explicit" `Quick test_config_general_scout_explicit;
           test_case "max_leads = 0 rejected" `Quick test_config_max_leads_zero_rejected;
@@ -9487,6 +9408,7 @@ let () =
         [
           test_case "same line prefers security" `Quick test_dedup_same_line_prefers_security;
           test_case "same line preserves plugin provenance" `Quick test_dedup_preserves_plugin_provenance;
+          test_case "same line preserves security findings" `Quick test_dedup_preserves_same_line_security_findings;
           test_case "same line same source higher severity wins" `Quick
             test_dedup_same_line_same_source_higher_severity_wins;
           test_case "near line collapse same category" `Quick test_dedup_near_line_collapse_same_category;
@@ -9517,16 +9439,6 @@ let () =
         [
           test_case "header and gutter" `Quick test_annotate_file_content_header_and_gutter;
           test_case "empty body" `Quick test_annotate_file_content_empty;
-        ] );
-      ( "security_dedup",
-        [
-          test_case "collapses same sink across vuln_classes; highest confidence wins" `Quick
-            test_dedup_collapses_same_sink_across_vuln_classes;
-          test_case "preserves distinct sinks" `Quick test_dedup_preserves_distinct_sinks;
-          test_case "tie on confidence, longer flow wins" `Quick test_dedup_tiebreak_prefers_longer_flow;
-          test_case "tie on confidence and flow, first-seen wins" `Quick test_dedup_tiebreak_first_seen_when_fully_tied;
-          test_case "empty input" `Quick test_dedup_empty;
-          test_case "single candidate passthrough" `Quick test_dedup_single_candidate_passthrough;
         ] );
       ( "security_analysis_contract",
         [

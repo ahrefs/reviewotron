@@ -219,6 +219,7 @@ let confidence probability =
   | _ -> Medium
 
 let semantic_duplicate ~threshold ~forward ~reverse = (forward +. reverse) /. 2.0 >= threshold
+let relationship_proposed ~threshold ~forward ~reverse = forward >= threshold && reverse >= threshold
 
 let signal ~threshold ~file_diff { vuln_class; probability } =
   if probability < threshold then Ok None

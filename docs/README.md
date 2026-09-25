@@ -302,7 +302,7 @@ Either LLM key works; `openrouter_api_key` is used when both are present. Swap i
 | `repos[].auth` | Yes* | Alternative to `gh_token` — GitHub App installation auth (see below) |
 | `openrouter_api_key` | Yes† | OpenRouter API key; preferred when both keys are set |
 | `anthropic_api_key` | Yes† | Anthropic API key for Claude, used when no OpenRouter key is present |
-| `typesafe_api_key` | No | TypeSafe API key for Jev security triage and semantic deduplication. Required when either Jev feature is enabled. |
+| `typesafe_api_key` | No | TypeSafe API key for Jev security triage and confirmed-finding grouping. Required when either Jev feature is enabled. |
 | `slack_access_token` | No | Slack bot token for posting messages |
 
 *Either `gh_token` or `auth` must be set per repo. Using `gh_token` is the simpler option.
@@ -454,8 +454,8 @@ version control. Webhook/server commands do not read the user-global files.
       "confidence_threshold": "medium",
       "jev_triage_enabled": false,
       "jev_triage_threshold": 0.8,
-      "jev_dedup_enabled": false,
-      "jev_dedup_threshold": 0.5,
+      "jev_grouping_enabled": false,
+      "jev_grouping_threshold": 0.7,
       "memory_max_tokens": 5000,
       "metrics_artifacts": false,
       "debug_artifacts": false
@@ -518,8 +518,8 @@ generated-file header markers. Broad folders such as `generated/`, `dist/`,
 | `confidence_threshold` | `"medium"` | Minimum triage confidence to trigger analysis for enabled classes. `"high"` = only high-confidence signals. `"medium"` = high + medium. `"low"` = all signals. |
 | `jev_triage_enabled` | `false` | Replace the generative triage call with TypeSafe Jev. If the key is absent, the service fails, or any file is not evaluated, Reviewotron falls back to the primary triage agent. Local reviews read `TYPESAFE_API_KEY` before `typesafe_api_key` in the secrets file. |
 | `jev_triage_threshold` | `0.8` | Minimum Jev Noul probability that routes a file to per-class analysis. Must be between 0 and 1. Tune against labeled repository changes. |
-| `jev_dedup_enabled` | `false` | Use TypeSafe Jev after exact-sink deduplication to merge analysis candidates that describe the same defect and repair. Two judgments with reversed candidate order are averaged. Errors preserve both candidates. |
-| `jev_dedup_threshold` | `0.5` | Minimum mean duplicate probability required to merge candidates. Must be between 0 and 1. The default was selected on captured review outputs and held-out candidate pairs. |
+| `jev_grouping_enabled` | `false` | After validation, ask TypeSafe Jev which confirmed-finding pairs warrant shared consolidation verification. This experimental stage records proposals and never merges or suppresses findings. |
+| `jev_grouping_threshold` | `0.7` | Minimum probability required in both candidate orderings to record a grouping proposal. Must be between 0 and 1. |
 | `memory_max_tokens` | `5000` | Target size limit for the repo's security memory file. |
 | `metrics_artifacts` | `false` | Write compact security metrics artifacts under the review debug dir's `security/` subdirectory. These omit source code and prompt bodies. |
 | `debug_artifacts` | `false` | Write full redacted per-stage security debug artifacts under the review debug dir's `security/` subdirectory. Sensitive and opt-in. |
@@ -583,12 +583,9 @@ For each flagged vulnerability class, a specialized agent runs deep analysis:
 3. **Data flow tracing** — Can the source reach the sink? Traces through variables, function calls, returns.
 4. **Sanitization evaluation** — Is there adequate, context-correct sanitization on the path?
 
-Reviewotron first collapses candidates with the same sink location. When
-`jev_dedup_enabled` is true, Jev then compares the remaining candidates in both
-orders and merges pairs whose mean probability reaches `jev_dedup_threshold`.
-This catches one defect reported through different evidence anchors before the
-validator spends work on both reports. A missing key or failed judgment keeps
-both candidates.
+Every structurally valid candidate reaches validation, including candidates that
+share a sink location. Location equality is not sufficient evidence that two
+security claims describe the same defect.
 
 For `policy_regression`, the same finding schema is used with a policy proof instead of a runtime user-input flow: source is the changed principal/grant/config entry or removed control, sink is the effective privileged capability or weakened boundary, flow is changed line -> effective policy/control state -> concrete action now possible, and sanitization is the missing or inadequate scoping/mitigation.
 
@@ -609,6 +606,14 @@ All candidate findings from all analysis agents pass through a single validator 
 For `policy_regression`, validation does not require a user-controlled runtime source, but it does require exact file/line evidence, a concrete effective privilege/control change, a concrete action now possible, no unresolved assumptions, and enough proof to reject vague "security relevant" policy edits.
 
 **Findings that fail validation are dropped.** Confirmed validator results without concrete proof are downgraded after parsing and are not surfaced. This is by design — a noisy security reviewer that cries wolf loses developer trust. Dropped findings are logged for offline prompt tuning.
+
+When `jev_grouping_enabled` is true, Jev compares independently confirmed
+findings in both orders after validation. Pairs whose two probabilities reach
+`jev_grouping_threshold` are written to the sensitive debug artifact
+`jev_grouping_proposals.json`. The proposals are experimental evidence for a
+future consolidation verifier; they do not change published findings. Missing
+credentials, service failures, and uncertain judgments leave every finding
+untouched.
 
 ### 4. Memory Curation (Haiku, async)
 

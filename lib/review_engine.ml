@@ -89,12 +89,8 @@ let same_category a b =
 let sourced_of_pair (source, finding) =
   { source; plugin_name = finding_source_to_string source; finding; vuln_class = None }
 
-let pick_for_same_line a b =
-  match a.source, b.source with
-  | From_security, From_general -> a
-  | From_general, From_security -> b
-  | From_general, From_general | From_security, From_security ->
-    if severity_rank a.finding.Review_types.severity >= severity_rank b.finding.Review_types.severity then a else b
+let pick_more_severe a b =
+  if severity_rank a.finding.Review_types.severity >= severity_rank b.finding.Review_types.severity then a else b
 
 let collapse_same_line sourced_findings =
   let tbl = Hashtbl.create (List.length sourced_findings) in
@@ -103,10 +99,24 @@ let collapse_same_line sourced_findings =
       let f = sourced.finding in
       let key = f.Review_types.path, f.line in
       match Hashtbl.find_opt tbl key with
-      | None -> Hashtbl.add tbl key sourced
-      | Some existing -> Hashtbl.replace tbl key (pick_for_same_line existing sourced))
+      | None -> Hashtbl.replace tbl key [ sourced ]
+      | Some existing -> Hashtbl.replace tbl key (sourced :: existing))
     sourced_findings;
-  Hashtbl.fold (fun _ v acc -> v :: acc) tbl []
+  Hashtbl.fold
+    (fun _ bucket acc ->
+      let security, general =
+        List.partition
+          (fun finding ->
+            match finding.source with
+            | From_security -> true
+            | From_general -> false)
+          bucket
+      in
+      match security, general with
+      | _ :: _, _ -> List.rev_append security acc
+      | [], [] -> acc
+      | [], first :: rest -> List.fold_left pick_more_severe first rest :: acc)
+    tbl []
 
 let near_line_window = 3
 

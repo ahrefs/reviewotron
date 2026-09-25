@@ -9,11 +9,6 @@ let log_context_prefix = function
 (** Numeric rank for confidence levels — higher means more confident. *)
 let confidence_rank = Config_types.confidence_rank
 
-let compare_candidate_strength (a : Security_types.candidate_finding) (b : Security_types.candidate_finding) =
-  match Int.compare (confidence_rank a.confidence) (confidence_rank b.confidence) with
-  | 0 -> Int.compare (List.length a.flow) (List.length b.flow)
-  | comparison -> comparison
-
 (** Compare two vuln_class values for equality.
 
     Exhaustive match ensures the compiler warns when a new variant is added. *)
@@ -626,20 +621,19 @@ module Make (AI : Api.Agent_runner) = struct
 
   let run_agent ~config f = run_stage ~stage:(Printf.sprintf "agent %s" config.Agent_runner.name) f
 
-  let semantic_dedup_question : Jev_triage.noul_question =
+  let grouping_proposal_question : Jev_triage.noul_question =
     {
       instructions =
-        "Should `finding_a` and `finding_b` be merged because they describe the same underlying security defect and \
-         one concrete code or policy repair would resolve both reports? Judge the causal defect and repair, not \
-         wording, vulnerability label, or anchor-line equality.";
+        "Should `finding_a` and `finding_b` be sent together to a consolidation verifier because they plausibly arise \
+         from the same causal defect or missing control and may share one repair? This judgment only retrieves \
+         possible groups; it does not merge or suppress either confirmed finding.";
       true_criteria =
-        "Both findings trace to the same unsafe operation or missing control, and one concrete repair at that \
-         operation or control would resolve both reports. Different evidence anchors or descriptions may still be \
-         duplicates.";
+        "The findings plausibly share one causal source, source-of-truth policy, generated artifact, unsafe input, or \
+         missing control such that one repair may resolve both. Include cases needing repository evidence to confirm \
+         the relationship.";
       false_criteria =
-        "The findings require separate repairs, concern different unsafe operations or missing controls, or one is a \
-         prerequisite or companion issue whose repair would not resolve the other. Proximity, shared data, or the same \
-         handler alone is insufficient.";
+        "The findings are independent defects or merely repeat a vulnerability pattern, principal, file, feature, or \
+         review context without a plausible shared causal source or control.";
     }
   let run_jev_triage ~ctx ~security_config ~diff ~artifacts ?log_context () =
     let log_prefix = log_context_prefix log_context in
@@ -671,23 +665,23 @@ module Make (AI : Api.Agent_runner) = struct
         Security_artifacts.write_debug_json artifacts ~filename:"jev_triage_signals.json"
           (`List (List.map Security_types.triage_signal_to_json output.signals));
         Lwt.return_some output)
-  let score_semantic_pair ~api_key ?log_context finding_a finding_b =
+  let score_grouping_pair ~api_key ?log_context finding_a finding_b =
     let log_prefix = log_context_prefix log_context in
     let state finding_a finding_b =
       `Assoc
         [
-          "finding_a", Security_types.candidate_finding_to_json finding_a;
-          "finding_b", Security_types.candidate_finding_to_json finding_b;
+          "finding_a", Security_types.validated_finding_to_json finding_a;
+          "finding_b", Security_types.validated_finding_to_json finding_b;
         ]
     in
     let score finding_a finding_b =
       let%lwt result =
-        Jev_triage.score_noul ~api_key ~state:(state finding_a finding_b) ~question:semantic_dedup_question
+        Jev_triage.score_noul ~api_key ~state:(state finding_a finding_b) ~question:grouping_proposal_question
       in
       Lwt.return
         (Result.map
            (fun (output : Jev_triage.noul_output) ->
-             { output with cost = { output.cost with agent_name = "jev_dedup" } })
+             { output with cost = { output.cost with agent_name = "jev_grouping" } })
            result)
     in
     let%lwt forward, reverse = Lwt.both (score finding_a finding_b) (score finding_b finding_a) in
@@ -700,47 +694,61 @@ module Make (AI : Api.Agent_runner) = struct
     match forward, reverse with
     | Ok forward, Ok reverse -> Lwt.return (Some (forward.probability, reverse.probability), costs)
     | Error forward, Error reverse ->
-      log#warn "%sJev dedup failed in both orientations: %s; %s" log_prefix forward reverse;
+      log#warn "%sJev grouping failed in both orientations: %s; %s" log_prefix forward reverse;
       Lwt.return (None, costs)
     | Error error, Ok _ | Ok _, Error error ->
-      log#warn "%sJev dedup failed in one orientation: %s" log_prefix error;
+      log#warn "%sJev grouping failed in one orientation: %s" log_prefix error;
       Lwt.return (None, costs)
 
-  let run_jev_dedup ~ctx ~security_config ?log_context candidates =
+  let run_jev_grouping ~ctx ~security_config ~artifacts ?log_context confirmed =
     let log_prefix = log_context_prefix log_context in
-    match security_config.Config_types.jev_dedup_enabled, candidates with
-    | false, _ | true, [] | true, [ _ ] -> Lwt.return (candidates, [])
+    match security_config.Config_types.jev_grouping_enabled, confirmed with
+    | false, _ | true, [] | true, [ _ ] -> Lwt.return []
     | true, _ :: _ :: _ ->
     match (Context.secrets ctx).typesafe_api_key with
     | None ->
-      log#warn "%sJev dedup is enabled but no TypeSafe API key is configured" log_prefix;
-      Lwt.return (candidates, [])
+      log#warn "%sJev grouping is enabled but no TypeSafe API key is configured" log_prefix;
+      Lwt.return []
     | Some api_key ->
-      (* ponytail: candidate sets are validator-bounded and normally single digits;
-         add a deterministic shortlist before this O(n²) scan if latency becomes material. *)
-      let candidates = List.stable_sort (fun a b -> compare_candidate_strength b a) candidates in
-      let rec duplicates_kept candidate costs = function
-        | [] -> Lwt.return (false, costs)
-        | kept :: rest ->
-          let%lwt probabilities, pair_costs = score_semantic_pair ~api_key ?log_context kept candidate in
-          let costs = List.rev_append pair_costs costs in
-          (match probabilities with
-          | Some (forward, reverse)
-            when Jev_triage.semantic_duplicate ~threshold:security_config.jev_dedup_threshold ~forward ~reverse ->
-            log#info "%sJev dedup: dropped %s:%d as duplicate of %s:%d (mean %.3f)" log_prefix candidate.sink.path
-              candidate.sink.line kept.sink.path kept.sink.line
-              ((forward +. reverse) /. 2.0);
-            Lwt.return (true, costs)
-          | Some _ | None -> duplicates_kept candidate costs rest)
+      (* ponytail: confirmed finding sets are normally single digits; shortlist
+         deterministically before this O(n²) experiment if latency becomes material. *)
+      let indexed = List.mapi (fun index finding -> index, finding) confirmed in
+      let rec pairs acc = function
+        | [] -> List.rev acc
+        | (left_id, left) :: rest ->
+          let new_pairs = List.map (fun (right_id, right) -> left_id, left, right_id, right) rest in
+          pairs (List.rev_append new_pairs acc) rest
       in
-      let rec loop kept costs = function
-        | [] -> Lwt.return (List.rev kept, List.rev costs)
-        | candidate :: rest ->
-          let%lwt duplicate, costs = duplicates_kept candidate costs kept in
-          let kept = if duplicate then kept else candidate :: kept in
-          loop kept costs rest
+      let%lwt judgments, proposed_count, costs =
+        Lwt_list.fold_left_s
+          (fun (judgments, proposed_count, costs) (left_id, left, right_id, right) ->
+            let%lwt probabilities, pair_costs = score_grouping_pair ~api_key ?log_context left right in
+            let common = [ "left_id", `Int left_id; "right_id", `Int right_id ] in
+            let judgment, proposed =
+              match probabilities with
+              | Some (forward, reverse) ->
+                let proposed =
+                  Jev_triage.relationship_proposed ~threshold:security_config.jev_grouping_threshold ~forward ~reverse
+                in
+                ( `Assoc
+                    (common
+                    @ [
+                        "forward_probability", `Float forward;
+                        "reverse_probability", `Float reverse;
+                        "proposed", `Bool proposed;
+                      ]),
+                  proposed )
+              | None -> `Assoc (common @ [ "error", `String "judgment_failed"; "proposed", `Bool false ]), false
+            in
+            let proposed_count = if proposed then proposed_count + 1 else proposed_count in
+            Lwt.return (judgment :: judgments, proposed_count, List.rev_append pair_costs costs))
+          ([], 0, []) (pairs [] indexed)
       in
-      loop [] [] candidates
+      let judgments = List.rev judgments in
+      Security_artifacts.write_debug_json artifacts ~filename:"jev_grouping_proposals.json" (`List judgments);
+      log#info "%sJev grouping proposed %d of %d confirmed-finding pair(s); no findings were merged" log_prefix
+        proposed_count (List.length judgments);
+      Lwt.return (List.rev costs)
   (** Run the triage agent and parse its structured output.
       Returns the parsed output (if successful) and any agent costs incurred. *)
   let run_triage ~ctx ~repo_url ~security_config ~diff_text ~file_paths ~deterministic_signals ~artifacts
@@ -1218,82 +1226,6 @@ module Make (AI : Api.Agent_runner) = struct
       (List.length candidate_findings) call_count;
     Lwt.return (results, costs, failed)
 
-  (** Collapse candidate findings that share the same [(sink.path, sink.line)].
-
-      Per-class analysis agents run independently, so a single defect (e.g. a
-      SQL injection in a [/search] route that also has missing authz on the
-      enclosing handler) frequently surfaces as several near-identical
-      candidates, one per vuln_class.  Forwarding all of them to the validator
-      causes three problems: (1) the validator's prompt grows linearly with the
-      duplication, eating its step budget on PRs with several defects (we have
-      observed it exhaust [max_steps] on real PRs); (2) the validator
-      sometimes accepts duplicates as separate findings, producing repetitive
-      inline comments; (3) when it does try to dedupe, it does so
-      inconsistently, so review counts swing run-to-run on the same diff.
-
-      This pass runs {e before} the validator, picks one canonical candidate
-      per [(sink.path, sink.line)], and discards the rest.  Selection is
-      deterministic: highest [confidence] first, then longest [flow] (more
-      evidence usually means the agent traced the chain harder), then
-      first-seen.  The deterministic ordering is what gives us run-to-run
-      consistency.
-
-      We do {e not} merge candidates across different sink lines, even when
-      they describe the same overall chain — the source-route line and the
-      actual exec call are both legitimate inline-comment anchors and both
-      worth surfacing.  Same [(path, line)] = same fix site = collapse. *)
-  let dedup_candidates ?log_context (candidates : Security_types.candidate_finding list) =
-    let log_prefix = log_context_prefix log_context in
-    let key (c : Security_types.candidate_finding) = c.sink.path, c.sink.line in
-    (* Bucket candidates by sink, preserving first-seen order both for buckets
-       and within each bucket. *)
-    let buckets = Hashtbl.create 16 in
-    let order = ref [] in
-    List.iter
-      (fun c ->
-        let k = key c in
-        match Hashtbl.find_opt buckets k with
-        | None ->
-          Hashtbl.replace buckets k [ c ];
-          order := k :: !order
-        | Some existing -> Hashtbl.replace buckets k (existing @ [ c ]))
-      candidates;
-    let pick_best bucket =
-      match bucket with
-      | [] -> None
-      | first :: _ ->
-        let better (a : Security_types.candidate_finding) (b : Security_types.candidate_finding) =
-          match compare_candidate_strength a b >= 0 with
-          | true -> a
-          | false -> b
-          (* first-seen wins on full tie; List.fold_left feeds [a] = accumulator
-             which started as the bucket's first element, so [a] is older *)
-        in
-        Some (List.fold_left better first bucket)
-    in
-    let log_discards (kept : Security_types.candidate_finding) bucket =
-      List.iter
-        (fun (c : Security_types.candidate_finding) ->
-          match c == kept with
-          | true -> ()
-          | false ->
-            log#info "%sdedup: dropped %s candidate at %s:%d (kept %s, %s confidence, %d flow steps)" log_prefix
-              (Security_types.vuln_class_to_string c.vuln_class)
-              c.sink.path c.sink.line
-              (Security_types.vuln_class_to_string kept.vuln_class)
-              (Security_types.confidence_to_string kept.confidence)
-              (List.length kept.flow))
-        bucket
-    in
-    List.rev !order
-    |> List.filter_map (fun k ->
-      let bucket = Hashtbl.find buckets k in
-      match pick_best bucket with
-      | None -> None
-      | Some kept ->
-        log_discards kept bucket;
-        Some kept)
-
   (** Log each rejected finding for offline prompt tuning. *)
   let log_rejected ?log_context (results : Security_types.validated_finding list) =
     let log_prefix = log_context_prefix log_context in
@@ -1394,27 +1326,15 @@ module Make (AI : Api.Agent_runner) = struct
           results
       in
       log#info "%sanalysis complete: %d total candidate findings" log_prefix (List.length raw_candidates);
-      let sink_deduped = dedup_candidates ?log_context raw_candidates in
-      (match List.compare_lengths sink_deduped raw_candidates < 0 with
-      | true ->
-        log#info "%sdedup: %d → %d candidates after collapsing duplicates by sink" log_prefix
-          (List.length raw_candidates) (List.length sink_deduped)
-      | false -> ());
-      let%lwt candidates, jev_dedup_costs = run_jev_dedup ~ctx ~security_config ?log_context sink_deduped in
-      (match List.compare_lengths candidates sink_deduped < 0 with
-      | true ->
-        log#info "%sJev dedup: %d → %d candidates after semantic deduplication" log_prefix (List.length sink_deduped)
-          (List.length candidates)
-      | false -> ());
-      (match candidates with
+      (match raw_candidates with
       | [] ->
         let metrics =
           {
             actionable_triage_signal_count = List.length actionable;
             analysis_agents_run = List.length groups;
             raw_candidates_produced = List.length raw_candidates;
-            candidates_kept_after_deduplication = List.length candidates;
-            duplicate_candidates_dropped = List.length raw_candidates - List.length candidates;
+            candidates_kept_after_deduplication = 0;
+            duplicate_candidates_dropped = 0;
             validator_confirmed = 0;
             validator_rejected = 0;
             final_findings_produced = 0;
@@ -1422,11 +1342,11 @@ module Make (AI : Api.Agent_runner) = struct
             class_drops;
           }
         in
-        Lwt.return ([], analysis_costs @ jev_dedup_costs, metrics, analysis_failed)
+        Lwt.return ([], analysis_costs, metrics, analysis_failed)
       | _ :: _ ->
         let%lwt validated, validator_costs, validator_failed =
           run_stage ~stage:"security_validator" (fun () ->
-            run_validator ~ctx ~repo_url ~fetch_file ~security_config ~diff_text ~candidate_findings:candidates
+            run_validator ~ctx ~repo_url ~fetch_file ~security_config ~diff_text ~candidate_findings:raw_candidates
               ~artifacts ?debug_dir ?log_context ())
         in
         log_rejected ?log_context validated;
@@ -1440,6 +1360,7 @@ module Make (AI : Api.Agent_runner) = struct
         in
         log#info "%svalidation complete: %d confirmed, %d rejected" log_prefix (List.length confirmed)
           (List.length validated - List.length confirmed);
+        let%lwt jev_grouping_costs = run_jev_grouping ~ctx ~security_config ~artifacts ?log_context confirmed in
         let classified_findings =
           List.map
             (fun (vf : Security_types.validated_finding) ->
@@ -1454,8 +1375,8 @@ module Make (AI : Api.Agent_runner) = struct
             actionable_triage_signal_count = List.length actionable;
             analysis_agents_run = List.length groups;
             raw_candidates_produced = List.length raw_candidates;
-            candidates_kept_after_deduplication = List.length candidates;
-            duplicate_candidates_dropped = List.length raw_candidates - List.length candidates;
+            candidates_kept_after_deduplication = List.length raw_candidates;
+            duplicate_candidates_dropped = 0;
             validator_confirmed = List.length confirmed;
             validator_rejected = List.length validated - List.length confirmed;
             final_findings_produced = List.length findings;
@@ -1465,7 +1386,7 @@ module Make (AI : Api.Agent_runner) = struct
         in
         Lwt.return
           ( classified_findings,
-            analysis_costs @ jev_dedup_costs @ validator_costs,
+            analysis_costs @ validator_costs @ jev_grouping_costs,
             metrics,
             analysis_failed || validator_failed ))
 

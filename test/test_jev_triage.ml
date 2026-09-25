@@ -68,6 +68,10 @@ let test_semantic_duplicate_uses_symmetric_mean () =
   check bool "at threshold" true (Jev_triage.semantic_duplicate ~threshold:0.5 ~forward:0.61 ~reverse:0.39);
   check bool "below threshold" false (Jev_triage.semantic_duplicate ~threshold:0.5 ~forward:0.58 ~reverse:0.39)
 
+let test_relationship_proposal_requires_both_orientations () =
+  check bool "both pass" true (Jev_triage.relationship_proposed ~threshold:0.7 ~forward:0.72 ~reverse:0.75);
+  check bool "one fails" false (Jev_triage.relationship_proposed ~threshold:0.7 ~forward:0.91 ~reverse:0.69)
+
 let () =
   run "jev_triage"
     [
@@ -77,5 +81,7 @@ let () =
           test_case "preserves raw probabilities" `Quick test_score_context_response_contract;
           test_case "parses graded output" `Quick test_graded_response_contract;
           test_case "semantic duplicate uses symmetric mean" `Quick test_semantic_duplicate_uses_symmetric_mean;
+          test_case "relationship proposal requires both orientations" `Quick
+            test_relationship_proposal_requires_both_orientations;
         ] );
     ]

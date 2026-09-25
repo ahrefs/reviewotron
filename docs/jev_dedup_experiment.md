@@ -57,3 +57,51 @@ different anchors; exact sink matching recovered none. The 300 judgments had no
 service errors and cost $0.017657. This evidence supports the opt-in integration
 at a 0.50 threshold. The source review corpus remains private and is not vendored
 with the repository.
+
+That evaluation compared post-dedup analysis candidates. It did not measure
+same-sink claims already removed by the existing deterministic pass, evidence
+loss from selecting one candidate, or final unique-defect recall. The result
+supports semantic relationship discovery, not pre-validation suppression.
+
+## 2026-09-25 lossless confirmed-finding evaluation
+
+A second frozen corpus contains all 35 within-review pairs among 20 independently
+confirmed findings. Eight pairs were labeled as sharing a causal source or
+control; 27 required separate publication. Each finding included its validator
+evidence and proof.
+
+The strict question asked whether Jev could authorize publishing a pair as one
+finding. At threshold 0.50 it proposed none of the 40 positive repeated decisions
+and made no false proposals. The finding proofs did not establish enough shared
+source-of-truth or generation evidence for a safe merge.
+
+The lossless retrieval question instead asked whether a pair warranted shared
+verification. Requiring both orderings to reach 0.70 produced:
+
+| Repeated decisions | Result |
+| --- | ---: |
+| True proposals | 40/40 |
+| Missed proposals | 0/40 |
+| Extra verification proposals | 66/135 |
+| Correctly separate | 69/135 |
+
+This is useful as a recall-oriented proposal stage: it retrieves every labeled
+relationship while sending about 13 additional pairs per 35-pair repetition to
+a verifier. It is not precise enough to merge findings directly. Both runs
+made 700 requests with no service errors, used 1,854,060 input tokens, and cost
+$0.077871.
+
+The implementation therefore validates every candidate, preserves confirmed
+same-line findings, and records Jev grouping proposals only after validation.
+No proposal changes the published review.
+
+## Next Jev experiments
+
+1. Add Jev routing signals to the existing triage union so Jev can increase
+   analysis coverage without suppressing an existing route.
+2. Check individual source, sink, mitigation, and policy claims against located
+   evidence; use uncertainty to fetch evidence or escalate to the validator.
+3. Mine analysis/validator disagreements offline to expand independently labeled
+   evaluation sets.
+4. Suggest finding continuity across revisions while keeping fix verification
+   independent.
