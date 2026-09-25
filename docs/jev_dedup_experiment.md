@@ -95,6 +95,36 @@ The implementation therefore validates every candidate, preserves confirmed
 same-line findings, and records Jev grouping proposals only after validation.
 No proposal changes the published review.
 
+## 2026-09-25 consolidation-verifier evaluation
+
+The Jev proposal stage now feeds a pairwise reasoning verifier in shadow mode.
+The verifier accepts a consolidation only when it names one shared cause and
+repair, returns both member IDs and sink locations, and has no unresolved
+assumptions. Original findings and proofs remain in the debug artifact; review
+publication is unchanged.
+
+On one frozen repetition, Jev proposed 21 of the 35 confirmed-finding pairs: all
+8 labeled shared-cause pairs and 13 separate controls.
+
+| Verifier evidence | Shared-cause accepted | Separate controls rejected | Cost |
+| --- | ---: | ---: | ---: |
+| Captured finding proofs only | 1/8 | 13/13 | $0.818153 |
+| Exact reviewed diff, seven remaining positives | 0/7 | — | $0.726488 |
+| Exact diff plus located generator evidence, seven remaining positives | 7/7 | — | $1.033701 |
+
+The initial run had zero false consolidations but only 12.5% recall. Every miss
+correctly named the missing fact: the finding proofs and diff did not prove that
+`users_props.ml` generates the affected `authorized_keys` files. Adding the
+relevant `gen_authorized_keys.ml` and access-policy excerpts raised the seven
+missed positives to 7/7 while satisfying the local evidence-preservation guard.
+
+Allowing the verifier to guess repository paths was both ineffective and
+expensive. One unrestricted probe used 12 file fetches and cost $3.141607; a
+four-step targeted probe still missed the generator and cost $1.542475. The
+useful next change is bounded evidence retrieval that locates source-of-truth
+and generated-file relationships before verification. Loosening the verifier
+would trade away the zero-false-consolidation result.
+
 ## Next Jev experiments
 
 1. Add Jev routing signals to the existing triage union so Jev can increase

@@ -700,7 +700,50 @@ module Make (AI : Api.Agent_runner) = struct
       log#warn "%sJev grouping failed in one orientation: %s" log_prefix error;
       Lwt.return (None, costs)
 
-  let run_jev_grouping ~ctx ~security_config ~artifacts ?log_context confirmed =
+  let verify_grouping_pair ~ctx ~repo_url ~fetch_file ~diff_text ~left_id ~left ~right_id ~right ?debug_dir ?log_context
+    () =
+    let input = Consolidation_agent.build_input ~diff_text ~left_id ~left ~right_id ~right in
+    let tools = Consolidation_agent.tools ~fetch_file:(fun path -> fetch_file ~path) in
+    let%lwt result =
+      AI.run ~ctx ~repo_url ~tools ?debug_dir ?log_context ~config:Consolidation_agent.config ~input ()
+    in
+    match result with
+    | Error error -> Lwt.return (`Assoc [ "status", `String "failed"; "error", `String error ], [])
+    | Ok agent_result ->
+      let cost =
+        Cost_tracking.of_agent_result ?log_context ~agent_name:"consolidation_verifier"
+          ~files_fetched:agent_result.tool_results_count agent_result
+      in
+      (match Consolidation_agent.output_of_json agent_result.output with
+      | output ->
+        let status, reason =
+          match Consolidation_agent.verify ~left_id ~left ~right_id ~right output with
+          | Ok _ -> "verified_consolidation", None
+          | Error reason ->
+            let status =
+              match output.verdict with
+              | Consolidation_agent.Keep_separate -> "keep_separate"
+              | Consolidation_agent.Consolidate -> "rejected_consolidation"
+            in
+            status, Some reason
+        in
+        let fields = [ "status", `String status; "output", agent_result.output ] in
+        let fields =
+          match reason with
+          | Some reason -> ("reason", `String reason) :: fields
+          | None -> fields
+        in
+        Lwt.return (`Assoc fields, [ cost ])
+      | exception exn ->
+        Lwt.return
+          ( `Assoc
+              [
+                "status", `String "invalid_output"; "error", `String (Devkit.Exn.str exn); "output", agent_result.output;
+              ],
+            [ cost ] ))
+
+  let run_jev_grouping ~ctx ~repo_url ~fetch_file ~diff_text ~security_config ~artifacts ?debug_dir ?log_context
+    confirmed =
     let log_prefix = log_context_prefix log_context in
     match security_config.Config_types.jev_grouping_enabled, confirmed with
     | false, _ | true, [] | true, [ _ ] -> Lwt.return []
@@ -724,24 +767,52 @@ module Make (AI : Api.Agent_runner) = struct
           (fun (judgments, proposed_count, costs) (left_id, left, right_id, right) ->
             let%lwt probabilities, pair_costs = score_grouping_pair ~api_key ?log_context left right in
             let common = [ "left_id", `Int left_id; "right_id", `Int right_id ] in
-            let judgment, proposed =
+            let%lwt judgment, proposed, verifier_costs =
               match probabilities with
               | Some (forward, reverse) ->
                 let proposed =
                   Jev_triage.relationship_proposed ~threshold:security_config.jev_grouping_threshold ~forward ~reverse
                 in
-                ( `Assoc
-                    (common
-                    @ [
-                        "forward_probability", `Float forward;
-                        "reverse_probability", `Float reverse;
-                        "proposed", `Bool proposed;
-                      ]),
-                  proposed )
-              | None -> `Assoc (common @ [ "error", `String "judgment_failed"; "proposed", `Bool false ]), false
+                (match proposed with
+                | false ->
+                  Lwt.return
+                    ( `Assoc
+                        (common
+                        @ [
+                            "forward_probability", `Float forward;
+                            "reverse_probability", `Float reverse;
+                            "proposed", `Bool false;
+                          ]),
+                      false,
+                      [] )
+                | true ->
+                  let%lwt verification, verifier_costs =
+                    verify_grouping_pair ~ctx ~repo_url ~fetch_file ~diff_text ~left_id ~left ~right_id ~right
+                      ?debug_dir ?log_context ()
+                  in
+                  Lwt.return
+                    ( `Assoc
+                        (common
+                        @ [
+                            "forward_probability", `Float forward;
+                            "reverse_probability", `Float reverse;
+                            "proposed", `Bool true;
+                            "verification", verification;
+                            ( "member_findings",
+                              `List
+                                [
+                                  Security_types.validated_finding_to_json left;
+                                  Security_types.validated_finding_to_json right;
+                                ] );
+                          ]),
+                      true,
+                      verifier_costs ))
+              | None ->
+                Lwt.return (`Assoc (common @ [ "error", `String "judgment_failed"; "proposed", `Bool false ]), false, [])
             in
             let proposed_count = if proposed then proposed_count + 1 else proposed_count in
-            Lwt.return (judgment :: judgments, proposed_count, List.rev_append pair_costs costs))
+            let costs = List.rev_append verifier_costs (List.rev_append pair_costs costs) in
+            Lwt.return (judgment :: judgments, proposed_count, costs))
           ([], 0, []) (pairs [] indexed)
       in
       let judgments = List.rev judgments in
@@ -1360,7 +1431,10 @@ module Make (AI : Api.Agent_runner) = struct
         in
         log#info "%svalidation complete: %d confirmed, %d rejected" log_prefix (List.length confirmed)
           (List.length validated - List.length confirmed);
-        let%lwt jev_grouping_costs = run_jev_grouping ~ctx ~security_config ~artifacts ?log_context confirmed in
+        let%lwt jev_grouping_costs =
+          run_jev_grouping ~ctx ~repo_url ~fetch_file ~diff_text ~security_config ~artifacts ?debug_dir ?log_context
+            confirmed
+        in
         let classified_findings =
           List.map
             (fun (vf : Security_types.validated_finding) ->

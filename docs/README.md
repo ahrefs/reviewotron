@@ -518,7 +518,7 @@ generated-file header markers. Broad folders such as `generated/`, `dist/`,
 | `confidence_threshold` | `"medium"` | Minimum triage confidence to trigger analysis for enabled classes. `"high"` = only high-confidence signals. `"medium"` = high + medium. `"low"` = all signals. |
 | `jev_triage_enabled` | `false` | Replace the generative triage call with TypeSafe Jev. If the key is absent, the service fails, or any file is not evaluated, Reviewotron falls back to the primary triage agent. Local reviews read `TYPESAFE_API_KEY` before `typesafe_api_key` in the secrets file. |
 | `jev_triage_threshold` | `0.8` | Minimum Jev Noul probability that routes a file to per-class analysis. Must be between 0 and 1. Tune against labeled repository changes. |
-| `jev_grouping_enabled` | `false` | After validation, ask TypeSafe Jev which confirmed-finding pairs warrant shared consolidation verification. This experimental stage records proposals and never merges or suppresses findings. |
+| `jev_grouping_enabled` | `false` | After validation, ask TypeSafe Jev which confirmed-finding pairs warrant shared consolidation verification, then run a reasoning verifier on proposed pairs. This experimental stage records decisions and never merges or suppresses findings. |
 | `jev_grouping_threshold` | `0.7` | Minimum probability required in both candidate orderings to record a grouping proposal. Must be between 0 and 1. |
 | `memory_max_tokens` | `5000` | Target size limit for the repo's security memory file. |
 | `metrics_artifacts` | `false` | Write compact security metrics artifacts under the review debug dir's `security/` subdirectory. These omit source code and prompt bodies. |
@@ -610,10 +610,12 @@ For `policy_regression`, validation does not require a user-controlled runtime s
 When `jev_grouping_enabled` is true, Jev compares independently confirmed
 findings in both orders after validation. Pairs whose two probabilities reach
 `jev_grouping_threshold` are written to the sensitive debug artifact
-`jev_grouping_proposals.json`. The proposals are experimental evidence for a
-future consolidation verifier; they do not change published findings. Missing
-credentials, service failures, and uncertain judgments leave every finding
-untouched.
+`jev_grouping_proposals.json`. Each proposal is checked by a reasoning verifier
+that must identify one shared cause and repair, preserve both member IDs and
+sink locations, and return no unresolved assumptions. The artifact retains both
+original confirmed findings and the verification result. This shadow stage does
+not change published findings. Missing credentials, service failures, invalid
+outputs, and uncertain judgments leave every finding untouched.
 
 ### 4. Memory Curation (Haiku, async)
 

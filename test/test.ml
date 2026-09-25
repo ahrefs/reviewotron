@@ -1409,6 +1409,36 @@ let src_site ~path ~line ~description : Security_types.source_evidence = { path;
 let sink_site ~path ~line ~description : Security_types.sink_evidence = { path; line; description }
 let flow_step ~path ~line ~description : Security_types.flow_step = { path; line; description }
 
+let test_consolidation_requires_lossless_evidence () =
+  let finding id path line =
+    mk_validated ~candidate_id:id
+      ~source:(src_site ~path ~line:(line - 1) ~description:"source")
+      ~sink:(sink_site ~path ~line ~description:"sink")
+      ~flow:[] ()
+  in
+  let left = finding 0 "src/a.ml" 10 in
+  let right = finding 1 "src/b.ml" 20 in
+  let location path line : Consolidation_agent.affected_location = { path; line; evidence = "confirmed sink" } in
+  let output : Consolidation_agent.output =
+    {
+      verdict = Consolidate;
+      reason = "one shared policy";
+      shared_cause = "one generated policy source";
+      shared_repair = "restore the check in the source policy";
+      primary_path = "policy/source.ml";
+      primary_line = 5;
+      affected_locations = [ location "src/a.ml" 10; location "src/b.ml" 20 ];
+      member_finding_ids = [ 0; 1 ];
+      assumptions = [];
+    }
+  in
+  let verify output = Consolidation_agent.verify ~left_id:0 ~left ~right_id:1 ~right output in
+  (check bool) "complete consolidation accepted" true (Result.is_ok (verify output));
+  (check bool) "missing member location rejected" true
+    (Result.is_error (verify { output with affected_locations = [ location "src/a.ml" 10 ] }));
+  (check bool) "unresolved assumption rejected" true
+    (Result.is_error (verify { output with assumptions = [ "generation relationship is unverified" ] }))
+
 let test_anchor_sink_in_diff_no_snap () =
   (* Sink is already in the diff (src/main.ml hunk A).  We must not snap; the
      finding's path/line should equal the sink and the message should NOT
@@ -9476,6 +9506,8 @@ let () =
           test_case "source fallback when flow empty" `Quick test_anchor_source_fallback_when_flow_empty;
           test_case "end_line derived from anchor, not sink" `Quick test_anchor_end_line_derived_from_anchor_not_sink;
         ] );
+      ( "security_consolidation",
+        [ test_case "requires lossless evidence" `Quick test_consolidation_requires_lossless_evidence ] );
       ( "security_artifacts",
         [
           test_case "disabled writes nothing" `Quick test_security_artifacts_disabled_writes_nothing;

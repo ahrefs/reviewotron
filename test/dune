@@ -82,6 +82,13 @@
  (preprocess
   (pps lwt_ppx)))
 
+(executable
+ (name consolidation_benchmark)
+ (modules consolidation_benchmark)
+ (libraries reviewotron_lib devkit lwt lwt.unix yojson)
+ (preprocess
+  (pps lwt_ppx)))
+
 (test
  (name test_local_cli)
  (modules test_local_cli)
