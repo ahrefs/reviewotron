@@ -40,6 +40,14 @@ val agent_model_tier : Config_types.model_tier -> Agent_runner.model_tier
     [always_analyze_vuln_classes]. *)
 val should_analyze : security_config:Config_types.security_plugin_config -> Security_types.triage_signal -> bool
 
+(** Keep primary triage signals whose vulnerability class Jev independently
+    supports. Classes in [always_analyze] bypass the gate. *)
+val gate_triage_signals :
+  always_analyze:Config_types.vuln_class list ->
+  jev_signals:Security_types.triage_signal list ->
+  Security_types.triage_signal list ->
+  Security_types.triage_signal list
+
 (** Step budget for a per-class analysis agent after routing.
 
     High-confidence signals still get enough room for multi-file evidence

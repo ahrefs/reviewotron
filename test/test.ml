@@ -645,6 +645,9 @@ let test_config_review_plugins_defaults () =
   | Some Config_types.Effort.Low | Some High | Some Xhigh | None -> fail "expected medium analysis effort by default");
   (check bool) "Jev triage default off" false config.review_plugins.security.jev_triage_enabled;
   (check (float 0.0001)) "Jev threshold default" 0.8 config.review_plugins.security.jev_triage_threshold;
+  (check bool) "Jev analysis gate default off" false config.review_plugins.security.jev_analysis_gate_enabled;
+  (check (float 0.0001))
+    "Jev analysis gate threshold default" 0.6 config.review_plugins.security.jev_analysis_gate_threshold;
   (check bool) "Jev grouping default off" false config.review_plugins.security.jev_grouping_enabled;
   (check (float 0.0001)) "Jev grouping threshold default" 0.7 config.review_plugins.security.jev_grouping_threshold;
   (check int) "memory_max_tokens" 5000 config.review_plugins.security.memory_max_tokens;
@@ -671,6 +674,8 @@ let test_config_review_plugins_explicit () =
         "triage_model_tier": "standard",
         "analysis_effort": "medium",
         "confidence_threshold": "high",
+        "jev_analysis_gate_enabled": true,
+        "jev_analysis_gate_threshold": 0.62,
         "jev_grouping_enabled": true,
         "jev_grouping_threshold": 0.75,
         "memory_max_tokens": 10000,
@@ -696,6 +701,8 @@ let test_config_review_plugins_explicit () =
   (match config.review_plugins.security.analysis_effort with
   | Some Config_types.Effort.Medium -> ()
   | Some Config_types.Effort.Low | Some High | Some Xhigh | None -> fail "expected medium analysis effort");
+  (check bool) "Jev analysis gate" true config.review_plugins.security.jev_analysis_gate_enabled;
+  (check (float 0.0001)) "Jev analysis gate threshold" 0.62 config.review_plugins.security.jev_analysis_gate_threshold;
   (check bool) "Jev grouping" true config.review_plugins.security.jev_grouping_enabled;
   (check (float 0.0001)) "Jev grouping threshold" 0.75 config.review_plugins.security.jev_grouping_threshold;
   (check int) "memory_max_tokens" 10000 config.review_plugins.security.memory_max_tokens;
@@ -727,6 +734,25 @@ let test_config_rejects_invalid_jev_threshold () =
   | (_ : Config_types.config) -> fail "expected out-of-range Jev threshold to be rejected"
   | exception Melange_json.Of_json_error (Melange_json.Json_error msg) ->
     (check bool) "error names Jev threshold" true (contains_sub ~sub:"jev_triage_threshold" msg)
+
+let test_config_rejects_invalid_jev_analysis_gate_threshold () =
+  match
+    Config_types.config_of_json
+      (Melange_json.of_string {|{"review_plugins":{"security":{"jev_analysis_gate_threshold":-0.1}}}|})
+  with
+  | (_ : Config_types.config) -> fail "expected out-of-range Jev analysis gate threshold to be rejected"
+  | exception Melange_json.Of_json_error (Melange_json.Json_error msg) ->
+    (check bool) "error names Jev analysis gate threshold" true (contains_sub ~sub:"jev_analysis_gate_threshold" msg)
+
+let test_config_rejects_both_jev_routing_modes () =
+  match
+    Config_types.config_of_json
+      (Melange_json.of_string
+         {|{"review_plugins":{"security":{"jev_triage_enabled":true,"jev_analysis_gate_enabled":true}}}|})
+  with
+  | (_ : Config_types.config) -> fail "expected mutually exclusive Jev routing modes to be rejected"
+  | exception Melange_json.Of_json_error (Melange_json.Json_error msg) ->
+    (check bool) "error names both Jev modes" true (contains_sub ~sub:"cannot both be true" msg)
 
 let test_config_rejects_invalid_jev_grouping_threshold () =
   match
@@ -884,8 +910,10 @@ let test_security_plugin_config_roundtrip () =
       analysis_effort = Some Config_types.Effort.Medium;
       validator_model_tier = Strong;
       confidence_threshold = High;
-      jev_triage_enabled = true;
+      jev_triage_enabled = false;
       jev_triage_threshold = 0.6;
+      jev_analysis_gate_enabled = true;
+      jev_analysis_gate_threshold = 0.62;
       jev_grouping_enabled = true;
       jev_grouping_threshold = 0.75;
       memory_max_tokens = 3000;
@@ -896,8 +924,10 @@ let test_security_plugin_config_roundtrip () =
   let json = Config_types.security_plugin_config_to_json cfg in
   let parsed = Config_types.security_plugin_config_of_json json in
   (check bool) "enabled" true parsed.enabled;
-  (check bool) "Jev triage" true parsed.jev_triage_enabled;
+  (check bool) "Jev triage" false parsed.jev_triage_enabled;
   (check (float 0.0001)) "Jev threshold" 0.6 parsed.jev_triage_threshold;
+  (check bool) "Jev analysis gate" true parsed.jev_analysis_gate_enabled;
+  (check (float 0.0001)) "Jev analysis gate threshold" 0.62 parsed.jev_analysis_gate_threshold;
   (check bool) "Jev grouping" true parsed.jev_grouping_enabled;
   (check (float 0.0001)) "Jev grouping threshold" 0.75 parsed.jev_grouping_threshold;
   (check int) "vuln_classes" 2 (List.length parsed.vuln_classes);
@@ -3051,6 +3081,29 @@ let test_security_always_analyze_implies_enabled () =
   let high_injection = make_triage_signal ~vuln_class:Injection ~confidence:High in
   (check bool) "High always_analyze-only class triggers" true
     (Security_review_plugin.should_analyze ~security_config high_injection)
+
+let test_security_jev_analysis_gate () =
+  let injection = make_triage_signal ~vuln_class:Injection ~confidence:High in
+  let xss = make_triage_signal ~vuln_class:Xss ~confidence:Medium in
+  let ssrf = make_triage_signal ~vuln_class:Ssrf ~confidence:Low in
+  let kept =
+    Security_review_plugin.gate_triage_signals ~always_analyze:[ Injection ] ~jev_signals:[ xss ]
+      [ injection; xss; ssrf ]
+  in
+  (check int) "keeps supported and bypassed classes" 2 (List.length kept);
+  (check bool) "always-analyze class bypasses gate" true
+    (List.exists
+       (fun (signal : Security_types.triage_signal) ->
+         Security_review_plugin.vuln_class_equal signal.vuln_class Injection)
+       kept);
+  (check bool) "Jev-supported class passes gate" true
+    (List.exists
+       (fun (signal : Security_types.triage_signal) -> Security_review_plugin.vuln_class_equal signal.vuln_class Xss)
+       kept);
+  (check bool) "unsupported class is removed" false
+    (List.exists
+       (fun (signal : Security_types.triage_signal) -> Security_review_plugin.vuln_class_equal signal.vuln_class Ssrf)
+       kept)
 
 let test_security_should_analyze_high_threshold () =
   let security_config = { Config_types.default_security_plugin_config with confidence_threshold = High } in
@@ -9398,6 +9451,9 @@ let () =
           test_case "invalid ignored file regex rejected" `Quick test_config_rejects_invalid_ignored_file_regex;
           test_case "broad ignored file regex rejected" `Quick test_config_rejects_broad_ignored_file_regex;
           test_case "invalid Jev threshold rejected" `Quick test_config_rejects_invalid_jev_threshold;
+          test_case "invalid Jev analysis gate threshold rejected" `Quick
+            test_config_rejects_invalid_jev_analysis_gate_threshold;
+          test_case "Jev routing modes are mutually exclusive" `Quick test_config_rejects_both_jev_routing_modes;
           test_case "invalid Jev grouping threshold rejected" `Quick test_config_rejects_invalid_jev_grouping_threshold;
           test_case "general scout config defaults" `Quick test_config_general_scout_defaults;
           test_case "general scout config explicit" `Quick test_config_general_scout_explicit;
@@ -9633,6 +9689,7 @@ let () =
           test_case "should analyze below threshold not in config" `Quick
             test_security_should_analyze_below_threshold_not_in_config;
           test_case "always_analyze implies enabled" `Quick test_security_always_analyze_implies_enabled;
+          test_case "Jev analysis gate" `Quick test_security_jev_analysis_gate;
           test_case "should analyze high threshold" `Quick test_security_should_analyze_high_threshold;
           test_case "should analyze high threshold restricted" `Quick
             test_security_should_analyze_high_threshold_restricted;

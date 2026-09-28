@@ -234,6 +234,14 @@ type security_plugin_config = {
   jev_triage_threshold : float;
      [@json.default 0.8]
      [@jsonschema.description "Minimum Jev Noul probability, from 0 to 1, that triggers deeper security analysis."]
+  jev_analysis_gate_enabled : bool;
+     [@json.default false]
+     [@jsonschema.description
+       "After primary triage, require independent Jev support before running each vulnerability-class analysis. Jev \
+        errors fail open. Requires typesafe_api_key in secrets or TYPESAFE_API_KEY for local reviews."]
+  jev_analysis_gate_threshold : float;
+     [@json.default 0.6]
+     [@jsonschema.description "Minimum Jev Noul probability, from 0 to 1, required by the post-triage analysis gate."]
   jev_grouping_enabled : bool;
      [@json.default false]
      [@jsonschema.description
@@ -281,6 +289,8 @@ let default_security_plugin_config =
     confidence_threshold = Medium;
     jev_triage_enabled = false;
     jev_triage_threshold = 0.8;
+    jev_analysis_gate_enabled = false;
+    jev_analysis_gate_threshold = 0.6;
     jev_grouping_enabled = false;
     jev_grouping_threshold = 0.7;
     memory_max_tokens = 5000;
@@ -407,8 +417,16 @@ let config_of_json (json : Yojson.Basic.t) : config =
   let config = Config_codec.of_json json in
   List.iter (validate_ignored_file_regex ~json) config.ignored_file_regexes;
   validate_probability_threshold ~json ~name:"jev_triage_threshold" config.review_plugins.security.jev_triage_threshold;
+  validate_probability_threshold ~json ~name:"jev_analysis_gate_threshold"
+    config.review_plugins.security.jev_analysis_gate_threshold;
   validate_probability_threshold ~json ~name:"jev_grouping_threshold"
     config.review_plugins.security.jev_grouping_threshold;
+  (match
+     config.review_plugins.security.jev_triage_enabled, config.review_plugins.security.jev_analysis_gate_enabled
+   with
+  | true, true ->
+    Melange_json.of_json_error ~json "jev_triage_enabled and jev_analysis_gate_enabled cannot both be true"
+  | true, false | false, true | false, false -> ());
   config
 
 let config_help_json () = Yojson.Basic.pretty_to_string config_jsonschema

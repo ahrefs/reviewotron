@@ -43,3 +43,35 @@ held-out set confirms it.
 The result supports keeping per-file context as the routing baseline. It does
 not establish an end-to-end detection improvement because analysis and
 validation were intentionally excluded.
+
+## 2026-09-28 captured-review cost gate
+
+The next experiment replayed the exact file diffs and recorded security-stage
+metrics from 14 real reviews (160 files). It kept the generative triager and
+used Jev only to approve or reject the vulnerability classes that triage had
+already routed. A Jev error or incomplete review passed every route through.
+
+Five repetitions with `jev-1.13.0` at a threshold of 0.60 produced:
+
+| Measure | Result |
+| --- | ---: |
+| Confirmed classes preserved | 8/8 in every repetition |
+| Captured final findings in preserved classes | 20/20 |
+| Analysis routes skipped in every repetition | 8 |
+| Net analysis savings per 14-review repetition | $1.84–$2.35 |
+| Mean net savings per review | $0.160 |
+| Largest stable per-review saving | $0.93 |
+| Jev cost per repetition | $0.0164 |
+
+The net value subtracts Jev cost from the recorded cost of analysis agents that
+the gate would skip. It leaves the original triage cost in place and claims no
+validator saving, so it is a conservative estimate. One oversized encrypted
+file exceeded the Jev request limit in every repetition; fail-open behavior kept
+all routes for that review.
+
+This is a counterfactual replay of captured routes, findings, and costs rather
+than a full review A/B. It establishes the release criterion for this path:
+retain the same confirmed routes while saving at least $0.50 on a real review,
+or improve review quality. Threshold 0.60 met the cost criterion with a $0.93
+saving on one review and no observed confirmed-class loss. Threshold 0.70 was
+rejected because it missed a confirmed injection route in every repetition.

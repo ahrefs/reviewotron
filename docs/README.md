@@ -454,6 +454,8 @@ version control. Webhook/server commands do not read the user-global files.
       "confidence_threshold": "medium",
       "jev_triage_enabled": false,
       "jev_triage_threshold": 0.8,
+      "jev_analysis_gate_enabled": false,
+      "jev_analysis_gate_threshold": 0.6,
       "jev_grouping_enabled": false,
       "jev_grouping_threshold": 0.7,
       "memory_max_tokens": 5000,
@@ -518,6 +520,8 @@ generated-file header markers. Broad folders such as `generated/`, `dist/`,
 | `confidence_threshold` | `"medium"` | Minimum triage confidence to trigger analysis for enabled classes. `"high"` = only high-confidence signals. `"medium"` = high + medium. `"low"` = all signals. |
 | `jev_triage_enabled` | `false` | Replace the generative triage call with TypeSafe Jev. If the key is absent, the service fails, or any file is not evaluated, Reviewotron falls back to the primary triage agent. Local reviews read `TYPESAFE_API_KEY` before `typesafe_api_key` in the secrets file. |
 | `jev_triage_threshold` | `0.8` | Minimum Jev Noul probability that routes a file to per-class analysis. Must be between 0 and 1. Tune against labeled repository changes. |
+| `jev_analysis_gate_enabled` | `false` | Run normal triage, then require independent Jev support before launching each per-class analysis agent. Errors and incomplete Jev evaluations fail open. This cannot be enabled with `jev_triage_enabled`. |
+| `jev_analysis_gate_threshold` | `0.6` | Minimum Jev Noul probability required by the post-triage analysis gate. Must be between 0 and 1. |
 | `jev_grouping_enabled` | `false` | After validation, ask TypeSafe Jev which confirmed-finding pairs warrant shared consolidation verification, then run a reasoning verifier on proposed pairs. This experimental stage records decisions and never merges or suppresses findings. |
 | `jev_grouping_threshold` | `0.7` | Minimum probability required in both candidate orderings to record a grouping proposal. Must be between 0 and 1. |
 | `memory_max_tokens` | `5000` | Target size limit for the repo's security memory file. |
@@ -571,6 +575,8 @@ Before triage, Reviewotron runs a deterministic scan over changed paths and adde
 By default, the triage agent scans the diff for security-relevant patterns and classifies them by vulnerability type. This is intentionally biased toward **over-flagging** — it's cheap to run an analysis agent that finds nothing, costly to miss a real issue.
 
 When `jev_triage_enabled` is true, Jev instead asks one independent Noul question per enabled vulnerability class for every changed file. Scores at or above `jev_triage_threshold` route that file and class to analysis. The model version is pinned so a calibrated threshold cannot change silently. Reviewotron falls back to the default triager if Jev is unavailable or fails to evaluate every file.
+
+When `jev_analysis_gate_enabled` is true, the default triager still runs. Jev then acts as a conservative class-level gate: an analysis agent runs only when both systems route that vulnerability class. `always_analyze_vuln_classes` bypasses this gate. A missing key, service failure, or incomplete file evaluation keeps every primary route, so Jev availability cannot suppress analysis.
 
 The triage agent outputs signals with confidence levels (`high`, `medium`, `low`). The `confidence_threshold` config controls which signals proceed to analysis for enabled vulnerability classes. `always_analyze_vuln_classes` is the explicit override that bypasses the threshold; classes listed there are implicitly enabled even if absent from `vuln_classes`.
 

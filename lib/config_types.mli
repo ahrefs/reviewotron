@@ -89,6 +89,8 @@ type security_plugin_config = {
   confidence_threshold : confidence;
   jev_triage_enabled : bool;
   jev_triage_threshold : float;
+  jev_analysis_gate_enabled : bool;
+  jev_analysis_gate_threshold : float;
   jev_grouping_enabled : bool;
   jev_grouping_threshold : float;
   memory_max_tokens : int;

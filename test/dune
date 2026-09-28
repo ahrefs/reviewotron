@@ -62,6 +62,13 @@
   (pps lwt_ppx)))
 
 (executable
+ (name jev_captured_routing_benchmark)
+ (modules jev_captured_routing_benchmark)
+ (libraries reviewotron_lib lwt lwt.unix yojson)
+ (preprocess
+  (pps lwt_ppx)))
+
+(executable
  (name jev_dedup_benchmark)
  (modules jev_dedup_benchmark)
  (libraries reviewotron_lib lwt lwt.unix yojson)

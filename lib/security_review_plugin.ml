@@ -48,6 +48,13 @@ let should_analyze ~security_config (signal : Security_types.triage_signal) =
   let above_threshold = confidence_rank signal.confidence >= confidence_rank threshold in
   enabled && (above_threshold || always_analyze)
 
+let gate_triage_signals ~always_analyze ~jev_signals =
+  List.filter (fun (signal : Security_types.triage_signal) ->
+    List.exists (vuln_class_equal signal.vuln_class) always_analyze
+    || List.exists
+         (fun (jev_signal : Security_types.triage_signal) -> vuln_class_equal signal.vuln_class jev_signal.vuln_class)
+         jev_signals)
+
 let highest_signal_confidence signals =
   List.fold_left
     (fun best (signal : Security_types.triage_signal) ->
@@ -637,7 +644,14 @@ module Make (AI : Api.Agent_runner) = struct
     }
   let run_jev_triage ~ctx ~security_config ~diff ~artifacts ?log_context () =
     let log_prefix = log_context_prefix log_context in
-    match security_config.Config_types.jev_triage_enabled with
+    let enabled, threshold =
+      match security_config.Config_types.jev_triage_enabled, security_config.Config_types.jev_analysis_gate_enabled with
+      | true, false -> true, security_config.jev_triage_threshold
+      | false, true -> true, security_config.jev_analysis_gate_threshold
+      | true, true -> true, security_config.jev_triage_threshold
+      | false, false -> false, security_config.jev_triage_threshold
+    in
+    match enabled with
     | false -> Lwt.return_none
     | true ->
     match (Context.secrets ctx).typesafe_api_key with
@@ -653,9 +667,7 @@ module Make (AI : Api.Agent_runner) = struct
             | false -> vuln_class :: classes)
           security_config.vuln_classes security_config.always_analyze_vuln_classes
       in
-      let%lwt result =
-        Jev_triage.run ?log_context ~api_key ~threshold:security_config.jev_triage_threshold ~vuln_classes ~diff ()
-      in
+      let%lwt result = Jev_triage.run ?log_context ~api_key ~threshold ~vuln_classes ~diff () in
       (match result with
       | Error error ->
         log#warn "%sJev triage failed: %s" log_prefix error;
@@ -1564,20 +1576,43 @@ module Make (AI : Api.Agent_runner) = struct
     in
     let%lwt jev_output = run_jev_triage ~ctx ~security_config ~diff ~artifacts ?log_context () in
     let%lwt triage_result, primary_triage_costs =
-      match jev_output with
-      | Some output when output.complete -> Lwt.return (Some (jev_triage_output output), [])
-      | Some output ->
-        log#warn "%sJev triage did not evaluate every file; falling back to primary triage" log_prefix;
+      match security_config.jev_triage_enabled, security_config.jev_analysis_gate_enabled with
+      | true, _ ->
+        (match jev_output with
+        | Some output when output.complete -> Lwt.return (Some (jev_triage_output output), [])
+        | Some output ->
+          log#warn "%sJev triage did not evaluate every file; falling back to primary triage" log_prefix;
+          let%lwt primary_result, primary_costs = run_primary_triage () in
+          let triage_result =
+            match primary_result, output.signals with
+            | None, [] -> None
+            | None, _ :: _ -> Some (jev_triage_output output)
+            | Some primary, [] -> Some primary
+            | Some primary, _ :: _ ->
+              Some { primary with signals = primary.signals @ output.signals; skip_reason = None }
+          in
+          Lwt.return (triage_result, primary_costs)
+        | None -> run_primary_triage ())
+      | false, true ->
         let%lwt primary_result, primary_costs = run_primary_triage () in
         let triage_result =
-          match primary_result, output.signals with
-          | None, [] -> None
-          | None, _ :: _ -> Some (jev_triage_output output)
-          | Some primary, [] -> Some primary
-          | Some primary, _ :: _ -> Some { primary with signals = primary.signals @ output.signals; skip_reason = None }
+          match primary_result, jev_output with
+          | Some primary, Some output when output.complete ->
+            let signals =
+              gate_triage_signals ~always_analyze:security_config.always_analyze_vuln_classes
+                ~jev_signals:output.signals primary.signals
+            in
+            log#info "%sJev analysis gate kept %d/%d primary triage signal(s)" log_prefix (List.length signals)
+              (List.length primary.signals);
+            Some { primary with signals }
+          | Some primary, Some _ ->
+            log#warn "%sJev analysis gate did not evaluate every file; keeping all primary routes" log_prefix;
+            Some primary
+          | Some primary, None -> Some primary
+          | None, Some _ | None, None -> None
         in
         Lwt.return (triage_result, primary_costs)
-      | None -> run_primary_triage ()
+      | false, false -> run_primary_triage ()
     in
     let jev_costs =
       match jev_output with
