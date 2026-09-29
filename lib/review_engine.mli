@@ -94,6 +94,12 @@ val retry_guidance_for_403 : string -> string option
 (** Whether a suggestion-integrity score removes only the proposed fix payload. *)
 val jev_suggestion_guard_removes : threshold:float -> probability:float -> bool
 
+(** Whether direct post-change context is strong enough to reject a false build claim. *)
+val jev_build_claim_guard_rejects : threshold:float -> probability:float -> bool
+
+(** A bounded, line-numbered window around a finding in its post-change file. *)
+val reviewed_file_context : line:int -> string -> string
+
 (** Raw plugin execution result, before sink-specific publishing. *)
 type plugin_result = {
   general_output : General_review_plugin.review_outcome option;

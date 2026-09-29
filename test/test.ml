@@ -626,6 +626,8 @@ let test_generic_openrouter_403_retries_one_provider_request () =
 
 let test_config_review_plugins_defaults () =
   let config = Config_types.config_of_json (Melange_json.of_string {|{}|}) in
+  (check bool) "Jev build-claim guard default off" false config.review_plugins.jev_build_claim_guard_enabled;
+  (check (float 0.0001)) "Jev build-claim threshold default" 0.7 config.review_plugins.jev_build_claim_guard_threshold;
   (check bool) "Jev suggestion guard default off" false config.review_plugins.jev_suggestion_guard_enabled;
   (check (float 0.0001)) "Jev suggestion threshold default" 0.5 config.review_plugins.jev_suggestion_guard_threshold;
   (check bool) "general enabled" true config.review_plugins.general.enabled;
@@ -669,6 +671,8 @@ let test_config_review_plugins_explicit () =
     "ignored_file_regexes": ["^snapshots/.*\\.golden$"],
     "ignore_generated_files": false,
     "review_plugins": {
+      "jev_build_claim_guard_enabled": true,
+      "jev_build_claim_guard_threshold": 0.72,
       "jev_suggestion_guard_enabled": true,
       "jev_suggestion_guard_threshold": 0.55,
       "general": { "enabled": false },
@@ -696,6 +700,8 @@ let test_config_review_plugins_explicit () =
   (check bool) "agent debug_artifacts" true config.debug_artifacts;
   (check (list string)) "ignored_file_regexes explicit" [ "^snapshots/.*\\.golden$" ] config.ignored_file_regexes;
   (check bool) "ignore_generated_files explicit off" false config.ignore_generated_files;
+  (check bool) "Jev build-claim guard" true config.review_plugins.jev_build_claim_guard_enabled;
+  (check (float 0.0001)) "Jev build-claim threshold" 0.72 config.review_plugins.jev_build_claim_guard_threshold;
   (check bool) "Jev suggestion guard" true config.review_plugins.jev_suggestion_guard_enabled;
   (check (float 0.0001)) "Jev suggestion threshold" 0.55 config.review_plugins.jev_suggestion_guard_threshold;
   (check bool) "general disabled" false config.review_plugins.general.enabled;
@@ -780,10 +786,33 @@ let test_config_rejects_invalid_jev_suggestion_guard_threshold () =
   | exception Melange_json.Of_json_error (Melange_json.Json_error msg) ->
     (check bool) "error names Jev suggestion threshold" true (contains_sub ~sub:"jev_suggestion_guard_threshold" msg)
 
+let test_config_rejects_invalid_jev_build_claim_guard_threshold () =
+  match
+    Config_types.config_of_json (Melange_json.of_string {|{"review_plugins":{"jev_build_claim_guard_threshold":-0.1}}|})
+  with
+  | (_ : Config_types.config) -> fail "expected out-of-range Jev build-claim threshold to be rejected"
+  | exception Melange_json.Of_json_error (Melange_json.Json_error msg) ->
+    (check bool) "error names Jev build-claim threshold" true (contains_sub ~sub:"jev_build_claim_guard_threshold" msg)
+
 let test_jev_suggestion_guard_threshold () =
   (check bool) "below threshold preserves fix" false
     (Review_engine.jev_suggestion_guard_removes ~threshold:0.5 ~probability:0.49);
   (check bool) "threshold removes fix" true (Review_engine.jev_suggestion_guard_removes ~threshold:0.5 ~probability:0.5)
+
+let test_jev_build_claim_guard () =
+  (check bool) "below threshold preserves finding" false
+    (Review_engine.jev_build_claim_guard_rejects ~threshold:0.7 ~probability:0.69);
+  (check bool) "threshold rejects finding" true
+    (Review_engine.jev_build_claim_guard_rejects ~threshold:0.7 ~probability:0.7);
+  let content = List.init 200 (fun index -> Printf.sprintf "line %d" (index + 1)) |> String.concat "\n" in
+  let context = Review_engine.reviewed_file_context ~line:100 content |> String.split_on_char '\n' in
+  (check int) "context line count" 161 (List.length context);
+  (match context with
+  | first :: _ -> (check string) "first numbered context line" "    20 | line 20" first
+  | [] -> fail "expected context lines");
+  match List.rev context with
+  | last :: _ -> (check string) "last numbered context line" "   180 | line 180" last
+  | [] -> fail "expected context lines"
 
 let test_config_general_scout_defaults () =
   let config = Config_types.config_of_json (Melange_json.of_string {|{}|}) in
@@ -9532,6 +9561,9 @@ let () =
           test_case "invalid Jev suggestion threshold rejected" `Quick
             test_config_rejects_invalid_jev_suggestion_guard_threshold;
           test_case "Jev suggestion threshold boundary" `Quick test_jev_suggestion_guard_threshold;
+          test_case "invalid Jev build-claim threshold rejected" `Quick
+            test_config_rejects_invalid_jev_build_claim_guard_threshold;
+          test_case "Jev build-claim guard" `Quick test_jev_build_claim_guard;
           test_case "general scout config defaults" `Quick test_config_general_scout_defaults;
           test_case "general scout config explicit" `Quick test_config_general_scout_explicit;
           test_case "max_leads = 0 rejected" `Quick test_config_max_leads_zero_rejected;

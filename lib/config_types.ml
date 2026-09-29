@@ -306,6 +306,14 @@ let default_security_plugin_config =
 
 (** Aggregated review plugin configuration. *)
 type review_plugins_config = {
+  jev_build_claim_guard_enabled : bool;
+     [@json.default false]
+     [@jsonschema.description
+       "Use TypeSafe Jev and post-change file context to reject general findings whose claimed deterministic build \
+        failure is directly contradicted. Requires typesafe_api_key in secrets or TYPESAFE_API_KEY for local reviews."]
+  jev_build_claim_guard_threshold : float;
+     [@json.default 0.7]
+     [@jsonschema.description "Minimum Jev probability, from 0 to 1, required to reject a false build claim."]
   jev_suggestion_guard_enabled : bool;
      [@json.default false]
      [@jsonschema.description
@@ -323,6 +331,8 @@ type review_plugins_config = {
 
 let default_review_plugins_config =
   {
+    jev_build_claim_guard_enabled = false;
+    jev_build_claim_guard_threshold = 0.7;
     jev_suggestion_guard_enabled = false;
     jev_suggestion_guard_threshold = 0.5;
     general = default_general_plugin_config;
@@ -442,6 +452,8 @@ let config_of_json (json : Yojson.Basic.t) : config =
     config.review_plugins.security.jev_grouping_threshold;
   validate_probability_threshold ~json ~name:"jev_suggestion_guard_threshold"
     config.review_plugins.jev_suggestion_guard_threshold;
+  validate_probability_threshold ~json ~name:"jev_build_claim_guard_threshold"
+    config.review_plugins.jev_build_claim_guard_threshold;
   (match
      config.review_plugins.security.jev_triage_enabled, config.review_plugins.security.jev_analysis_gate_enabled
    with

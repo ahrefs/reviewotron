@@ -439,6 +439,8 @@ version control. Webhook/server commands do not read the user-global files.
   "show_review_cost": false,
   "debug_artifacts": false,
   "review_plugins": {
+    "jev_build_claim_guard_enabled": false,
+    "jev_build_claim_guard_threshold": 0.7,
     "jev_suggestion_guard_enabled": false,
     "jev_suggestion_guard_threshold": 0.5,
     "general": {
@@ -504,6 +506,8 @@ generated-file header markers. Broad folders such as `generated/`, `dist/`,
 
 | Field | Default | Description |
 |-------|---------|-------------|
+| `jev_build_claim_guard_enabled` | `false` | Ask Jev to reject general findings whose deterministic compile/build claim is directly contradicted by post-change file context. Missing context, credentials, and service errors preserve the finding. |
+| `jev_build_claim_guard_threshold` | `0.7` | Minimum false-build-claim probability required to reject the finding. Must be between 0 and 1. |
 | `jev_suggestion_guard_enabled` | `false` | Ask Jev to remove mechanically defective `suggested_fix` payloads after validation. Findings remain published. Missing credentials and service errors preserve the fix. |
 | `jev_suggestion_guard_threshold` | `0.5` | Minimum defective-fix probability required to remove only the suggestion payload. Must be between 0 and 1. |
 
@@ -647,6 +651,13 @@ optional `suggested_fix` against the exact reviewed file diff. Scores at or
 above `jev_suggestion_guard_threshold` remove only the suggestion block; the
 finding and its evidence still publish. Missing credentials, unavailable diff
 evidence, and service failures preserve the suggestion.
+
+When `jev_build_claim_guard_enabled` is true, Jev checks validated general
+findings against the exact file diff and a bounded post-change source window.
+It rejects a finding only when that context directly disproves an explicit
+syntax, binding, type, or linking failure. The check runs after existing
+validation and cross-plugin deduplication. Security findings, unavailable file
+content, missing credentials, and Jev failures pass through unchanged.
 
 ### 4. Memory Curation (Haiku, async)
 

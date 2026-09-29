@@ -286,10 +286,39 @@ both plugins have validated and deduplicated findings. It removes only
 Missing credentials, missing diff evidence, and Jev failures preserve the
 suggestion.
 
+## False build-claim experiment
+
+A broad “withhold unsupported finding” question did not improve the saved
+current baseline: the five historical cases it identified were already removed
+by Reviewotron. On 48 labeled candidates emitted by newer pipeline runs, it also
+failed to separate false positives from protected findings.
+
+A first narrower question identified compiler-diagnostic findings, but this
+mixed two different cases. One was a real OCaml compile failure with a broken
+no-op suggestion; the suggestion guard is the correct treatment because it
+preserves the useful finding. The other claimed an unbound `encoder` even
+though the post-change file bound it earlier in the function.
+
+The final question therefore asks only whether bounded post-change file context
+directly disproves an explicit deterministic build claim. Across three runs on
+48 current candidates, it rejected both generated versions of the false
+`encoder` finding at 0.71–0.85 and preserved all other candidates at 0.17 or
+below, including 22 protected true positives. The 144 calls cost $0.026389.
+Across three runs on the larger 75-finding historical set, the same invalid
+finding scored 0.78 in every run; every other finding scored at most 0.27 and
+all 23 protected findings survived. The 225 calls cost $0.044679.
+
+The opt-in `review_plugins.jev_build_claim_guard_enabled` integration uses the
+measured 0.70 threshold after normal validation and deduplication. It checks
+only general findings, omits suggestion payloads from the judgment, and fails
+open when source context, credentials, or Jev are unavailable.
+
 ## Next Jev experiments
 
 1. Expand the independent human-feedback set beyond two SSRF findings before
    treating source-constraint rejection as a default.
 2. Expand the suggested-fix corpus beyond the five known broken payloads.
-3. Gather more multi-revision positives and define a notification behavior for
+3. Gather more false build claims and real compiler-diagnostic controls before
+   enabling the build-claim guard by default.
+4. Gather more multi-revision positives and define a notification behavior for
    continuity that does not hide unresolved findings.

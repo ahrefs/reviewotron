@@ -361,6 +361,16 @@ let retry_guidance_for_403 reason =
   | false -> None
 
 let jev_suggestion_guard_removes ~threshold ~probability = probability >= threshold
+let jev_build_claim_guard_rejects ~threshold ~probability = probability >= threshold
+
+let reviewed_file_context ~line content =
+  let first_line = max 1 (line - 80) in
+  content
+  |> String.split_on_char '\n'
+  |> CCList.drop (first_line - 1)
+  |> CCList.take 161
+  |> List.mapi (fun index text -> Printf.sprintf "%6d | %s" (first_line + index) text)
+  |> String.concat "\n"
 
 let review_body ~log_context ~change_label ~general_output ~findings ~unchanged_findings ~anchor_failed_findings
   ~review_costs ~security_error ~(config : Config_types.config) =
@@ -536,6 +546,71 @@ module Make (AI : Api.Agent_runner) = struct
         ^ "It need not be the only or most elegant repair, and incomplete repository context alone is not a defect.";
     }
 
+  let build_claim_guard_question : Jev_triage.noul_question =
+    {
+      instructions =
+        "Does `reviewed_file_context` directly disprove the finding's claimed deterministic compile or build failure? "
+        ^ "Answer only about an explicit syntax, missing-binding, name-resolution, type, or linking claim in the "
+        ^ "finding.";
+      true_criteria =
+        "The finding claims the changed code cannot build, but the shown reviewed-file context directly shows the "
+        ^ "allegedly missing binding, valid scope, compatible type, or other concrete fact that makes that claimed "
+        ^ "build failure false.";
+      false_criteria =
+        "The compile or build failure is real, the finding concerns runtime behavior rather than a deterministic "
+        ^ "build failure, or the supplied context does not directly disprove the exact build-failure claim. "
+        ^ "Uncertainty is false.";
+    }
+
+  let run_build_claim_guard ~api_key ~threshold ~diff ~file_contents ~fetch_file ?log_context sourced_findings =
+    let log_prefix = log_context_prefix log_context in
+    let fetch path =
+      match List.assoc_opt path file_contents with
+      | Some content -> Lwt.return (Ok (Some content))
+      | None -> fetch_file ~path
+    in
+    let check sourced =
+      let finding = sourced.finding in
+      match sourced.source, Diff_anchor.find_file_diff_by_path ~diff finding.path with
+      | From_security, _ | From_general, None -> Lwt.return (Some sourced, None)
+      | From_general, Some file_diff ->
+      match%lwt fetch finding.path with
+      | Error error ->
+        log#warn "%sJev build-claim guard failed to fetch %s: %s" log_prefix finding.path error;
+        Lwt.return (Some sourced, None)
+      | Ok None -> Lwt.return (Some sourced, None)
+      | Ok (Some content) ->
+        let finding_without_fix = { finding with Review_types.suggested_fix = None } in
+        let state =
+          `Assoc
+            [
+              "finding", Review_types.finding_to_json finding_without_fix;
+              "exact_file_diff", `String (Diff_parser.to_string_annotated [ file_diff ]);
+              "reviewed_file_context", `String (reviewed_file_context ~line:finding.line content);
+            ]
+        in
+        Lwt.catch
+          (fun () ->
+            let%lwt result = Jev_triage.score_noul ~api_key ~state ~question:build_claim_guard_question in
+            match result with
+            | Error error ->
+              log#warn "%sJev build-claim guard failed for %s:%d: %s" log_prefix finding.path finding.line error;
+              Lwt.return (Some sourced, None)
+            | Ok ({ probability; cost } : Jev_triage.noul_output) ->
+              let cost = { cost with agent_name = "jev_build_claim_guard" } in
+              (match jev_build_claim_guard_rejects ~threshold ~probability with
+              | true ->
+                log#info "%sJev build-claim guard rejected false claim at %s:%d (Noul %.3f)" log_prefix finding.path
+                  finding.line probability;
+                Lwt.return (None, Some cost)
+              | false -> Lwt.return (Some sourced, Some cost)))
+          (fun exn ->
+            log#warn "%sJev build-claim guard raised for %s:%d: %s" log_prefix finding.path finding.line (Exn.str exn);
+            Lwt.return (Some sourced, None))
+    in
+    let%lwt checked = Lwt_list.map_p check sourced_findings in
+    Lwt.return (List.filter_map fst checked, List.filter_map snd checked)
+
   let suggestion_guard_state ~diff finding suggested_fix =
     let finding_without_fix = { finding with Review_types.suggested_fix = None } in
     `Assoc
@@ -686,6 +761,16 @@ module Make (AI : Api.Agent_runner) = struct
           @ plugin_findings
         in
         let sourced_findings = deduplicate_sourced_findings sourced in
+        let%lwt sourced_findings, build_claim_guard_costs =
+          match plugins_config.jev_build_claim_guard_enabled, (Context.secrets ctx).typesafe_api_key with
+          | false, _ -> Lwt.return (sourced_findings, [])
+          | true, None ->
+            log#warn "%sJev build-claim guard is enabled but no TypeSafe API key is configured" log_prefix;
+            Lwt.return (sourced_findings, [])
+          | true, Some api_key ->
+            run_build_claim_guard ~api_key ~threshold:plugins_config.jev_build_claim_guard_threshold ~diff
+              ~file_contents:job.file_contents ~fetch_file:job.fetch_file ~log_context sourced_findings
+        in
         let%lwt sourced_findings, suggestion_guard_costs =
           match plugins_config.jev_suggestion_guard_enabled, (Context.secrets ctx).typesafe_api_key with
           | false, _ -> Lwt.return (sourced_findings, [])
@@ -704,7 +789,10 @@ module Make (AI : Api.Agent_runner) = struct
         in
         let review_costs =
           (Cost_tracking.aggregate ~plugin:"general" general_costs :: plugin_costs)
-          @ [ Cost_tracking.aggregate ~plugin:"jev_suggestion_guard" suggestion_guard_costs ]
+          @ [
+              Cost_tracking.aggregate ~plugin:"jev_build_claim_guard" build_claim_guard_costs;
+              Cost_tracking.aggregate ~plugin:"jev_suggestion_guard" suggestion_guard_costs;
+            ]
           |> List.filter (fun (rc : Cost_tracking.review_cost) ->
             match rc.agents with
             | [] -> false
