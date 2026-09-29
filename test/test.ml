@@ -1464,10 +1464,26 @@ let test_consolidation_requires_lossless_evidence () =
   in
   let verify output = Consolidation_agent.verify ~left_id:0 ~left ~right_id:1 ~right output in
   (check bool) "complete consolidation accepted" true (Result.is_ok (verify output));
-  (check bool) "missing member location rejected" true
-    (Result.is_error (verify { output with affected_locations = [ location "src/a.ml" 10 ] }));
+  (match verify { output with affected_locations = [ location "src/a.ml" 10 ] } with
+  | Ok consolidation ->
+    (check bool) "missing member location restored" true
+      (List.exists
+         (fun (location : Consolidation_agent.affected_location) ->
+           String.equal location.path "src/b.ml" && Int.equal location.line 20)
+         consolidation.affected_locations)
+  | Error reason -> fail reason);
   (check bool) "unresolved assumption rejected" true
     (Result.is_error (verify { output with assumptions = [ "generation relationship is unverified" ] }))
+
+let test_consolidation_relationship_evidence_paths () =
+  let paths =
+    Consolidation_agent.relationship_evidence_candidate_paths ~changed_paths:[ "backend/ops/users/users_props.ml" ]
+      ~affected_paths:[ "infra/puppet/modules/core/files/authorized_keys/hotdog_team" ]
+  in
+  (check bool) "finds sibling access policy" true
+    (List.exists (String.equal "backend/ops/users/users_access_policy.ml") paths);
+  (check bool) "finds nearby artifact generator" true
+    (List.exists (String.equal "backend/ops/gen_files/gen_authorized_keys.ml") paths)
 
 let test_anchor_sink_in_diff_no_snap () =
   (* Sink is already in the diff (src/main.ml hunk A).  We must not snap; the
@@ -9563,7 +9579,10 @@ let () =
           test_case "end_line derived from anchor, not sink" `Quick test_anchor_end_line_derived_from_anchor_not_sink;
         ] );
       ( "security_consolidation",
-        [ test_case "requires lossless evidence" `Quick test_consolidation_requires_lossless_evidence ] );
+        [
+          test_case "requires lossless evidence" `Quick test_consolidation_requires_lossless_evidence;
+          test_case "locates bounded relationship evidence" `Quick test_consolidation_relationship_evidence_paths;
+        ] );
       ( "security_artifacts",
         [
           test_case "disabled writes nothing" `Quick test_security_artifacts_disabled_writes_nothing;

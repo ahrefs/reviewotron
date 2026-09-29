@@ -62,16 +62,45 @@ let fetch_file root path =
     | true -> Lwt.return_ok (Some (Std.input_file ~bin:true full_path))
     | false -> Lwt.return_ok None)
 
+let finding_paths (finding : Security_types.validated_finding) =
+  finding.finding.source.path
+  :: finding.finding.sink.path
+  :: List.map (fun (site : Security_types.flow_step) -> site.path) finding.finding.flow
+
 let run_case ~ctx ?repo_root case =
-  let input =
-    Consolidation_agent.build_input ~diff_text:case.diff_text ~left_id:0 ~left:case.left ~right_id:1 ~right:case.right
+  let%lwt relationship_evidence, relationship_evidence_paths =
+    match repo_root with
+    | None -> Lwt.return ("", [])
+    | Some root ->
+      let changed_paths =
+        Diff_parser.parse case.diff_text |> List.map (fun (file : Diff_parser.file_diff) -> file.path)
+      in
+      let affected_paths = finding_paths case.left @ finding_paths case.right in
+      let candidates =
+        Consolidation_agent.relationship_evidence_candidate_paths ~changed_paths ~affected_paths |> CCList.take 8
+      in
+      Consolidation_agent.fetch_relationship_evidence ~fetch_file:(fetch_file root) candidates
   in
-  let tools = Option.map (fun root -> Consolidation_agent.tools ~fetch_file:(fetch_file root)) repo_root in
+  let input =
+    Consolidation_agent.build_input ~relationship_evidence ~diff_text:case.diff_text ~left_id:0 ~left:case.left
+      ~right_id:1 ~right:case.right ()
+  in
+  let tools =
+    match repo_root, String.trim relationship_evidence with
+    | Some root, "" -> Some (Consolidation_agent.tools ~fetch_file:(fetch_file root))
+    | Some _, _ | None, _ -> None
+  in
   let%lwt result =
     Api_remote.Agent_runner.run ~ctx ~repo_url:"offline://confirmed-consolidation-corpus" ?tools
       ~config:Consolidation_agent.config ~input ()
   in
-  let common = [ "name", `String case.name; "expected_consolidate", `Bool case.expected_consolidate ] in
+  let common =
+    [
+      "name", `String case.name;
+      "expected_consolidate", `Bool case.expected_consolidate;
+      "relationship_evidence_paths", `List (List.map (fun path -> `String path) relationship_evidence_paths);
+    ]
+  in
   let json =
     match result with
     | Error error -> `Assoc (common @ [ "error", `String error ])

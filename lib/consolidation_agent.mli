@@ -37,17 +37,29 @@ val output_to_json : output -> Yojson.Basic.t
 val config : Agent_runner.agent_config
 
 val build_input :
+  ?relationship_evidence:string ->
   diff_text:string ->
   left_id:int ->
   left:Security_types.validated_finding ->
   right_id:int ->
   right:Security_types.validated_finding ->
+  unit ->
   string
+
+(** Derive a small ordered set of companion policy and generator paths from
+    changed source files and affected artifact paths. *)
+val relationship_evidence_candidate_paths : changed_paths:string list -> affected_paths:string list -> string list
+
+(** Fetch the first available candidate file and format its bounded contents for the
+    consolidation verifier. Missing files and fetch failures are skipped. *)
+val fetch_relationship_evidence :
+  fetch_file:(string -> (string option, string) result Lwt.t) -> string list -> (string * string list) Lwt.t
 
 val tools : fetch_file:(string -> (string option, string) result Lwt.t) -> (string * Ai_core.Core_tool.t) list
 
-(** Accept a consolidation only when the model returned both member IDs, both
-    affected sink locations, a concrete cause and repair, and no assumptions. *)
+(** Accept a consolidation only when the model returned both member IDs, a
+    concrete cause and repair, and no assumptions. Exact validated sink
+    locations are restored from the original findings when omitted. *)
 val verify :
   left_id:int ->
   left:Security_types.validated_finding ->

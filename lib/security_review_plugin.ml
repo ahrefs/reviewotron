@@ -712,12 +712,16 @@ module Make (AI : Api.Agent_runner) = struct
       log#warn "%sJev grouping failed in one orientation: %s" log_prefix error;
       Lwt.return (None, costs)
 
-  let verify_grouping_pair ~ctx ~repo_url ~fetch_file ~diff_text ~left_id ~left ~right_id ~right ?debug_dir ?log_context
-    () =
-    let input = Consolidation_agent.build_input ~diff_text ~left_id ~left ~right_id ~right in
-    let tools = Consolidation_agent.tools ~fetch_file:(fun path -> fetch_file ~path) in
+  let verify_grouping_pair ~ctx ~repo_url ~fetch_file ~diff_text ~relationship_evidence ~left_id ~left ~right_id ~right
+    ?debug_dir ?log_context () =
+    let input = Consolidation_agent.build_input ~relationship_evidence ~diff_text ~left_id ~left ~right_id ~right () in
+    let tools =
+      match String.trim relationship_evidence with
+      | "" -> Some (Consolidation_agent.tools ~fetch_file:(fun path -> fetch_file ~path))
+      | _ -> None
+    in
     let%lwt result =
-      AI.run ~ctx ~repo_url ~tools ?debug_dir ?log_context ~config:Consolidation_agent.config ~input ()
+      AI.run ~ctx ~repo_url ?tools ?debug_dir ?log_context ~config:Consolidation_agent.config ~input ()
     in
     match result with
     | Error error -> Lwt.return (`Assoc [ "status", `String "failed"; "error", `String error ], [])
@@ -754,7 +758,12 @@ module Make (AI : Api.Agent_runner) = struct
               ],
             [ cost ] ))
 
-  let run_jev_grouping ~ctx ~repo_url ~fetch_file ~diff_text ~security_config ~artifacts ?debug_dir ?log_context
+  let finding_paths (finding : Security_types.validated_finding) =
+    finding.finding.source.path
+    :: finding.finding.sink.path
+    :: List.map (fun (site : Security_types.flow_step) -> site.path) finding.finding.flow
+
+  let run_jev_grouping ~ctx ~repo_url ~fetch_file ~diff ~diff_text ~security_config ~artifacts ?debug_dir ?log_context
     confirmed =
     let log_prefix = log_context_prefix log_context in
     match security_config.Config_types.jev_grouping_enabled, confirmed with
@@ -768,6 +777,18 @@ module Make (AI : Api.Agent_runner) = struct
       (* ponytail: confirmed finding sets are normally single digits; shortlist
          deterministically before this O(n²) experiment if latency becomes material. *)
       let indexed = List.mapi (fun index finding -> index, finding) confirmed in
+      let evidence_candidates =
+        Consolidation_agent.relationship_evidence_candidate_paths
+          ~changed_paths:(List.map (fun (file : Diff_parser.file_diff) -> file.path) diff)
+          ~affected_paths:(List.concat_map finding_paths confirmed)
+        |> CCList.take 8
+      in
+      let relationship_evidence =
+        lazy
+          (Consolidation_agent.fetch_relationship_evidence
+             ~fetch_file:(fun path -> fetch_file ~path)
+             evidence_candidates)
+      in
       let rec pairs acc = function
         | [] -> List.rev acc
         | (left_id, left) :: rest ->
@@ -798,9 +819,10 @@ module Make (AI : Api.Agent_runner) = struct
                       false,
                       [] )
                 | true ->
+                  let%lwt relationship_evidence, relationship_evidence_paths = Lazy.force relationship_evidence in
                   let%lwt verification, verifier_costs =
-                    verify_grouping_pair ~ctx ~repo_url ~fetch_file ~diff_text ~left_id ~left ~right_id ~right
-                      ?debug_dir ?log_context ()
+                    verify_grouping_pair ~ctx ~repo_url ~fetch_file ~diff_text ~relationship_evidence ~left_id ~left
+                      ~right_id ~right ?debug_dir ?log_context ()
                   in
                   Lwt.return
                     ( `Assoc
@@ -810,6 +832,8 @@ module Make (AI : Api.Agent_runner) = struct
                             "reverse_probability", `Float reverse;
                             "proposed", `Bool true;
                             "verification", verification;
+                            ( "relationship_evidence_paths",
+                              `List (List.map (fun path -> `String path) relationship_evidence_paths) );
                             ( "member_findings",
                               `List
                                 [
@@ -1444,8 +1468,8 @@ module Make (AI : Api.Agent_runner) = struct
         log#info "%svalidation complete: %d confirmed, %d rejected" log_prefix (List.length confirmed)
           (List.length validated - List.length confirmed);
         let%lwt jev_grouping_costs =
-          run_jev_grouping ~ctx ~repo_url ~fetch_file ~diff_text ~security_config ~artifacts ?debug_dir ?log_context
-            confirmed
+          run_jev_grouping ~ctx ~repo_url ~fetch_file ~diff ~diff_text ~security_config ~artifacts ?debug_dir
+            ?log_context confirmed
         in
         let classified_findings =
           List.map

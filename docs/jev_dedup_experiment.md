@@ -125,10 +125,40 @@ useful next change is bounded evidence retrieval that locates source-of-truth
 and generated-file relationships before verification. Loosening the verifier
 would trade away the zero-false-consolidation result.
 
+## 2026-09-29 bounded relationship evidence
+
+Reviewotron now derives a bounded list of companion policy and generator paths
+from changed source files and affected artifacts. It supplies the first file
+that exists, capped at 12,000 characters, and disables exploratory tools when
+that evidence is available. Exact validated sink locations are restored in code
+when the verifier copies an approximate diff line.
+
+The seven previously missed positive pairs all had one small companion access
+policy file. Supplying only that file verified 7/7 pairs for $0.914951. Supplying
+both the policy and the larger generator file increased cost and reduced the
+strict result to 5/7 because longer outputs copied two sink lines incorrectly.
+The one-file automatic locator then verified 7/7 for $1.016241.
+
+A full-fidelity corpus joined all 21 Jev proposals to their exact captured
+diffs: eight shared-cause pairs and thirteen separation controls. The first run
+exposed one false consolidation: the verifier invented a new restrictive input
+allowlist to combine two context-specific shell-escaping defects. The prompt now
+requires repository evidence for that input contract and otherwise keeps such
+sinks separate. The crux rerun preserved the valid shared-download pair and
+rejected the shell-escaping pair.
+
+On the final 21-pair run, the verifier made all 21 intended decisions for
+$1.964718: eight consolidate verdicts and thirteen keep-separate verdicts. One
+consolidation copied an affected sink at line 29 instead of its validated line
+31; deterministic sink preservation restores that exact location without
+weakening the cause, repair, member-ID, assumption, or primary-anchor checks.
+Publication remains unchanged while the evaluation corpus is expanded beyond
+this concentrated generated-access-control pattern.
+
 ## Next Jev experiments
 
-1. Add Jev routing signals to the existing triage union so Jev can increase
-   analysis coverage without suppressing an existing route.
+1. Expand independently labeled relationship cases beyond generated access
+   controls before allowing consolidation to affect publication.
 2. Check individual source, sink, mitigation, and policy claims against located
    evidence; use uncertainty to fetch evidence or escalate to the validator.
 3. Mine analysis/validator disagreements offline to expand independently labeled

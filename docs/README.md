@@ -617,8 +617,11 @@ When `jev_grouping_enabled` is true, Jev compares independently confirmed
 findings in both orders after validation. Pairs whose two probabilities reach
 `jev_grouping_threshold` are written to the sensitive debug artifact
 `jev_grouping_proposals.json`. Each proposal is checked by a reasoning verifier
-that must identify one shared cause and repair, preserve both member IDs and
-sink locations, and return no unresolved assumptions. The artifact retains both
+that must identify one shared cause and repair, preserve both member IDs, and
+return no unresolved assumptions. Before verification, Reviewotron tries a
+bounded set of companion policy and generator paths derived from the changed
+and affected files, supplying the first file it finds. Exact sink locations are
+restored from the independently validated findings. The artifact retains both
 original confirmed findings and the verification result. This shadow stage does
 not change published findings. Missing credentials, service failures, invalid
 outputs, and uncertain judgments leave every finding untouched.
