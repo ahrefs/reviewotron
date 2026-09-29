@@ -580,7 +580,7 @@ When `jev_triage_enabled` is true, Jev instead asks one independent Noul questio
 
 When `jev_analysis_gate_enabled` is true, the default triager still runs. Jev then acts as a conservative class-level gate: an analysis agent runs only when both systems route that vulnerability class. `always_analyze_vuln_classes` bypasses this gate. A missing key, service failure, or incomplete file evaluation keeps every primary route, so Jev availability cannot suppress analysis.
 
-When `jev_validator_cascade_enabled` is true, Jev scores whether each candidate is directly supported and whether the evidence demonstrates a fatal validation defect. Reviewotron confirms only candidates with support at or above 0.62 and fatal-defect probability at or below 0.30, and only when its existing deterministic proof enforcement accepts the candidate. It rejects only candidates with fatal-defect probability at or above 0.70 and support at or below 0.30. Every other candidate, missing key, missing changed-file evidence, and service failure follows the normal reasoning-validator path.
+When `jev_validator_cascade_enabled` is true, Jev scores whether each candidate is directly supported and whether the evidence demonstrates a fatal validation defect. Reviewotron confirms only candidates with support at or above 0.62 and fatal-defect probability at or below 0.30, and only when its existing deterministic proof enforcement accepts the candidate. It rejects only candidates with fatal-defect probability at or above 0.70 and support at or below 0.30. Every other candidate follows the normal reasoning-validator path. After that validator confirms a candidate, Jev also checks the candidate diff against files the validator fetched. It rejects the confirmation only when those files directly constrain the claimed attacker-controlled source with probability at least 0.60 and direct support falls to at most 0.30. Missing credentials, missing evidence, and service failures preserve the normal validator result.
 
 The triage agent outputs signals with confidence levels (`high`, `medium`, `low`). The `confidence_threshold` config controls which signals proceed to analysis for enabled vulnerability classes. `always_analyze_vuln_classes` is the explicit override that bypasses the threshold; classes listed there are implicitly enabled even if absent from `vuln_classes`.
 
@@ -605,7 +605,7 @@ Analysis depth is budgeted by vulnerability class, triage confidence, and signal
 
 ### 3. Validation (Sonnet, adversarial)
 
-By default, all candidate findings from all analysis agents pass through the validator agent. With `jev_validator_cascade_enabled`, only high-certainty Jev decisions that pass the same deterministic proof invariant bypass it; every uncertain candidate still reaches the validator. Validation checks:
+By default, all candidate findings from all analysis agents pass through the validator agent. With `jev_validator_cascade_enabled`, only high-certainty Jev decisions that pass the same deterministic proof invariant bypass it; every uncertain candidate still reaches the validator. Jev then independently checks files fetched by the validator for concrete source constraints that contradict confirmed findings. Validation checks:
 
 - The claimed source actually accepts external input
 - The claimed sink actually performs the dangerous operation

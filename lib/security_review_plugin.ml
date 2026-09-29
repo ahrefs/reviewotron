@@ -66,6 +66,8 @@ let jev_validator_decision ~supported ~fatal_defect =
   | () when fatal_defect >= 0.70 && supported <= 0.30 -> Reject_candidate
   | () -> Run_validator
 
+let jev_source_constraint_reject ~source_constrained ~supported = source_constrained >= 0.60 && supported <= 0.30
+
 let highest_signal_confidence signals =
   List.fold_left
     (fun best (signal : Security_types.triage_signal) ->
@@ -819,6 +821,97 @@ module Make (AI : Api.Agent_runner) = struct
     in
     paths |> List.filter_map (Diff_anchor.find_file_diff_by_path ~diff) |> Diff_parser.to_string_annotated
 
+  let source_constraint_question : Jev_triage.noul_question =
+    {
+      instructions =
+        "Does `evidence` directly contradict the candidate's claimed attacker-controlled source-to-sink influence by \
+         showing that the exact value reaching the sink is constructed exclusively from fixed, trusted, typed, \
+         UUID-derived, configured, or allowlisted components that prevent control of the security-sensitive component \
+         named by the candidate?";
+      true_criteria =
+        "The evidence traces the value reaching the sink and shows the claimed attacker-controlled host, scheme, \
+         command, path, principal, or equivalent security-sensitive component is fixed or constrained so the described \
+         exploit cannot occur.";
+      false_criteria =
+        "The relevant component can still be attacker-controlled, or the evidence does not establish a complete \
+         constraining provenance for the exact value reaching the sink.";
+    }
+
+  let source_constraint_evidence ~diff (finding : Security_types.candidate_finding) ~path ~content =
+    Printf.sprintf "%s\n\n%s" (candidate_diff_evidence ~diff finding) (Diff_parser.annotate_file_content ~path content)
+
+  let run_jev_source_constraint ~api_key ~diff ~fetched_files ?log_context
+    (validated : Security_types.validated_finding) =
+    let log_prefix = log_context_prefix log_context in
+    let rec check costs judgments = function
+      | [] -> Lwt.return (validated, List.rev costs, List.rev judgments)
+      | (path, content) :: rest ->
+        let evidence = source_constraint_evidence ~diff validated.finding ~path ~content in
+        let state =
+          `Assoc
+            [ "candidate", Security_types.candidate_finding_to_json validated.finding; "evidence", `String evidence ]
+        in
+        let%lwt constrained = Jev_triage.score_noul ~api_key ~state ~question:source_constraint_question in
+        (match constrained with
+        | Error error ->
+          log#warn "%sJev source-constraint check failed for %s: %s" log_prefix path error;
+          check costs judgments rest
+        | Ok constrained ->
+          let constrained_cost = { constrained.cost with agent_name = "jev_source_constraint" } in
+          let judgment probability supported decision =
+            let supported =
+              match supported with
+              | Some value -> `Float value
+              | None -> `Null
+            in
+            `Assoc
+              [
+                "path", `String path;
+                "source_constraint_probability", `Float probability;
+                "supported_probability", supported;
+                "decision", `String decision;
+                "candidate", Security_types.candidate_finding_to_json validated.finding;
+              ]
+          in
+          (match constrained.probability >= 0.60 with
+          | false ->
+            check (constrained_cost :: costs) (judgment constrained.probability None "confirmed" :: judgments) rest
+          | true ->
+            let%lwt support = Jev_triage.score_candidate_validation ~api_key ~candidate:validated.finding ~evidence in
+            (match support with
+            | Error error ->
+              log#warn "%sJev source-constraint support check failed for %s: %s" log_prefix path error;
+              check (constrained_cost :: costs) (judgment constrained.probability None "confirmed" :: judgments) rest
+            | Ok support ->
+              let support_cost = { support.cost with agent_name = "jev_source_constraint_support" } in
+              let costs = support_cost :: constrained_cost :: costs in
+              (match
+                 jev_source_constraint_reject ~source_constrained:constrained.probability ~supported:support.supported
+               with
+              | false ->
+                check costs (judgment constrained.probability (Some support.supported) "confirmed" :: judgments) rest
+              | true ->
+                let rejected =
+                  {
+                    validated with
+                    verdict = Rejected;
+                    evidence_notes =
+                      Printf.sprintf
+                        "Jev found that %s constrains the claimed attacker-controlled source (constraint %.3f, support \
+                         %.3f)."
+                        path constrained.probability support.supported;
+                    proof_by_construction = None;
+                  }
+                in
+                Lwt.return
+                  ( rejected,
+                    List.rev costs,
+                    List.rev (judgment constrained.probability (Some support.supported) "rejected" :: judgments) )))))
+    in
+    match validated.verdict with
+    | Rejected -> Lwt.return (validated, [], [])
+    | Confirmed -> check [] [] fetched_files
+
   let run_jev_validator_cascade ~ctx ~security_config ~diff ~artifacts ?log_context candidates =
     let log_prefix = log_context_prefix log_context in
     match security_config.Config_types.jev_validator_cascade_enabled, candidates with
@@ -1479,12 +1572,20 @@ module Make (AI : Api.Agent_runner) = struct
       A failed agent call or an unparseable response degrades to "every
       candidate in this call is missing"; it never discards results from other
       calls. *)
-  let run_validator_call ~ctx ~repo_url ~fetch_file ~agent_config ~diff_text ~candidates ~artifacts ~attempt_label
-    ?debug_dir ?log_context () =
+  let run_validator_call ~ctx ~repo_url ~fetch_file ~agent_config ~diff ~diff_text ~jev_api_key ~candidates ~artifacts
+    ~attempt_label ?debug_dir ?log_context () =
     let log_prefix = log_context_prefix log_context in
     let input = Validator_agent.build_input ~diff_text ~candidate_findings:candidates () in
     Security_artifacts.write_debug_text artifacts ~filename:(Printf.sprintf "validator_input_%s.md" attempt_label) input;
-    let tools = Validator_agent.tools ~fetch_file:(fun path -> fetch_file ~path) in
+    let fetched_files = ref [] in
+    let fetch_file path =
+      let%lwt result = fetch_file ~path in
+      (match result with
+      | Ok (Some content) -> fetched_files := (path, content) :: !fetched_files
+      | Ok None | Error _ -> ());
+      Lwt.return result
+    in
+    let tools = Validator_agent.tools ~fetch_file in
     let all_missing = List.mapi (fun index candidate -> index, candidate) candidates in
     let%lwt result =
       run_agent ~config:agent_config (fun () ->
@@ -1524,7 +1625,27 @@ module Make (AI : Api.Agent_runner) = struct
            log#warn "%svalidator (%s): downgraded %d confirmed result(s) without concrete proof" log_prefix
              attempt_label downgraded
          | false -> ());
-         Lwt.return (join.matched, join.missing, [ cost ])
+         let fetched_files = List.sort_uniq (fun (left, _) (right, _) -> String.compare left right) !fetched_files in
+         let%lwt matched, jev_costs, jev_judgments =
+           match jev_api_key, fetched_files with
+           | None, _ | Some _, [] -> Lwt.return (join.matched, [], [])
+           | Some api_key, _ :: _ ->
+             Lwt_list.fold_left_s
+               (fun (matched, costs, judgments) validated ->
+                 let%lwt validated, next_costs, next_judgments =
+                   run_jev_source_constraint ~api_key ~diff ~fetched_files ?log_context validated
+                 in
+                 Lwt.return (validated :: matched, costs @ next_costs, judgments @ next_judgments))
+               ([], [], []) join.matched
+             |> Lwt.map (fun (matched, costs, judgments) -> List.rev matched, costs, judgments)
+         in
+         (match jev_judgments with
+         | [] -> ()
+         | _ :: _ ->
+           Security_artifacts.write_debug_json artifacts
+             ~filename:(Printf.sprintf "jev_source_constraint_%s.json" attempt_label)
+             (`List jev_judgments));
+         Lwt.return (matched, join.missing, cost :: jev_costs)
        with exn ->
          log#error "%svalidator output parse failed (%s): %s" log_prefix attempt_label (Exn.str exn);
          Lwt.return ([], all_missing, [ cost ]))
@@ -1537,13 +1658,19 @@ module Make (AI : Api.Agent_runner) = struct
       verdict. Candidates still unanswered after their retry are withheld and
       raise the failure flag; results obtained for other candidates are always
       preserved. *)
-  let run_validator ~ctx ~repo_url ~fetch_file ~security_config ~diff_text ~candidate_findings ~artifacts ?debug_dir
-    ?log_context () =
+  let run_validator ~ctx ~repo_url ~fetch_file ~security_config ~diff ~diff_text ~candidate_findings ~artifacts
+    ?debug_dir ?log_context () =
     let log_prefix = log_context_prefix log_context in
     let model_tier = agent_model_tier security_config.Config_types.validator_model_tier in
     let agent_config = Validator_agent.config ~model_tier in
+    let jev_api_key =
+      match security_config.Config_types.jev_validator_cascade_enabled with
+      | false -> None
+      | true -> (Context.secrets ctx).typesafe_api_key
+    in
     let call =
-      run_validator_call ~ctx ~repo_url ~fetch_file ~agent_config ~diff_text ~artifacts ?debug_dir ?log_context
+      run_validator_call ~ctx ~repo_url ~fetch_file ~agent_config ~diff ~diff_text ~jev_api_key ~artifacts ?debug_dir
+        ?log_context
     in
     let chunks = CCList.chunks max_candidates_per_validator_call candidate_findings in
     (* Chunks run sequentially: the validator fetches files through a shared
@@ -1711,7 +1838,7 @@ module Make (AI : Api.Agent_runner) = struct
           | [] -> Lwt.return ([], [], false)
           | _ :: _ ->
             run_stage ~stage:"security_validator" (fun () ->
-              run_validator ~ctx ~repo_url ~fetch_file ~security_config ~diff_text
+              run_validator ~ctx ~repo_url ~fetch_file ~security_config ~diff ~diff_text
                 ~candidate_findings:validator_candidates ~artifacts ?debug_dir ?log_context ())
         in
         let validated = jev_validated @ validated in

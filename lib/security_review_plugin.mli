@@ -58,6 +58,10 @@ type jev_validator_decision =
     defects, and send the uncertain middle to the reasoning validator. *)
 val jev_validator_decision : supported:float -> fatal_defect:float -> jev_validator_decision
 
+(** Reject a validator-confirmed candidate only when fetched evidence both
+    demonstrates a constrained source and makes direct support very unlikely. *)
+val jev_source_constraint_reject : source_constrained:float -> supported:float -> bool
+
 (** Step budget for a per-class analysis agent after routing.
 
     High-confidence signals still get enough room for multi-file evidence

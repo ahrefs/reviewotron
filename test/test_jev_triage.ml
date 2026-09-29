@@ -97,6 +97,13 @@ let test_validator_cascade_boundary () =
     | Run_validator -> true
     | Confirm_candidate | Reject_candidate -> false)
 
+let test_source_constraint_boundary () =
+  let open Security_review_plugin in
+  check bool "rejects demonstrated constraint" true
+    (jev_source_constraint_reject ~source_constrained:0.60 ~supported:0.30);
+  check bool "keeps higher support" false (jev_source_constraint_reject ~source_constrained:0.60 ~supported:0.31);
+  check bool "keeps weaker constraint" false (jev_source_constraint_reject ~source_constrained:0.59 ~supported:0.30)
+
 let test_semantic_duplicate_uses_symmetric_mean () =
   check bool "at threshold" true (Jev_triage.semantic_duplicate ~threshold:0.5 ~forward:0.61 ~reverse:0.39);
   check bool "below threshold" false (Jev_triage.semantic_duplicate ~threshold:0.5 ~forward:0.58 ~reverse:0.39)
@@ -115,6 +122,7 @@ let () =
           test_case "parses graded output" `Quick test_graded_response_contract;
           test_case "parses candidate validation" `Quick test_candidate_validation_response_contract;
           test_case "candidate cascade boundary" `Quick test_validator_cascade_boundary;
+          test_case "source constraint boundary" `Quick test_source_constraint_boundary;
           test_case "semantic duplicate uses symmetric mean" `Quick test_semantic_duplicate_uses_symmetric_mean;
           test_case "relationship proposal requires both orientations" `Quick
             test_relationship_proposal_requires_both_orientations;

@@ -218,9 +218,36 @@ uncertain and correctly stayed on the reasoning path. This is a small captured
 corpus rather than an independent held-out result; the runtime path is therefore
 opt-in and fails open to the validator.
 
+## 2026-09-29 validator source-constraint challenge
+
+Two older published SSRF findings supplied the first independent disagreement
+set: both passed Reviewotron's validator and later received explicit negative
+human feedback. They claimed that YouTube video and thumbnail URLs could select
+arbitrary outbound destinations. At the exact reviewed commit, the caller
+instead constructs both URLs from UUID paths under a configured HTTPS assets
+domain.
+
+The original two-question cascade correctly refused to auto-confirm either
+finding but left both in the uncertain validator path. A broad publication-
+defect question was discarded because it missed the human-rejected cases and
+crossed confirmed cases. A direct source-provenance question separated them:
+across three repetitions, both human-rejected findings scored at least 0.64
+when supplied the candidate diff and bounded caller evidence, while all 23
+validator-confirmed controls stayed at or below 0.23. Those 84 calls cost
+$0.015958.
+
+A validator-only check confirmed the evidence effect. Sink-only prompts
+confirmed both findings in all six verdicts, including prompts carrying a Jev
+warning. Adding the caller evidence rejected both in all six verdicts. The
+runtime cascade now records files already fetched by the validator and checks
+each confirmation against those files plus the candidate diff. Rejection
+requires both source-constraint probability at least 0.60 and direct support at
+most 0.30. Missing files, credentials, or successful Jev responses preserve the
+validator result.
+
 ## Next Jev experiments
 
-1. Mine analysis/validator disagreements offline to expand independently labeled
-   evaluation sets.
+1. Expand the independent human-feedback set beyond two SSRF findings before
+   treating source-constraint rejection as a default.
 2. Suggest finding continuity across revisions while keeping fix verification
    independent.
