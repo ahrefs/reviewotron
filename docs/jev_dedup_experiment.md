@@ -313,6 +313,23 @@ measured 0.70 threshold after normal validation and deduplication. It checks
 only general findings, omits suggestion payloads from the judgment, and fails
 open when source context, credentials, or Jev are unavailable.
 
+## General-review cost experiments
+
+A two-question Jev cascade tested whether clearly supported general candidates
+could bypass the reasoning validator while uncertain candidates kept the
+existing path. At conservative support/fatal thresholds of 0.80/0.30, only 3
+of 22 protected candidates bypassed stably. No invalid candidate bypassed, but
+the remaining candidates still require the same batched validator call, so the
+token reduction cannot approach the $0.50 per-review cost criterion. The 288
+Jev calls cost $0.052633. This cascade is not integrated.
+
+A whole-review gate then scored 73 saved diffs representing $78.56 of general
+review spend. To preserve every saved finding and every protected historical
+finding, the highest usable threshold was 0.30. It skipped only one $0.03
+review per repetition while Jev cost $0.029491, for net savings of $0.000509;
+no review saved $0.50. Six oversized diffs also failed open with
+`max_tokens_exceeded` in every repetition. This gate is not integrated.
+
 ## Next Jev experiments
 
 1. Expand the independent human-feedback set beyond two SSRF findings before
