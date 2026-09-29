@@ -522,8 +522,8 @@ generated-file header markers. Broad folders such as `generated/`, `dist/`,
 | `jev_triage_threshold` | `0.8` | Minimum Jev Noul probability that routes a file to per-class analysis. Must be between 0 and 1. Tune against labeled repository changes. |
 | `jev_analysis_gate_enabled` | `false` | Run normal triage, then require independent Jev support before launching each per-class analysis agent. Errors and incomplete Jev evaluations fail open. This cannot be enabled with `jev_triage_enabled`. |
 | `jev_analysis_gate_threshold` | `0.6` | Minimum Jev Noul probability required by the post-triage analysis gate. Must be between 0 and 1. |
-| `jev_grouping_enabled` | `false` | After validation, ask TypeSafe Jev which confirmed-finding pairs warrant shared consolidation verification, then run a reasoning verifier on proposed pairs. This experimental stage records decisions and never merges or suppresses findings. |
-| `jev_grouping_threshold` | `0.7` | Minimum probability required in both candidate orderings to record a grouping proposal. Must be between 0 and 1. |
+| `jev_grouping_enabled` | `false` | After validation, ask TypeSafe Jev which confirmed-finding pairs warrant shared verification. Verified consolidations and coherent remediation pairs are published as one notification group that retains every member location, impact, scenario, and proposed fix. |
+| `jev_grouping_threshold` | `0.7` | Minimum probability required in both candidate orderings for a consolidation proposal or notification group. Must be between 0 and 1. |
 | `memory_max_tokens` | `5000` | Target size limit for the repo's security memory file. |
 | `metrics_artifacts` | `false` | Write compact security metrics artifacts under the review debug dir's `security/` subdirectory. These omit source code and prompt bodies. |
 | `debug_artifacts` | `false` | Write full redacted per-stage security debug artifacts under the review debug dir's `security/` subdirectory. Sensitive and opt-in. |
@@ -622,9 +622,14 @@ return no unresolved assumptions. Before verification, Reviewotron tries a
 bounded set of companion policy and generator paths derived from the changed
 and affected files, supplying the first file it finds. Exact sink locations are
 restored from the independently validated findings. The artifact retains both
-original confirmed findings and the verification result. This shadow stage does
-not change published findings. Missing credentials, service failures, invalid
-outputs, and uncertain judgments leave every finding untouched.
+original confirmed findings and the verification result. When strict
+consolidation rejects an otherwise related pair, a second Jev judgment asks
+whether both complete findings form one coherent remediation notification.
+Approved pair edges become deterministic complete-link groups, preventing a
+non-transitive A-B/B-C relationship from silently grouping A with C. Each group
+is published as one anchored comment that lists every member location, message,
+failure scenario, and proposed replacement. Missing credentials, service
+failures, invalid outputs, and uncertain judgments leave findings separate.
 
 ### 4. Memory Curation (Haiku, async)
 

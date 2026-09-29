@@ -152,16 +152,48 @@ $1.964718: eight consolidate verdicts and thirteen keep-separate verdicts. One
 consolidation copied an affected sink at line 29 instead of its validated line
 31; deterministic sink preservation restores that exact location without
 weakening the cause, repair, member-ID, assumption, or primary-anchor checks.
-Publication remains unchanged while the evaluation corpus is expanded beyond
-this concentrated generated-access-control pattern.
+This established the lossless consolidation boundary before expanding into
+notification grouping.
+
+## 2026-09-29 notification grouping
+
+A new real pair broadened the corpus beyond generated artifacts: one change
+added `@everyone` to the separate age recipient ACLs for an incus client
+certificate and its private key. The strict verifier correctly kept them as two
+canonical findings because each ACL requires its own edit and re-encryption.
+Jev nevertheless scored the pair as one coherent remediation notification in
+all three repetitions.
+
+The notification evaluation then labeled every pair that the strict verifier
+kept separate, plus that credential pair. It contains ten positive groups and
+four controls that deliberately mix authentication, privilege escalation, or
+different attacker-controlled artifacts. Each pair was scored in both orders
+for three repetitions.
+
+At the existing 0.70 threshold, all 30 positive repetitions grouped and all 12
+negative controls stayed separate. The 84 Jev calls cost $0.009075. This stage
+is materially cheaper than the reasoning verifier and covers repeated SQL
+injection sites, two ZTP paths with the same unrestricted sudo policy, two
+representations of one fleet credential, and two shell contexts fed by the same
+input.
+
+Applying the accepted strict and notification edges to the five captured
+reviews represented by the corpus reduces 19 confirmed findings to 8 complete
+notification groups, a 58% reduction in review comments with no member finding
+removed. The later credential ACL pair reduces from two comments to one.
+
+With `jev_grouping_enabled`, verified consolidations and positive notification
+pairs now affect publication. Pair edges form complete-link groups so
+non-transitive relationships cannot over-group findings. One anchored comment
+retains every member location, description, failure scenario, and proposed
+replacement; multi-location GitHub suggestions are disabled because one
+suggestion cannot safely edit multiple sites.
 
 ## Next Jev experiments
 
-1. Expand independently labeled relationship cases beyond generated access
-   controls before allowing consolidation to affect publication.
-2. Check individual source, sink, mitigation, and policy claims against located
+1. Check individual source, sink, mitigation, and policy claims against located
    evidence; use uncertainty to fetch evidence or escalate to the validator.
-3. Mine analysis/validator disagreements offline to expand independently labeled
+2. Mine analysis/validator disagreements offline to expand independently labeled
    evaluation sets.
-4. Suggest finding continuity across revisions while keeping fix verification
+3. Suggest finding continuity across revisions while keeping fix verification
    independent.

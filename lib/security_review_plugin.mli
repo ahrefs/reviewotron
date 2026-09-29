@@ -125,6 +125,14 @@ val validator_results_for_candidates :
     proof are downgraded to [Rejected] with an evidence note. *)
 val enforce_validator_proofs : Security_types.validated_finding list -> Security_types.validated_finding list
 
+(** Build deterministic complete-link groups. A finding joins a group only
+    when every pair between it and the existing members was approved. *)
+val notification_groups : finding_count:int -> (int * int) list -> int list list
+
+(** Render a notification group as one anchored finding while retaining every
+    member location, message, failure scenario, and proposed replacement. *)
+val grouped_finding : Review_types.finding list -> Review_types.finding
+
 (** Security review plugin functor. File content fetching is supplied through
     {!Review_plugin.review_metadata}, so the plugin is independent of any
     specific source adapter. *)

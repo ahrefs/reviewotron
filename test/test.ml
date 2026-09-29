@@ -1485,6 +1485,40 @@ let test_consolidation_relationship_evidence_paths () =
   (check bool) "finds nearby artifact generator" true
     (List.exists (String.equal "backend/ops/gen_files/gen_authorized_keys.ml") paths)
 
+let test_notification_groups_require_complete_links () =
+  let groups = Security_review_plugin.notification_groups ~finding_count:4 [ 0, 1; 1, 2 ] in
+  (check (list (list int))) "non-transitive edges do not over-group" [ [ 0; 1 ]; [ 2 ]; [ 3 ] ] groups;
+  let groups = Security_review_plugin.notification_groups ~finding_count:4 [ 0, 1; 0, 2; 1, 2 ] in
+  (check (list (list int))) "clique becomes one group" [ [ 0; 1; 2 ]; [ 3 ] ] groups
+
+let test_grouped_finding_preserves_member_details () =
+  let left =
+    mk_finding ~path:"src/a.ml" ~line:10 ~message:"first defect" ~failure_scenario:"first trigger"
+      ~suggested_fix:(Some "safe_a ()") ~confidence:Review_types.High ()
+  in
+  let right =
+    mk_finding ~path:"src/b.ml" ~line:20 ~severity:Review_types.Critical ~message:"second defect"
+      ~failure_scenario:"second trigger" ~suggested_fix:(Some "safe_b ()") ~confidence:Review_types.Low ()
+  in
+  let grouped = Security_review_plugin.grouped_finding [ left; right ] in
+  (check string) "primary anchor retained" "src/a.ml" grouped.path;
+  (check bool) "highest severity retained" true
+    (match grouped.severity with
+    | Review_types.Critical -> true
+    | Warning | Suggestion | Nitpick | Praise | Other _ -> false);
+  (check bool) "lowest confidence retained" true
+    (match grouped.confidence with
+    | Review_types.Low -> true
+    | High | Medium -> false);
+  (check bool) "multi-location suggestion disabled" true (Option.is_none grouped.suggested_fix);
+  List.iter
+    (fun expected -> (check bool) ("message contains " ^ expected) true (CCString.mem ~sub:expected grouped.message))
+    [ "src/a.ml:10"; "src/b.ml:20"; "first defect"; "second defect"; "safe_a ()"; "safe_b ()" ];
+  List.iter
+    (fun expected ->
+      (check bool) ("scenario contains " ^ expected) true (CCString.mem ~sub:expected grouped.failure_scenario))
+    [ "first trigger"; "second trigger" ]
+
 let test_anchor_sink_in_diff_no_snap () =
   (* Sink is already in the diff (src/main.ml hunk A).  We must not snap; the
      finding's path/line should equal the sink and the message should NOT
@@ -9582,6 +9616,8 @@ let () =
         [
           test_case "requires lossless evidence" `Quick test_consolidation_requires_lossless_evidence;
           test_case "locates bounded relationship evidence" `Quick test_consolidation_relationship_evidence_paths;
+          test_case "notification groups require complete links" `Quick test_notification_groups_require_complete_links;
+          test_case "grouped finding preserves member details" `Quick test_grouped_finding_preserves_member_details;
         ] );
       ( "security_artifacts",
         [

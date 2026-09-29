@@ -245,13 +245,12 @@ type security_plugin_config = {
   jev_grouping_enabled : bool;
      [@json.default false]
      [@jsonschema.description
-       "Use TypeSafe Jev to propose related confirmed security findings for lossless consolidation experiments. \
-        Requires typesafe_api_key in secrets or TYPESAFE_API_KEY for local reviews."]
+       "Use TypeSafe Jev and a consolidation verifier to publish related confirmed security findings as complete-link \
+        notification groups. Requires typesafe_api_key in secrets or TYPESAFE_API_KEY for local reviews."]
   jev_grouping_threshold : float;
      [@json.default 0.7]
      [@jsonschema.description
-       "Minimum probability required in both Jev orientations to propose two confirmed findings for shared \
-        verification."]
+       "Minimum probability required in both Jev orientations for consolidation proposals and notification grouping."]
   memory_max_tokens : int;
      [@json.default 5000] [@jsonschema.description "Target size limit for the repo security memory."]
   metrics_artifacts : bool;

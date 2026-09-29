@@ -618,6 +618,86 @@ let log_stage_metrics ~log_context ~changed_file_count ~deterministic_signals ~t
     metrics.validator_rejected metrics.final_findings_produced (List.length metrics.class_drops)
     (total_files_fetched costs) (total_estimated_cost costs)
 
+let grouping_edge_exists edges left right =
+  List.exists
+    (fun (edge_left, edge_right) ->
+      (Int.equal edge_left left && Int.equal edge_right right)
+      || (Int.equal edge_left right && Int.equal edge_right left))
+    edges
+
+let notification_groups ~finding_count edges =
+  let add groups index =
+    let rec insert previous = function
+      | [] -> List.rev ([ index ] :: previous)
+      | group :: rest when List.for_all (grouping_edge_exists edges index) group ->
+        List.rev_append previous (List.rev (index :: List.rev group) :: rest)
+      | group :: rest -> insert (group :: previous) rest
+    in
+    insert [] groups
+  in
+  List.fold_left add [] (List.init finding_count Fun.id)
+
+let review_severity_rank = function
+  | Review_types.Critical -> 5
+  | Warning -> 4
+  | Suggestion -> 3
+  | Nitpick -> 2
+  | Praise -> 1
+  | Other _ -> 0
+
+let grouped_finding members =
+  match members with
+  | [] -> invalid_arg "grouped_finding requires at least one member"
+  | (primary : Review_types.finding) :: _ ->
+    let severity =
+      List.fold_left
+        (fun severity (finding : Review_types.finding) ->
+          match review_severity_rank finding.severity > review_severity_rank severity with
+          | true -> finding.severity
+          | false -> severity)
+        primary.severity members
+    in
+    let confidence =
+      List.fold_left
+        (fun confidence (finding : Review_types.finding) ->
+          match confidence_rank finding.confidence < confidence_rank confidence with
+          | true -> finding.confidence
+          | false -> confidence)
+        primary.confidence members
+    in
+    let member_text (finding : Review_types.finding) =
+      let fix =
+        match finding.suggested_fix with
+        | None -> ""
+        | Some fix -> Printf.sprintf "\n\n  Proposed replacement:\n\n  ```\n%s\n  ```" fix
+      in
+      Printf.sprintf "- `%s:%d` — %s%s" finding.path finding.line finding.message fix
+    in
+    let detail name field =
+      members
+      |> List.filter_map (fun (finding : Review_types.finding) ->
+        let value = String.trim (field finding) in
+        match String.equal value "" with
+        | true -> None
+        | false -> Some (Printf.sprintf "- `%s:%d` — %s" finding.path finding.line value))
+      |> function
+      | [] -> ""
+      | values -> Printf.sprintf "\n\n%s:\n\n%s" name (String.concat "\n" values)
+    in
+    {
+      primary with
+      severity;
+      message =
+        Printf.sprintf "These %d independently confirmed findings form one remediation group:\n\n%s"
+          (List.length members)
+          (members |> List.map member_text |> String.concat "\n");
+      failure_scenario = detail "Confirmed failure scenarios" (fun finding -> finding.failure_scenario);
+      evidence_snippet = detail "Evidence" (fun finding -> finding.evidence_snippet);
+      why_now = detail "Why this change" (fun finding -> finding.why_now);
+      confidence;
+      suggested_fix = None;
+    }
+
 module Make (AI : Api.Agent_runner) = struct
   let name = "security"
 
@@ -641,6 +721,22 @@ module Make (AI : Api.Agent_runner) = struct
       false_criteria =
         "The findings are independent defects or merely repeat a vulnerability pattern, principal, file, feature, or \
          review context without a plausible shared causal source or control.";
+    }
+  let notification_grouping_question : Jev_triage.noul_question =
+    {
+      instructions =
+        "Should these independently confirmed findings appear under one review notification group while retaining both \
+         complete findings, locations, impacts, and fixes?";
+      true_criteria =
+        "One accurate title and remediation plan can describe both findings because they belong to the same introduced \
+         policy change, credential, input, unsafe operation, or repeated repair campaign. A source-of-truth finding \
+         and manifestations in its generated artifacts are one group. A developer can resolve the group as one \
+         coherent review action even when every affected site still needs its own edit.";
+      false_criteria =
+        "Grouping would mix different threat models, controls, assets, owners, urgency, or remediation plans. Keep \
+         credential acquisition or authentication defects separate from post-authentication privilege escalation even \
+         when they can form one attack chain. A shared vulnerability class, file, feature, attacker, or broad \
+         hardening theme alone is insufficient.";
     }
   let run_jev_triage ~ctx ~security_config ~diff ~artifacts ?log_context () =
     let log_prefix = log_context_prefix log_context in
@@ -677,7 +773,7 @@ module Make (AI : Api.Agent_runner) = struct
         Security_artifacts.write_debug_json artifacts ~filename:"jev_triage_signals.json"
           (`List (List.map Security_types.triage_signal_to_json output.signals));
         Lwt.return_some output)
-  let score_grouping_pair ~api_key ?log_context finding_a finding_b =
+  let score_pair ~api_key ~question ~agent_name ?log_context finding_a finding_b =
     let log_prefix = log_context_prefix log_context in
     let state finding_a finding_b =
       `Assoc
@@ -687,13 +783,10 @@ module Make (AI : Api.Agent_runner) = struct
         ]
     in
     let score finding_a finding_b =
-      let%lwt result =
-        Jev_triage.score_noul ~api_key ~state:(state finding_a finding_b) ~question:grouping_proposal_question
-      in
+      let%lwt result = Jev_triage.score_noul ~api_key ~state:(state finding_a finding_b) ~question in
       Lwt.return
         (Result.map
-           (fun (output : Jev_triage.noul_output) ->
-             { output with cost = { output.cost with agent_name = "jev_grouping" } })
+           (fun (output : Jev_triage.noul_output) -> { output with cost = { output.cost with agent_name } })
            result)
     in
     let%lwt forward, reverse = Lwt.both (score finding_a finding_b) (score finding_b finding_a) in
@@ -706,11 +799,16 @@ module Make (AI : Api.Agent_runner) = struct
     match forward, reverse with
     | Ok forward, Ok reverse -> Lwt.return (Some (forward.probability, reverse.probability), costs)
     | Error forward, Error reverse ->
-      log#warn "%sJev grouping failed in both orientations: %s; %s" log_prefix forward reverse;
+      log#warn "%s%s failed in both orientations: %s; %s" log_prefix agent_name forward reverse;
       Lwt.return (None, costs)
     | Error error, Ok _ | Ok _, Error error ->
-      log#warn "%sJev grouping failed in one orientation: %s" log_prefix error;
+      log#warn "%s%s failed in one orientation: %s" log_prefix agent_name error;
       Lwt.return (None, costs)
+
+  type grouping_verification =
+    | Verified_consolidation
+    | Keep_findings_separate
+    | Inconclusive_verification
 
   let verify_grouping_pair ~ctx ~repo_url ~fetch_file ~diff_text ~relationship_evidence ~left_id ~left ~right_id ~right
     ?debug_dir ?log_context () =
@@ -724,7 +822,8 @@ module Make (AI : Api.Agent_runner) = struct
       AI.run ~ctx ~repo_url ?tools ?debug_dir ?log_context ~config:Consolidation_agent.config ~input ()
     in
     match result with
-    | Error error -> Lwt.return (`Assoc [ "status", `String "failed"; "error", `String error ], [])
+    | Error error ->
+      Lwt.return (`Assoc [ "status", `String "failed"; "error", `String error ], Inconclusive_verification, [])
     | Ok agent_result ->
       let cost =
         Cost_tracking.of_agent_result ?log_context ~agent_name:"consolidation_verifier"
@@ -732,16 +831,16 @@ module Make (AI : Api.Agent_runner) = struct
       in
       (match Consolidation_agent.output_of_json agent_result.output with
       | output ->
-        let status, reason =
+        let status, reason, verification =
           match Consolidation_agent.verify ~left_id ~left ~right_id ~right output with
-          | Ok _ -> "verified_consolidation", None
+          | Ok _ -> "verified_consolidation", None, Verified_consolidation
           | Error reason ->
-            let status =
+            let status, verification =
               match output.verdict with
-              | Consolidation_agent.Keep_separate -> "keep_separate"
-              | Consolidation_agent.Consolidate -> "rejected_consolidation"
+              | Consolidation_agent.Keep_separate -> "keep_separate", Keep_findings_separate
+              | Consolidation_agent.Consolidate -> "rejected_consolidation", Inconclusive_verification
             in
-            status, Some reason
+            status, Some reason, verification
         in
         let fields = [ "status", `String status; "output", agent_result.output ] in
         let fields =
@@ -749,13 +848,14 @@ module Make (AI : Api.Agent_runner) = struct
           | Some reason -> ("reason", `String reason) :: fields
           | None -> fields
         in
-        Lwt.return (`Assoc fields, [ cost ])
+        Lwt.return (`Assoc fields, verification, [ cost ])
       | exception exn ->
         Lwt.return
           ( `Assoc
               [
                 "status", `String "invalid_output"; "error", `String (Devkit.Exn.str exn); "output", agent_result.output;
               ],
+            Inconclusive_verification,
             [ cost ] ))
 
   let finding_paths (finding : Security_types.validated_finding) =
@@ -767,12 +867,12 @@ module Make (AI : Api.Agent_runner) = struct
     confirmed =
     let log_prefix = log_context_prefix log_context in
     match security_config.Config_types.jev_grouping_enabled, confirmed with
-    | false, _ | true, [] | true, [ _ ] -> Lwt.return []
+    | false, _ | true, [] | true, [ _ ] -> Lwt.return ([], [])
     | true, _ :: _ :: _ ->
     match (Context.secrets ctx).typesafe_api_key with
     | None ->
       log#warn "%sJev grouping is enabled but no TypeSafe API key is configured" log_prefix;
-      Lwt.return []
+      Lwt.return ([], [])
     | Some api_key ->
       (* ponytail: confirmed finding sets are normally single digits; shortlist
          deterministically before this O(n²) experiment if latency becomes material. *)
@@ -795,12 +895,15 @@ module Make (AI : Api.Agent_runner) = struct
           let new_pairs = List.map (fun (right_id, right) -> left_id, left, right_id, right) rest in
           pairs (List.rev_append new_pairs acc) rest
       in
-      let%lwt judgments, proposed_count, costs =
+      let%lwt judgments, proposed_count, grouped_count, grouping_edges, costs =
         Lwt_list.fold_left_s
-          (fun (judgments, proposed_count, costs) (left_id, left, right_id, right) ->
-            let%lwt probabilities, pair_costs = score_grouping_pair ~api_key ?log_context left right in
+          (fun (judgments, proposed_count, grouped_count, grouping_edges, costs) (left_id, left, right_id, right) ->
+            let%lwt probabilities, pair_costs =
+              score_pair ~api_key ~question:grouping_proposal_question ~agent_name:"jev_grouping" ?log_context left
+                right
+            in
             let common = [ "left_id", `Int left_id; "right_id", `Int right_id ] in
-            let%lwt judgment, proposed, verifier_costs =
+            let%lwt judgment, proposed, grouped, decision_costs =
               match probabilities with
               | Some (forward, reverse) ->
                 let proposed =
@@ -817,12 +920,39 @@ module Make (AI : Api.Agent_runner) = struct
                             "proposed", `Bool false;
                           ]),
                       false,
+                      false,
                       [] )
                 | true ->
                   let%lwt relationship_evidence, relationship_evidence_paths = Lazy.force relationship_evidence in
-                  let%lwt verification, verifier_costs =
+                  let%lwt verification_json, verification, verifier_costs =
                     verify_grouping_pair ~ctx ~repo_url ~fetch_file ~diff_text ~relationship_evidence ~left_id ~left
                       ~right_id ~right ?debug_dir ?log_context ()
+                  in
+                  let%lwt notification_grouping, grouped, notification_costs =
+                    match verification with
+                    | Verified_consolidation -> Lwt.return (`Null, true, [])
+                    | Inconclusive_verification -> Lwt.return (`Null, false, [])
+                    | Keep_findings_separate ->
+                      let%lwt probabilities, costs =
+                        score_pair ~api_key ~question:notification_grouping_question
+                          ~agent_name:"jev_notification_grouping" ?log_context left right
+                      in
+                      (match probabilities with
+                      | None -> Lwt.return (`Assoc [ "error", `String "judgment_failed" ], false, costs)
+                      | Some (forward, reverse) ->
+                        let grouped =
+                          Jev_triage.relationship_proposed ~threshold:security_config.jev_grouping_threshold ~forward
+                            ~reverse
+                        in
+                        Lwt.return
+                          ( `Assoc
+                              [
+                                "forward_probability", `Float forward;
+                                "reverse_probability", `Float reverse;
+                                "grouped", `Bool grouped;
+                              ],
+                            grouped,
+                            costs ))
                   in
                   Lwt.return
                     ( `Assoc
@@ -831,7 +961,9 @@ module Make (AI : Api.Agent_runner) = struct
                             "forward_probability", `Float forward;
                             "reverse_probability", `Float reverse;
                             "proposed", `Bool true;
-                            "verification", verification;
+                            "verification", verification_json;
+                            "notification_grouping", notification_grouping;
+                            "grouped_for_publication", `Bool grouped;
                             ( "relationship_evidence_paths",
                               `List (List.map (fun path -> `String path) relationship_evidence_paths) );
                             ( "member_findings",
@@ -842,20 +974,24 @@ module Make (AI : Api.Agent_runner) = struct
                                 ] );
                           ]),
                       true,
-                      verifier_costs ))
+                      grouped,
+                      List.rev_append notification_costs verifier_costs ))
               | None ->
-                Lwt.return (`Assoc (common @ [ "error", `String "judgment_failed"; "proposed", `Bool false ]), false, [])
+                Lwt.return
+                  (`Assoc (common @ [ "error", `String "judgment_failed"; "proposed", `Bool false ]), false, false, [])
             in
             let proposed_count = if proposed then proposed_count + 1 else proposed_count in
-            let costs = List.rev_append verifier_costs (List.rev_append pair_costs costs) in
-            Lwt.return (judgment :: judgments, proposed_count, costs))
-          ([], 0, []) (pairs [] indexed)
+            let grouped_count = if grouped then grouped_count + 1 else grouped_count in
+            let grouping_edges = if grouped then (left_id, right_id) :: grouping_edges else grouping_edges in
+            let costs = List.rev_append decision_costs (List.rev_append pair_costs costs) in
+            Lwt.return (judgment :: judgments, proposed_count, grouped_count, grouping_edges, costs))
+          ([], 0, 0, [], []) (pairs [] indexed)
       in
       let judgments = List.rev judgments in
       Security_artifacts.write_debug_json artifacts ~filename:"jev_grouping_proposals.json" (`List judgments);
-      log#info "%sJev grouping proposed %d of %d confirmed-finding pair(s); no findings were merged" log_prefix
-        proposed_count (List.length judgments);
-      Lwt.return (List.rev costs)
+      log#info "%sJev grouping proposed %d of %d confirmed-finding pair(s); %d pair(s) grouped for publication"
+        log_prefix proposed_count (List.length judgments) grouped_count;
+      Lwt.return (List.rev grouping_edges, List.rev costs)
   (** Run the triage agent and parse its structured output.
       Returns the parsed output (if successful) and any agent costs incurred. *)
   let run_triage ~ctx ~repo_url ~security_config ~diff_text ~file_paths ~deterministic_signals ~artifacts
@@ -1467,15 +1603,20 @@ module Make (AI : Api.Agent_runner) = struct
         in
         log#info "%svalidation complete: %d confirmed, %d rejected" log_prefix (List.length confirmed)
           (List.length validated - List.length confirmed);
-        let%lwt jev_grouping_costs =
+        let%lwt grouping_edges, jev_grouping_costs =
           run_jev_grouping ~ctx ~repo_url ~fetch_file ~diff ~diff_text ~security_config ~artifacts ?debug_dir
             ?log_context confirmed
         in
+        let confirmed = Array.of_list confirmed in
         let classified_findings =
-          List.map
-            (fun (vf : Security_types.validated_finding) ->
-              validated_to_finding ?log_context ~diff vf, Some vf.finding.vuln_class)
-            confirmed
+          notification_groups ~finding_count:(Array.length confirmed) grouping_edges
+          |> List.map (fun group ->
+            let members = List.map (Array.get confirmed) group in
+            match members with
+            | [] -> invalid_arg "notification group cannot be empty"
+            | (primary : Security_types.validated_finding) :: _ ->
+              let findings = List.map (validated_to_finding ?log_context ~diff) members in
+              grouped_finding findings, Some primary.finding.vuln_class)
         in
         let findings = List.map fst classified_findings in
         Security_artifacts.write_debug_json artifacts ~filename:"final_findings.json"
@@ -1487,8 +1628,8 @@ module Make (AI : Api.Agent_runner) = struct
             raw_candidates_produced = List.length raw_candidates;
             candidates_kept_after_deduplication = List.length raw_candidates;
             duplicate_candidates_dropped = 0;
-            validator_confirmed = List.length confirmed;
-            validator_rejected = List.length validated - List.length confirmed;
+            validator_confirmed = Array.length confirmed;
+            validator_rejected = List.length validated - Array.length confirmed;
             final_findings_produced = List.length findings;
             analysis_class_metrics;
             class_drops;
