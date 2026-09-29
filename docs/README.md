@@ -302,7 +302,7 @@ Either LLM key works; `openrouter_api_key` is used when both are present. Swap i
 | `repos[].auth` | Yes* | Alternative to `gh_token` — GitHub App installation auth (see below) |
 | `openrouter_api_key` | Yes† | OpenRouter API key; preferred when both keys are set |
 | `anthropic_api_key` | Yes† | Anthropic API key for Claude, used when no OpenRouter key is present |
-| `typesafe_api_key` | No | TypeSafe API key for Jev security triage, candidate validation, and confirmed-finding grouping. Required when a Jev feature is enabled. |
+| `typesafe_api_key` | No | TypeSafe API key for Jev triage, candidate validation, suggested-fix guarding, and confirmed-finding grouping. Required when a Jev feature is enabled. |
 | `slack_access_token` | No | Slack bot token for posting messages |
 
 *Either `gh_token` or `auth` must be set per repo. Using `gh_token` is the simpler option.
@@ -439,6 +439,8 @@ version control. Webhook/server commands do not read the user-global files.
   "show_review_cost": false,
   "debug_artifacts": false,
   "review_plugins": {
+    "jev_suggestion_guard_enabled": false,
+    "jev_suggestion_guard_threshold": 0.5,
     "general": {
       "enabled": true,
       "system_prompt_override": null
@@ -499,6 +501,11 @@ generated-file header markers. Broad folders such as `generated/`, `dist/`,
 `ignored_file_regexes`.
 
 ### Plugin Configuration
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `jev_suggestion_guard_enabled` | `false` | Ask Jev to remove mechanically defective `suggested_fix` payloads after validation. Findings remain published. Missing credentials and service errors preserve the fix. |
+| `jev_suggestion_guard_threshold` | `0.5` | Minimum defective-fix probability required to remove only the suggestion payload. Must be between 0 and 1. |
 
 #### General Plugin
 
@@ -634,6 +641,12 @@ non-transitive A-B/B-C relationship from silently grouping A with C. Each group
 is published as one anchored comment that lists every member location, message,
 failure scenario, and proposed replacement. Missing credentials, service
 failures, invalid outputs, and uncertain judgments leave findings separate.
+
+When `jev_suggestion_guard_enabled` is true, Jev checks each validated finding's
+optional `suggested_fix` against the exact reviewed file diff. Scores at or
+above `jev_suggestion_guard_threshold` remove only the suggestion block; the
+finding and its evidence still publish. Missing credentials, unavailable diff
+evidence, and service failures preserve the suggestion.
 
 ### 4. Memory Curation (Haiku, async)
 

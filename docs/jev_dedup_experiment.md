@@ -245,9 +245,51 @@ requires both source-constraint probability at least 0.60 and direct support at
 most 0.30. Missing files, credentials, or successful Jev responses preserve the
 validator result.
 
+## 2026-09-29 finding continuity across revisions
+
+The refreshed feedback history contained two pull requests with confirmed
+security findings on more than one reviewed revision. Both real repeated
+findings were paired with five hard same-PR controls: similar authorization
+removals in separate services, separate anonymous endpoints, certificate and
+private-key ACLs, and separate same-file command-injection and SSRF paths.
+
+Each pair was scored in both orientations for three repetitions. Requiring both
+orientations to reach the threshold linked both repeated findings and none of
+the five controls at every threshold from 0.60 through 0.80. One same-file
+command-injection control scored 0.79–0.81 in one direction but 0.43–0.47 in
+reverse, confirming that the complete-link rule is necessary. The 42 calls cost
+$0.002918.
+
+Token similarity could not provide this separation: one negative control was
+more lexically similar than both positives. Continuity is not integrated yet.
+Prior findings are available only in the publication feedback store, after the
+current revision has been independently validated; suppressing the current
+finding would save no review cost and could hide an unresolved defect.
+
+## 2026-09-29 suggested-fix integrity guard
+
+Five real suggestions previously adjudicated as mechanically broken were paired
+with five upvoted, mechanically valid controls and each finding's exact reviewed
+file diff. The broken set included a no-op that left an unbound name unchanged,
+literal `\\n` text, deployment prose in a code suggestion, a duplicated log
+call, and a parallelized N+1 query that preserved the reported defect.
+
+Across three repetitions, broken suggestions scored 0.56–0.95 and controls
+scored 0.08–0.35. A 0.50 threshold removed all 15 broken repetitions and
+preserved all 15 controls. The 30 calls had no errors and cost $0.002833, or
+about $0.000094 per suggestion. A 0.60 threshold would have missed the
+deployment-prose case.
+
+The opt-in `review_plugins.jev_suggestion_guard_enabled` integration runs after
+both plugins have validated and deduplicated findings. It removes only
+`suggested_fix`; the finding, location, impact, and evidence remain unchanged.
+Missing credentials, missing diff evidence, and Jev failures preserve the
+suggestion.
+
 ## Next Jev experiments
 
 1. Expand the independent human-feedback set beyond two SSRF findings before
    treating source-constraint rejection as a default.
-2. Suggest finding continuity across revisions while keeping fix verification
-   independent.
+2. Expand the suggested-fix corpus beyond the five known broken payloads.
+3. Gather more multi-revision positives and define a notification behavior for
+   continuity that does not hide unresolved findings.

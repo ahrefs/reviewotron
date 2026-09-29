@@ -105,6 +105,8 @@ val default_security_plugin_config : security_plugin_config
 
 (** Aggregated review plugin configuration. *)
 type review_plugins_config = {
+  jev_suggestion_guard_enabled : bool;
+  jev_suggestion_guard_threshold : float;
   general : general_plugin_config;
   security : security_plugin_config;
 }

@@ -360,6 +360,8 @@ let retry_guidance_for_403 reason =
   | true -> Some (retry_guidance reason)
   | false -> None
 
+let jev_suggestion_guard_removes ~threshold ~probability = probability >= threshold
+
 let review_body ~log_context ~change_label ~general_output ~findings ~unchanged_findings ~anchor_failed_findings
   ~review_costs ~security_error ~(config : Config_types.config) =
   let log_prefix = log_context_prefix (Some log_context) in
@@ -520,6 +522,61 @@ module Make (AI : Api.Agent_runner) = struct
         fetch_file = job.fetch_file;
       }
 
+  let suggestion_guard_question : Jev_triage.noul_question =
+    {
+      instructions =
+        "Is `suggested_fix` mechanically defective or harmful as an actionable replacement for the validated finding, "
+        ^ "given the exact reviewed file diff? Judge only the fix payload; do not reject the underlying finding.";
+      true_criteria =
+        "The payload is a no-op; contains literal escape text instead of required newlines; is prose rather than "
+        ^ "applicable code; duplicates existing behavior; leaves the stated defect unchanged; introduces an evident "
+        ^ "syntax, type, or behavioral defect; or cannot plausibly replace the indicated lines.";
+      false_criteria =
+        "The payload is a concrete, mechanically plausible change that addresses the stated defect in the shown code. "
+        ^ "It need not be the only or most elegant repair, and incomplete repository context alone is not a defect.";
+    }
+
+  let suggestion_guard_state ~diff finding suggested_fix =
+    let finding_without_fix = { finding with Review_types.suggested_fix = None } in
+    `Assoc
+      [
+        "finding", Review_types.finding_to_json finding_without_fix;
+        "suggested_fix", `String suggested_fix;
+        "exact_file_diff", `String (Diff_parser.to_string_annotated [ diff ]);
+      ]
+
+  let run_suggestion_guard ~api_key ~threshold ~diff ?log_context sourced_findings =
+    let log_prefix = log_context_prefix log_context in
+    let check sourced =
+      let finding = sourced.finding in
+      match finding.suggested_fix, Diff_anchor.find_file_diff_by_path ~diff finding.path with
+      | Some suggested_fix, Some file_diff ->
+        let state = suggestion_guard_state ~diff:file_diff finding suggested_fix in
+        Lwt.catch
+          (fun () ->
+            let%lwt result = Jev_triage.score_noul ~api_key ~state ~question:suggestion_guard_question in
+            match result with
+            | Error error ->
+              log#warn "%sJev suggestion guard failed for %s:%d: %s" log_prefix finding.path finding.line error;
+              Lwt.return (sourced, None)
+            | Ok ({ probability; cost } : Jev_triage.noul_output) ->
+              let sourced =
+                match jev_suggestion_guard_removes ~threshold ~probability with
+                | true ->
+                  log#info "%sJev suggestion guard removed defective fix at %s:%d (Noul %.3f)" log_prefix finding.path
+                    finding.line probability;
+                  { sourced with finding = { finding with suggested_fix = None } }
+                | false -> sourced
+              in
+              Lwt.return (sourced, Some cost))
+          (fun exn ->
+            log#warn "%sJev suggestion guard raised for %s:%d: %s" log_prefix finding.path finding.line (Exn.str exn);
+            Lwt.return (sourced, None))
+      | None, _ | Some _, None -> Lwt.return (sourced, None)
+    in
+    let%lwt checked = Lwt_list.map_p check sourced_findings in
+    Lwt.return (List.map fst checked, List.filter_map snd checked)
+
   let run_plugins ~ctx ~job ~debug_dir =
     Telemetry.span
       ~attrs:(Review_job.span_attrs job ~fetched_files:(List.length job.Review_job.file_contents))
@@ -629,6 +686,16 @@ module Make (AI : Api.Agent_runner) = struct
           @ plugin_findings
         in
         let sourced_findings = deduplicate_sourced_findings sourced in
+        let%lwt sourced_findings, suggestion_guard_costs =
+          match plugins_config.jev_suggestion_guard_enabled, (Context.secrets ctx).typesafe_api_key with
+          | false, _ -> Lwt.return (sourced_findings, [])
+          | true, None ->
+            log#warn "%sJev suggestion guard is enabled but no TypeSafe API key is configured" log_prefix;
+            Lwt.return (sourced_findings, [])
+          | true, Some api_key ->
+            run_suggestion_guard ~api_key ~threshold:plugins_config.jev_suggestion_guard_threshold ~diff ~log_context
+              sourced_findings
+        in
         let findings = List.map (fun sourced -> sourced.finding) sourced_findings in
         let plugin_costs =
           List.map
@@ -636,7 +703,8 @@ module Make (AI : Api.Agent_runner) = struct
             findings_results
         in
         let review_costs =
-          Cost_tracking.aggregate ~plugin:"general" general_costs :: plugin_costs
+          (Cost_tracking.aggregate ~plugin:"general" general_costs :: plugin_costs)
+          @ [ Cost_tracking.aggregate ~plugin:"jev_suggestion_guard" suggestion_guard_costs ]
           |> List.filter (fun (rc : Cost_tracking.review_cost) ->
             match rc.agents with
             | [] -> false

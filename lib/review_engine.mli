@@ -91,6 +91,9 @@ val retry_guidance : string -> string
 (** Actionable retry guidance for an HTTP 403 provider rejection. *)
 val retry_guidance_for_403 : string -> string option
 
+(** Whether a suggestion-integrity score removes only the proposed fix payload. *)
+val jev_suggestion_guard_removes : threshold:float -> probability:float -> bool
+
 (** Raw plugin execution result, before sink-specific publishing. *)
 type plugin_result = {
   general_output : General_review_plugin.review_outcome option;

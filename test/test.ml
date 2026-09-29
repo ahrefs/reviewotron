@@ -626,6 +626,8 @@ let test_generic_openrouter_403_retries_one_provider_request () =
 
 let test_config_review_plugins_defaults () =
   let config = Config_types.config_of_json (Melange_json.of_string {|{}|}) in
+  (check bool) "Jev suggestion guard default off" false config.review_plugins.jev_suggestion_guard_enabled;
+  (check (float 0.0001)) "Jev suggestion threshold default" 0.5 config.review_plugins.jev_suggestion_guard_threshold;
   (check bool) "general enabled" true config.review_plugins.general.enabled;
   (check bool) "general prompt override" true (Option.is_none config.review_plugins.general.system_prompt_override);
   (check bool) "security disabled by default" false config.review_plugins.security.enabled;
@@ -667,6 +669,8 @@ let test_config_review_plugins_explicit () =
     "ignored_file_regexes": ["^snapshots/.*\\.golden$"],
     "ignore_generated_files": false,
     "review_plugins": {
+      "jev_suggestion_guard_enabled": true,
+      "jev_suggestion_guard_threshold": 0.55,
       "general": { "enabled": false },
       "security": {
         "enabled": true,
@@ -692,6 +696,8 @@ let test_config_review_plugins_explicit () =
   (check bool) "agent debug_artifacts" true config.debug_artifacts;
   (check (list string)) "ignored_file_regexes explicit" [ "^snapshots/.*\\.golden$" ] config.ignored_file_regexes;
   (check bool) "ignore_generated_files explicit off" false config.ignore_generated_files;
+  (check bool) "Jev suggestion guard" true config.review_plugins.jev_suggestion_guard_enabled;
+  (check (float 0.0001)) "Jev suggestion threshold" 0.55 config.review_plugins.jev_suggestion_guard_threshold;
   (check bool) "general disabled" false config.review_plugins.general.enabled;
   (check bool) "security enabled" true config.review_plugins.security.enabled;
   (check int) "vuln_classes count" 2 (List.length config.review_plugins.security.vuln_classes);
@@ -765,6 +771,19 @@ let test_config_rejects_invalid_jev_grouping_threshold () =
   | (_ : Config_types.config) -> fail "expected out-of-range Jev grouping threshold to be rejected"
   | exception Melange_json.Of_json_error (Melange_json.Json_error msg) ->
     (check bool) "error names Jev grouping threshold" true (contains_sub ~sub:"jev_grouping_threshold" msg)
+
+let test_config_rejects_invalid_jev_suggestion_guard_threshold () =
+  match
+    Config_types.config_of_json (Melange_json.of_string {|{"review_plugins":{"jev_suggestion_guard_threshold":1.1}}|})
+  with
+  | (_ : Config_types.config) -> fail "expected out-of-range Jev suggestion threshold to be rejected"
+  | exception Melange_json.Of_json_error (Melange_json.Json_error msg) ->
+    (check bool) "error names Jev suggestion threshold" true (contains_sub ~sub:"jev_suggestion_guard_threshold" msg)
+
+let test_jev_suggestion_guard_threshold () =
+  (check bool) "below threshold preserves fix" false
+    (Review_engine.jev_suggestion_guard_removes ~threshold:0.5 ~probability:0.49);
+  (check bool) "threshold removes fix" true (Review_engine.jev_suggestion_guard_removes ~threshold:0.5 ~probability:0.5)
 
 let test_config_general_scout_defaults () =
   let config = Config_types.config_of_json (Melange_json.of_string {|{}|}) in
@@ -9510,6 +9529,9 @@ let () =
             test_config_rejects_invalid_jev_analysis_gate_threshold;
           test_case "Jev routing modes are mutually exclusive" `Quick test_config_rejects_both_jev_routing_modes;
           test_case "invalid Jev grouping threshold rejected" `Quick test_config_rejects_invalid_jev_grouping_threshold;
+          test_case "invalid Jev suggestion threshold rejected" `Quick
+            test_config_rejects_invalid_jev_suggestion_guard_threshold;
+          test_case "Jev suggestion threshold boundary" `Quick test_jev_suggestion_guard_threshold;
           test_case "general scout config defaults" `Quick test_config_general_scout_defaults;
           test_case "general scout config explicit" `Quick test_config_general_scout_explicit;
           test_case "max_leads = 0 rejected" `Quick test_config_max_leads_zero_rejected;

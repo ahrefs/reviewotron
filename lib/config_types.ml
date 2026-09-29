@@ -306,6 +306,14 @@ let default_security_plugin_config =
 
 (** Aggregated review plugin configuration. *)
 type review_plugins_config = {
+  jev_suggestion_guard_enabled : bool;
+     [@json.default false]
+     [@jsonschema.description
+       "Use TypeSafe Jev to remove mechanically defective suggested-fix payloads while preserving their findings. \
+        Requires typesafe_api_key in secrets or TYPESAFE_API_KEY for local reviews."]
+  jev_suggestion_guard_threshold : float;
+     [@json.default 0.5]
+     [@jsonschema.description "Minimum Jev probability, from 0 to 1, required to remove a suggested fix."]
   general : general_plugin_config;
      [@json.default default_general_plugin_config] [@jsonschema.description "General code-review plugin settings."]
   security : security_plugin_config;
@@ -314,7 +322,12 @@ type review_plugins_config = {
 [@@deriving json, jsonschema] [@@json.allow_extra_fields]
 
 let default_review_plugins_config =
-  { general = default_general_plugin_config; security = default_security_plugin_config }
+  {
+    jev_suggestion_guard_enabled = false;
+    jev_suggestion_guard_threshold = 0.5;
+    general = default_general_plugin_config;
+    security = default_security_plugin_config;
+  }
 
 module Config_codec = struct
   type t = {
@@ -427,6 +440,8 @@ let config_of_json (json : Yojson.Basic.t) : config =
     config.review_plugins.security.jev_analysis_gate_threshold;
   validate_probability_threshold ~json ~name:"jev_grouping_threshold"
     config.review_plugins.security.jev_grouping_threshold;
+  validate_probability_threshold ~json ~name:"jev_suggestion_guard_threshold"
+    config.review_plugins.jev_suggestion_guard_threshold;
   (match
      config.review_plugins.security.jev_triage_enabled, config.review_plugins.security.jev_analysis_gate_enabled
    with
