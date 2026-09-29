@@ -55,6 +55,17 @@ let gate_triage_signals ~always_analyze ~jev_signals =
          (fun (jev_signal : Security_types.triage_signal) -> vuln_class_equal signal.vuln_class jev_signal.vuln_class)
          jev_signals)
 
+type jev_validator_decision =
+  | Confirm_candidate
+  | Reject_candidate
+  | Run_validator
+
+let jev_validator_decision ~supported ~fatal_defect =
+  match () with
+  | () when supported >= 0.62 && fatal_defect <= 0.30 -> Confirm_candidate
+  | () when fatal_defect >= 0.70 && supported <= 0.30 -> Reject_candidate
+  | () -> Run_validator
+
 let highest_signal_confidence signals =
   List.fold_left
     (fun best (signal : Security_types.triage_signal) ->
@@ -400,6 +411,32 @@ let enforce_validator_proofs results =
       | Confirmed, None -> reject_for_missing_proof vf
       | Rejected, Some _ | Rejected, None -> vf)
     results
+
+let jev_confirmed_finding finding =
+  let proof : Security_types.exploitation_proof =
+    {
+      trigger = proof_repair_trigger finding;
+      preconditions = [ "The reviewed source and sink sites are present in the diff evidence scored by Jev." ];
+      source_to_sink_trace = proof_trace_from_finding finding;
+      missing_or_inadequate_control = proof_repair_control finding;
+      expected_impact = proof_repair_impact finding;
+      assumptions = [];
+    }
+  in
+  let validated : Security_types.validated_finding =
+    {
+      candidate_id = 0;
+      finding;
+      verdict = Confirmed;
+      evidence_notes =
+        Printf.sprintf "Jev directly supported the candidate against exact diff evidence at %s:%d and %s:%d."
+          finding.source.path finding.source.line finding.sink.path finding.sink.line;
+      proof_by_construction = Some proof;
+    }
+  in
+  match enforce_validator_proofs [ validated ] with
+  | [ ({ verdict = Confirmed; _ } as validated) ] -> Some validated
+  | [ { verdict = Rejected; _ } ] | [] | _ :: _ :: _ -> None
 
 (** Maximum number of candidates sent to the validator in a single call.
 
@@ -773,6 +810,85 @@ module Make (AI : Api.Agent_runner) = struct
         Security_artifacts.write_debug_json artifacts ~filename:"jev_triage_signals.json"
           (`List (List.map Security_types.triage_signal_to_json output.signals));
         Lwt.return_some output)
+  let candidate_diff_evidence ~diff (candidate : Security_types.candidate_finding) =
+    let paths =
+      candidate.source.path
+      :: candidate.sink.path
+      :: List.map (fun (step : Security_types.flow_step) -> step.path) candidate.flow
+      |> List.sort_uniq String.compare
+    in
+    paths |> List.filter_map (Diff_anchor.find_file_diff_by_path ~diff) |> Diff_parser.to_string_annotated
+
+  let run_jev_validator_cascade ~ctx ~security_config ~diff ~artifacts ?log_context candidates =
+    let log_prefix = log_context_prefix log_context in
+    match security_config.Config_types.jev_validator_cascade_enabled, candidates with
+    | false, _ | true, [] -> Lwt.return ([], candidates, [])
+    | true, _ :: _ ->
+    match (Context.secrets ctx).typesafe_api_key with
+    | None ->
+      log#warn "%sJev validator cascade is enabled but no TypeSafe API key is configured" log_prefix;
+      Lwt.return ([], candidates, [])
+    | Some api_key ->
+      let%lwt resolved, remaining, costs, judgments =
+        Lwt_list.fold_left_s
+          (fun (resolved, remaining, costs, judgments) candidate ->
+            let evidence = candidate_diff_evidence ~diff candidate in
+            match String.trim evidence with
+            | "" -> Lwt.return (resolved, candidate :: remaining, costs, judgments)
+            | _ ->
+              let%lwt result = Jev_triage.score_candidate_validation ~api_key ~candidate ~evidence in
+              (match result with
+              | Error error ->
+                log#warn "%sJev candidate validation failed: %s" log_prefix error;
+                Lwt.return
+                  ( resolved,
+                    candidate :: remaining,
+                    costs,
+                    `Assoc [ "error", `String error; "candidate", Security_types.candidate_finding_to_json candidate ]
+                    :: judgments )
+              | Ok ({ supported; fatal_defect; cost } : Jev_triage.candidate_validation_output) ->
+                let cost = { cost with agent_name = "jev_validator_cascade" } in
+                let decision = jev_validator_decision ~supported ~fatal_defect in
+                let decision_name, resolved, remaining =
+                  match decision with
+                  | Confirm_candidate ->
+                    (match jev_confirmed_finding candidate with
+                    | Some validated -> "confirmed", validated :: resolved, remaining
+                    | None -> "validator", resolved, candidate :: remaining)
+                  | Reject_candidate ->
+                    let validated : Security_types.validated_finding =
+                      {
+                        candidate_id = 0;
+                        finding = candidate;
+                        verdict = Rejected;
+                        evidence_notes =
+                          Printf.sprintf
+                            "Jev found a demonstrated fatal validation defect (support %.3f, fatal defect %.3f)."
+                            supported fatal_defect;
+                        proof_by_construction = None;
+                      }
+                    in
+                    "rejected", validated :: resolved, remaining
+                  | Run_validator -> "validator", resolved, candidate :: remaining
+                in
+                let judgment =
+                  `Assoc
+                    [
+                      "decision", `String decision_name;
+                      "supported_probability", `Float supported;
+                      "fatal_defect_probability", `Float fatal_defect;
+                      "candidate", Security_types.candidate_finding_to_json candidate;
+                    ]
+                in
+                Lwt.return (resolved, remaining, cost :: costs, judgment :: judgments)))
+          ([], [], [], []) candidates
+      in
+      let resolved = List.rev resolved in
+      let remaining = List.rev remaining in
+      Security_artifacts.write_debug_json artifacts ~filename:"jev_validator_cascade.json" (`List (List.rev judgments));
+      log#info "%sJev validator cascade resolved %d of %d candidate(s); %d sent to validator" log_prefix
+        (List.length resolved) (List.length candidates) (List.length remaining);
+      Lwt.return (resolved, remaining, List.rev costs)
   let score_pair ~api_key ~question ~agent_name ?log_context finding_a finding_b =
     let log_prefix = log_context_prefix log_context in
     let state finding_a finding_b =
@@ -1587,11 +1703,18 @@ module Make (AI : Api.Agent_runner) = struct
         in
         Lwt.return ([], analysis_costs, metrics, analysis_failed)
       | _ :: _ ->
-        let%lwt validated, validator_costs, validator_failed =
-          run_stage ~stage:"security_validator" (fun () ->
-            run_validator ~ctx ~repo_url ~fetch_file ~security_config ~diff_text ~candidate_findings:raw_candidates
-              ~artifacts ?debug_dir ?log_context ())
+        let%lwt jev_validated, validator_candidates, jev_validator_costs =
+          run_jev_validator_cascade ~ctx ~security_config ~diff ~artifacts ?log_context raw_candidates
         in
+        let%lwt validated, validator_costs, validator_failed =
+          match validator_candidates with
+          | [] -> Lwt.return ([], [], false)
+          | _ :: _ ->
+            run_stage ~stage:"security_validator" (fun () ->
+              run_validator ~ctx ~repo_url ~fetch_file ~security_config ~diff_text
+                ~candidate_findings:validator_candidates ~artifacts ?debug_dir ?log_context ())
+        in
+        let validated = jev_validated @ validated in
         log_rejected ?log_context validated;
         let confirmed =
           List.filter_map
@@ -1637,7 +1760,7 @@ module Make (AI : Api.Agent_runner) = struct
         in
         Lwt.return
           ( classified_findings,
-            analysis_costs @ validator_costs @ jev_grouping_costs,
+            analysis_costs @ jev_validator_costs @ validator_costs @ jev_grouping_costs,
             metrics,
             analysis_failed || validator_failed ))
 

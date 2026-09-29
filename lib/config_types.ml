@@ -242,6 +242,12 @@ type security_plugin_config = {
   jev_analysis_gate_threshold : float;
      [@json.default 0.6]
      [@jsonschema.description "Minimum Jev Noul probability, from 0 to 1, required by the post-triage analysis gate."]
+  jev_validator_cascade_enabled : bool;
+     [@json.default false]
+     [@jsonschema.description
+       "Allow high-certainty Jev judgments over candidate findings and their exact diff evidence to bypass the \
+        adversarial validator. Inconclusive judgments and errors still run the validator. Requires typesafe_api_key in \
+        secrets or TYPESAFE_API_KEY for local reviews."]
   jev_grouping_enabled : bool;
      [@json.default false]
      [@jsonschema.description
@@ -290,6 +296,7 @@ let default_security_plugin_config =
     jev_triage_threshold = 0.8;
     jev_analysis_gate_enabled = false;
     jev_analysis_gate_threshold = 0.6;
+    jev_validator_cascade_enabled = false;
     jev_grouping_enabled = false;
     jev_grouping_threshold = 0.7;
     memory_max_tokens = 5000;

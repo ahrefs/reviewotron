@@ -189,11 +189,38 @@ retains every member location, description, failure scenario, and proposed
 replacement; multi-location GitHub suggestions are disabled because one
 suggestion cannot safely edit multiple sites.
 
+## 2026-09-29 candidate validation cascade
+
+The first validator-cost experiment joined 26 real analysis candidates to their
+captured validator verdicts: 23 confirmed and 3 rejected. Each candidate was
+scored three times against only the changed files named by its source, sink, and
+flow evidence. The initial four-level completeness Score could not separate the
+classes and was discarded.
+
+The successful formulation asks two independent Noul questions in one request:
+whether the evidence directly supports the complete finding, and whether it
+demonstrates a fatal validation defect. Candidates in the uncertain middle keep
+the existing validator. At the measured support/fatal boundary of 0.62/0.30,
+seven confirmed candidates crossed the auto-confirm boundary in all three
+repetitions and no rejected candidate crossed it. They were all from one captured
+review whose two validator calls cost $2.048323. Deterministic proof enforcement
+accepts six of the seven; the source-policy candidate stays on the validator path.
+The six accepted candidates include all three candidates from the review's second
+validator call, which cost $0.557326. Jev costs $0.000503 for all seven candidates,
+so eliminating that one call alone saves $0.556823 on the review. Shrinking the
+first validator call from four candidates to one should save more, but that
+unmeasured amount is not included.
+
+At the inverse reject boundary of fatal probability at least 0.70 and support at
+most 0.30, one rejected candidate was rejected in all three repetitions and no
+confirmed candidate was rejected. The other two rejected cases remained
+uncertain and correctly stayed on the reasoning path. This is a small captured
+corpus rather than an independent held-out result; the runtime path is therefore
+opt-in and fails open to the validator.
+
 ## Next Jev experiments
 
-1. Check individual source, sink, mitigation, and policy claims against located
-   evidence; use uncertainty to fetch evidence or escalate to the validator.
-2. Mine analysis/validator disagreements offline to expand independently labeled
+1. Mine analysis/validator disagreements offline to expand independently labeled
    evaluation sets.
-3. Suggest finding continuity across revisions while keeping fix verification
+2. Suggest finding continuity across revisions while keeping fix verification
    independent.

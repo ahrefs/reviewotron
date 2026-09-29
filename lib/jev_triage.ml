@@ -48,6 +48,12 @@ type graded_output = {
   cost : Cost_tracking.agent_cost;
 }
 
+type candidate_validation_output = {
+  supported : float;
+  fatal_defect : float;
+  cost : Cost_tracking.agent_cost;
+}
+
 let question = function
   | Config_types.Injection ->
     ( "Does `annotated_diff` warrant dedicated injection analysis because changed code may let untrusted data alter a \
@@ -154,6 +160,51 @@ let noul_request_body ~state ~question =
 
 let graded_request_body ~state ~question =
   `Assoc [ "state", state; "model", `String model; "questions", `Assoc [ "decision", graded_question_json question ] ]
+  |> Yojson.Basic.to_string
+
+let candidate_validation_question_json = function
+  | `Supported ->
+    noul_question_json
+      {
+        instructions =
+          "Does `evidence` directly establish the security candidate in `candidate` as written, including the relevant \
+           source or control change, security-sensitive sink or capability, missing or inadequate control, and \
+           concrete current consequence, without any essential repository, platform, trust, reachability, or attacker \
+           fact absent from the evidence?";
+        true_criteria =
+          "Every material required claim is directly supported and no unresolved assumption is needed for the current \
+           security consequence.";
+        false_criteria =
+          "An essential claim is contradicted, controlled, speculative, or needs evidence or reasoning beyond what is \
+           supplied.";
+      }
+  | `Fatal_defect ->
+    noul_question_json
+      {
+        instructions =
+          "Does `candidate` have a fatal validation defect demonstrated by `evidence` or admitted in the candidate \
+           itself?";
+        true_criteria =
+          "A material description or blast-radius claim is contradicted; evidence shows the behavior is already \
+           adequately controlled or is an expected minimally scoped prerequisite; or the candidate admits an essential \
+           exploit mechanism is unverified or speculative.";
+        false_criteria =
+          "No such fatal defect is demonstrated. Missing context or uncertainty alone is not a fatal defect; answer \
+           false when deeper reasoning or more evidence could still confirm the finding.";
+      }
+
+let candidate_validation_request_body ~candidate ~evidence =
+  `Assoc
+    [
+      "state", `Assoc [ "candidate", Security_types.candidate_finding_to_json candidate; "evidence", `String evidence ];
+      "model", `String model;
+      ( "questions",
+        `Assoc
+          [
+            "supported", candidate_validation_question_json `Supported;
+            "fatal_defect", candidate_validation_question_json `Fatal_defect;
+          ] );
+    ]
   |> Yojson.Basic.to_string
 
 let regions (file_diff : Diff_parser.file_diff) =
@@ -283,6 +334,15 @@ let noul_of_response body =
   let* probability = probability_value answer in
   Ok { probability; cost }
 
+let candidate_validation_of_response body =
+  let open Result in
+  let* answers, cost = response_parts body in
+  let* supported_answer = assoc "supported" answers in
+  let* supported = probability_value supported_answer in
+  let* fatal_answer = assoc "fatal_defect" answers in
+  let* fatal_defect = probability_value fatal_answer in
+  Ok { supported; fatal_defect; cost }
+
 let graded_output_of_response ~levels body =
   let open Result in
   let* answers, cost = response_parts body in
@@ -347,6 +407,11 @@ let score_dimension ~api_key ~state ~question =
     let body = graded_request_body ~state ~question in
     let%lwt response = request ~api_key ~body 0 in
     Lwt.return (Result.bind response (graded_output_of_response ~levels)))
+
+let score_candidate_validation ~api_key ~candidate ~evidence =
+  let body = candidate_validation_request_body ~candidate ~evidence in
+  let%lwt response = request ~api_key ~body 0 in
+  Lwt.return (Result.bind response candidate_validation_of_response)
 
 let evaluate_file ~api_key ~threshold ~vuln_classes file_diff =
   let%lwt result =

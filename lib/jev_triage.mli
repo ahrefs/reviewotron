@@ -38,6 +38,12 @@ type graded_output = {
   cost : Cost_tracking.agent_cost;
 }
 
+type candidate_validation_output = {
+  supported : float;
+  fatal_defect : float;
+  cost : Cost_tracking.agent_cost;
+}
+
 (** Parse raw scores and usage from one successful System One response. *)
 val scores_of_response : vuln_classes:Config_types.vuln_class list -> string -> (score_output, string) result
 
@@ -58,6 +64,9 @@ val score_noul : api_key:string -> state:Yojson.Basic.t -> question:noul_questio
 (** Parse one successful Score response. *)
 val graded_output_of_response : levels:int -> string -> (graded_output, string) result
 
+(** Parse one successful two-question candidate-validation response. *)
+val candidate_validation_of_response : string -> (candidate_validation_output, string) result
+
 (** Return [true] when the mean of the two orderings reaches [threshold]. *)
 val semantic_duplicate : threshold:float -> forward:float -> reverse:float -> bool
 
@@ -67,6 +76,15 @@ val relationship_proposed : threshold:float -> forward:float -> reverse:float ->
 (** Rate state along one ordered semantic dimension. *)
 val score_dimension :
   api_key:string -> state:Yojson.Basic.t -> question:graded_question -> (graded_output, string) result Lwt.t
+
+(** Score whether supplied diff evidence directly supports a candidate and
+    whether it demonstrates a fatal validation defect. Both independent Noul
+    judgments are sent in one request. *)
+val score_candidate_validation :
+  api_key:string ->
+  candidate:Security_types.candidate_finding ->
+  evidence:string ->
+  (candidate_validation_output, string) result Lwt.t
 
 (** Convert one successful System One response into routing signals and cost.
     Exposed so the third-party response contract can be tested without network

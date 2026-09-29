@@ -20,6 +20,16 @@ let graded_response =
     "usage": {"input_tokens": 300, "output_tokens": 30}
   }|}
 
+let candidate_validation_response =
+  {|{
+    "model": "jev-1.13.0",
+    "answers": {
+      "supported": {"type": "noul", "noul": 0.66},
+      "fatal_defect": {"type": "noul", "noul": 0.24}
+    },
+    "usage": {"input_tokens": 900, "output_tokens": 40}
+  }|}
+
 let test_response_routes_only_probable_classes () =
   let diff =
     Diff_parser.parse
@@ -64,6 +74,29 @@ let test_graded_response_contract () =
     check (float 0.0001) "confidence" 0.6 output.confidence;
     check int "input tokens" 300 output.cost.input_tokens
 
+let test_candidate_validation_response_contract () =
+  match Jev_triage.candidate_validation_of_response candidate_validation_response with
+  | Error error -> fail error
+  | Ok output ->
+    check (float 0.0001) "supported" 0.66 output.supported;
+    check (float 0.0001) "fatal defect" 0.24 output.fatal_defect;
+    check int "input tokens" 900 output.cost.input_tokens
+
+let test_validator_cascade_boundary () =
+  let open Security_review_plugin in
+  check bool "confirmed" true
+    (match jev_validator_decision ~supported:0.62 ~fatal_defect:0.30 with
+    | Confirm_candidate -> true
+    | Reject_candidate | Run_validator -> false);
+  check bool "rejected" true
+    (match jev_validator_decision ~supported:0.30 ~fatal_defect:0.70 with
+    | Reject_candidate -> true
+    | Confirm_candidate | Run_validator -> false);
+  check bool "uncertain" true
+    (match jev_validator_decision ~supported:0.61 ~fatal_defect:0.31 with
+    | Run_validator -> true
+    | Confirm_candidate | Reject_candidate -> false)
+
 let test_semantic_duplicate_uses_symmetric_mean () =
   check bool "at threshold" true (Jev_triage.semantic_duplicate ~threshold:0.5 ~forward:0.61 ~reverse:0.39);
   check bool "below threshold" false (Jev_triage.semantic_duplicate ~threshold:0.5 ~forward:0.58 ~reverse:0.39)
@@ -80,6 +113,8 @@ let () =
           test_case "routes probable classes" `Quick test_response_routes_only_probable_classes;
           test_case "preserves raw probabilities" `Quick test_score_context_response_contract;
           test_case "parses graded output" `Quick test_graded_response_contract;
+          test_case "parses candidate validation" `Quick test_candidate_validation_response_contract;
+          test_case "candidate cascade boundary" `Quick test_validator_cascade_boundary;
           test_case "semantic duplicate uses symmetric mean" `Quick test_semantic_duplicate_uses_symmetric_mean;
           test_case "relationship proposal requires both orientations" `Quick
             test_relationship_proposal_requires_both_orientations;

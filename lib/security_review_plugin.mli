@@ -48,6 +48,16 @@ val gate_triage_signals :
   Security_types.triage_signal list ->
   Security_types.triage_signal list
 
+(** Outcome of the measured Jev candidate-validation boundary. *)
+type jev_validator_decision =
+  | Confirm_candidate
+  | Reject_candidate
+  | Run_validator
+
+(** Confirm only directly supported candidates, reject only demonstrated fatal
+    defects, and send the uncertain middle to the reasoning validator. *)
+val jev_validator_decision : supported:float -> fatal_defect:float -> jev_validator_decision
+
 (** Step budget for a per-class analysis agent after routing.
 
     High-confidence signals still get enough room for multi-file evidence

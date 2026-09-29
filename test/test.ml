@@ -648,6 +648,7 @@ let test_config_review_plugins_defaults () =
   (check bool) "Jev analysis gate default off" false config.review_plugins.security.jev_analysis_gate_enabled;
   (check (float 0.0001))
     "Jev analysis gate threshold default" 0.6 config.review_plugins.security.jev_analysis_gate_threshold;
+  (check bool) "Jev validator cascade default off" false config.review_plugins.security.jev_validator_cascade_enabled;
   (check bool) "Jev grouping default off" false config.review_plugins.security.jev_grouping_enabled;
   (check (float 0.0001)) "Jev grouping threshold default" 0.7 config.review_plugins.security.jev_grouping_threshold;
   (check int) "memory_max_tokens" 5000 config.review_plugins.security.memory_max_tokens;
@@ -676,6 +677,7 @@ let test_config_review_plugins_explicit () =
         "confidence_threshold": "high",
         "jev_analysis_gate_enabled": true,
         "jev_analysis_gate_threshold": 0.62,
+        "jev_validator_cascade_enabled": true,
         "jev_grouping_enabled": true,
         "jev_grouping_threshold": 0.75,
         "memory_max_tokens": 10000,
@@ -703,6 +705,7 @@ let test_config_review_plugins_explicit () =
   | Some Config_types.Effort.Low | Some High | Some Xhigh | None -> fail "expected medium analysis effort");
   (check bool) "Jev analysis gate" true config.review_plugins.security.jev_analysis_gate_enabled;
   (check (float 0.0001)) "Jev analysis gate threshold" 0.62 config.review_plugins.security.jev_analysis_gate_threshold;
+  (check bool) "Jev validator cascade" true config.review_plugins.security.jev_validator_cascade_enabled;
   (check bool) "Jev grouping" true config.review_plugins.security.jev_grouping_enabled;
   (check (float 0.0001)) "Jev grouping threshold" 0.75 config.review_plugins.security.jev_grouping_threshold;
   (check int) "memory_max_tokens" 10000 config.review_plugins.security.memory_max_tokens;
@@ -914,6 +917,7 @@ let test_security_plugin_config_roundtrip () =
       jev_triage_threshold = 0.6;
       jev_analysis_gate_enabled = true;
       jev_analysis_gate_threshold = 0.62;
+      jev_validator_cascade_enabled = true;
       jev_grouping_enabled = true;
       jev_grouping_threshold = 0.75;
       memory_max_tokens = 3000;
@@ -928,6 +932,7 @@ let test_security_plugin_config_roundtrip () =
   (check (float 0.0001)) "Jev threshold" 0.6 parsed.jev_triage_threshold;
   (check bool) "Jev analysis gate" true parsed.jev_analysis_gate_enabled;
   (check (float 0.0001)) "Jev analysis gate threshold" 0.62 parsed.jev_analysis_gate_threshold;
+  (check bool) "Jev validator cascade" true parsed.jev_validator_cascade_enabled;
   (check bool) "Jev grouping" true parsed.jev_grouping_enabled;
   (check (float 0.0001)) "Jev grouping threshold" 0.75 parsed.jev_grouping_threshold;
   (check int) "vuln_classes" 2 (List.length parsed.vuln_classes);
