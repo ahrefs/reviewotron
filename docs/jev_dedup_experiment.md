@@ -265,26 +265,49 @@ added. The expanded experiment used 288 calls, cost $0.055153, and had three
 maximum-token errors in an initial oversized case that was corrected before
 measurement.
 
-## 2026-09-29 finding continuity across revisions
+## 2026-09-30 finding continuity across revisions
 
-The refreshed feedback history contained two pull requests with confirmed
-security findings on more than one reviewed revision. Both real repeated
-findings were paired with five hard same-PR controls: similar authorization
-removals in separate services, separate anonymous endpoints, certificate and
-private-key ACLs, and separate same-file command-injection and SSRF paths.
+The first continuity corpus contained two recurring security findings and five
+hard same-PR controls. Requiring both orientations to reach the threshold linked
+both repeated findings and none of the controls across three repetitions. One
+same-file command-injection control scored 0.79–0.81 in one direction but
+0.43–0.47 in reverse, establishing that a one-sided decision is unsafe.
 
-Each pair was scored in both orientations for three repetitions. Requiring both
-orientations to reach the threshold linked both repeated findings and none of
-the five controls at every threshold from 0.60 through 0.80. One same-file
-command-injection control scored 0.79–0.81 in one direction but 0.43–0.47 in
-reverse, confirming that the complete-link rule is necessary. The 42 calls cost
-$0.002918.
+The refreshed 754-review history contained 72 pairs of distinct revisions in
+the same pull request and only 92 cross-revision finding pairs. An exhaustive
+two-orientation discovery pass over all pairs cost $0.010281. Manual labeling
+then froze nine recurring defects and eleven hard controls, covering both
+general and security findings, changed line numbers and wording, partial fixes,
+same-file defects, and new defects introduced by attempted repairs.
 
-Token similarity could not provide this separation: one negative control was
-more lexically similar than both positives. Continuity is not integrated yet.
-Prior findings are available only in the publication feedback store, after the
-current revision has been independently validated; suppressing the current
-finding would save no review cost and could hide an unresolved defect.
+The frozen corpus was scored in both orientations for three repetitions. The
+pair score is the lower orientation score; both calls must reach the threshold.
+
+| Threshold | Recurring findings linked | Controls linked |
+| --- | ---: | ---: |
+| 0.60 | 27/27 | 2/33 |
+| 0.65 | 27/27 | 1/33 |
+| 0.70 | 27/27 | 0/33 |
+| 0.75 | 24/27 | 0/33 |
+
+The weakest positive pair score was 0.73 and the strongest control was 0.65.
+The 120 frozen-corpus calls had no errors and cost $0.007139. Token similarity
+still could not provide this separation.
+
+A directional follow-up asked whether a current candidate could inherit a
+prior finding's validation and bypass another reasoning-validator call. At a
+0.50 threshold it accepted 24/27 repetitions, covering eight of nine recurring
+cases stably, and rejected all 33 controls. The 60 calls cost $0.003602. The
+saved reviews recorded $3.49 in total validator spend, including one $1.70
+security validator call. This is a potential saving, not a measured one: the
+retained evidence contains post-validation findings rather than raw candidates
+and does not identify every candidate sharing each batched validator call.
+
+Continuity is therefore not integrated yet. The safe notification behavior is
+to keep publishing the current validated finding and annotate it as recurring,
+never suppress it. Validator bypass needs a new corpus that retains raw
+pre-validation candidates and their validator-call membership; only an actually
+eliminated or cheaper call counts as a cost gain.
 
 ## 2026-09-29 suggested-fix integrity guard
 
@@ -403,5 +426,7 @@ no review saved $0.50. Six oversized diffs also failed open with
 
 ## Next Jev experiments
 
-1. Gather more multi-revision positives and define a notification behavior for
-   continuity that does not hide unresolved findings.
+1. Retain raw pre-validation candidates and validator-call membership in the
+   feedback evidence, then replay continuity inheritance before validation.
+2. Measure whether inheritance eliminates or materially shrinks a validator
+   call; require unchanged quality or at least $0.50 saved on a review.
