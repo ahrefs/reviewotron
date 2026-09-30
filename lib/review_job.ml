@@ -14,6 +14,25 @@ type source_kind =
 
 type fetch_file = path:string -> (string option, string) result Lwt.t
 
+type commit_status_state =
+  | Success
+  | Failure
+  | Error
+
+type commit_status = {
+  context : string;
+  state : commit_status_state;
+  description : string option;
+  completed_at : string option;
+}
+
+type fetch_commit_statuses = unit -> (commit_status list, string) result Lwt.t
+
+let commit_status_state_to_string = function
+  | Success -> "success"
+  | Failure -> "failure"
+  | Error -> "error"
+
 let short_display_id id = String.sub id 0 (min 8 (String.length id))
 
 let strip_trailing_slashes value =
@@ -141,6 +160,7 @@ type t = {
   config : Config_types.config;
   file_contents : (string * string) list;
   fetch_file : fetch_file;
+  fetch_commit_statuses : fetch_commit_statuses;
   trigger : trigger;
   source_kind : source_kind;
 }

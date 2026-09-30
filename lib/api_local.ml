@@ -201,6 +201,8 @@ module Github : Api.Github = struct
       let path = Printf.sprintf "mock_api_responses/github/commit_%s.diff" commit in
       Lwt.return (mock_diff_result path)
 
+  let get_commit_statuses ~ctx:_ ~repo_url:_ ~commit:_ = Lwt.return (Ok [])
+
   let get_pull_request ~ctx:_ ~repo_url:_ ~number =
     let path = Printf.sprintf "mock_api_responses/github/pr_%d.json" number in
     match read_mock_file path with

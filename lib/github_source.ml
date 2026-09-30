@@ -202,6 +202,7 @@ module Make (SRC : Api.Github_review_source) = struct
         in
         let description = CCOption.get_or ~default:"" pr.body in
         let fetch_file = fetch_file_at_ref ~log_context:(Some log_context) ~ctx ~repo_url ~ref_:head_sha in
+        let fetch_commit_statuses () = SRC.get_commit_statuses ~ctx ~repo_url ~commit:head_sha in
         let job =
           Review_job.
             {
@@ -216,6 +217,7 @@ module Make (SRC : Api.Github_review_source) = struct
               config;
               file_contents;
               fetch_file;
+              fetch_commit_statuses;
               trigger;
               source_kind = Github;
             }
@@ -282,6 +284,7 @@ module Make (SRC : Api.Github_review_source) = struct
       in
       let title = Printf.sprintf "Push to %s" push.ref_ in
       let fetch_file = fetch_file_at_ref ~log_context:(Some log_context) ~ctx ~repo_url ~ref_:push.after in
+      let fetch_commit_statuses () = SRC.get_commit_statuses ~ctx ~repo_url ~commit:push.after in
       let job =
         Review_job.
           {
@@ -296,6 +299,7 @@ module Make (SRC : Api.Github_review_source) = struct
             config;
             file_contents = [];
             fetch_file;
+            fetch_commit_statuses;
             trigger = Push;
             source_kind = Github;
           }

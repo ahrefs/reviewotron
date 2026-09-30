@@ -342,6 +342,9 @@ Instead of a personal access token, you can authenticate as a GitHub App install
 ```
 
 App installation tokens are automatically refreshed and cached (55-minute TTL).
+When `jev_build_claim_guard_enabled` is enabled, grant the app read access to
+**Commit statuses** so Jev can use completed checks for the reviewed commit.
+Without that permission, the guard falls back to source evidence.
 
 #### OpenRouter Base URL Override
 
@@ -440,7 +443,7 @@ version control. Webhook/server commands do not read the user-global files.
   "debug_artifacts": false,
   "review_plugins": {
     "jev_build_claim_guard_enabled": false,
-    "jev_build_claim_guard_threshold": 0.7,
+    "jev_build_claim_guard_threshold": 0.6,
     "jev_suggestion_guard_enabled": false,
     "jev_suggestion_guard_threshold": 0.5,
     "general": {
@@ -506,8 +509,8 @@ generated-file header markers. Broad folders such as `generated/`, `dist/`,
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `jev_build_claim_guard_enabled` | `false` | Ask Jev to reject general findings whose deterministic compile/build claim is directly contradicted by post-change file context. Missing context, credentials, and service errors preserve the finding. |
-| `jev_build_claim_guard_threshold` | `0.7` | Minimum false-build-claim probability required to reject the finding. Must be between 0 and 1. |
+| `jev_build_claim_guard_enabled` | `false` | Ask Jev to reject general findings whose deterministic compile/build claim is directly contradicted by post-change file context or completed checks for the exact commit. Missing evidence, credentials, and service errors preserve the finding. |
+| `jev_build_claim_guard_threshold` | `0.6` | Minimum false-build-claim probability required to reject the finding. Must be between 0 and 1. |
 | `jev_suggestion_guard_enabled` | `false` | Ask Jev to remove mechanically defective `suggested_fix` payloads after validation. Jev must also reject the fix's mechanical plausibility. Findings remain published. Missing credentials and service errors preserve the fix. |
 | `jev_suggestion_guard_threshold` | `0.5` | Minimum defective-fix probability required to challenge the suggestion. Removal also requires mechanical plausibility at or below one minus this value. Must be between 0 and 1. |
 
@@ -655,11 +658,11 @@ credentials, unavailable diff evidence, and service failures preserve the
 suggestion.
 
 When `jev_build_claim_guard_enabled` is true, Jev checks validated general
-findings against the exact file diff and a bounded post-change source window.
-It rejects a finding only when that context directly disproves an explicit
-syntax, binding, type, or linking failure. The check runs after existing
-validation and cross-plugin deduplication. Security findings, unavailable file
-content, missing credentials, and Jev failures pass through unchanged.
+findings against a bounded post-change source window and completed statuses for
+the exact reviewed commit. It rejects a finding only when that evidence directly
+disproves an explicit syntax, binding, arity, type, or linking failure. The check
+runs after existing validation and cross-plugin deduplication. Security findings,
+missing credentials, unavailable evidence, and Jev failures pass through unchanged.
 
 ### 4. Memory Curation (Haiku, async)
 

@@ -25,6 +25,9 @@ module type Github_review_source = sig
     unit ->
     (string, Http_util.error) result Lwt.t
 
+  val get_commit_statuses :
+    ctx:Context.t -> repo_url:string -> commit:string -> (Review_job.commit_status list, string) result Lwt.t
+
   val get_pull_request :
     ctx:Context.t -> repo_url:string -> number:int -> (Github_types.pull_request, string) result Lwt.t
 

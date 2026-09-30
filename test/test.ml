@@ -627,7 +627,7 @@ let test_generic_openrouter_403_retries_one_provider_request () =
 let test_config_review_plugins_defaults () =
   let config = Config_types.config_of_json (Melange_json.of_string {|{}|}) in
   (check bool) "Jev build-claim guard default off" false config.review_plugins.jev_build_claim_guard_enabled;
-  (check (float 0.0001)) "Jev build-claim threshold default" 0.7 config.review_plugins.jev_build_claim_guard_threshold;
+  (check (float 0.0001)) "Jev build-claim threshold default" 0.6 config.review_plugins.jev_build_claim_guard_threshold;
   (check bool) "Jev suggestion guard default off" false config.review_plugins.jev_suggestion_guard_enabled;
   (check (float 0.0001)) "Jev suggestion threshold default" 0.5 config.review_plugins.jev_suggestion_guard_threshold;
   (check bool) "general enabled" true config.review_plugins.general.enabled;
@@ -804,9 +804,9 @@ let test_jev_suggestion_guard_threshold () =
 
 let test_jev_build_claim_guard () =
   (check bool) "below threshold preserves finding" false
-    (Review_engine.jev_build_claim_guard_rejects ~threshold:0.7 ~probability:0.69);
+    (Review_engine.jev_build_claim_guard_rejects ~threshold:0.6 ~probability:0.59);
   (check bool) "threshold rejects finding" true
-    (Review_engine.jev_build_claim_guard_rejects ~threshold:0.7 ~probability:0.7);
+    (Review_engine.jev_build_claim_guard_rejects ~threshold:0.6 ~probability:0.6);
   let content = List.init 200 (fun index -> Printf.sprintf "line %d" (index + 1)) |> String.concat "\n" in
   let context = Review_engine.reviewed_file_context ~line:100 content |> String.split_on_char '\n' in
   (check int) "context line count" 161 (List.length context);
@@ -4355,6 +4355,7 @@ module Config_mutating_source = struct
 
   let get_pr_commit_shas = Api_local.Github.get_pr_commit_shas
   let get_commit_diff = Api_local.Github.get_commit_diff
+  let get_commit_statuses = Api_local.Github.get_commit_statuses
 
   let get_pull_request = Api_local.Github.get_pull_request
 
@@ -5760,6 +5761,7 @@ let debug_dir_test_job ?(repo_key = Test_helpers.test_repo_url) ?(head_sha = "fb
     config = Config_types.config_of_json (Melange_json.of_string "{}");
     file_contents = [];
     fetch_file = (fun ~path:_ -> Lwt.return (Ok None));
+    fetch_commit_statuses = (fun () -> Lwt.return (Ok []));
     trigger = Pull_request;
     source_kind = Github;
   }
@@ -6371,6 +6373,32 @@ let test_api_remote_collects_all_pr_commit_pages () =
   | Ok shas ->
     (check int) "all PR commit pages are collected" 101 (List.length shas);
     (check (list int)) "commit pages requested" [ 1; 2 ] (List.rev !seen_pages)
+
+let test_api_remote_parses_completed_commit_statuses () =
+  let body =
+    {|{
+  "state": "failure",
+  "statuses": [
+    {"context":"build/backend", "state":"success", "description":"Passed", "updated_at":"2026-09-30T12:00:00Z"},
+    {"context":"build/frontend", "state":"pending", "description":null},
+    {"context":"test/backend", "state":"failure", "description":null}
+  ]
+}|}
+  in
+  match Api_remote.parse_commit_statuses_json body with
+  | Error msg -> fail (Printf.sprintf "unexpected commit status parse error: %s" msg)
+  | Ok statuses ->
+  match statuses with
+  | [ success; failure ] ->
+    (check string) "successful context" "build/backend" success.Review_job.context;
+    (check string) "successful state" "success" (Review_job.commit_status_state_to_string success.state);
+    (check (option string)) "successful description" (Some "Passed") success.description;
+    (check (option string)) "successful completion" (Some "2026-09-30T12:00:00Z") success.completed_at;
+    (check string) "failed context" "test/backend" failure.context;
+    (check string) "failed state" "failure" (Review_job.commit_status_state_to_string failure.state);
+    (check (option string)) "null description" None failure.description;
+    (check (option string)) "missing completion" None failure.completed_at
+  | _ -> failf "expected two completed statuses, got %d" (List.length statuses)
 
 let test_api_remote_parse_pr_review_reaction_counts () =
   let body =
@@ -9524,6 +9552,7 @@ let () =
             test_parse_pull_request_review_without_change_counts;
           test_case "parse pull_request_review_comment without change counts" `Quick
             test_parse_pull_request_review_comment_without_change_counts;
+          test_case "parse completed commit statuses" `Quick test_api_remote_parses_completed_commit_statuses;
         ] );
       ( "hmac_signature",
         [

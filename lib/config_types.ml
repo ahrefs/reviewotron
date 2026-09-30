@@ -309,10 +309,11 @@ type review_plugins_config = {
   jev_build_claim_guard_enabled : bool;
      [@json.default false]
      [@jsonschema.description
-       "Use TypeSafe Jev and post-change file context to reject general findings whose claimed deterministic build \
-        failure is directly contradicted. Requires typesafe_api_key in secrets or TYPESAFE_API_KEY for local reviews."]
+       "Use TypeSafe Jev with post-change file context and exact-commit statuses to reject general findings whose \
+        claimed deterministic build failure is directly contradicted. Requires typesafe_api_key in secrets or \
+        TYPESAFE_API_KEY for local reviews."]
   jev_build_claim_guard_threshold : float;
-     [@json.default 0.7]
+     [@json.default 0.6]
      [@jsonschema.description "Minimum Jev probability, from 0 to 1, required to reject a false build claim."]
   jev_suggestion_guard_enabled : bool;
      [@json.default false]
@@ -334,7 +335,7 @@ type review_plugins_config = {
 let default_review_plugins_config =
   {
     jev_build_claim_guard_enabled = false;
-    jev_build_claim_guard_threshold = 0.7;
+    jev_build_claim_guard_threshold = 0.6;
     jev_suggestion_guard_enabled = false;
     jev_suggestion_guard_threshold = 0.5;
     general = default_general_plugin_config;

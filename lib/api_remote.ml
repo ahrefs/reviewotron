@@ -134,6 +134,45 @@ let parse_pr_commit_shas_json body =
     | json -> Melange_json.of_json_error ~json "expected commit array"
   with exn -> Error (Printf.sprintf "failed to parse PR commits response: %s" (Exn.str exn))
 
+let parse_commit_statuses_json body =
+  let parse_status = function
+    | `Assoc fields ->
+      let state =
+        match required_string fields "state" with
+        | "pending" -> None
+        | "success" -> Some Review_job.Success
+        | "failure" -> Some Review_job.Failure
+        | "error" -> Some Review_job.Error
+        | unknown -> invalid_arg (Printf.sprintf "unknown commit status state %s" unknown)
+      in
+      (match state with
+      | None -> None
+      | Some state ->
+        let optional_string name =
+          match List.assoc_opt name fields with
+          | None | Some `Null -> None
+          | Some (`String value) -> Some value
+          | Some json -> Melange_json.of_json_error ~json (Printf.sprintf "expected string or null field %s" name)
+        in
+        Some
+          Review_job.
+            {
+              context = required_string fields "context";
+              state;
+              description = optional_string "description";
+              completed_at = optional_string "updated_at";
+            })
+    | json -> Melange_json.of_json_error ~json "expected commit status object"
+  in
+  try
+    match Melange_json.of_string body with
+    | `Assoc fields ->
+      (match required_field fields "statuses" with
+      | `List statuses -> Ok (List.filter_map parse_status statuses)
+      | json -> Melange_json.of_json_error ~json "expected statuses array")
+    | json -> Melange_json.of_json_error ~json "expected combined commit status object"
+  with exn -> Error (Printf.sprintf "failed to parse commit statuses response: %s" (Exn.str exn))
+
 let required_int fields name =
   match required_field fields name with
   | `Int value -> value
@@ -261,6 +300,11 @@ module Github : Api.Github = struct
   let get_commit_diff ~ctx ~repo_url ~commit ?log_context () =
     let path = Printf.sprintf "/commits/%s" (Web.urlencode commit) in
     github_get ~ctx ~repo_url ~path ~accept:"application/vnd.github.diff" ?log_context ()
+
+  let get_commit_statuses ~ctx ~repo_url ~commit =
+    let path = Printf.sprintf "/commits/%s/status?per_page=100" (Web.urlencode commit) in
+    let%lwt result = github_get ~ctx ~repo_url ~path () in
+    Lwt.return (Result.bind (Result.map_error Http_util.error_to_string result) parse_commit_statuses_json)
 
   let get_pull_request ~ctx ~repo_url ~number =
     let path = Printf.sprintf "/pulls/%d" number in

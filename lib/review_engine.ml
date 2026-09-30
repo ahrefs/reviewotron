@@ -565,20 +565,32 @@ module Make (AI : Api.Agent_runner) = struct
   let build_claim_guard_question : Jev_triage.noul_question =
     {
       instructions =
-        "Does `reviewed_file_context` directly disprove the finding's claimed deterministic compile or build failure? "
-        ^ "Answer only about an explicit syntax, missing-binding, name-resolution, type, or linking claim in the "
-        ^ "finding.";
+        "Do `reviewed_file_context` or `completed_commit_checks` directly disprove the finding's claimed "
+        ^ "deterministic compile or build failure at this exact commit? Answer only about explicit syntax, binding, "
+        ^ "name-resolution, arity, type, or linking claims.";
       true_criteria =
-        "The finding claims the changed code cannot build, but the shown reviewed-file context directly shows the "
-        ^ "allegedly missing binding, valid scope, compatible type, or other concrete fact that makes that claimed "
-        ^ "build failure false.";
+        "Either the shown source directly establishes the disputed construct is valid, or a successful completed "
+        ^ "check clearly compiled the affected language/component at this exact commit and no clearly relevant build "
+        ^ "check failed. Unrelated failed checks do not outweigh a relevant successful build.";
       false_criteria =
-        "The compile or build failure is real, the finding concerns runtime behavior rather than a deterministic "
-        ^ "build failure, or the supplied context does not directly disprove the exact build-failure claim. "
-        ^ "Uncertainty is false.";
+        "The claimed build defect is real, a clearly relevant build check failed, neither source nor checks directly "
+        ^ "disprove the exact claim, the finding concerns runtime behavior, or evidence is uncertain. Uncertainty is "
+        ^ "false.";
     }
 
-  let run_build_claim_guard ~api_key ~threshold ~diff ~file_contents ~fetch_file ?log_context sourced_findings =
+  let commit_status_to_json ({ context; state; description; completed_at } : Review_job.commit_status) =
+    let fields = [ "context", `String context; "state", `String (Review_job.commit_status_state_to_string state) ] in
+    let fields =
+      match description with
+      | None -> fields
+      | Some value -> ("description", `String value) :: fields
+    in
+    match completed_at with
+    | None -> `Assoc fields
+    | Some value -> `Assoc (("completed_at", `String value) :: fields)
+
+  let run_build_claim_guard ~api_key ~threshold ~diff ~file_contents ~fetch_file ~completed_commit_checks ?log_context
+    sourced_findings =
     let log_prefix = log_context_prefix log_context in
     let fetch path =
       match List.assoc_opt path file_contents with
@@ -589,40 +601,45 @@ module Make (AI : Api.Agent_runner) = struct
       let finding = sourced.finding in
       match sourced.source, Diff_anchor.find_file_diff_by_path ~diff finding.path with
       | From_security, _ | From_general, None -> Lwt.return (Some sourced, None)
-      | From_general, Some file_diff ->
-      match%lwt fetch finding.path with
-      | Error error ->
-        log#warn "%sJev build-claim guard failed to fetch %s: %s" log_prefix finding.path error;
-        Lwt.return (Some sourced, None)
-      | Ok None -> Lwt.return (Some sourced, None)
-      | Ok (Some content) ->
-        let finding_without_fix = { finding with Review_types.suggested_fix = None } in
-        let state =
-          `Assoc
-            [
-              "finding", Review_types.finding_to_json finding_without_fix;
-              "exact_file_diff", `String (Diff_parser.to_string_annotated [ file_diff ]);
-              "reviewed_file_context", `String (reviewed_file_context ~line:finding.line content);
-            ]
+      | From_general, Some _file_diff ->
+        let%lwt reviewed_file_context =
+          match%lwt fetch finding.path with
+          | Error error ->
+            log#warn "%sJev build-claim guard failed to fetch %s: %s" log_prefix finding.path error;
+            Lwt.return None
+          | Ok None -> Lwt.return None
+          | Ok (Some content) -> Lwt.return (Some (reviewed_file_context ~line:finding.line content))
         in
-        Lwt.catch
-          (fun () ->
-            let%lwt result = Jev_triage.score_noul ~api_key ~state ~question:build_claim_guard_question in
-            match result with
-            | Error error ->
-              log#warn "%sJev build-claim guard failed for %s:%d: %s" log_prefix finding.path finding.line error;
-              Lwt.return (Some sourced, None)
-            | Ok ({ probability; cost } : Jev_triage.noul_output) ->
-              let cost = { cost with agent_name = "jev_build_claim_guard" } in
-              (match jev_build_claim_guard_rejects ~threshold ~probability with
-              | true ->
-                log#info "%sJev build-claim guard rejected false claim at %s:%d (Noul %.3f)" log_prefix finding.path
-                  finding.line probability;
-                Lwt.return (None, Some cost)
-              | false -> Lwt.return (Some sourced, Some cost)))
-          (fun exn ->
-            log#warn "%sJev build-claim guard raised for %s:%d: %s" log_prefix finding.path finding.line (Exn.str exn);
-            Lwt.return (Some sourced, None))
+        (match reviewed_file_context, completed_commit_checks with
+        | None, [] -> Lwt.return (Some sourced, None)
+        | _ ->
+          let finding_without_fix = { finding with Review_types.suggested_fix = None } in
+          let state =
+            `Assoc
+              [
+                "finding", Review_types.finding_to_json finding_without_fix;
+                "reviewed_file_context", `String (CCOption.get_or ~default:"" reviewed_file_context);
+                "completed_commit_checks", `List (List.map commit_status_to_json completed_commit_checks);
+              ]
+          in
+          Lwt.catch
+            (fun () ->
+              let%lwt result = Jev_triage.score_noul ~api_key ~state ~question:build_claim_guard_question in
+              match result with
+              | Error error ->
+                log#warn "%sJev build-claim guard failed for %s:%d: %s" log_prefix finding.path finding.line error;
+                Lwt.return (Some sourced, None)
+              | Ok ({ probability; cost } : Jev_triage.noul_output) ->
+                let cost = { cost with agent_name = "jev_build_claim_guard" } in
+                (match jev_build_claim_guard_rejects ~threshold ~probability with
+                | true ->
+                  log#info "%sJev build-claim guard rejected false claim at %s:%d (Noul %.3f)" log_prefix finding.path
+                    finding.line probability;
+                  Lwt.return (None, Some cost)
+                | false -> Lwt.return (Some sourced, Some cost)))
+            (fun exn ->
+              log#warn "%sJev build-claim guard raised for %s:%d: %s" log_prefix finding.path finding.line (Exn.str exn);
+              Lwt.return (Some sourced, None)))
     in
     let%lwt checked = Lwt_list.map_p check sourced_findings in
     Lwt.return (List.filter_map fst checked, List.filter_map snd checked)
@@ -791,8 +808,16 @@ module Make (AI : Api.Agent_runner) = struct
             log#warn "%sJev build-claim guard is enabled but no TypeSafe API key is configured" log_prefix;
             Lwt.return (sourced_findings, [])
           | true, Some api_key ->
+            let%lwt completed_commit_checks =
+              match%lwt job.fetch_commit_statuses () with
+              | Ok statuses -> Lwt.return statuses
+              | Error error ->
+                log#warn "%sfailed to fetch commit statuses for Jev build-claim guard: %s" log_prefix error;
+                Lwt.return []
+            in
             run_build_claim_guard ~api_key ~threshold:plugins_config.jev_build_claim_guard_threshold ~diff
-              ~file_contents:job.file_contents ~fetch_file:job.fetch_file ~log_context sourced_findings
+              ~file_contents:job.file_contents ~fetch_file:job.fetch_file ~completed_commit_checks ~log_context
+              sourced_findings
         in
         let%lwt sourced_findings, suggestion_guard_costs =
           match plugins_config.jev_suggestion_guard_enabled, (Context.secrets ctx).typesafe_api_key with

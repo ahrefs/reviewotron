@@ -321,24 +321,38 @@ by Reviewotron. On 48 labeled candidates emitted by newer pipeline runs, it also
 failed to separate false positives from protected findings.
 
 A first narrower question identified compiler-diagnostic findings, but this
-mixed two different cases. One was a real OCaml compile failure with a broken
-no-op suggestion; the suggestion guard is the correct treatment because it
-preserves the useful finding. The other claimed an unbound `encoder` even
-though the post-change file bound it earlier in the function.
+mixed real compiler failures with false claims. The first integrated guard
+therefore asked only whether bounded post-change source directly disproved an
+explicit deterministic build claim. It reliably rejected a false unbound
+`encoder` claim while preserving the other candidates.
 
-The final question therefore asks only whether bounded post-change file context
-directly disproves an explicit deterministic build claim. Across three runs on
-48 current candidates, it rejected both generated versions of the false
-`encoder` finding at 0.71–0.85 and preserved all other candidates at 0.17 or
-below, including 22 protected true positives. The 144 calls cost $0.026389.
-Across three runs on the larger 75-finding historical set, the same invalid
-finding scored 0.78 in every run; every other finding scored at most 0.27 and
-all 23 protected findings survived. The 225 calls cost $0.044679.
+The refreshed feedback corpus added four different false build claims and five
+real compiler failures. For each case, the experiment recovered the exact
+reviewed source and the commit statuses that had completed before Reviewotron
+published its review. The source-only guard at its original 0.70 threshold
+missed all four new false claims. A combined question using source or relevant
+exact-commit build statuses rejected all five false claims in 15/15 repeated
+decisions at a 0.60 threshold (scores 0.66–0.90), while preserving the five real
+compiler failures in 15/15 decisions (maximum 0.23). The 30 calls cost
+$0.006520. Removing status completion times made one positive decision fall to
+0.59 once, so the runtime payload retains GitHub's status update time.
 
-The opt-in `review_plugins.jev_build_claim_guard_enabled` integration uses the
-measured 0.70 threshold after normal validation and deduplication. It checks
-only general findings, omits suggestion payloads from the judgment, and fails
-open when source context, credentials, or Jev are unavailable.
+The smaller combined prompt was also replayed without commit statuses to test
+the source-only fallback. Across 48 current candidates, only the two generated
+versions of the known false `encoder` finding crossed 0.60; every other score
+was at most 0.21. Across 75 historical findings, only that same false finding
+crossed 0.60; the next-highest score was 0.36. These 369 calls cost $0.043486,
+38.8% less than the prior source-only prompt's $0.071068. All experiments for
+this expansion used 639 Jev calls, encountered three fail-open token-limit
+errors in an abandoned oversized prompt, and cost $0.112409.
+
+The opt-in `review_plugins.jev_build_claim_guard_enabled` integration now
+fetches completed statuses for the exact GitHub commit immediately before the
+guard runs and uses the measured 0.60 threshold after normal validation and
+deduplication. It checks only general findings, omits suggestion payloads and
+the full diff from the judgment, and fails open to source-only evidence when
+status fetching fails. Disabled configuration, missing credentials, missing
+evidence, and Jev errors preserve the finding.
 
 ## Critical-severity calibration experiment
 
@@ -389,7 +403,5 @@ no review saved $0.50. Six oversized diffs also failed open with
 
 ## Next Jev experiments
 
-1. Gather more false build claims and real compiler-diagnostic controls before
-   enabling the build-claim guard by default.
-2. Gather more multi-revision positives and define a notification behavior for
+1. Gather more multi-revision positives and define a notification behavior for
    continuity that does not hide unresolved findings.
