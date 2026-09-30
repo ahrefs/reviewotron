@@ -109,6 +109,7 @@ type plugin_result = {
   findings : Review_types.finding list;
   sourced_findings : sourced_finding list;
   review_costs : Cost_tracking.review_cost list;
+  prevalidation : Prevalidation.t;
   security_error : bool;
 }
 
@@ -123,6 +124,7 @@ type report = {
   unchanged_findings : Review_types.finding list;
   anchor_failed_findings : Review_types.finding list;
   review_costs : Cost_tracking.review_cost list;
+  prevalidation : Prevalidation.t;
   security_error : bool;
   general_failed : bool;
     (** [true] when the general review produced no publishable output, either

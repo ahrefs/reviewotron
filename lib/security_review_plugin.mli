@@ -184,6 +184,7 @@ module Make (_ : Api.Agent_runner) : sig
     log_context:string option ->
     debug_dir:string ->
     memory_dir:string ->
+    record_prevalidation:Prevalidation.recorder ->
     ((Review_types.finding * Config_types.vuln_class option) list * Cost_tracking.agent_cost list * bool) Lwt.t
 
   (** Convert a validated security finding into a review finding, choosing the

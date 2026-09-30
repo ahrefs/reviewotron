@@ -67,6 +67,7 @@ type findings_plugin = {
     log_context:string option ->
     debug_dir:string ->
     memory_dir:string ->
+    record_prevalidation:Prevalidation.recorder ->
     ((Review_types.finding * Config_types.vuln_class option) list * Cost_tracking.agent_cost list * bool) Lwt.t;
 }
 
@@ -291,6 +292,7 @@ type plugin_result = {
   findings : Review_types.finding list;
   sourced_findings : sourced_finding list;
   review_costs : Cost_tracking.review_cost list;
+  prevalidation : Prevalidation.t;
   security_error : bool;
 }
 
@@ -304,6 +306,7 @@ type report = {
   unchanged_findings : Review_types.finding list;
   anchor_failed_findings : Review_types.finding list;
   review_costs : Cost_tracking.review_cost list;
+  prevalidation : Prevalidation.t;
   security_error : bool;
   general_failed : bool;
     (** [true] when the general review produced no publishable output, either
@@ -705,6 +708,8 @@ module Make (AI : Api.Agent_runner) = struct
         let memory_dir = memory_dir_for_context ~ctx in
         let metadata = metadata_of_job job in
         let plugins_config = config.Config_types.review_plugins in
+        let prevalidation = ref Prevalidation.empty in
+        let record_prevalidation evidence = prevalidation := Prevalidation.merge !prevalidation evidence in
         log#info "%splugins starting: general=%b security=%b files=%d diff_bytes=%d debug_dir=%s memory_dir=%s"
           log_prefix plugins_config.general.enabled plugins_config.security.enabled (List.length diff)
           (String.length job.diff_text) debug_dir memory_dir;
@@ -722,7 +727,7 @@ module Make (AI : Api.Agent_runner) = struct
                   if plugins_config.general.enabled then begin
                     let%lwt result, costs =
                       General_plugin.run_review ~ctx ~repo_url ~config ~diff_text:job.diff_text ~metadata ~debug_dir
-                        ~log_context ()
+                        ~log_context ~record_prevalidation ()
                     in
                     (match result with
                     | General_review_plugin.Completed _ -> ()
@@ -756,7 +761,7 @@ module Make (AI : Api.Agent_runner) = struct
                   (fun () ->
                     let%lwt findings, costs, failed =
                       plugin.fp_run ~ctx ~repo_url ~config ~diff ~diff_text:job.diff_text ~metadata
-                        ~log_context:(Some log_context) ~debug_dir ~memory_dir
+                        ~log_context:(Some log_context) ~debug_dir ~memory_dir ~record_prevalidation
                     in
                     Lwt.return (plugin, findings, costs, failed))
                   (function
@@ -855,7 +860,8 @@ module Make (AI : Api.Agent_runner) = struct
         in
         log#info "%splugins complete: findings=%d general=%s findings_plugin_error=%b" log_prefix (List.length findings)
           general_status security_error;
-        Lwt.return { general_output; findings; sourced_findings; review_costs; security_error })
+        Lwt.return
+          { general_output; findings; sourced_findings; review_costs; prevalidation = !prevalidation; security_error })
 
   let route_findings ~log_context ~change_label ~filtered_diff findings =
     let log_prefix = log_context_prefix (Some log_context) in
@@ -940,6 +946,7 @@ module Make (AI : Api.Agent_runner) = struct
             unchanged_findings;
             anchor_failed_findings;
             review_costs = plugin_result.review_costs;
+            prevalidation = plugin_result.prevalidation;
             security_error = plugin_result.security_error;
             general_failed;
           })

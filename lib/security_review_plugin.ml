@@ -6,6 +6,11 @@ let log_context_prefix = function
   | None -> ""
   | Some context -> context ^ " "
 
+let record_prevalidation recorder evidence =
+  match recorder with
+  | Some record -> record evidence
+  | None -> ()
+
 (** Numeric rank for confidence levels — higher means more confident. *)
 let confidence_rank = Config_types.confidence_rank
 
@@ -912,8 +917,16 @@ module Make (AI : Api.Agent_runner) = struct
     | Rejected -> Lwt.return (validated, [], [])
     | Confirmed -> check [] [] fetched_files
 
-  let run_jev_validator_cascade ~ctx ~security_config ~diff ~artifacts ?log_context candidates =
+  let run_jev_validator_cascade ~ctx ~security_config ~diff ~artifacts ?log_context ?record_prevalidation:recorder
+    candidates =
     let log_prefix = log_context_prefix log_context in
+    let record_call ~attempt ~costs ~verdict candidate =
+      record_prevalidation recorder
+        (Prevalidation.call ~plugin:name ~validator:"jev_validator_cascade" ~attempt
+           ~candidates:[ Security_types.candidate_finding_to_json candidate ]
+           ~verdicts:[ 0, verdict ]
+           ~costs)
+    in
     match security_config.Config_types.jev_validator_cascade_enabled, candidates with
     | false, _ | true, [] -> Lwt.return ([], candidates, [])
     | true, _ :: _ ->
@@ -924,7 +937,8 @@ module Make (AI : Api.Agent_runner) = struct
     | Some api_key ->
       let%lwt resolved, remaining, costs, judgments =
         Lwt_list.fold_left_s
-          (fun (resolved, remaining, costs, judgments) candidate ->
+          (fun (resolved, remaining, costs, judgments) (index, candidate) ->
+            let attempt = Printf.sprintf "candidate_%d" (index + 1) in
             let evidence = candidate_diff_evidence ~diff candidate in
             match String.trim evidence with
             | "" -> Lwt.return (resolved, candidate :: remaining, costs, judgments)
@@ -933,6 +947,7 @@ module Make (AI : Api.Agent_runner) = struct
               (match result with
               | Error error ->
                 log#warn "%sJev candidate validation failed: %s" log_prefix error;
+                record_call ~attempt ~costs:[] ~verdict:Prevalidation.Forwarded candidate;
                 Lwt.return
                   ( resolved,
                     candidate :: remaining,
@@ -942,12 +957,12 @@ module Make (AI : Api.Agent_runner) = struct
               | Ok ({ supported; fatal_defect; cost } : Jev_triage.candidate_validation_output) ->
                 let cost = { cost with agent_name = "jev_validator_cascade" } in
                 let decision = jev_validator_decision ~supported ~fatal_defect in
-                let decision_name, resolved, remaining =
+                let decision_name, verdict, resolved, remaining =
                   match decision with
                   | Confirm_candidate ->
                     (match jev_confirmed_finding candidate with
-                    | Some validated -> "confirmed", validated :: resolved, remaining
-                    | None -> "validator", resolved, candidate :: remaining)
+                    | Some validated -> "confirmed", Prevalidation.Confirmed, validated :: resolved, remaining
+                    | None -> "validator", Prevalidation.Forwarded, resolved, candidate :: remaining)
                   | Reject_candidate ->
                     let validated : Security_types.validated_finding =
                       {
@@ -961,9 +976,10 @@ module Make (AI : Api.Agent_runner) = struct
                         proof_by_construction = None;
                       }
                     in
-                    "rejected", validated :: resolved, remaining
-                  | Run_validator -> "validator", resolved, candidate :: remaining
+                    "rejected", Prevalidation.Rejected, validated :: resolved, remaining
+                  | Run_validator -> "validator", Prevalidation.Forwarded, resolved, candidate :: remaining
                 in
+                record_call ~attempt ~costs:[ cost ] ~verdict candidate;
                 let judgment =
                   `Assoc
                     [
@@ -974,7 +990,8 @@ module Make (AI : Api.Agent_runner) = struct
                     ]
                 in
                 Lwt.return (resolved, remaining, cost :: costs, judgment :: judgments)))
-          ([], [], [], []) candidates
+          ([], [], [], [])
+          (List.mapi (fun index candidate -> index, candidate) candidates)
       in
       let resolved = List.rev resolved in
       let remaining = List.rev remaining in
@@ -1201,6 +1218,7 @@ module Make (AI : Api.Agent_runner) = struct
       log#info "%sJev grouping proposed %d of %d confirmed-finding pair(s); %d pair(s) grouped for publication"
         log_prefix proposed_count (List.length judgments) grouped_count;
       Lwt.return (List.rev grouping_edges, List.rev costs)
+
   (** Run the triage agent and parse its structured output.
       Returns the parsed output (if successful) and any agent costs incurred. *)
   let run_triage ~ctx ~repo_url ~security_config ~diff_text ~file_paths ~deterministic_signals ~artifacts
@@ -1573,8 +1591,25 @@ module Make (AI : Api.Agent_runner) = struct
       candidate in this call is missing"; it never discards results from other
       calls. *)
   let run_validator_call ~ctx ~repo_url ~fetch_file ~agent_config ~diff ~diff_text ~jev_api_key ~candidates ~artifacts
-    ~attempt_label ?debug_dir ?log_context () =
+    ~attempt_label ?debug_dir ?log_context ?record_prevalidation:recorder () =
     let log_prefix = log_context_prefix log_context in
+    let candidate_json = List.map Security_types.candidate_finding_to_json candidates in
+    let record_call ~costs validated =
+      let verdicts =
+        List.map
+          (fun (finding : Security_types.validated_finding) ->
+            let verdict =
+              match finding.verdict with
+              | Confirmed -> Prevalidation.Confirmed
+              | Rejected -> Prevalidation.Rejected
+            in
+            finding.candidate_id, verdict)
+          validated
+      in
+      record_prevalidation recorder
+        (Prevalidation.call ~plugin:name ~validator:"security_validator" ~attempt:attempt_label
+           ~candidates:candidate_json ~verdicts ~costs)
+    in
     let input = Validator_agent.build_input ~diff_text ~candidate_findings:candidates () in
     Security_artifacts.write_debug_text artifacts ~filename:(Printf.sprintf "validator_input_%s.md" attempt_label) input;
     let fetched_files = ref [] in
@@ -1594,6 +1629,7 @@ module Make (AI : Api.Agent_runner) = struct
     match result with
     | Error msg ->
       log#error "%svalidator agent failed (%s): %s" log_prefix attempt_label msg;
+      record_call ~costs:[] [];
       Lwt.return ([], all_missing, [])
     | Ok agent_result ->
       let files_fetched = agent_result.tool_results_count in
@@ -1645,9 +1681,12 @@ module Make (AI : Api.Agent_runner) = struct
            Security_artifacts.write_debug_json artifacts
              ~filename:(Printf.sprintf "jev_source_constraint_%s.json" attempt_label)
              (`List jev_judgments));
-         Lwt.return (matched, join.missing, cost :: jev_costs)
+         let costs = cost :: jev_costs in
+         record_call ~costs matched;
+         Lwt.return (matched, join.missing, costs)
        with exn ->
          log#error "%svalidator output parse failed (%s): %s" log_prefix attempt_label (Exn.str exn);
+         record_call ~costs:[ cost ] [];
          Lwt.return ([], all_missing, [ cost ]))
 
   (** Validate [candidates] in chunks, then retry any unanswered candidate once,
@@ -1659,7 +1698,7 @@ module Make (AI : Api.Agent_runner) = struct
       raise the failure flag; results obtained for other candidates are always
       preserved. *)
   let run_validator ~ctx ~repo_url ~fetch_file ~security_config ~diff ~diff_text ~candidate_findings ~artifacts
-    ?debug_dir ?log_context () =
+    ?debug_dir ?log_context ?record_prevalidation () =
     let log_prefix = log_context_prefix log_context in
     let model_tier = agent_model_tier security_config.Config_types.validator_model_tier in
     let agent_config = Validator_agent.config ~model_tier in
@@ -1670,7 +1709,7 @@ module Make (AI : Api.Agent_runner) = struct
     in
     let call =
       run_validator_call ~ctx ~repo_url ~fetch_file ~agent_config ~diff ~diff_text ~jev_api_key ~artifacts ?debug_dir
-        ?log_context
+        ?log_context ?record_prevalidation
     in
     let chunks = CCList.chunks max_candidates_per_validator_call candidate_findings in
     (* Chunks run sequentially: the validator fetches files through a shared
@@ -1733,7 +1772,7 @@ module Make (AI : Api.Agent_runner) = struct
       findings are passed through the validator agent; only confirmed
       findings are converted to review findings. *)
   let run_analysis ~ctx ~repo_url ~fetch_file ~security_config ~diff ~diff_text ~file_paths ~language_hints ~artifacts
-    ?debug_dir ?log_context signals =
+    ?debug_dir ?log_context ?record_prevalidation:recorder signals =
     let log_prefix = log_context_prefix log_context in
     let actionable = List.filter (should_analyze ~security_config) signals in
     match actionable with
@@ -1802,6 +1841,9 @@ module Make (AI : Api.Agent_runner) = struct
         collect [] [] groups results
       in
       let raw_candidates = List.concat_map (fun (result : analysis_result) -> result.candidates) results in
+      record_prevalidation recorder
+        (Prevalidation.snapshot ~plugin:name
+           ~candidates:(List.map Security_types.candidate_finding_to_json raw_candidates));
       let analysis_costs = List.concat_map (fun (result : analysis_result) -> result.costs) results in
       let analysis_failed =
         List.exists
@@ -1831,7 +1873,8 @@ module Make (AI : Api.Agent_runner) = struct
         Lwt.return ([], analysis_costs, metrics, analysis_failed)
       | _ :: _ ->
         let%lwt jev_validated, validator_candidates, jev_validator_costs =
-          run_jev_validator_cascade ~ctx ~security_config ~diff ~artifacts ?log_context raw_candidates
+          run_jev_validator_cascade ~ctx ~security_config ~diff ~artifacts ?log_context ?record_prevalidation:recorder
+            raw_candidates
         in
         let%lwt validated, validator_costs, validator_failed =
           match validator_candidates with
@@ -1839,7 +1882,8 @@ module Make (AI : Api.Agent_runner) = struct
           | _ :: _ ->
             run_stage ~stage:"security_validator" (fun () ->
               run_validator ~ctx ~repo_url ~fetch_file ~security_config ~diff ~diff_text
-                ~candidate_findings:validator_candidates ~artifacts ?debug_dir ?log_context ())
+                ~candidate_findings:validator_candidates ~artifacts ?debug_dir ?log_context
+                ?record_prevalidation:recorder ())
         in
         let validated = jev_validated @ validated in
         log_rejected ?log_context validated;
@@ -1957,7 +2001,7 @@ module Make (AI : Api.Agent_runner) = struct
       Lwt.return [ cost ]
 
   let run ~ctx ~repo_url ~(config : Config_types.config) ~diff ~diff_text ~(metadata : Review_plugin.review_metadata)
-    ~log_context ~debug_dir ~memory_dir =
+    ~log_context ~debug_dir ~memory_dir ~record_prevalidation =
     let log_prefix = log_context_prefix log_context in
     let security_config = config.review_plugins.security in
     let agent_debug_dir = if config.debug_artifacts then Some debug_dir else None in
@@ -2076,7 +2120,7 @@ module Make (AI : Api.Agent_runner) = struct
           run_stage ~stage:"security_analysis" (fun () ->
             run_analysis ~ctx ~repo_url ~fetch_file:metadata.fetch_file ~security_config ~diff ~diff_text ~file_paths
               ~language_hints:triage_output.language_hints ~artifacts ?debug_dir:agent_debug_dir ?log_context
-              triage_output.signals)
+              ~record_prevalidation triage_output.signals)
         in
         let costs = triage_costs @ analysis_costs in
         log_stage_metrics ~log_context ~changed_file_count:(List.length file_paths) ~deterministic_signals

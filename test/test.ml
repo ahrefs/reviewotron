@@ -5545,6 +5545,7 @@ let test_local_sink_render_json () =
       unchanged_findings = [];
       anchor_failed_findings = [];
       review_costs = [];
+      prevalidation = Prevalidation.empty;
       security_error = false;
       general_failed = false;
     }
@@ -6906,6 +6907,21 @@ let test_feedback_publish_records_targets_and_markers () =
         "finding id linked" inline_target.finding_id
         (Some (json_string_field finding_fields "finding_id"))
     | _ -> fail "expected one routed finding");
+    let prevalidation = read_bundle_json "prevalidation.json" in
+    (check int) "prevalidation schema" 1 (json_int_field prevalidation "schema");
+    (check bool) "raw candidate snapshots included" true
+      (match json_list_field prevalidation "snapshots" with
+      | [] -> false
+      | _ :: _ -> true);
+    (check bool) "validator call membership included" true
+      (match json_list_field prevalidation "calls" with
+      | [] -> false
+      | `Assoc fields :: _ ->
+        (match json_list_field fields "candidates" with
+        | [] -> false
+        | `Assoc candidate :: _ -> List.mem_assoc "candidate_key" candidate
+        | _ :: _ -> false)
+      | _ :: _ -> false);
     let costs = read_bundle_json "review_costs.json" in
     (check bool) "costs included" true
       (match json_list_field costs "review_costs" with

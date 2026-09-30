@@ -80,7 +80,7 @@ let run_classified_pipeline ~ctx ~diff_text ~diff =
   let findings, _costs, failed =
     Lwt_main.run
       (SP.run ~ctx ~repo_url:corpus_repo_url ~config ~diff ~diff_text ~metadata ~log_context:None
-         ~debug_dir:"debug/corpus" ~memory_dir:"memory/corpus")
+         ~debug_dir:"debug/corpus" ~memory_dir:"memory/corpus" ~record_prevalidation:(fun _ -> ()))
   in
   match failed with
   | true -> fail "security pipeline failed"
