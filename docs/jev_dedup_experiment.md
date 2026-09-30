@@ -313,6 +313,22 @@ measured 0.70 threshold after normal validation and deduplication. It checks
 only general findings, omits suggestion payloads from the judgment, and fails
 open when source context, credentials, or Jev are unavailable.
 
+## Critical-severity calibration experiment
+
+A frozen corpus joined all 30 adjudicated `critical` general findings to their
+exact reviewed-file diffs: 11 had inflated severity and 19 were proportionate.
+A direct downgrade question did not separate them across three repetitions;
+mean probability was 0.267 for inflated findings and 0.290 for controls. Adding
+bounded post-change context for the 27 available files made separation slightly
+worse (0.267 versus 0.305).
+
+An affirmative rewrite instead asked whether the evidence satisfied the existing
+critical definition. At a post-hoc score below 0.22 it downgraded 1 of 11
+inflated findings and preserved all 19 controls, but the next control scored
+0.25 and aggregate means still overlapped (0.692 versus 0.723). That margin and
+recall are too weak for an integration. The 261 Jev calls had no errors and
+cost $0.030002. No severity guard is integrated.
+
 ## General-review cost experiments
 
 A two-question Jev cascade tested whether clearly supported general candidates
