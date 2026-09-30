@@ -321,7 +321,9 @@ type review_plugins_config = {
         Requires typesafe_api_key in secrets or TYPESAFE_API_KEY for local reviews."]
   jev_suggestion_guard_threshold : float;
      [@json.default 0.5]
-     [@jsonschema.description "Minimum Jev probability, from 0 to 1, required to remove a suggested fix."]
+     [@jsonschema.description
+       "Minimum Jev defect probability, from 0 to 1, required to challenge a suggested fix. The opposing mechanical \
+        plausibility score must be at most one minus this value before the fix is removed."]
   general : general_plugin_config;
      [@json.default default_general_plugin_config] [@jsonschema.description "General code-review plugin settings."]
   security : security_plugin_config;

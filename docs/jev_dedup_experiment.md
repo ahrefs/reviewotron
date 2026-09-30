@@ -286,6 +286,13 @@ both plugins have validated and deduplicated findings. It removes only
 Missing credentials, missing diff evidence, and Jev failures preserve the
 suggestion.
 
+An expanded held-out set added 15 broken and 13 valid suggestions. The original
+one-sided 0.50 rule removed 15 of 45 broken-payload decisions but also 3 of 39
+valid-payload decisions. Requiring an opposing mechanical-plausibility score at
+or below 0.50 retained all 15 original broken-payload decisions, removed 12 of
+45 held-out broken-payload decisions, and removed 0 of 39 held-out valid-payload
+decisions. The reverse check runs only when the first score would remove a fix.
+
 ## False build-claim experiment
 
 A broad “withhold unsupported finding” question did not improve the saved
@@ -329,6 +336,20 @@ inflated findings and preserved all 19 controls, but the next control scored
 recall are too weak for an integration. The 261 Jev calls had no errors and
 cost $0.030002. No severity guard is integrated.
 
+## Broad general-finding guard experiments
+
+A factual-mechanism guard covered 10 adjudicated incorrect findings and 116
+correct controls. A direct contradiction question averaged 0.100 for incorrect
+mechanisms and 0.086 for controls. Reversing the question averaged 0.804 for
+incorrect mechanisms and 0.811 for controls; adding bounded post-change context
+changed those means to 0.791 and 0.816. The overlap leaves no safe threshold.
+The 368 calls cost $0.058157, and no broad factual guard is integrated.
+
+An intent-mismatch question covered 9 findings that attacked deliberate behavior
+and 104 controls. Mismatches averaged 0.128 while controls averaged 0.118, with a
+control reaching 0.65. The 113 calls cost $0.013812. Intent mismatch remains a
+context and review-description problem rather than a Jev publication gate.
+
 ## General-review cost experiments
 
 A two-question Jev cascade tested whether clearly supported general candidates
@@ -350,8 +371,7 @@ no review saved $0.50. Six oversized diffs also failed open with
 
 1. Expand the independent human-feedback set beyond two SSRF findings before
    treating source-constraint rejection as a default.
-2. Expand the suggested-fix corpus beyond the five known broken payloads.
-3. Gather more false build claims and real compiler-diagnostic controls before
+2. Gather more false build claims and real compiler-diagnostic controls before
    enabling the build-claim guard by default.
-4. Gather more multi-revision positives and define a notification behavior for
+3. Gather more multi-revision positives and define a notification behavior for
    continuity that does not hide unresolved findings.

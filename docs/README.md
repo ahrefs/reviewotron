@@ -508,8 +508,8 @@ generated-file header markers. Broad folders such as `generated/`, `dist/`,
 |-------|---------|-------------|
 | `jev_build_claim_guard_enabled` | `false` | Ask Jev to reject general findings whose deterministic compile/build claim is directly contradicted by post-change file context. Missing context, credentials, and service errors preserve the finding. |
 | `jev_build_claim_guard_threshold` | `0.7` | Minimum false-build-claim probability required to reject the finding. Must be between 0 and 1. |
-| `jev_suggestion_guard_enabled` | `false` | Ask Jev to remove mechanically defective `suggested_fix` payloads after validation. Findings remain published. Missing credentials and service errors preserve the fix. |
-| `jev_suggestion_guard_threshold` | `0.5` | Minimum defective-fix probability required to remove only the suggestion payload. Must be between 0 and 1. |
+| `jev_suggestion_guard_enabled` | `false` | Ask Jev to remove mechanically defective `suggested_fix` payloads after validation. Jev must also reject the fix's mechanical plausibility. Findings remain published. Missing credentials and service errors preserve the fix. |
+| `jev_suggestion_guard_threshold` | `0.5` | Minimum defective-fix probability required to challenge the suggestion. Removal also requires mechanical plausibility at or below one minus this value. Must be between 0 and 1. |
 
 #### General Plugin
 
@@ -647,10 +647,12 @@ failure scenario, and proposed replacement. Missing credentials, service
 failures, invalid outputs, and uncertain judgments leave findings separate.
 
 When `jev_suggestion_guard_enabled` is true, Jev checks each validated finding's
-optional `suggested_fix` against the exact reviewed file diff. Scores at or
-above `jev_suggestion_guard_threshold` remove only the suggestion block; the
-finding and its evidence still publish. Missing credentials, unavailable diff
-evidence, and service failures preserve the suggestion.
+optional `suggested_fix` against the exact reviewed file diff. A defect score at
+or above `jev_suggestion_guard_threshold` triggers an opposing plausibility
+check. The suggestion is removed only when plausibility is also at or below one
+minus that threshold; the finding and its evidence still publish. Missing
+credentials, unavailable diff evidence, and service failures preserve the
+suggestion.
 
 When `jev_build_claim_guard_enabled` is true, Jev checks validated general
 findings against the exact file diff and a bounded post-change source window.

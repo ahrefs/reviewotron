@@ -360,7 +360,8 @@ let retry_guidance_for_403 reason =
   | true -> Some (retry_guidance reason)
   | false -> None
 
-let jev_suggestion_guard_removes ~threshold ~probability = probability >= threshold
+let jev_suggestion_guard_removes ~threshold ~defect_probability ~plausibility_probability =
+  Float.compare defect_probability threshold >= 0 && Float.compare plausibility_probability (1.0 -. threshold) <= 0
 let jev_build_claim_guard_rejects ~threshold ~probability = probability >= threshold
 
 let reviewed_file_context ~line content =
@@ -546,6 +547,21 @@ module Make (AI : Api.Agent_runner) = struct
         ^ "It need not be the only or most elegant repair, and incomplete repository context alone is not a defect.";
     }
 
+  let suggestion_plausibility_question : Jev_triage.noul_question =
+    {
+      instructions =
+        "Is `suggested_fix` a concrete, mechanically plausible actionable replacement for the validated finding at "
+        ^ "its indicated location, given the exact reviewed-file diff? Judge only the fix payload.";
+      true_criteria =
+        "The payload can plausibly replace the indicated code and address the stated defect without an evident syntax, "
+        ^ "type, control-flow, ordering, or behavioral error. It need not be the only or most elegant repair.";
+      false_criteria =
+        "The payload is a no-op, prose, placeholder code, anchored to incompatible lines, duplicates existing \
+         behavior, "
+        ^ "leaves the defect unchanged, or introduces an evident defect. Missing repository context alone is "
+        ^ "uncertainty, not proof of invalidity.";
+    }
+
   let build_claim_guard_question : Jev_triage.noul_question =
     {
       instructions =
@@ -622,35 +638,42 @@ module Make (AI : Api.Agent_runner) = struct
 
   let run_suggestion_guard ~api_key ~threshold ~diff ?log_context sourced_findings =
     let log_prefix = log_context_prefix log_context in
+    let score ~state ~question =
+      Lwt.catch
+        (fun () -> Jev_triage.score_noul ~api_key ~state ~question)
+        (fun exn -> Lwt.return (Error (Exn.str exn)))
+    in
     let check sourced =
       let finding = sourced.finding in
       match finding.suggested_fix, Diff_anchor.find_file_diff_by_path ~diff finding.path with
       | Some suggested_fix, Some file_diff ->
         let state = suggestion_guard_state ~diff:file_diff finding suggested_fix in
-        Lwt.catch
-          (fun () ->
-            let%lwt result = Jev_triage.score_noul ~api_key ~state ~question:suggestion_guard_question in
-            match result with
-            | Error error ->
-              log#warn "%sJev suggestion guard failed for %s:%d: %s" log_prefix finding.path finding.line error;
-              Lwt.return (sourced, None)
-            | Ok ({ probability; cost } : Jev_triage.noul_output) ->
-              let sourced =
-                match jev_suggestion_guard_removes ~threshold ~probability with
-                | true ->
-                  log#info "%sJev suggestion guard removed defective fix at %s:%d (Noul %.3f)" log_prefix finding.path
-                    finding.line probability;
-                  { sourced with finding = { finding with suggested_fix = None } }
-                | false -> sourced
-              in
-              Lwt.return (sourced, Some cost))
-          (fun exn ->
-            log#warn "%sJev suggestion guard raised for %s:%d: %s" log_prefix finding.path finding.line (Exn.str exn);
-            Lwt.return (sourced, None))
-      | None, _ | Some _, None -> Lwt.return (sourced, None)
+        (match%lwt score ~state ~question:suggestion_guard_question with
+        | Error error ->
+          log#warn "%sJev suggestion guard failed for %s:%d: %s" log_prefix finding.path finding.line error;
+          Lwt.return (sourced, [])
+        | Ok ({ probability = defect_probability; cost = defect_cost } : Jev_triage.noul_output) ->
+        match Float.compare defect_probability threshold >= 0 with
+        | false -> Lwt.return (sourced, [ defect_cost ])
+        | true ->
+        match%lwt score ~state ~question:suggestion_plausibility_question with
+        | Error error ->
+          log#warn "%sJev suggestion plausibility check failed for %s:%d: %s" log_prefix finding.path finding.line error;
+          Lwt.return (sourced, [ defect_cost ])
+        | Ok ({ probability = plausibility_probability; cost = plausibility_cost } : Jev_triage.noul_output) ->
+          let sourced =
+            match jev_suggestion_guard_removes ~threshold ~defect_probability ~plausibility_probability with
+            | true ->
+              log#info "%sJev suggestion guard removed defective fix at %s:%d (defect %.3f, plausibility %.3f)"
+                log_prefix finding.path finding.line defect_probability plausibility_probability;
+              { sourced with finding = { finding with suggested_fix = None } }
+            | false -> sourced
+          in
+          Lwt.return (sourced, [ defect_cost; plausibility_cost ]))
+      | None, _ | Some _, None -> Lwt.return (sourced, [])
     in
     let%lwt checked = Lwt_list.map_p check sourced_findings in
-    Lwt.return (List.map fst checked, List.filter_map snd checked)
+    Lwt.return (List.map fst checked, List.concat_map snd checked)
 
   let run_plugins ~ctx ~job ~debug_dir =
     Telemetry.span

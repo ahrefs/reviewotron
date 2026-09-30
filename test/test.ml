@@ -795,9 +795,12 @@ let test_config_rejects_invalid_jev_build_claim_guard_threshold () =
     (check bool) "error names Jev build-claim threshold" true (contains_sub ~sub:"jev_build_claim_guard_threshold" msg)
 
 let test_jev_suggestion_guard_threshold () =
-  (check bool) "below threshold preserves fix" false
-    (Review_engine.jev_suggestion_guard_removes ~threshold:0.5 ~probability:0.49);
-  (check bool) "threshold removes fix" true (Review_engine.jev_suggestion_guard_removes ~threshold:0.5 ~probability:0.5)
+  let removes defect_probability plausibility_probability =
+    Review_engine.jev_suggestion_guard_removes ~threshold:0.5 ~defect_probability ~plausibility_probability
+  in
+  (check bool) "low defect score preserves fix" false (removes 0.49 0.1);
+  (check bool) "plausible fix is preserved" false (removes 0.9 0.51);
+  (check bool) "opposing boundaries remove fix" true (removes 0.5 0.5)
 
 let test_jev_build_claim_guard () =
   (check bool) "below threshold preserves finding" false

@@ -91,8 +91,8 @@ val retry_guidance : string -> string
 (** Actionable retry guidance for an HTTP 403 provider rejection. *)
 val retry_guidance_for_403 : string -> string option
 
-(** Whether a suggestion-integrity score removes only the proposed fix payload. *)
-val jev_suggestion_guard_removes : threshold:float -> probability:float -> bool
+(** Whether two opposing suggestion-integrity scores remove only the proposed fix payload. *)
+val jev_suggestion_guard_removes : threshold:float -> defect_probability:float -> plausibility_probability:float -> bool
 
 (** Whether direct post-change context is strong enough to reject a false build claim. *)
 val jev_build_claim_guard_rejects : threshold:float -> probability:float -> bool
