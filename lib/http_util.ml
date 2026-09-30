@@ -78,10 +78,17 @@ let http_status_class code =
   | 2 -> "ok"
   | _ -> "status_error"
 
-let http_request ?(verbose = true) ?headers ?body meth url =
+(* GitHub and Slack requests should complete quickly; callers can raise only
+   the total timeout for an endpoint known to be slower. *)
+let default_connect_timeout_seconds = 10
+let default_timeout_seconds = 60
+
+let http_request ?(verbose = true) ?(timeout = default_timeout_seconds) ?headers ?body meth url =
   let setup h =
     Curl.set_followlocation h true;
-    Curl.set_maxredirs h 1
+    Curl.set_maxredirs h 1;
+    Curl.set_connecttimeout h default_connect_timeout_seconds;
+    Curl.set_timeout h timeout
   in
   ignore (verbose : bool);
   let parts = url_parts url in

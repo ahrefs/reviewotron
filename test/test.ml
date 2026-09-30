@@ -4131,6 +4131,52 @@ module Capturing_agent_runner = struct
 end
 
 module Local_review_test = Local_review.Make (Api_local.Agent_runner)
+
+module Raising_general_agent = struct
+  let run ~ctx ~repo_url ?model_id ?tools ?debug_dir ?log_context ~config ~input () =
+    if String.equal config.Agent_runner.name "general_scout" then Lwt.fail (Failure "forced test exception")
+    else Api_local.Agent_runner.run ~ctx ~repo_url ?model_id ?tools ?debug_dir ?log_context ~config ~input ()
+end
+
+module Local_review_raising_general = Local_review.Make (Raising_general_agent)
+
+module Cancellable_security_agent = struct
+  let pending_triage : unit Lwt.t option ref = ref None
+  let pending_analysis : unit Lwt.t option ref = ref None
+  let block_triage = ref true
+
+  let set_block_triage value = block_triage := value
+
+  let run ~ctx ~repo_url ?model_id ?tools ?debug_dir ?log_context ~config ~input () =
+    match String.equal config.Agent_runner.name "security_triage", !block_triage with
+    | true, true ->
+      let promise, _resolver = Lwt.task () in
+      pending_triage := Some promise;
+      let%lwt () = promise in
+      Lwt.return (Error "unexpected completion")
+    | true, false ->
+      Api_local.Agent_runner.run ~ctx ~repo_url ?model_id ?tools ?debug_dir ?log_context ~config ~input ()
+    | false, true | false, false ->
+    match String.equal config.Agent_runner.name "security_analysis_injection" with
+    | true ->
+      let promise, _resolver = Lwt.task () in
+      pending_analysis := Some promise;
+      let%lwt () = promise in
+      Lwt.return (Error "unexpected completion")
+    | false -> Api_local.Agent_runner.run ~ctx ~repo_url ?model_id ?tools ?debug_dir ?log_context ~config ~input ()
+
+  let cancel () =
+    match !pending_triage with
+    | Some promise -> Lwt.cancel promise
+    | None -> fail "cancellable security agent was not started"
+
+  let cancel_analysis () =
+    match !pending_analysis with
+    | Some promise -> Lwt.cancel promise
+    | None -> fail "cancellable security analysis agent was not started"
+end
+
+module Local_review_cancellable_security = Local_review.Make (Cancellable_security_agent)
 module Local_review_capture = Local_review.Make (Capturing_agent_runner)
 
 module Config_mutating_source = struct
@@ -4619,6 +4665,102 @@ let test_local_review_partial_failure_is_retryable () =
     (check bool) "JSON partial failure outcome" true
       (contains_sub ~sub:{|"outcome": "failure"|} (Local_sink.render_json report));
     (check int) "partially failed change not recorded" 0 (recorded_change_review_count state ~repo_key:"local/repo")
+
+let test_local_review_plugin_raise_keeps_sibling_findings () =
+  Test_helpers.reset_test_state ();
+  Api_local.set_agent_response_map
+    [
+      "security_triage", "mock_api_responses/security/triage_injection.json";
+      "security_analysis_injection", "mock_api_responses/security/analysis_injection.json";
+      "security_validator", "mock_api_responses/security/validator_confirmed.json";
+    ];
+  let state = State.create () in
+  let ctx = Test_helpers.make_test_context ~state ~config:security_enabled_config () in
+  let diff_text = read_file "mock_api_responses/github/pr_42.diff" in
+  let result =
+    Lwt_main.run
+      (Local_review_raising_general.review_diff_text_report ~ctx ~root:"." ~repo_key:"local/repo"
+         ~change_key:"plugin-raise" ~title:"Raised plugin" ~description:"" ~diff_text ~config:security_enabled_config ())
+  in
+  match result with
+  | Error msg -> fail msg
+  | Ok report ->
+    (check bool) "raised plugin marks report failed" true (Review_engine.report_failed report);
+    (check bool) "security findings survive sibling plugin raise" true
+      (List.exists
+         (fun (sourced : Review_engine.sourced_finding) ->
+           match sourced.source with
+           | Review_engine.From_general -> false
+           | Review_engine.From_security -> true)
+         report.sourced_findings);
+    (check bool) "failure names the raising agent" true (contains_sub ~sub:"general_scout" report.body);
+    (check bool) "partial failure is reported" true (contains_sub ~sub:"Review partially failed" report.body)
+
+let test_local_review_security_cancellation_propagates () =
+  Test_helpers.reset_test_state ();
+  Cancellable_security_agent.set_block_triage true;
+  let config =
+    Config_types.config_of_json
+      (Melange_json.of_string {|{"review_plugins":{"general":{"enabled":false},"security":{"enabled":true}}}|})
+  in
+  let state = State.create () in
+  let ctx = Test_helpers.make_test_context ~state ~config () in
+  let diff_text = read_file "mock_api_responses/github/pr_42.diff" in
+  let outcome =
+    Lwt_main.run
+      (let review =
+         Local_review_cancellable_security.review_diff_text_report ~ctx ~root:"." ~repo_key:"local/repo"
+           ~change_key:"security-cancel" ~title:"Cancelled security review" ~description:"" ~diff_text ~config ()
+       in
+       let%lwt () = Lwt.pause () in
+       Cancellable_security_agent.cancel ();
+       Lwt.catch
+         (fun () ->
+           let%lwt _result = review in
+           Lwt.return `Completed)
+         (function
+           | Lwt.Canceled -> Lwt.return `Canceled
+           | exn -> Lwt.return (`Raised (Exn.str exn))))
+  in
+  match outcome with
+  | `Canceled -> ()
+  | `Completed -> fail "expected security review cancellation to propagate"
+  | `Raised message -> failf "expected Lwt.Canceled, got %s" message
+
+let test_local_review_security_analysis_cancellation_propagates () =
+  Test_helpers.reset_test_state ();
+  Cancellable_security_agent.set_block_triage false;
+  Api_local.set_agent_response_map [ "security_triage", "mock_api_responses/security/triage_injection.json" ];
+  let config =
+    Config_types.config_of_json
+      (Melange_json.of_string {|{"review_plugins":{"general":{"enabled":false},"security":{"enabled":true}}}|})
+  in
+  let state = State.create () in
+  let ctx = Test_helpers.make_test_context ~state ~config () in
+  let diff_text = read_file "mock_api_responses/github/pr_42.diff" in
+  let outcome =
+    Lwt_main.run
+      (let review =
+         Local_review_cancellable_security.review_diff_text_report ~ctx ~root:"." ~repo_key:"local/repo"
+           ~change_key:"security-analysis-cancel" ~title:"Cancelled security analysis" ~description:"" ~diff_text
+           ~config ()
+       in
+       let%lwt () = Lwt.pause () in
+       Cancellable_security_agent.cancel_analysis ();
+       Lwt.catch
+         (fun () ->
+           let%lwt _result = review in
+           Lwt.return `Completed)
+         (function
+           | Lwt.Canceled -> Lwt.return `Canceled
+           | exn -> Lwt.return (`Raised (Exn.str exn))))
+  in
+  Cancellable_security_agent.set_block_triage true;
+  Test_helpers.reset_test_state ();
+  match outcome with
+  | `Canceled -> ()
+  | `Completed -> fail "expected security analysis cancellation to propagate"
+  | `Raised message -> failf "expected Lwt.Canceled, got %s" message
 
 let test_local_review_security_stage_failures_are_retryable () =
   let config =
@@ -7821,6 +7963,51 @@ let test_pr_no_security_notice_when_disabled () =
   (check bool) "no security failure notice" true
     (CCString.find ~sub:"security review plugin encountered an error" write_log < 0)
 
+(** {2 HTTP timeout tests} *)
+
+let test_http_request_total_timeout () =
+  let listener = Unix.socket Unix.PF_INET Unix.SOCK_STREAM 0 in
+  Unix.setsockopt listener Unix.SO_REUSEADDR true;
+  Unix.bind listener (Unix.ADDR_INET (Unix.inet_addr_loopback, 0));
+  Unix.listen listener 1;
+  let port =
+    match Unix.getsockname listener with
+    | Unix.ADDR_INET (_, port) -> port
+    | Unix.ADDR_UNIX _ -> fail "expected an inet socket"
+  in
+  let lwt_listener = Lwt_unix.of_unix_file_descr listener in
+  Fun.protect
+    ~finally:(fun () -> Lwt_main.run (Lwt_unix.close lwt_listener))
+    (fun () ->
+      let request = Http_util.http_request ~timeout:1 `GET (Printf.sprintf "http://127.0.0.1:%d/never-responds" port) in
+      let accepted = Lwt_unix.accept lwt_listener in
+      let started_at = Unix.gettimeofday () in
+      let outcome =
+        Lwt_main.run
+          (Lwt.pick
+             [
+               (let%lwt result, (client, _) = Lwt.both request accepted in
+                Lwt.return (`Completed (result, client)));
+               Lwt.map (fun () -> `Timed_out) (Lwt_unix.sleep 5.0);
+             ])
+      in
+      match outcome with
+      | `Timed_out ->
+        Lwt.cancel request;
+        Lwt.cancel accepted;
+        fail "HTTP request exceeded the test watchdog"
+      | `Completed (result, client) ->
+        Lwt_main.run (Lwt_unix.close client);
+        let elapsed = Unix.gettimeofday () -. started_at in
+        (check bool) "total timeout is bounded" true (elapsed < 5.0);
+        (match result with
+        | Error (Http_util.Transport code) -> (check int) "curl reports operation timeout" 28 (Curl.errno code)
+        | Error (Http_util.Status (status, _)) ->
+          fail (Printf.sprintf "expected a transport timeout, got HTTP %d" status)
+        | Error (Http_util.Local message) ->
+          fail (Printf.sprintf "expected a transport timeout, got local error: %s" message)
+        | Ok _ -> fail "expected the request to time out"))
+
 (** {2 GitHub API retry tests}
 
     Classification and the backoff loop are unit-tested directly against the
@@ -7829,9 +8016,12 @@ let test_pr_no_security_notice_when_disabled () =
     reachable through the [Api_local] mock — hence no end-to-end fault-injection
     tests here. *)
 
+let check_retryable ~idempotent expected label e =
+  (check bool) (Printf.sprintf "%s (idempotent=%b)" label idempotent) expected (Github_retry.is_retryable ~idempotent e)
+
 let test_retry_classification () =
-  let retryable label e = (check bool) (Printf.sprintf "retryable: %s" label) true (Github_retry.is_retryable e) in
-  let permanent label e = (check bool) (Printf.sprintf "permanent: %s" label) false (Github_retry.is_retryable e) in
+  let retryable label e = check_retryable ~idempotent:true true label e in
+  let permanent label e = check_retryable ~idempotent:true false label e in
   (* transient curl transport errors (the failure that motivated this) *)
   retryable "resolve host" (Http_util.Transport Curl.CURLE_COULDNT_RESOLVE_HOST);
   retryable "connect" (Http_util.Transport Curl.CURLE_COULDNT_CONNECT);
@@ -7850,6 +8040,54 @@ let test_retry_classification () =
   permanent "401" (Http_util.Status (401, "Bad credentials"));
   permanent "422" (Http_util.Status (422, "Unprocessable Entity"))
 
+let test_retry_non_idempotent_classification () =
+  let retryable label e = check_retryable ~idempotent:false true label e in
+  let permanent label e = check_retryable ~idempotent:false false label e in
+  (* GitHub never saw or never acted on these *)
+  retryable "resolve host" (Http_util.Transport Curl.CURLE_COULDNT_RESOLVE_HOST);
+  retryable "resolve proxy" (Http_util.Transport Curl.CURLE_COULDNT_RESOLVE_PROXY);
+  retryable "connect" (Http_util.Transport Curl.CURLE_COULDNT_CONNECT);
+  retryable "tls connect" (Http_util.Transport Curl.CURLE_SSL_CONNECT_ERROR);
+  retryable "429" (Http_util.Status (429, "too many requests"));
+  (* the mutation may already have landed *)
+  permanent "timeout" (Http_util.Transport Curl.CURLE_OPERATION_TIMEOUTED);
+  permanent "recv" (Http_util.Transport Curl.CURLE_RECV_ERROR);
+  permanent "got nothing" (Http_util.Transport Curl.CURLE_GOT_NOTHING);
+  permanent "502" (Http_util.Status (502, "Bad Gateway"));
+  permanent "422" (Http_util.Status (422, "Unprocessable Entity"))
+
+let test_github_post_timeout_is_not_retried () =
+  let calls = ref 0 in
+  let result =
+    Lwt_main.run
+      (Api_remote.github_request_retry ~label:"POST test" `POST (fun () ->
+         calls := !calls + 1;
+         Lwt.return (Error (Http_util.Transport Curl.CURLE_OPERATION_TIMEOUTED))))
+  in
+  (check int) "non-idempotent request called once" 1 !calls;
+  match result with
+  | Error (Http_util.Transport code) -> (check int) "timeout preserved" 28 (Curl.errno code)
+  | Error (Http_util.Status (status, _)) -> fail (Printf.sprintf "expected timeout, got HTTP %d" status)
+  | Error (Http_util.Local message) -> fail (Printf.sprintf "expected timeout, got local error: %s" message)
+  | Ok _ -> fail "expected POST timeout"
+
+(* [meth] fails once with [err], then succeeds: the request is retried once. *)
+let check_retried_once meth err =
+  let calls = ref 0 in
+  let f () =
+    incr calls;
+    match !calls with
+    | 1 -> Lwt.return (Error err)
+    | _ -> Lwt.return (Ok "body")
+  in
+  let result = Lwt_main.run (Api_remote.github_request_retry ~base_delay:0.001 ~label:"test" meth f) in
+  (check bool) "succeeds after the error clears" true (Result.is_ok result);
+  (check int) "retried once" 2 !calls
+
+let test_github_post_rate_limit_is_retried () =
+  check_retried_once `POST (Http_util.Status (429, "secondary rate limit"))
+let test_github_delete_server_error_is_retried () = check_retried_once `DELETE (Http_util.Status (502, "Bad Gateway"))
+
 (* A retryable error that clears before attempts run out succeeds; the thunk is
    called once per attempt. base_delay is tiny to keep the test fast. *)
 let test_with_retry_recovers () =
@@ -7859,7 +8097,7 @@ let test_with_retry_recovers () =
     if !calls < 3 then Lwt.return (Error (Http_util.Transport Curl.CURLE_COULDNT_RESOLVE_HOST))
     else Lwt.return (Ok "body")
   in
-  let result = Lwt_main.run (Github_retry.with_retry ~base_delay:0.001 ~label:"test" f) in
+  let result = Lwt_main.run (Github_retry.with_retry ~base_delay:0.001 ~idempotent:true ~label:"test" f) in
   (check bool) "succeeds once the error clears" true (Result.is_ok result);
   (check int) "thunk called once per attempt until success" 3 !calls
 
@@ -7870,7 +8108,7 @@ let test_with_retry_fails_fast () =
     incr calls;
     Lwt.return (Error (Http_util.Status (404, "Not Found")))
   in
-  let result = Lwt_main.run (Github_retry.with_retry ~base_delay:0.001 ~label:"test" f) in
+  let result = Lwt_main.run (Github_retry.with_retry ~base_delay:0.001 ~idempotent:true ~label:"test" f) in
   (check bool) "returns the error" true (Result.is_error result);
   (check int) "no retry on permanent error" 1 !calls
 
@@ -7881,7 +8119,9 @@ let test_with_retry_exhausts_attempts () =
     incr calls;
     Lwt.return (Error (Http_util.Transport Curl.CURLE_COULDNT_RESOLVE_HOST))
   in
-  let result = Lwt_main.run (Github_retry.with_retry ~max_attempts:3 ~base_delay:0.001 ~label:"test" f) in
+  let result =
+    Lwt_main.run (Github_retry.with_retry ~max_attempts:3 ~base_delay:0.001 ~idempotent:true ~label:"test" f)
+  in
   (check bool) "gives up with the error" true (Result.is_error result);
   (check int) "tries exactly max_attempts times" 3 !calls
 
@@ -8711,6 +8951,27 @@ end
 
 module General_plugin_test = General_review_plugin.Make (General_plugin_agent_runner)
 
+module Cancellable_general_agent = struct
+  let pending : unit Lwt.t option ref = ref None
+
+  let run ~ctx:_ ~repo_url:_ ?model_id:_ ?tools:_ ?debug_dir:_ ?log_context:_ ~config ~input:_ () =
+    match String.equal config.Agent_runner.name "general_scout" with
+    | true ->
+      let promise, _resolver = Lwt.task () in
+      pending := Some promise;
+      let%lwt () = promise in
+      Lwt.return (Error "unexpected completion")
+    | false -> Lwt.return (Error "unexpected agent")
+
+  let cancel () =
+    match !pending with
+    | Some promise -> Lwt.cancel promise
+    | None -> fail "cancellable agent was not started"
+end
+
+module Cancellable_general_test = General_review_plugin.Make (Cancellable_general_agent)
+module Local_review_cancellable_general = Local_review.Make (Cancellable_general_agent)
+
 let general_plugin_metadata : Review_plugin.review_metadata =
   {
     change_title = "Test change";
@@ -8914,6 +9175,59 @@ let scout_enabled_config =
 
 let scout_disabled_config =
   Config_types.config_of_json (Melange_json.of_string {|{"review_plugins": {"general": {"scout_enabled": false}}}|})
+
+let test_general_review_propagates_cancellation () =
+  let ctx = Test_helpers.make_test_context ~config:scout_enabled_config () in
+  let outcome =
+    Lwt_main.run
+      (let review =
+         Cancellable_general_test.run_review ~ctx ~repo_url:"https://github.com/org/repo" ~config:scout_enabled_config
+           ~diff_text:"diff" ~metadata:pipeline_metadata ()
+       in
+       let%lwt () = Lwt.pause () in
+       Cancellable_general_agent.cancel ();
+       Lwt.catch
+         (fun () ->
+           let%lwt _result = review in
+           Lwt.return `Completed)
+         (function
+           | Lwt.Canceled -> Lwt.return `Canceled
+           | exn -> Lwt.return (`Raised (Exn.str exn))))
+  in
+  match outcome with
+  | `Canceled -> ()
+  | `Completed -> fail "expected general review cancellation to propagate"
+  | `Raised message -> failf "expected Lwt.Canceled, got %s" message
+
+let test_local_review_general_cancellation_propagates () =
+  Test_helpers.reset_test_state ();
+  let config =
+    Config_types.config_of_json
+      (Melange_json.of_string
+         {|{"review_plugins":{"general":{"enabled":true,"scout_enabled":true},"security":{"enabled":false}}}|})
+  in
+  let ctx = Test_helpers.make_test_context ~config () in
+  let diff_text = read_file "mock_api_responses/github/pr_42.diff" in
+  let outcome =
+    Lwt_main.run
+      (let review =
+         Local_review_cancellable_general.review_diff_text_report ~ctx ~root:"." ~repo_key:"local/repo"
+           ~change_key:"general-cancel" ~title:"Cancelled general review" ~description:"" ~diff_text ~config ()
+       in
+       let%lwt () = Lwt.pause () in
+       Cancellable_general_agent.cancel ();
+       Lwt.catch
+         (fun () ->
+           let%lwt _result = review in
+           Lwt.return `Completed)
+         (function
+           | Lwt.Canceled -> Lwt.return `Canceled
+           | exn -> Lwt.return (`Raised (Exn.str exn))))
+  in
+  match outcome with
+  | `Canceled -> ()
+  | `Completed -> fail "expected local general review cancellation to propagate"
+  | `Raised message -> failf "expected Lwt.Canceled, got %s" message
 
 let run_pipeline_plugin ~config =
   let ctx = Test_helpers.make_test_context ~config () in
@@ -9379,6 +9693,8 @@ let () =
           test_case "pipeline early exit on no leads" `Quick test_general_pipeline_early_exit_on_no_leads;
           test_case "pipeline caps leads and completes" `Quick test_general_pipeline_caps_leads;
           test_case "pipeline legacy fallback when scout disabled" `Quick test_general_pipeline_legacy_fallback;
+          test_case "cancellation propagates" `Quick test_general_review_propagates_cancellation;
+          test_case "local cancellation propagates" `Quick test_local_review_general_cancellation_propagates;
         ] );
       ( "reviewer_e2e",
         [
@@ -9464,6 +9780,11 @@ let () =
           test_case "dedup cache is config aware" `Quick test_local_review_dedup_is_config_aware;
           test_case "total failure is retryable" `Quick test_local_review_total_failure_is_retryable;
           test_case "partial failure is retryable" `Quick test_local_review_partial_failure_is_retryable;
+          test_case "raised plugin preserves sibling findings" `Quick
+            test_local_review_plugin_raise_keeps_sibling_findings;
+          test_case "security cancellation propagates" `Quick test_local_review_security_cancellation_propagates;
+          test_case "security analysis cancellation propagates" `Quick
+            test_local_review_security_analysis_cancellation_propagates;
           test_case "security stage failures are retryable" `Quick
             test_local_review_security_stage_failures_are_retryable;
           test_case "all-refuted local review shows LGTM not summary" `Quick
@@ -9647,7 +9968,12 @@ let () =
         ] );
       ( "github_api_retry",
         [
+          test_case "HTTP request total timeout" `Quick test_http_request_total_timeout;
           test_case "error classification" `Quick test_retry_classification;
+          test_case "write-safe error classification" `Quick test_retry_non_idempotent_classification;
+          test_case "POST timeout is not retried" `Quick test_github_post_timeout_is_not_retried;
+          test_case "POST 429 is retried" `Quick test_github_post_rate_limit_is_retried;
+          test_case "DELETE 5xx is retried" `Quick test_github_delete_server_error_is_retried;
           test_case "with_retry recovers on transient error" `Quick test_with_retry_recovers;
           test_case "with_retry fails fast on permanent error" `Quick test_with_retry_fails_fast;
           test_case "with_retry exhausts max attempts" `Quick test_with_retry_exhausts_attempts;

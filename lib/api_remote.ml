@@ -59,6 +59,16 @@ let resolve_auth ~ctx ~repo_url =
 (* A non-HTTP failure local to request setup (auth, URL parsing). *)
 let local_error message : Http_util.error = Http_util.Local message
 
+(* GET and DELETE are idempotent (a repeated DELETE just returns 404); other
+   writes retry only failures GitHub cannot have applied. *)
+let github_request_retry ?base_delay ~label meth f =
+  let idempotent =
+    match meth with
+    | `GET | `DELETE -> true
+    | `POST | `PUT | `PATCH | `CUSTOM _ -> false
+  in
+  Github_retry.with_retry ?base_delay ~idempotent ~label f
+
 let github_request ~ctx ~repo_url ~path ?(accept = "application/json") ?body ?log_context meth =
   let%lwt auth = resolve_auth ~ctx ~repo_url in
   match auth with
@@ -70,7 +80,7 @@ let github_request ~ctx ~repo_url ~path ?(accept = "application/json") ?body ?lo
     let url = Printf.sprintf "https://api.github.com/repos/%s/%s%s" owner repo path in
     let headers = build_headers ~auth_header ~accept in
     let label = Printf.sprintf "%s%s %s" (log_context_prefix log_context) (Web.string_of_http_action meth) url in
-    Github_retry.with_retry ~label (fun () -> http_request ~headers ?body meth url)
+    github_request_retry ~label meth (fun () -> http_request ~headers ?body meth url)
     |> Lwt.map (Result.map_error (Http_util.query_error_msg url))
 
 let github_get ~ctx ~repo_url ~path ?accept ?log_context () =
@@ -78,18 +88,6 @@ let github_get ~ctx ~repo_url ~path ?accept ?log_context () =
 
 let github_post ~ctx ~repo_url ~path ?accept ?log_context ~body () =
   github_request ~ctx ~repo_url ~path ?accept ?log_context ~body:(`Raw ("application/json; charset=utf-8", body)) `POST
-
-let github_graphql_post ~ctx ~repo_url ?log_context ~body () =
-  let%lwt auth = resolve_auth ~ctx ~repo_url in
-  match auth with
-  | Error msg -> Lwt.return (Error (local_error msg))
-  | Ok auth_header ->
-    let url = "https://api.github.com/graphql" in
-    let headers = build_headers ~auth_header ~accept:"application/vnd.github+json" in
-    let label = Printf.sprintf "%sPOST %s" (log_context_prefix log_context) url in
-    Github_retry.with_retry ~label (fun () ->
-      http_request ~headers ~body:(`Raw ("application/json; charset=utf-8", body)) `POST url)
-    |> Lwt.map (Result.map_error (Http_util.query_error_msg url))
 
 let github_delete ~ctx ~repo_url ~path ?accept ?log_context () =
   github_request ~ctx ~repo_url ~path ?accept ?log_context `DELETE
@@ -342,7 +340,19 @@ query($id: ID!) {
     let body =
       Melange_json.to_string (`Assoc [ "query", `String query; "variables", `Assoc [ "id", `String review_node_id ] ])
     in
-    let%lwt result = github_graphql_post ~ctx ~repo_url ~body () in
+    let%lwt auth = resolve_auth ~ctx ~repo_url in
+    let result =
+      match auth with
+      | Error msg -> Lwt.return (Error (local_error msg))
+      | Ok auth_header ->
+        let url = "https://api.github.com/graphql" in
+        let headers = build_headers ~auth_header ~accept:"application/vnd.github+json" in
+        (* This is a read-only query. Keep its retry policy local so a future
+           GraphQL mutation cannot accidentally inherit retries for POST. *)
+        Github_retry.with_retry ~idempotent:true ~label:(Printf.sprintf "POST %s" url) (fun () ->
+          http_request ~headers ~body:(`Raw ("application/json; charset=utf-8", body)) `POST url)
+    in
+    let%lwt result = Lwt.map (Result.map_error (Http_util.query_error_msg "https://api.github.com/graphql")) result in
     Lwt.return
       (match result with
       | Error e -> Error (Http_util.error_to_string e)

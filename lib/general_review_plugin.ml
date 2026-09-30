@@ -76,6 +76,13 @@ let filter_candidates ?log_context ~security_covered_elsewhere findings =
 module Make (AI : Api.Agent_runner) = struct
   let name = "general"
 
+  let run_stage ~stage f =
+    Lwt.catch f (function
+      | Lwt.Canceled -> Lwt.fail Lwt.Canceled
+      | exn -> Lwt.fail (Failure (Printf.sprintf "stage %s raised: %s" stage (Exn.str exn))))
+
+  let run_agent ~config f = run_stage ~stage:(Printf.sprintf "agent %s" config.Agent_runner.name) f
+
   let confirmed_findings_by_candidate_id ?log_context candidate_findings (output : Review_types.validator_output) =
     let log_prefix = log_context_prefix log_context in
     let n_candidates = List.length candidate_findings in
@@ -128,7 +135,10 @@ module Make (AI : Api.Agent_runner) = struct
     | [] -> Lwt.return (Ok [], [])
     | _ :: _ ->
       let input = General_validator_agent.build_input ~diff_text ~candidate_findings () in
-      let%lwt result = AI.run ~ctx ~repo_url ?debug_dir ?log_context ~config:General_validator_agent.config ~input () in
+      let%lwt result =
+        run_agent ~config:General_validator_agent.config (fun () ->
+          AI.run ~ctx ~repo_url ?debug_dir ?log_context ~config:General_validator_agent.config ~input ())
+      in
       (match result with
       | Error msg ->
         log#error "%sgeneral validator failed: %s" log_prefix msg;
@@ -196,7 +206,8 @@ module Make (AI : Api.Agent_runner) = struct
     let input = Review_prompt.build_user_message ~diff:diff_text ~change_title ~change_description ~file_contents () in
     let agent_config = build_agent_config ~system_prompt:system in
     let%lwt result =
-      AI.run ~ctx ~repo_url ?model_id:config.model ?debug_dir ?log_context ~config:agent_config ~input ()
+      run_agent ~config:agent_config (fun () ->
+        AI.run ~ctx ~repo_url ?model_id:config.model ?debug_dir ?log_context ~config:agent_config ~input ())
     in
     match result with
     | Error msg -> Lwt.return (Failed msg, [])
@@ -219,7 +230,7 @@ module Make (AI : Api.Agent_runner) = struct
       General_scout_agent.config ~model_tier:(agent_model_tier general_cfg.scout_model_tier) ~security_covered_elsewhere
     in
     let input = General_scout_agent.build_input ~diff_text ~change_title ~change_description () in
-    let%lwt result = AI.run ~ctx ~repo_url ?debug_dir ?log_context ~config ~input () in
+    let%lwt result = run_agent ~config (fun () -> AI.run ~ctx ~repo_url ?debug_dir ?log_context ~config ~input ()) in
     match result with
     | Error _ as e -> Lwt.return (e, [])
     | Ok agent_result ->
@@ -243,7 +254,8 @@ module Make (AI : Api.Agent_runner) = struct
       General_deep_reviewer_agent.build_input ~leads ~diff_text ~change_title ~change_description ~file_contents ()
     in
     let%lwt result =
-      AI.run ~ctx ~repo_url ?model_id:config.model ?debug_dir ?log_context ~config:agent_config ~input ()
+      run_agent ~config:agent_config (fun () ->
+        AI.run ~ctx ~repo_url ?model_id:config.model ?debug_dir ?log_context ~config:agent_config ~input ())
     in
     match result with
     | Error _ as e -> Lwt.return (e, [])
@@ -291,9 +303,10 @@ module Make (AI : Api.Agent_runner) = struct
   let run_review ~ctx ~repo_url ~(config : Config_types.config) ~diff_text ~metadata ?debug_dir ?log_context () =
     let debug_dir = if config.debug_artifacts then debug_dir else None in
     let general_cfg = config.review_plugins.general in
-    match general_cfg.scout_enabled with
-    | true -> run_pipeline ~ctx ~repo_url ~config ~general_cfg ~diff_text ~metadata ?debug_dir ?log_context ()
-    | false -> run_single_pass ~ctx ~repo_url ~config ~diff_text ~metadata ?debug_dir ?log_context ()
+    run_stage ~stage:"general" (fun () ->
+      match general_cfg.scout_enabled with
+      | true -> run_pipeline ~ctx ~repo_url ~config ~general_cfg ~diff_text ~metadata ?debug_dir ?log_context ()
+      | false -> run_single_pass ~ctx ~repo_url ~config ~diff_text ~metadata ?debug_dir ?log_context ())
 
   let run ~ctx ~repo_url ~config ~diff:_ ~diff_text ~metadata =
     let%lwt result, costs = run_review ~ctx ~repo_url ~config ~diff_text ~metadata () in
