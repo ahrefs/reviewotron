@@ -8016,9 +8016,12 @@ let test_http_request_total_timeout () =
     reachable through the [Api_local] mock — hence no end-to-end fault-injection
     tests here. *)
 
+let check_retryable ~idempotent expected label e =
+  (check bool) (Printf.sprintf "%s (idempotent=%b)" label idempotent) expected (Github_retry.is_retryable ~idempotent e)
+
 let test_retry_classification () =
-  let retryable label e = (check bool) (Printf.sprintf "retryable: %s" label) true (Github_retry.is_retryable e) in
-  let permanent label e = (check bool) (Printf.sprintf "permanent: %s" label) false (Github_retry.is_retryable e) in
+  let retryable label e = check_retryable ~idempotent:true true label e in
+  let permanent label e = check_retryable ~idempotent:true false label e in
   (* transient curl transport errors (the failure that motivated this) *)
   retryable "resolve host" (Http_util.Transport Curl.CURLE_COULDNT_RESOLVE_HOST);
   retryable "connect" (Http_util.Transport Curl.CURLE_COULDNT_CONNECT);
@@ -8037,6 +8040,22 @@ let test_retry_classification () =
   permanent "401" (Http_util.Status (401, "Bad credentials"));
   permanent "422" (Http_util.Status (422, "Unprocessable Entity"))
 
+let test_retry_non_idempotent_classification () =
+  let retryable label e = check_retryable ~idempotent:false true label e in
+  let permanent label e = check_retryable ~idempotent:false false label e in
+  (* GitHub never saw or never acted on these *)
+  retryable "resolve host" (Http_util.Transport Curl.CURLE_COULDNT_RESOLVE_HOST);
+  retryable "resolve proxy" (Http_util.Transport Curl.CURLE_COULDNT_RESOLVE_PROXY);
+  retryable "connect" (Http_util.Transport Curl.CURLE_COULDNT_CONNECT);
+  retryable "tls connect" (Http_util.Transport Curl.CURLE_SSL_CONNECT_ERROR);
+  retryable "429" (Http_util.Status (429, "too many requests"));
+  (* the mutation may already have landed *)
+  permanent "timeout" (Http_util.Transport Curl.CURLE_OPERATION_TIMEOUTED);
+  permanent "recv" (Http_util.Transport Curl.CURLE_RECV_ERROR);
+  permanent "got nothing" (Http_util.Transport Curl.CURLE_GOT_NOTHING);
+  permanent "502" (Http_util.Status (502, "Bad Gateway"));
+  permanent "422" (Http_util.Status (422, "Unprocessable Entity"))
+
 let test_github_post_timeout_is_not_retried () =
   let calls = ref 0 in
   let result =
@@ -8052,6 +8071,23 @@ let test_github_post_timeout_is_not_retried () =
   | Error (Http_util.Local message) -> fail (Printf.sprintf "expected timeout, got local error: %s" message)
   | Ok _ -> fail "expected POST timeout"
 
+(* [meth] fails once with [err], then succeeds: the request is retried once. *)
+let check_retried_once meth err =
+  let calls = ref 0 in
+  let f () =
+    incr calls;
+    match !calls with
+    | 1 -> Lwt.return (Error err)
+    | _ -> Lwt.return (Ok "body")
+  in
+  let result = Lwt_main.run (Api_remote.github_request_retry ~base_delay:0.001 ~label:"test" meth f) in
+  (check bool) "succeeds after the error clears" true (Result.is_ok result);
+  (check int) "retried once" 2 !calls
+
+let test_github_post_rate_limit_is_retried () =
+  check_retried_once `POST (Http_util.Status (429, "secondary rate limit"))
+let test_github_delete_server_error_is_retried () = check_retried_once `DELETE (Http_util.Status (502, "Bad Gateway"))
+
 (* A retryable error that clears before attempts run out succeeds; the thunk is
    called once per attempt. base_delay is tiny to keep the test fast. *)
 let test_with_retry_recovers () =
@@ -8061,7 +8097,7 @@ let test_with_retry_recovers () =
     if !calls < 3 then Lwt.return (Error (Http_util.Transport Curl.CURLE_COULDNT_RESOLVE_HOST))
     else Lwt.return (Ok "body")
   in
-  let result = Lwt_main.run (Github_retry.with_retry ~base_delay:0.001 ~label:"test" f) in
+  let result = Lwt_main.run (Github_retry.with_retry ~base_delay:0.001 ~idempotent:true ~label:"test" f) in
   (check bool) "succeeds once the error clears" true (Result.is_ok result);
   (check int) "thunk called once per attempt until success" 3 !calls
 
@@ -8072,7 +8108,7 @@ let test_with_retry_fails_fast () =
     incr calls;
     Lwt.return (Error (Http_util.Status (404, "Not Found")))
   in
-  let result = Lwt_main.run (Github_retry.with_retry ~base_delay:0.001 ~label:"test" f) in
+  let result = Lwt_main.run (Github_retry.with_retry ~base_delay:0.001 ~idempotent:true ~label:"test" f) in
   (check bool) "returns the error" true (Result.is_error result);
   (check int) "no retry on permanent error" 1 !calls
 
@@ -8083,7 +8119,9 @@ let test_with_retry_exhausts_attempts () =
     incr calls;
     Lwt.return (Error (Http_util.Transport Curl.CURLE_COULDNT_RESOLVE_HOST))
   in
-  let result = Lwt_main.run (Github_retry.with_retry ~max_attempts:3 ~base_delay:0.001 ~label:"test" f) in
+  let result =
+    Lwt_main.run (Github_retry.with_retry ~max_attempts:3 ~base_delay:0.001 ~idempotent:true ~label:"test" f)
+  in
   (check bool) "gives up with the error" true (Result.is_error result);
   (check int) "tries exactly max_attempts times" 3 !calls
 
@@ -9932,7 +9970,10 @@ let () =
         [
           test_case "HTTP request total timeout" `Quick test_http_request_total_timeout;
           test_case "error classification" `Quick test_retry_classification;
+          test_case "write-safe error classification" `Quick test_retry_non_idempotent_classification;
           test_case "POST timeout is not retried" `Quick test_github_post_timeout_is_not_retried;
+          test_case "POST 429 is retried" `Quick test_github_post_rate_limit_is_retried;
+          test_case "DELETE 5xx is retried" `Quick test_github_delete_server_error_is_retried;
           test_case "with_retry recovers on transient error" `Quick test_with_retry_recovers;
           test_case "with_retry fails fast on permanent error" `Quick test_with_retry_fails_fast;
           test_case "with_retry exhausts max attempts" `Quick test_with_retry_exhausts_attempts;

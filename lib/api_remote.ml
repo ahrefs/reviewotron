@@ -59,13 +59,15 @@ let resolve_auth ~ctx ~repo_url =
 (* A non-HTTP failure local to request setup (auth, URL parsing). *)
 let local_error message : Http_util.error = Http_util.Local message
 
-(* REST writes are not retried: a timeout or 5xx may arrive after GitHub has
-   applied a non-idempotent mutation. The one GraphQL caller is a read-only
-   query and keeps its retry policy local to that operation. *)
-let github_request_retry ~label meth f =
-  match meth with
-  | `GET -> Github_retry.with_retry ~label f
-  | `POST | `PUT | `PATCH | `DELETE | `CUSTOM _ -> f ()
+(* GET and DELETE are idempotent (a repeated DELETE just returns 404); other
+   writes retry only failures GitHub cannot have applied. *)
+let github_request_retry ?base_delay ~label meth f =
+  let idempotent =
+    match meth with
+    | `GET | `DELETE -> true
+    | `POST | `PUT | `PATCH | `CUSTOM _ -> false
+  in
+  Github_retry.with_retry ?base_delay ~idempotent ~label f
 
 let github_request ~ctx ~repo_url ~path ?(accept = "application/json") ?body ?log_context meth =
   let%lwt auth = resolve_auth ~ctx ~repo_url in
@@ -347,7 +349,7 @@ query($id: ID!) {
         let headers = build_headers ~auth_header ~accept:"application/vnd.github+json" in
         (* This is a read-only query. Keep its retry policy local so a future
            GraphQL mutation cannot accidentally inherit retries for POST. *)
-        Github_retry.with_retry ~label:(Printf.sprintf "POST %s" url) (fun () ->
+        Github_retry.with_retry ~idempotent:true ~label:(Printf.sprintf "POST %s" url) (fun () ->
           http_request ~headers ~body:(`Raw ("application/json; charset=utf-8", body)) `POST url)
     in
     let%lwt result = Lwt.map (Result.map_error (Http_util.query_error_msg "https://api.github.com/graphql")) result in
