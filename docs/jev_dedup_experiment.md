@@ -242,8 +242,28 @@ warning. Adding the caller evidence rejected both in all six verdicts. The
 runtime cascade now records files already fetched by the validator and checks
 each confirmation against those files plus the candidate diff. Rejection
 requires both source-constraint probability at least 0.60 and direct support at
-most 0.30. Missing files, credentials, or successful Jev responses preserve the
+most 0.30. Missing files, credentials, or unsuccessful Jev responses preserve the
 validator result.
+
+An expanded held-out set added five independently rejected SSRF routes and
+five confirmed controls. The original generic question caught two of the five
+routes in all three repetitions. A vulnerability-class-aware fallback caught
+four of five, while preserving all controls. Keeping the original question
+first is necessary: it still catches both older human-rejected findings that
+the fallback misses. Together they separate six of seven source-constrained
+findings from all 31 controls across both corpora.
+
+The existing second gate also remained well calibrated. All seven false claims
+scored at most 0.27 for direct support, while two confirmed controls scored at
+least 0.38, preserving the current 0.30 boundary. Moving the class-aware check
+before analysis caught only three of five routes from diff evidence. More
+importantly, the existing analysis gate already removes those same routes and
+measured a $0.93 saving on the review containing the Unix-socket SSRF and SQL
+injection claims. A new pre-analysis suppressor would therefore duplicate an
+existing gate without a measured incremental gain, so no runtime path was
+added. The expanded experiment used 288 calls, cost $0.055153, and had three
+maximum-token errors in an initial oversized case that was corrected before
+measurement.
 
 ## 2026-09-29 finding continuity across revisions
 
@@ -369,9 +389,7 @@ no review saved $0.50. Six oversized diffs also failed open with
 
 ## Next Jev experiments
 
-1. Expand the independent human-feedback set beyond two SSRF findings before
-   treating source-constraint rejection as a default.
-2. Gather more false build claims and real compiler-diagnostic controls before
+1. Gather more false build claims and real compiler-diagnostic controls before
    enabling the build-claim guard by default.
-3. Gather more multi-revision positives and define a notification behavior for
+2. Gather more multi-revision positives and define a notification behavior for
    continuity that does not hide unresolved findings.

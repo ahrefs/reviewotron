@@ -83,6 +83,13 @@
   (pps lwt_ppx)))
 
 (executable
+ (name jev_candidate_validation_benchmark)
+ (modules jev_candidate_validation_benchmark)
+ (libraries reviewotron_lib lwt lwt.unix yojson)
+ (preprocess
+  (pps lwt_ppx)))
+
+(executable
  (name jev_score_benchmark)
  (modules jev_score_benchmark)
  (libraries reviewotron_lib lwt lwt.unix yojson)
