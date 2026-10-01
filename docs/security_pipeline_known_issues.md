@@ -1,5 +1,12 @@
 # Security pipeline — known issues
 
+> **2026-09-25 experiment-branch update:** the destructive exact-sink candidate
+> pass has been removed. Every candidate is validated in bounded chunks, and
+> same-line confirmed security findings remain separate. Optional Jev grouping
+> runs after validation and records lossless proposals only. The dedup sections
+> below describe the historical pipeline and remain as context for the original
+> incidents.
+
 Snapshot of open problems in the security review pipeline as of 2026-04-27,
 written after a session that attempted a fix and then reverted it. Pre-fix
 state matches commit `8060c13` on `security-review`. The one fix that did

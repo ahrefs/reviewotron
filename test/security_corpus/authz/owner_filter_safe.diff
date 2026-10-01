@@ -1,0 +1,14 @@
+diff --git a/src/projects/archive.ts b/src/projects/archive.ts
+index 1111111..2222222 100644
+--- a/src/projects/archive.ts
++++ b/src/projects/archive.ts
+@@ -1,4 +1,10 @@
+-export const archive = (_request: Request) => new Response("not implemented");
++export async function archive(request: Request, currentUser: User) {
++  const projectId = new URL(request.url).pathname.split("/").pop();
++  const result = await db.query(
++    "UPDATE projects SET archived = true WHERE id = $1 AND owner_id = $2",
++    [projectId, currentUser.id],
++  );
++  return Response.json({ archived: result.rowCount === 1 });
++}

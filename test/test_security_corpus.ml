@@ -34,7 +34,13 @@ let corpus_repo_url = "https://github.com/test/security-corpus"
     config cache so the plugin does not need to fetch from GitHub. *)
 let make_corpus_context ~api_key =
   let secrets : Config_types.secrets =
-    { repos = []; anthropic_api_key = Some api_key; openrouter_api_key = None; slack_access_token = None }
+    {
+      repos = [];
+      anthropic_api_key = Some api_key;
+      openrouter_api_key = None;
+      typesafe_api_key = None;
+      slack_access_token = None;
+    }
   in
   let ctx = Context.make ~secrets () in
   Context.set_config ctx ~repo_key:corpus_repo_url (Context.default_config ());
@@ -74,7 +80,7 @@ let run_classified_pipeline ~ctx ~diff_text ~diff =
   let findings, _costs, failed =
     Lwt_main.run
       (SP.run ~ctx ~repo_url:corpus_repo_url ~config ~diff ~diff_text ~metadata ~log_context:None
-         ~debug_dir:"debug/corpus" ~memory_dir:"memory/corpus")
+         ~debug_dir:"debug/corpus" ~memory_dir:"memory/corpus" ~record_prevalidation:(fun _ -> ()))
   in
   match failed with
   | true -> fail "security pipeline failed"
@@ -118,11 +124,22 @@ let corpus_cases : corpus_case list =
       expected = Vulnerable Security_types.Injection;
     };
     {
+      name = "injection/cross_file_query_builder";
+      file_path = "src/reports/search.ts";
+      expected = Vulnerable Security_types.Injection;
+    };
+    {
       name = "xss/innerHTML_vulnerable";
       file_path = "src/components/UserProfile.jsx";
       expected = Vulnerable Security_types.Xss;
     };
     { name = "xss/escaped_output_safe"; file_path = "src/components/UserProfile.jsx"; expected = Clean };
+    {
+      name = "xss/cross_file_cookie_json_innerhtml";
+      file_path = "src/web/profile.ts";
+      expected = Vulnerable Security_types.Xss;
+    };
+    { name = "xss/cross_file_textcontent_safe"; file_path = "src/web/profile.ts"; expected = Clean };
     {
       name = "command_injection/exec_user_input";
       file_path = "lib/handlers/file_preview.ml";
@@ -135,10 +152,16 @@ let corpus_cases : corpus_case list =
       expected = Vulnerable Security_types.Authn;
     };
     {
+      name = "authn/cross_file_token_without_expiry";
+      file_path = "src/auth/token.ts";
+      expected = Vulnerable Security_types.Authn;
+    };
+    {
       name = "authz/missing_ownership_check";
       file_path = "lib/handlers/document.ml";
       expected = Vulnerable Security_types.Authz;
     };
+    { name = "authz/owner_filter_safe"; file_path = "src/projects/archive.ts"; expected = Clean };
     {
       name = "ssrf/url_from_user_input";
       file_path = "src/handlers/webhook.py";
@@ -147,6 +170,11 @@ let corpus_cases : corpus_case list =
     {
       name = "path_traversal/send_file_user_path";
       file_path = "src/handlers/export.py";
+      expected = Vulnerable Security_types.Path_traversal;
+    };
+    {
+      name = "path_traversal/multi_hunk_user_path";
+      file_path = "src/export/download.ts";
       expected = Vulnerable Security_types.Path_traversal;
     };
     { name = "path_traversal/send_file_basename_safe"; file_path = "src/handlers/export.py"; expected = Clean };

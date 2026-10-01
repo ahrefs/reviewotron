@@ -1,0 +1,25 @@
+diff --git a/src/auth/token.ts b/src/auth/token.ts
+index 1111111..2222222 100644
+--- a/src/auth/token.ts
++++ b/src/auth/token.ts
+@@ -1,5 +1,8 @@
+ import jwt from "jsonwebtoken";
+ 
+-export const verifyToken = (token: string) => jwt.verify(token, publicKey);
++export const verifyToken = (token: string) => {
++  const claims = jwt.verify(token, publicKey, { ignoreExpiration: true });
++  return claims;
++};
+diff --git a/src/auth/middleware.ts b/src/auth/middleware.ts
+index 3333333..4444444 100644
+--- a/src/auth/middleware.ts
++++ b/src/auth/middleware.ts
+@@ -1,4 +1,8 @@
+ import { verifyToken } from "./token";
+ 
+-export const authenticate = (_request: Request) => null;
++export const authenticate = (request: Request) => {
++  const token = request.headers.get("authorization")?.replace("Bearer ", "") ?? "";
++  const claims = verifyToken(token);
++  return { userId: claims.sub };
++};

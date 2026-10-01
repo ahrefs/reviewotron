@@ -1,0 +1,24 @@
+diff --git a/src/reports/route.ts b/src/reports/route.ts
+index 1111111..2222222 100644
+--- a/src/reports/route.ts
++++ b/src/reports/route.ts
+@@ -1,4 +1,7 @@
+ import { findReports } from "./search";
+ 
+-export const reports = () => findReports("active");
++export const reports = (request: Request) => {
++  const owner = new URL(request.url).searchParams.get("owner") ?? "";
++  return findReports(owner);
++};
+diff --git a/src/reports/search.ts b/src/reports/search.ts
+index 3333333..4444444 100644
+--- a/src/reports/search.ts
++++ b/src/reports/search.ts
+@@ -1,4 +1,8 @@
+ import { db } from "./store";
+ 
+-export const findReports = (status: string) => db.query("SELECT * FROM reports WHERE status = $1", [status]);
++const ownerClause = (owner: string) => `owner = '${owner}'`;
++const query = (clause: string) => `SELECT * FROM reports WHERE active = true AND ${clause}`;
++
++export const findReports = (owner: string) => db.query(query(ownerClause(owner)));

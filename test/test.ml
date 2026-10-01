@@ -305,7 +305,13 @@ let test_parse_secrets_openrouter_only () =
 
 let test_llm_provider_resolve () =
   let mk ?anthropic ?openrouter () : Config_types.secrets =
-    { repos = []; anthropic_api_key = anthropic; openrouter_api_key = openrouter; slack_access_token = None }
+    {
+      repos = [];
+      anthropic_api_key = anthropic;
+      openrouter_api_key = openrouter;
+      typesafe_api_key = None;
+      slack_access_token = None;
+    }
   in
   (match Llm_provider.resolve (mk ~openrouter:"k" ~anthropic:"a" ()) with
   | Ok Llm_provider.Openrouter -> ()
@@ -358,7 +364,13 @@ let test_llm_provider_base_url_of_env () =
    exposes no URL, so an actual request is the only way to observe the wiring. *)
 let test_llm_provider_base_url_reaches_sdk () =
   let secrets : Config_types.secrets =
-    { repos = []; anthropic_api_key = None; openrouter_api_key = Some "sk-or-test"; slack_access_token = None }
+    {
+      repos = [];
+      anthropic_api_key = None;
+      openrouter_api_key = Some "sk-or-test";
+      typesafe_api_key = None;
+      slack_access_token = None;
+    }
   in
   let listener = Unix.socket Unix.PF_INET Unix.SOCK_STREAM 0 in
   Unix.setsockopt listener Unix.SO_REUSEADDR true;
@@ -614,6 +626,10 @@ let test_generic_openrouter_403_retries_one_provider_request () =
 
 let test_config_review_plugins_defaults () =
   let config = Config_types.config_of_json (Melange_json.of_string {|{}|}) in
+  (check bool) "Jev build-claim guard default off" false config.review_plugins.jev_build_claim_guard_enabled;
+  (check (float 0.0001)) "Jev build-claim threshold default" 0.6 config.review_plugins.jev_build_claim_guard_threshold;
+  (check bool) "Jev suggestion guard default off" false config.review_plugins.jev_suggestion_guard_enabled;
+  (check (float 0.0001)) "Jev suggestion threshold default" 0.5 config.review_plugins.jev_suggestion_guard_threshold;
   (check bool) "general enabled" true config.review_plugins.general.enabled;
   (check bool) "general prompt override" true (Option.is_none config.review_plugins.general.system_prompt_override);
   (check bool) "security disabled by default" false config.review_plugins.security.enabled;
@@ -631,6 +647,14 @@ let test_config_review_plugins_defaults () =
   (match config.review_plugins.security.analysis_effort with
   | Some Config_types.Effort.Medium -> ()
   | Some Config_types.Effort.Low | Some High | Some Xhigh | None -> fail "expected medium analysis effort by default");
+  (check bool) "Jev triage default off" false config.review_plugins.security.jev_triage_enabled;
+  (check (float 0.0001)) "Jev threshold default" 0.8 config.review_plugins.security.jev_triage_threshold;
+  (check bool) "Jev analysis gate default off" false config.review_plugins.security.jev_analysis_gate_enabled;
+  (check (float 0.0001))
+    "Jev analysis gate threshold default" 0.6 config.review_plugins.security.jev_analysis_gate_threshold;
+  (check bool) "Jev validator cascade default off" false config.review_plugins.security.jev_validator_cascade_enabled;
+  (check bool) "Jev grouping default off" false config.review_plugins.security.jev_grouping_enabled;
+  (check (float 0.0001)) "Jev grouping threshold default" 0.7 config.review_plugins.security.jev_grouping_threshold;
   (check int) "memory_max_tokens" 5000 config.review_plugins.security.memory_max_tokens;
   (check bool) "metrics_artifacts default off" false config.review_plugins.security.metrics_artifacts;
   (check bool) "debug_artifacts default off" false config.review_plugins.security.debug_artifacts;
@@ -647,6 +671,10 @@ let test_config_review_plugins_explicit () =
     "ignored_file_regexes": ["^snapshots/.*\\.golden$"],
     "ignore_generated_files": false,
     "review_plugins": {
+      "jev_build_claim_guard_enabled": true,
+      "jev_build_claim_guard_threshold": 0.72,
+      "jev_suggestion_guard_enabled": true,
+      "jev_suggestion_guard_threshold": 0.55,
       "general": { "enabled": false },
       "security": {
         "enabled": true,
@@ -655,6 +683,11 @@ let test_config_review_plugins_explicit () =
         "triage_model_tier": "standard",
         "analysis_effort": "medium",
         "confidence_threshold": "high",
+        "jev_analysis_gate_enabled": true,
+        "jev_analysis_gate_threshold": 0.62,
+        "jev_validator_cascade_enabled": true,
+        "jev_grouping_enabled": true,
+        "jev_grouping_threshold": 0.75,
         "memory_max_tokens": 10000,
         "metrics_artifacts": true,
         "debug_artifacts": true
@@ -667,6 +700,10 @@ let test_config_review_plugins_explicit () =
   (check bool) "agent debug_artifacts" true config.debug_artifacts;
   (check (list string)) "ignored_file_regexes explicit" [ "^snapshots/.*\\.golden$" ] config.ignored_file_regexes;
   (check bool) "ignore_generated_files explicit off" false config.ignore_generated_files;
+  (check bool) "Jev build-claim guard" true config.review_plugins.jev_build_claim_guard_enabled;
+  (check (float 0.0001)) "Jev build-claim threshold" 0.72 config.review_plugins.jev_build_claim_guard_threshold;
+  (check bool) "Jev suggestion guard" true config.review_plugins.jev_suggestion_guard_enabled;
+  (check (float 0.0001)) "Jev suggestion threshold" 0.55 config.review_plugins.jev_suggestion_guard_threshold;
   (check bool) "general disabled" false config.review_plugins.general.enabled;
   (check bool) "security enabled" true config.review_plugins.security.enabled;
   (check int) "vuln_classes count" 2 (List.length config.review_plugins.security.vuln_classes);
@@ -678,6 +715,11 @@ let test_config_review_plugins_explicit () =
   (match config.review_plugins.security.analysis_effort with
   | Some Config_types.Effort.Medium -> ()
   | Some Config_types.Effort.Low | Some High | Some Xhigh | None -> fail "expected medium analysis effort");
+  (check bool) "Jev analysis gate" true config.review_plugins.security.jev_analysis_gate_enabled;
+  (check (float 0.0001)) "Jev analysis gate threshold" 0.62 config.review_plugins.security.jev_analysis_gate_threshold;
+  (check bool) "Jev validator cascade" true config.review_plugins.security.jev_validator_cascade_enabled;
+  (check bool) "Jev grouping" true config.review_plugins.security.jev_grouping_enabled;
+  (check (float 0.0001)) "Jev grouping threshold" 0.75 config.review_plugins.security.jev_grouping_threshold;
   (check int) "memory_max_tokens" 10000 config.review_plugins.security.memory_max_tokens;
   (check bool) "metrics_artifacts" true config.review_plugins.security.metrics_artifacts;
   (check bool) "debug_artifacts" true config.review_plugins.security.debug_artifacts
@@ -698,6 +740,82 @@ let test_config_rejects_broad_ignored_file_regex () =
       | exception Melange_json.Of_json_error (Melange_json.Json_error msg) ->
         (check bool) "error names ignored_file_regexes" true (contains_sub ~sub:"ignored_file_regexes" msg))
     [ ".*"; ".+"; "^.*$"; "^.+$"; "^" ]
+
+let test_config_rejects_invalid_jev_threshold () =
+  match
+    Config_types.config_of_json
+      (Melange_json.of_string {|{"review_plugins":{"security":{"jev_triage_threshold":1.1}}}|})
+  with
+  | (_ : Config_types.config) -> fail "expected out-of-range Jev threshold to be rejected"
+  | exception Melange_json.Of_json_error (Melange_json.Json_error msg) ->
+    (check bool) "error names Jev threshold" true (contains_sub ~sub:"jev_triage_threshold" msg)
+
+let test_config_rejects_invalid_jev_analysis_gate_threshold () =
+  match
+    Config_types.config_of_json
+      (Melange_json.of_string {|{"review_plugins":{"security":{"jev_analysis_gate_threshold":-0.1}}}|})
+  with
+  | (_ : Config_types.config) -> fail "expected out-of-range Jev analysis gate threshold to be rejected"
+  | exception Melange_json.Of_json_error (Melange_json.Json_error msg) ->
+    (check bool) "error names Jev analysis gate threshold" true (contains_sub ~sub:"jev_analysis_gate_threshold" msg)
+
+let test_config_rejects_both_jev_routing_modes () =
+  match
+    Config_types.config_of_json
+      (Melange_json.of_string
+         {|{"review_plugins":{"security":{"jev_triage_enabled":true,"jev_analysis_gate_enabled":true}}}|})
+  with
+  | (_ : Config_types.config) -> fail "expected mutually exclusive Jev routing modes to be rejected"
+  | exception Melange_json.Of_json_error (Melange_json.Json_error msg) ->
+    (check bool) "error names both Jev modes" true (contains_sub ~sub:"cannot both be true" msg)
+
+let test_config_rejects_invalid_jev_grouping_threshold () =
+  match
+    Config_types.config_of_json
+      (Melange_json.of_string {|{"review_plugins":{"security":{"jev_grouping_threshold":-0.1}}}|})
+  with
+  | (_ : Config_types.config) -> fail "expected out-of-range Jev grouping threshold to be rejected"
+  | exception Melange_json.Of_json_error (Melange_json.Json_error msg) ->
+    (check bool) "error names Jev grouping threshold" true (contains_sub ~sub:"jev_grouping_threshold" msg)
+
+let test_config_rejects_invalid_jev_suggestion_guard_threshold () =
+  match
+    Config_types.config_of_json (Melange_json.of_string {|{"review_plugins":{"jev_suggestion_guard_threshold":1.1}}|})
+  with
+  | (_ : Config_types.config) -> fail "expected out-of-range Jev suggestion threshold to be rejected"
+  | exception Melange_json.Of_json_error (Melange_json.Json_error msg) ->
+    (check bool) "error names Jev suggestion threshold" true (contains_sub ~sub:"jev_suggestion_guard_threshold" msg)
+
+let test_config_rejects_invalid_jev_build_claim_guard_threshold () =
+  match
+    Config_types.config_of_json (Melange_json.of_string {|{"review_plugins":{"jev_build_claim_guard_threshold":-0.1}}|})
+  with
+  | (_ : Config_types.config) -> fail "expected out-of-range Jev build-claim threshold to be rejected"
+  | exception Melange_json.Of_json_error (Melange_json.Json_error msg) ->
+    (check bool) "error names Jev build-claim threshold" true (contains_sub ~sub:"jev_build_claim_guard_threshold" msg)
+
+let test_jev_suggestion_guard_threshold () =
+  let removes defect_probability plausibility_probability =
+    Review_engine.jev_suggestion_guard_removes ~threshold:0.5 ~defect_probability ~plausibility_probability
+  in
+  (check bool) "low defect score preserves fix" false (removes 0.49 0.1);
+  (check bool) "plausible fix is preserved" false (removes 0.9 0.51);
+  (check bool) "opposing boundaries remove fix" true (removes 0.5 0.5)
+
+let test_jev_build_claim_guard () =
+  (check bool) "below threshold preserves finding" false
+    (Review_engine.jev_build_claim_guard_rejects ~threshold:0.6 ~probability:0.59);
+  (check bool) "threshold rejects finding" true
+    (Review_engine.jev_build_claim_guard_rejects ~threshold:0.6 ~probability:0.6);
+  let content = List.init 200 (fun index -> Printf.sprintf "line %d" (index + 1)) |> String.concat "\n" in
+  let context = Review_engine.reviewed_file_context ~line:100 content |> String.split_on_char '\n' in
+  (check int) "context line count" 161 (List.length context);
+  (match context with
+  | first :: _ -> (check string) "first numbered context line" "    20 | line 20" first
+  | [] -> fail "expected context lines");
+  match List.rev context with
+  | last :: _ -> (check string) "last numbered context line" "   180 | line 180" last
+  | [] -> fail "expected context lines"
 
 let test_config_general_scout_defaults () =
   let config = Config_types.config_of_json (Melange_json.of_string {|{}|}) in
@@ -846,6 +964,13 @@ let test_security_plugin_config_roundtrip () =
       analysis_effort = Some Config_types.Effort.Medium;
       validator_model_tier = Strong;
       confidence_threshold = High;
+      jev_triage_enabled = false;
+      jev_triage_threshold = 0.6;
+      jev_analysis_gate_enabled = true;
+      jev_analysis_gate_threshold = 0.62;
+      jev_validator_cascade_enabled = true;
+      jev_grouping_enabled = true;
+      jev_grouping_threshold = 0.75;
       memory_max_tokens = 3000;
       metrics_artifacts = true;
       debug_artifacts = false;
@@ -854,6 +979,13 @@ let test_security_plugin_config_roundtrip () =
   let json = Config_types.security_plugin_config_to_json cfg in
   let parsed = Config_types.security_plugin_config_of_json json in
   (check bool) "enabled" true parsed.enabled;
+  (check bool) "Jev triage" false parsed.jev_triage_enabled;
+  (check (float 0.0001)) "Jev threshold" 0.6 parsed.jev_triage_threshold;
+  (check bool) "Jev analysis gate" true parsed.jev_analysis_gate_enabled;
+  (check (float 0.0001)) "Jev analysis gate threshold" 0.62 parsed.jev_analysis_gate_threshold;
+  (check bool) "Jev validator cascade" true parsed.jev_validator_cascade_enabled;
+  (check bool) "Jev grouping" true parsed.jev_grouping_enabled;
+  (check (float 0.0001)) "Jev grouping threshold" 0.75 parsed.jev_grouping_threshold;
   (check int) "vuln_classes" 2 (List.length parsed.vuln_classes);
   (check int) "always_analyze_vuln_classes" 1 (List.length parsed.always_analyze_vuln_classes);
   (check int) "memory_max_tokens" 3000 parsed.memory_max_tokens;
@@ -1096,6 +1228,12 @@ let test_dedup_preserves_plugin_provenance () =
       | Some Injection -> true
       | Some (Xss | Command_injection | Authn | Authz | Ssrf | Path_traversal | Policy_regression) | None -> false)
   | _ -> fail "expected one sourced finding"
+
+let test_dedup_preserves_same_line_security_findings () =
+  let authz = mk_finding ~path:"a.ml" ~line:10 ~message:"missing authorization" () in
+  let injection = mk_finding ~path:"a.ml" ~line:10 ~message:"query injection" () in
+  let out = Reviewer.deduplicate_findings [ From_security, authz; From_security, injection ] in
+  (check int) "both validated security findings survive" 2 (List.length out)
 
 let test_dedup_same_line_same_source_higher_severity_wins () =
   let low = mk_finding ~path:"a.ml" ~line:10 ~severity:Suggestion ~message:"low" () in
@@ -1357,6 +1495,92 @@ let src_site ~path ~line ~description : Security_types.source_evidence = { path;
 let sink_site ~path ~line ~description : Security_types.sink_evidence = { path; line; description }
 let flow_step ~path ~line ~description : Security_types.flow_step = { path; line; description }
 
+let test_consolidation_requires_lossless_evidence () =
+  let finding id path line =
+    mk_validated ~candidate_id:id
+      ~source:(src_site ~path ~line:(line - 1) ~description:"source")
+      ~sink:(sink_site ~path ~line ~description:"sink")
+      ~flow:[] ()
+  in
+  let left = finding 0 "src/a.ml" 10 in
+  let right = finding 1 "src/b.ml" 20 in
+  let location path line : Consolidation_agent.affected_location = { path; line; evidence = "confirmed sink" } in
+  let output : Consolidation_agent.output =
+    {
+      verdict = Consolidate;
+      reason = "one shared policy";
+      shared_cause = "one generated policy source";
+      shared_repair = "restore the check in the source policy";
+      primary_path = "policy/source.ml";
+      primary_line = 5;
+      affected_locations = [ location "src/a.ml" 10; location "src/b.ml" 20 ];
+      member_finding_ids = [ 0; 1 ];
+      assumptions = [];
+    }
+  in
+  let verify output = Consolidation_agent.verify ~left_id:0 ~left ~right_id:1 ~right output in
+  (check bool) "complete consolidation accepted" true (Result.is_ok (verify output));
+  (match verify { output with affected_locations = [ location "src/a.ml" 10 ] } with
+  | Ok consolidation ->
+    (check bool) "missing member location restored" true
+      (List.exists
+         (fun (location : Consolidation_agent.affected_location) ->
+           String.equal location.path "src/b.ml" && Int.equal location.line 20)
+         consolidation.affected_locations)
+  | Error reason -> fail reason);
+  (check bool) "unresolved assumption rejected" true
+    (Result.is_error (verify { output with assumptions = [ "generation relationship is unverified" ] }))
+
+let test_consolidation_relationship_evidence_paths () =
+  let paths =
+    Consolidation_agent.relationship_evidence_candidate_paths ~changed_paths:[ "backend/ops/users/users_props.ml" ]
+      ~affected_paths:[ "infra/puppet/modules/core/files/authorized_keys/hotdog_team" ]
+  in
+  (check bool) "finds sibling access policy" true
+    (List.exists (String.equal "backend/ops/users/users_access_policy.ml") paths);
+  (check bool) "finds nearby artifact generator" true
+    (List.exists (String.equal "backend/ops/gen_files/gen_authorized_keys.ml") paths)
+
+let test_notification_groups_require_complete_links () =
+  let groups = Security_review_plugin.notification_groups ~finding_count:4 [ 0, 1; 1, 2 ] in
+  (check (list (list int))) "non-transitive edges do not over-group" [ [ 0; 1 ]; [ 2 ]; [ 3 ] ] groups;
+  let groups = Security_review_plugin.notification_groups ~finding_count:4 [ 0, 1; 0, 2; 1, 2 ] in
+  (check (list (list int))) "clique becomes one group" [ [ 0; 1; 2 ]; [ 3 ] ] groups
+
+let test_grouped_finding_preserves_member_details () =
+  let left =
+    mk_finding ~path:"src/a.ml" ~line:10 ~message:"first defect" ~failure_scenario:"first trigger"
+      ~suggested_fix:(Some "safe_a ()") ~confidence:Review_types.High ()
+  in
+  let right =
+    mk_finding ~path:"src/b.ml" ~line:20 ~severity:Review_types.Critical ~message:"second defect"
+      ~failure_scenario:"second trigger" ~suggested_fix:(Some "safe_b ()") ~confidence:Review_types.Low ()
+  in
+  let grouped = Security_review_plugin.grouped_finding [ left; right ] in
+  (check string) "primary anchor retained" "src/a.ml" grouped.path;
+  (check bool) "highest severity retained" true
+    (match grouped.severity with
+    | Review_types.Critical -> true
+    | Warning | Suggestion | Nitpick | Praise | Other _ -> false);
+  (check bool) "lowest confidence retained" true
+    (match grouped.confidence with
+    | Review_types.Low -> true
+    | High | Medium -> false);
+  (check bool) "multi-location suggestion disabled" true (Option.is_none grouped.suggested_fix);
+  List.iter
+    (fun expected -> (check bool) ("message contains " ^ expected) true (CCString.mem ~sub:expected grouped.message))
+    [ "src/a.ml:10"; "src/b.ml:20"; "first defect"; "second defect"; "safe_a ()"; "safe_b ()" ];
+  List.iter
+    (fun expected ->
+      (check bool) ("scenario contains " ^ expected) true (CCString.mem ~sub:expected grouped.failure_scenario))
+    [ "first trigger"; "second trigger" ]
+
+let test_grouped_finding_preserves_singleton () =
+  let finding = mk_finding ~path:"src/a.ml" ~line:10 ~message:"original defect" ~suggested_fix:(Some "safe_a ()") () in
+  let grouped = Security_review_plugin.grouped_finding [ finding ] in
+  (check string) "message unchanged" finding.message grouped.message;
+  (check (option string)) "suggestion unchanged" finding.suggested_fix grouped.suggested_fix
+
 let test_anchor_sink_in_diff_no_snap () =
   (* Sink is already in the diff (src/main.ml hunk A).  We must not snap; the
      finding's path/line should equal the sink and the message should NOT
@@ -1446,13 +1670,7 @@ let test_anchor_end_line_derived_from_anchor_not_sink () =
   (check int) "snapped line" 10 f.line;
   (check (option int)) "end_line extends to 14" (Some 14) f.end_line
 
-(** {2 Candidate finding deduplication tests}
-
-    Per-class analysis agents independently flag the same defect under different
-    vuln_class labels (e.g. SQL injection in a [/search] endpoint also smells
-    like authn or authz to neighbouring agents).  [dedup_candidates] collapses
-    candidates that share the same [(sink.path, sink.line)] so the validator
-    sees the strongest framing of each defect, exactly once. *)
+(** {2 Candidate finding tests} *)
 
 let mk_candidate ~vuln_class ~sink_path ~sink_line ?(confidence = Security_types.High) ?(flow = []) ?(tag = "") () :
   Security_types.candidate_finding =
@@ -1468,85 +1686,6 @@ let mk_candidate ~vuln_class ~sink_path ~sink_line ?(confidence = Security_types
   }
 
 let mk_flow_step ~path ~line description : Security_types.flow_step = { path; line; description }
-
-let test_dedup_collapses_same_sink_across_vuln_classes () =
-  let candidates =
-    [
-      mk_candidate ~vuln_class:Injection ~sink_path:"src/routes/notes.ts" ~sink_line:99 ~confidence:Medium
-        ~tag:"injection" ();
-      mk_candidate ~vuln_class:Authn ~sink_path:"src/routes/notes.ts" ~sink_line:99 ~confidence:Low ~tag:"authn" ();
-      mk_candidate ~vuln_class:Authz ~sink_path:"src/routes/notes.ts" ~sink_line:99 ~confidence:Medium ~tag:"authz" ();
-      mk_candidate ~vuln_class:Xss ~sink_path:"src/routes/notes.ts" ~sink_line:99 ~confidence:High ~tag:"xss" ();
-    ]
-  in
-  let deduped = Sec_test.dedup_candidates candidates in
-  (check int) "collapses 4 → 1" 1 (List.length deduped);
-  match deduped with
-  | [ kept ] ->
-    (check string) "highest confidence wins (xss High > Medium > Low)" "xss"
-      (Security_types.vuln_class_to_string kept.vuln_class)
-  | _ -> Alcotest.fail "expected exactly one finding after dedup"
-
-let test_dedup_preserves_distinct_sinks () =
-  (* Two real, separate defects: command-injection sources at admin.ts:19 *and*
-     the actual exec call at debug.ts:7.  Both should survive. *)
-  let candidates =
-    [
-      mk_candidate ~vuln_class:Command_injection ~sink_path:"src/lib/debug.ts" ~sink_line:7 ~tag:"exec" ();
-      mk_candidate ~vuln_class:Command_injection ~sink_path:"src/routes/admin.ts" ~sink_line:19 ~tag:"route" ();
-    ]
-  in
-  let deduped = Sec_test.dedup_candidates candidates in
-  (check int) "two distinct sinks preserved" 2 (List.length deduped)
-
-let test_dedup_tiebreak_prefers_longer_flow () =
-  let short_flow = [ mk_flow_step ~path:"src/a.ts" ~line:5 "step 1" ] in
-  let long_flow =
-    [
-      mk_flow_step ~path:"src/a.ts" ~line:5 "step 1";
-      mk_flow_step ~path:"src/a.ts" ~line:9 "step 2";
-      mk_flow_step ~path:"src/a.ts" ~line:14 "step 3";
-    ]
-  in
-  let candidates =
-    [
-      mk_candidate ~vuln_class:Injection ~sink_path:"src/a.ts" ~sink_line:42 ~confidence:Medium ~flow:short_flow
-        ~tag:"short" ();
-      mk_candidate ~vuln_class:Authz ~sink_path:"src/a.ts" ~sink_line:42 ~confidence:Medium ~flow:long_flow ~tag:"long"
-        ();
-    ]
-  in
-  let deduped = Sec_test.dedup_candidates candidates in
-  (check int) "collapses to one" 1 (List.length deduped);
-  match deduped with
-  | [ kept ] ->
-    (check int) "longer flow wins on confidence tie" 3 (List.length kept.flow);
-    (check string) "kept the longer-flow candidate" "authz" (Security_types.vuln_class_to_string kept.vuln_class)
-  | _ -> Alcotest.fail "expected exactly one finding after dedup"
-
-let test_dedup_tiebreak_first_seen_when_fully_tied () =
-  let flow = [ mk_flow_step ~path:"src/a.ts" ~line:5 "step 1" ] in
-  let candidates =
-    [
-      mk_candidate ~vuln_class:Injection ~sink_path:"src/a.ts" ~sink_line:42 ~confidence:High ~flow ~tag:"first" ();
-      mk_candidate ~vuln_class:Authz ~sink_path:"src/a.ts" ~sink_line:42 ~confidence:High ~flow ~tag:"second" ();
-    ]
-  in
-  let deduped = Sec_test.dedup_candidates candidates in
-  match deduped with
-  | [ kept ] ->
-    (check string) "first-seen wins when confidence and flow tied" "injection"
-      (Security_types.vuln_class_to_string kept.vuln_class)
-  | _ -> Alcotest.fail "expected exactly one finding after dedup"
-
-let test_dedup_empty () =
-  let deduped = Sec_test.dedup_candidates [] in
-  (check int) "empty in, empty out" 0 (List.length deduped)
-
-let test_dedup_single_candidate_passthrough () =
-  let c = mk_candidate ~vuln_class:Injection ~sink_path:"src/a.ts" ~sink_line:1 ~tag:"only" () in
-  let deduped = Sec_test.dedup_candidates [ c ] in
-  (check int) "single candidate passes through" 1 (List.length deduped)
 
 let test_candidate_structurally_valid_accepts_all_evidence () =
   let candidate =
@@ -3055,6 +3194,44 @@ let test_security_always_analyze_implies_enabled () =
   (check bool) "High always_analyze-only class triggers" true
     (Security_review_plugin.should_analyze ~security_config high_injection)
 
+let test_security_jev_analysis_gate () =
+  let injection = make_triage_signal ~vuln_class:Injection ~confidence:High in
+  let xss = make_triage_signal ~vuln_class:Xss ~confidence:Medium in
+  let ssrf = make_triage_signal ~vuln_class:Ssrf ~confidence:Low in
+  let kept =
+    Security_review_plugin.gate_triage_signals ~always_analyze:[ Injection ] ~jev_signals:[ xss ]
+      [ injection; xss; ssrf ]
+  in
+  (check int) "keeps supported and bypassed classes" 2 (List.length kept);
+  (check bool) "always-analyze class bypasses gate" true
+    (List.exists
+       (fun (signal : Security_types.triage_signal) ->
+         Security_review_plugin.vuln_class_equal signal.vuln_class Injection)
+       kept);
+  (check bool) "Jev-supported class passes gate" true
+    (List.exists
+       (fun (signal : Security_types.triage_signal) -> Security_review_plugin.vuln_class_equal signal.vuln_class Xss)
+       kept);
+  (check bool) "unsupported class is removed" false
+    (List.exists
+       (fun (signal : Security_types.triage_signal) -> Security_review_plugin.vuln_class_equal signal.vuln_class Ssrf)
+       kept)
+
+let test_security_partial_jev_fallback_stays_incomplete () =
+  let partial : Security_types.triage_output =
+    {
+      signals = [ make_triage_signal ~vuln_class:Xss ~confidence:High ];
+      language_hints = [ "TypeScript" ];
+      skip_reason = None;
+    }
+  in
+  let result, failed = Security_review_plugin.partial_triage_fallback ~partial ~primary:None in
+  (check bool) "partial signals retained" true
+    (match result with
+    | Some result -> Int.equal (List.length result.signals) 1
+    | None -> false);
+  (check bool) "failed fallback remains incomplete" true failed
+
 let test_security_should_analyze_high_threshold () =
   let security_config = { Config_types.default_security_plugin_config with confidence_threshold = High } in
   (* With High threshold, only High triggers unconditionally. *)
@@ -4199,6 +4376,7 @@ module Config_mutating_source = struct
 
   let get_pr_commit_shas = Api_local.Github.get_pr_commit_shas
   let get_commit_diff = Api_local.Github.get_commit_diff
+  let get_commit_statuses = Api_local.Github.get_commit_statuses
 
   let get_pull_request = Api_local.Github.get_pull_request
 
@@ -5388,6 +5566,7 @@ let test_local_sink_render_json () =
       unchanged_findings = [];
       anchor_failed_findings = [];
       review_costs = [];
+      prevalidation = Prevalidation.empty;
       security_error = false;
       general_failed = false;
     }
@@ -5604,6 +5783,7 @@ let debug_dir_test_job ?(repo_key = Test_helpers.test_repo_url) ?(head_sha = "fb
     config = Config_types.config_of_json (Melange_json.of_string "{}");
     file_contents = [];
     fetch_file = (fun ~path:_ -> Lwt.return (Ok None));
+    fetch_commit_statuses = (fun () -> Lwt.return (Ok []));
     trigger = Pull_request;
     source_kind = Github;
   }
@@ -6216,6 +6396,32 @@ let test_api_remote_collects_all_pr_commit_pages () =
     (check int) "all PR commit pages are collected" 101 (List.length shas);
     (check (list int)) "commit pages requested" [ 1; 2 ] (List.rev !seen_pages)
 
+let test_api_remote_parses_completed_commit_statuses () =
+  let body =
+    {|{
+  "state": "failure",
+  "statuses": [
+    {"context":"build/backend", "state":"success", "description":"Passed", "updated_at":"2026-09-30T12:00:00Z"},
+    {"context":"build/frontend", "state":"pending", "description":null},
+    {"context":"test/backend", "state":"failure", "description":null}
+  ]
+}|}
+  in
+  match Api_remote.parse_commit_statuses_json body with
+  | Error msg -> fail (Printf.sprintf "unexpected commit status parse error: %s" msg)
+  | Ok statuses ->
+  match statuses with
+  | [ success; failure ] ->
+    (check string) "successful context" "build/backend" success.Review_job.context;
+    (check string) "successful state" "success" (Review_job.commit_status_state_to_string success.state);
+    (check (option string)) "successful description" (Some "Passed") success.description;
+    (check (option string)) "successful completion" (Some "2026-09-30T12:00:00Z") success.completed_at;
+    (check string) "failed context" "test/backend" failure.context;
+    (check string) "failed state" "failure" (Review_job.commit_status_state_to_string failure.state);
+    (check (option string)) "null description" None failure.description;
+    (check (option string)) "missing completion" None failure.completed_at
+  | _ -> failf "expected two completed statuses, got %d" (List.length statuses)
+
 let test_api_remote_parse_pr_review_reaction_counts () =
   let body =
     {|{
@@ -6722,6 +6928,21 @@ let test_feedback_publish_records_targets_and_markers () =
         "finding id linked" inline_target.finding_id
         (Some (json_string_field finding_fields "finding_id"))
     | _ -> fail "expected one routed finding");
+    let prevalidation = read_bundle_json "prevalidation.json" in
+    (check int) "prevalidation schema" 1 (json_int_field prevalidation "schema");
+    (check bool) "raw candidate snapshots included" true
+      (match json_list_field prevalidation "snapshots" with
+      | [] -> false
+      | _ :: _ -> true);
+    (check bool) "validator call membership included" true
+      (match json_list_field prevalidation "calls" with
+      | [] -> false
+      | `Assoc fields :: _ ->
+        (match json_list_field fields "candidates" with
+        | [] -> false
+        | `Assoc candidate :: _ -> List.mem_assoc "candidate_key" candidate
+        | _ :: _ -> false)
+      | _ :: _ -> false);
     let costs = read_bundle_json "review_costs.json" in
     (check bool) "costs included" true
       (match json_list_field costs "review_costs" with
@@ -9368,6 +9589,7 @@ let () =
             test_parse_pull_request_review_without_change_counts;
           test_case "parse pull_request_review_comment without change counts" `Quick
             test_parse_pull_request_review_comment_without_change_counts;
+          test_case "parse completed commit statuses" `Quick test_api_remote_parses_completed_commit_statuses;
         ] );
       ( "hmac_signature",
         [
@@ -9400,6 +9622,17 @@ let () =
           test_case "review_plugins explicit" `Quick test_config_review_plugins_explicit;
           test_case "invalid ignored file regex rejected" `Quick test_config_rejects_invalid_ignored_file_regex;
           test_case "broad ignored file regex rejected" `Quick test_config_rejects_broad_ignored_file_regex;
+          test_case "invalid Jev threshold rejected" `Quick test_config_rejects_invalid_jev_threshold;
+          test_case "invalid Jev analysis gate threshold rejected" `Quick
+            test_config_rejects_invalid_jev_analysis_gate_threshold;
+          test_case "Jev routing modes are mutually exclusive" `Quick test_config_rejects_both_jev_routing_modes;
+          test_case "invalid Jev grouping threshold rejected" `Quick test_config_rejects_invalid_jev_grouping_threshold;
+          test_case "invalid Jev suggestion threshold rejected" `Quick
+            test_config_rejects_invalid_jev_suggestion_guard_threshold;
+          test_case "Jev suggestion threshold boundary" `Quick test_jev_suggestion_guard_threshold;
+          test_case "invalid Jev build-claim threshold rejected" `Quick
+            test_config_rejects_invalid_jev_build_claim_guard_threshold;
+          test_case "Jev build-claim guard" `Quick test_jev_build_claim_guard;
           test_case "general scout config defaults" `Quick test_config_general_scout_defaults;
           test_case "general scout config explicit" `Quick test_config_general_scout_explicit;
           test_case "max_leads = 0 rejected" `Quick test_config_max_leads_zero_rejected;
@@ -9439,6 +9672,7 @@ let () =
         [
           test_case "same line prefers security" `Quick test_dedup_same_line_prefers_security;
           test_case "same line preserves plugin provenance" `Quick test_dedup_preserves_plugin_provenance;
+          test_case "same line preserves security findings" `Quick test_dedup_preserves_same_line_security_findings;
           test_case "same line same source higher severity wins" `Quick
             test_dedup_same_line_same_source_higher_severity_wins;
           test_case "near line collapse same category" `Quick test_dedup_near_line_collapse_same_category;
@@ -9469,16 +9703,6 @@ let () =
         [
           test_case "header and gutter" `Quick test_annotate_file_content_header_and_gutter;
           test_case "empty body" `Quick test_annotate_file_content_empty;
-        ] );
-      ( "security_dedup",
-        [
-          test_case "collapses same sink across vuln_classes; highest confidence wins" `Quick
-            test_dedup_collapses_same_sink_across_vuln_classes;
-          test_case "preserves distinct sinks" `Quick test_dedup_preserves_distinct_sinks;
-          test_case "tie on confidence, longer flow wins" `Quick test_dedup_tiebreak_prefers_longer_flow;
-          test_case "tie on confidence and flow, first-seen wins" `Quick test_dedup_tiebreak_first_seen_when_fully_tied;
-          test_case "empty input" `Quick test_dedup_empty;
-          test_case "single candidate passthrough" `Quick test_dedup_single_candidate_passthrough;
         ] );
       ( "security_analysis_contract",
         [
@@ -9515,6 +9739,14 @@ let () =
           test_case "nothing in diff: falls through to sink" `Quick test_anchor_nothing_in_diff_falls_through_to_sink;
           test_case "source fallback when flow empty" `Quick test_anchor_source_fallback_when_flow_empty;
           test_case "end_line derived from anchor, not sink" `Quick test_anchor_end_line_derived_from_anchor_not_sink;
+        ] );
+      ( "security_consolidation",
+        [
+          test_case "requires lossless evidence" `Quick test_consolidation_requires_lossless_evidence;
+          test_case "locates bounded relationship evidence" `Quick test_consolidation_relationship_evidence_paths;
+          test_case "notification groups require complete links" `Quick test_notification_groups_require_complete_links;
+          test_case "grouped finding preserves member details" `Quick test_grouped_finding_preserves_member_details;
+          test_case "grouped finding preserves singleton" `Quick test_grouped_finding_preserves_singleton;
         ] );
       ( "security_artifacts",
         [
@@ -9641,6 +9873,8 @@ let () =
           test_case "should analyze below threshold not in config" `Quick
             test_security_should_analyze_below_threshold_not_in_config;
           test_case "always_analyze implies enabled" `Quick test_security_always_analyze_implies_enabled;
+          test_case "Jev analysis gate" `Quick test_security_jev_analysis_gate;
+          test_case "partial Jev fallback stays incomplete" `Quick test_security_partial_jev_fallback_stays_incomplete;
           test_case "should analyze high threshold" `Quick test_security_should_analyze_high_threshold;
           test_case "should analyze high threshold restricted" `Quick
             test_security_should_analyze_high_threshold_restricted;
