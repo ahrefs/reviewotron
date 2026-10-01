@@ -48,6 +48,13 @@ val gate_triage_signals :
   Security_types.triage_signal list ->
   Security_types.triage_signal list
 
+(** Preserve partial Jev signals when primary triage fails while marking the
+    combined result incomplete. *)
+val partial_triage_fallback :
+  partial:Security_types.triage_output ->
+  primary:Security_types.triage_output option ->
+  Security_types.triage_output option * bool
+
 (** Outcome of the measured Jev candidate-validation boundary. *)
 type jev_validator_decision =
   | Confirm_candidate

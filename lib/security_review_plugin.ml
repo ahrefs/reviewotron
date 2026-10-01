@@ -60,6 +60,13 @@ let gate_triage_signals ~always_analyze ~jev_signals =
          (fun (jev_signal : Security_types.triage_signal) -> vuln_class_equal signal.vuln_class jev_signal.vuln_class)
          jev_signals)
 
+let partial_triage_fallback ~(partial : Security_types.triage_output) ~primary =
+  match primary, partial.signals with
+  | None, [] -> None, true
+  | None, _ :: _ -> Some partial, true
+  | Some primary, [] -> Some primary, false
+  | Some primary, _ :: _ -> Some { primary with signals = primary.signals @ partial.signals; skip_reason = None }, false
+
 type jev_validator_decision =
   | Confirm_candidate
   | Reject_candidate
@@ -692,6 +699,7 @@ let review_severity_rank = function
 let grouped_finding members =
   match members with
   | [] -> invalid_arg "grouped_finding requires at least one member"
+  | [ finding ] -> finding
   | (primary : Review_types.finding) :: _ ->
     let severity =
       List.fold_left
@@ -2034,24 +2042,25 @@ module Make (AI : Api.Agent_runner) = struct
       }
     in
     let%lwt jev_output = run_jev_triage ~ctx ~security_config ~diff ~artifacts ?log_context () in
-    let%lwt triage_result, primary_triage_costs =
+    let primary_failed = function
+      | None -> true
+      | Some _ -> false
+    in
+    let%lwt triage_result, primary_triage_costs, triage_failed =
       match security_config.jev_triage_enabled, security_config.jev_analysis_gate_enabled with
       | true, _ ->
         (match jev_output with
-        | Some output when output.complete -> Lwt.return (Some (jev_triage_output output), [])
+        | Some output when output.complete -> Lwt.return (Some (jev_triage_output output), [], false)
         | Some output ->
           log#warn "%sJev triage did not evaluate every file; falling back to primary triage" log_prefix;
           let%lwt primary_result, primary_costs = run_primary_triage () in
-          let triage_result =
-            match primary_result, output.signals with
-            | None, [] -> None
-            | None, _ :: _ -> Some (jev_triage_output output)
-            | Some primary, [] -> Some primary
-            | Some primary, _ :: _ ->
-              Some { primary with signals = primary.signals @ output.signals; skip_reason = None }
+          let triage_result, triage_failed =
+            partial_triage_fallback ~partial:(jev_triage_output output) ~primary:primary_result
           in
-          Lwt.return (triage_result, primary_costs)
-        | None -> run_primary_triage ())
+          Lwt.return (triage_result, primary_costs, triage_failed)
+        | None ->
+          let%lwt primary_result, primary_costs = run_primary_triage () in
+          Lwt.return (primary_result, primary_costs, primary_failed primary_result))
       | false, true ->
         let%lwt primary_result, primary_costs = run_primary_triage () in
         let triage_result =
@@ -2070,8 +2079,10 @@ module Make (AI : Api.Agent_runner) = struct
           | Some primary, None -> Some primary
           | None, Some _ | None, None -> None
         in
-        Lwt.return (triage_result, primary_costs)
-      | false, false -> run_primary_triage ()
+        Lwt.return (triage_result, primary_costs, primary_failed primary_result)
+      | false, false ->
+        let%lwt primary_result, primary_costs = run_primary_triage () in
+        Lwt.return (primary_result, primary_costs, primary_failed primary_result)
     in
     let jev_costs =
       match jev_output with
@@ -2114,7 +2125,7 @@ module Make (AI : Api.Agent_runner) = struct
              ~triage_signal_count:(List.length triage_output.signals) ~metrics ~costs:triage_costs);
         Security_artifacts.write_fetch_stats artifacts triage_costs;
         Security_artifacts.write_debug_json artifacts ~filename:"final_findings.json" (`List []);
-        Lwt.return ([], triage_costs, false)
+        Lwt.return ([], triage_costs, triage_failed)
       | None ->
         let%lwt classified_findings, analysis_costs, analysis_metrics, analysis_failed =
           run_stage ~stage:"security_analysis" (fun () ->
@@ -2148,5 +2159,5 @@ module Make (AI : Api.Agent_runner) = struct
           with exn ->
             log#error "%smemory curator async task raised: %s" log_prefix (Exn.str exn);
             Lwt.return_unit);
-        Lwt.return (classified_findings, costs, analysis_failed))
+        Lwt.return (classified_findings, costs, triage_failed || analysis_failed))
 end

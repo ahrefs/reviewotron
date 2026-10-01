@@ -1575,6 +1575,12 @@ let test_grouped_finding_preserves_member_details () =
       (check bool) ("scenario contains " ^ expected) true (CCString.mem ~sub:expected grouped.failure_scenario))
     [ "first trigger"; "second trigger" ]
 
+let test_grouped_finding_preserves_singleton () =
+  let finding = mk_finding ~path:"src/a.ml" ~line:10 ~message:"original defect" ~suggested_fix:(Some "safe_a ()") () in
+  let grouped = Security_review_plugin.grouped_finding [ finding ] in
+  (check string) "message unchanged" finding.message grouped.message;
+  (check (option string)) "suggestion unchanged" finding.suggested_fix grouped.suggested_fix
+
 let test_anchor_sink_in_diff_no_snap () =
   (* Sink is already in the diff (src/main.ml hunk A).  We must not snap; the
      finding's path/line should equal the sink and the message should NOT
@@ -3210,6 +3216,21 @@ let test_security_jev_analysis_gate () =
     (List.exists
        (fun (signal : Security_types.triage_signal) -> Security_review_plugin.vuln_class_equal signal.vuln_class Ssrf)
        kept)
+
+let test_security_partial_jev_fallback_stays_incomplete () =
+  let partial : Security_types.triage_output =
+    {
+      signals = [ make_triage_signal ~vuln_class:Xss ~confidence:High ];
+      language_hints = [ "TypeScript" ];
+      skip_reason = None;
+    }
+  in
+  let result, failed = Security_review_plugin.partial_triage_fallback ~partial ~primary:None in
+  (check bool) "partial signals retained" true
+    (match result with
+    | Some result -> Int.equal (List.length result.signals) 1
+    | None -> false);
+  (check bool) "failed fallback remains incomplete" true failed
 
 let test_security_should_analyze_high_threshold () =
   let security_config = { Config_types.default_security_plugin_config with confidence_threshold = High } in
@@ -9725,6 +9746,7 @@ let () =
           test_case "locates bounded relationship evidence" `Quick test_consolidation_relationship_evidence_paths;
           test_case "notification groups require complete links" `Quick test_notification_groups_require_complete_links;
           test_case "grouped finding preserves member details" `Quick test_grouped_finding_preserves_member_details;
+          test_case "grouped finding preserves singleton" `Quick test_grouped_finding_preserves_singleton;
         ] );
       ( "security_artifacts",
         [
@@ -9852,6 +9874,7 @@ let () =
             test_security_should_analyze_below_threshold_not_in_config;
           test_case "always_analyze implies enabled" `Quick test_security_always_analyze_implies_enabled;
           test_case "Jev analysis gate" `Quick test_security_jev_analysis_gate;
+          test_case "partial Jev fallback stays incomplete" `Quick test_security_partial_jev_fallback_stays_incomplete;
           test_case "should analyze high threshold" `Quick test_security_should_analyze_high_threshold;
           test_case "should analyze high threshold restricted" `Quick
             test_security_should_analyze_high_threshold_restricted;
