@@ -217,6 +217,7 @@ let write_bundle ~evidence_root ~review_batch_id ~created_at ~repo_url ~pr_numbe
     (Filename.concat dir "posted_review.json")
     (posted_review_json ~review_id ~pr_number ~head_sha ~review_body ~posted_comments);
   write_json (Filename.concat dir "findings.json") (findings_json ~posted_comments report);
+  write_json (Filename.concat dir "prevalidation.json") (Prevalidation.to_json report.prevalidation);
   write_json (Filename.concat dir "review_costs.json") (review_costs_json report.review_costs);
   write_json (Filename.concat dir "review_config.json") (review_config_json job.config);
   write_json (Filename.concat dir "fetched_files.json") (fetched_files_json job.file_contents);

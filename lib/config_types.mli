@@ -87,6 +87,13 @@ type security_plugin_config = {
   analysis_effort : Effort.t option;
   validator_model_tier : model_tier;
   confidence_threshold : confidence;
+  jev_triage_enabled : bool;
+  jev_triage_threshold : float;
+  jev_analysis_gate_enabled : bool;
+  jev_analysis_gate_threshold : float;
+  jev_validator_cascade_enabled : bool;
+  jev_grouping_enabled : bool;
+  jev_grouping_threshold : float;
   memory_max_tokens : int;
   metrics_artifacts : bool;
   debug_artifacts : bool;
@@ -98,6 +105,10 @@ val default_security_plugin_config : security_plugin_config
 
 (** Aggregated review plugin configuration. *)
 type review_plugins_config = {
+  jev_build_claim_guard_enabled : bool;
+  jev_build_claim_guard_threshold : float;
+  jev_suggestion_guard_enabled : bool;
+  jev_suggestion_guard_threshold : float;
   general : general_plugin_config;
   security : security_plugin_config;
 }
@@ -161,6 +172,7 @@ type secrets = {
   repos : repo_config list;
   anthropic_api_key : string option;
   openrouter_api_key : string option;
+  typesafe_api_key : string option;
   slack_access_token : string option;
 }
 [@@deriving json]

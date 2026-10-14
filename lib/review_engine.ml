@@ -67,6 +67,7 @@ type findings_plugin = {
     log_context:string option ->
     debug_dir:string ->
     memory_dir:string ->
+    record_prevalidation:Prevalidation.recorder ->
     ((Review_types.finding * Config_types.vuln_class option) list * Cost_tracking.agent_cost list * bool) Lwt.t;
 }
 
@@ -89,12 +90,8 @@ let same_category a b =
 let sourced_of_pair (source, finding) =
   { source; plugin_name = finding_source_to_string source; finding; vuln_class = None }
 
-let pick_for_same_line a b =
-  match a.source, b.source with
-  | From_security, From_general -> a
-  | From_general, From_security -> b
-  | From_general, From_general | From_security, From_security ->
-    if severity_rank a.finding.Review_types.severity >= severity_rank b.finding.Review_types.severity then a else b
+let pick_more_severe a b =
+  if severity_rank a.finding.Review_types.severity >= severity_rank b.finding.Review_types.severity then a else b
 
 let collapse_same_line sourced_findings =
   let tbl = Hashtbl.create (List.length sourced_findings) in
@@ -103,10 +100,24 @@ let collapse_same_line sourced_findings =
       let f = sourced.finding in
       let key = f.Review_types.path, f.line in
       match Hashtbl.find_opt tbl key with
-      | None -> Hashtbl.add tbl key sourced
-      | Some existing -> Hashtbl.replace tbl key (pick_for_same_line existing sourced))
+      | None -> Hashtbl.replace tbl key [ sourced ]
+      | Some existing -> Hashtbl.replace tbl key (sourced :: existing))
     sourced_findings;
-  Hashtbl.fold (fun _ v acc -> v :: acc) tbl []
+  Hashtbl.fold
+    (fun _ bucket acc ->
+      let security, general =
+        List.partition
+          (fun finding ->
+            match finding.source with
+            | From_security -> true
+            | From_general -> false)
+          bucket
+      in
+      match security, general with
+      | _ :: _, _ -> List.rev_append security acc
+      | [], [] -> acc
+      | [], first :: rest -> List.fold_left pick_more_severe first rest :: acc)
+    tbl []
 
 let near_line_window = 3
 
@@ -281,6 +292,7 @@ type plugin_result = {
   findings : Review_types.finding list;
   sourced_findings : sourced_finding list;
   review_costs : Cost_tracking.review_cost list;
+  prevalidation : Prevalidation.t;
   security_error : bool;
 }
 
@@ -294,6 +306,7 @@ type report = {
   unchanged_findings : Review_types.finding list;
   anchor_failed_findings : Review_types.finding list;
   review_costs : Cost_tracking.review_cost list;
+  prevalidation : Prevalidation.t;
   security_error : bool;
   general_failed : bool;
     (** [true] when the general review produced no publishable output, either
@@ -349,6 +362,19 @@ let retry_guidance_for_403 reason =
   match CCString.mem ~sub:"HTTP 403" reason with
   | true -> Some (retry_guidance reason)
   | false -> None
+
+let jev_suggestion_guard_removes ~threshold ~defect_probability ~plausibility_probability =
+  Float.compare defect_probability threshold >= 0 && Float.compare plausibility_probability (1.0 -. threshold) <= 0
+let jev_build_claim_guard_rejects ~threshold ~probability = probability >= threshold
+
+let reviewed_file_context ~line content =
+  let first_line = max 1 (line - 80) in
+  content
+  |> String.split_on_char '\n'
+  |> CCList.drop (first_line - 1)
+  |> CCList.take 161
+  |> List.mapi (fun index text -> Printf.sprintf "%6d | %s" (first_line + index) text)
+  |> String.concat "\n"
 
 let review_body ~log_context ~change_label ~general_output ~findings ~unchanged_findings ~anchor_failed_findings
   ~review_costs ~security_error ~(config : Config_types.config) =
@@ -510,6 +536,165 @@ module Make (AI : Api.Agent_runner) = struct
         fetch_file = job.fetch_file;
       }
 
+  let suggestion_guard_question : Jev_triage.noul_question =
+    {
+      instructions =
+        "Is `suggested_fix` mechanically defective or harmful as an actionable replacement for the validated finding, "
+        ^ "given the exact reviewed file diff? Judge only the fix payload; do not reject the underlying finding.";
+      true_criteria =
+        "The payload is a no-op; contains literal escape text instead of required newlines; is prose rather than "
+        ^ "applicable code; duplicates existing behavior; leaves the stated defect unchanged; introduces an evident "
+        ^ "syntax, type, or behavioral defect; or cannot plausibly replace the indicated lines.";
+      false_criteria =
+        "The payload is a concrete, mechanically plausible change that addresses the stated defect in the shown code. "
+        ^ "It need not be the only or most elegant repair, and incomplete repository context alone is not a defect.";
+    }
+
+  let suggestion_plausibility_question : Jev_triage.noul_question =
+    {
+      instructions =
+        "Is `suggested_fix` a concrete, mechanically plausible actionable replacement for the validated finding at "
+        ^ "its indicated location, given the exact reviewed-file diff? Judge only the fix payload.";
+      true_criteria =
+        "The payload can plausibly replace the indicated code and address the stated defect without an evident syntax, "
+        ^ "type, control-flow, ordering, or behavioral error. It need not be the only or most elegant repair.";
+      false_criteria =
+        "The payload is a no-op, prose, placeholder code, anchored to incompatible lines, duplicates existing \
+         behavior, "
+        ^ "leaves the defect unchanged, or introduces an evident defect. Missing repository context alone is "
+        ^ "uncertainty, not proof of invalidity.";
+    }
+
+  let build_claim_guard_question : Jev_triage.noul_question =
+    {
+      instructions =
+        "Do `reviewed_file_context` or `completed_commit_checks` directly disprove the finding's claimed "
+        ^ "deterministic compile or build failure at this exact commit? Answer only about explicit syntax, binding, "
+        ^ "name-resolution, arity, type, or linking claims.";
+      true_criteria =
+        "Either the shown source directly establishes the disputed construct is valid, or a successful completed "
+        ^ "check clearly compiled the affected language/component at this exact commit and no clearly relevant build "
+        ^ "check failed. Unrelated failed checks do not outweigh a relevant successful build.";
+      false_criteria =
+        "The claimed build defect is real, a clearly relevant build check failed, neither source nor checks directly "
+        ^ "disprove the exact claim, the finding concerns runtime behavior, or evidence is uncertain. Uncertainty is "
+        ^ "false.";
+    }
+
+  let commit_status_to_json ({ context; state; description; completed_at } : Review_job.commit_status) =
+    let fields = [ "context", `String context; "state", `String (Review_job.commit_status_state_to_string state) ] in
+    let fields =
+      match description with
+      | None -> fields
+      | Some value -> ("description", `String value) :: fields
+    in
+    match completed_at with
+    | None -> `Assoc fields
+    | Some value -> `Assoc (("completed_at", `String value) :: fields)
+
+  let run_build_claim_guard ~api_key ~threshold ~diff ~file_contents ~fetch_file ~completed_commit_checks ?log_context
+    sourced_findings =
+    let log_prefix = log_context_prefix log_context in
+    let fetch path =
+      match List.assoc_opt path file_contents with
+      | Some content -> Lwt.return (Ok (Some content))
+      | None -> fetch_file ~path
+    in
+    let check sourced =
+      let finding = sourced.finding in
+      match sourced.source, Diff_anchor.find_file_diff_by_path ~diff finding.path with
+      | From_security, _ | From_general, None -> Lwt.return (Some sourced, None)
+      | From_general, Some _file_diff ->
+        let%lwt reviewed_file_context =
+          match%lwt fetch finding.path with
+          | Error error ->
+            log#warn "%sJev build-claim guard failed to fetch %s: %s" log_prefix finding.path error;
+            Lwt.return None
+          | Ok None -> Lwt.return None
+          | Ok (Some content) -> Lwt.return (Some (reviewed_file_context ~line:finding.line content))
+        in
+        (match reviewed_file_context, completed_commit_checks with
+        | None, [] -> Lwt.return (Some sourced, None)
+        | _ ->
+          let finding_without_fix = { finding with Review_types.suggested_fix = None } in
+          let state =
+            `Assoc
+              [
+                "finding", Review_types.finding_to_json finding_without_fix;
+                "reviewed_file_context", `String (CCOption.get_or ~default:"" reviewed_file_context);
+                "completed_commit_checks", `List (List.map commit_status_to_json completed_commit_checks);
+              ]
+          in
+          Lwt.catch
+            (fun () ->
+              let%lwt result = Jev_triage.score_noul ~api_key ~state ~question:build_claim_guard_question in
+              match result with
+              | Error error ->
+                log#warn "%sJev build-claim guard failed for %s:%d: %s" log_prefix finding.path finding.line error;
+                Lwt.return (Some sourced, None)
+              | Ok ({ probability; cost } : Jev_triage.noul_output) ->
+                let cost = { cost with agent_name = "jev_build_claim_guard" } in
+                (match jev_build_claim_guard_rejects ~threshold ~probability with
+                | true ->
+                  log#info "%sJev build-claim guard rejected false claim at %s:%d (Noul %.3f)" log_prefix finding.path
+                    finding.line probability;
+                  Lwt.return (None, Some cost)
+                | false -> Lwt.return (Some sourced, Some cost)))
+            (fun exn ->
+              log#warn "%sJev build-claim guard raised for %s:%d: %s" log_prefix finding.path finding.line (Exn.str exn);
+              Lwt.return (Some sourced, None)))
+    in
+    let%lwt checked = Lwt_list.map_p check sourced_findings in
+    Lwt.return (List.filter_map fst checked, List.filter_map snd checked)
+
+  let suggestion_guard_state ~diff finding suggested_fix =
+    let finding_without_fix = { finding with Review_types.suggested_fix = None } in
+    `Assoc
+      [
+        "finding", Review_types.finding_to_json finding_without_fix;
+        "suggested_fix", `String suggested_fix;
+        "exact_file_diff", `String (Diff_parser.to_string_annotated [ diff ]);
+      ]
+
+  let run_suggestion_guard ~api_key ~threshold ~diff ?log_context sourced_findings =
+    let log_prefix = log_context_prefix log_context in
+    let score ~state ~question =
+      Lwt.catch
+        (fun () -> Jev_triage.score_noul ~api_key ~state ~question)
+        (fun exn -> Lwt.return (Error (Exn.str exn)))
+    in
+    let check sourced =
+      let finding = sourced.finding in
+      match finding.suggested_fix, Diff_anchor.find_file_diff_by_path ~diff finding.path with
+      | Some suggested_fix, Some file_diff ->
+        let state = suggestion_guard_state ~diff:file_diff finding suggested_fix in
+        (match%lwt score ~state ~question:suggestion_guard_question with
+        | Error error ->
+          log#warn "%sJev suggestion guard failed for %s:%d: %s" log_prefix finding.path finding.line error;
+          Lwt.return (sourced, [])
+        | Ok ({ probability = defect_probability; cost = defect_cost } : Jev_triage.noul_output) ->
+        match Float.compare defect_probability threshold >= 0 with
+        | false -> Lwt.return (sourced, [ defect_cost ])
+        | true ->
+        match%lwt score ~state ~question:suggestion_plausibility_question with
+        | Error error ->
+          log#warn "%sJev suggestion plausibility check failed for %s:%d: %s" log_prefix finding.path finding.line error;
+          Lwt.return (sourced, [ defect_cost ])
+        | Ok ({ probability = plausibility_probability; cost = plausibility_cost } : Jev_triage.noul_output) ->
+          let sourced =
+            match jev_suggestion_guard_removes ~threshold ~defect_probability ~plausibility_probability with
+            | true ->
+              log#info "%sJev suggestion guard removed defective fix at %s:%d (defect %.3f, plausibility %.3f)"
+                log_prefix finding.path finding.line defect_probability plausibility_probability;
+              { sourced with finding = { finding with suggested_fix = None } }
+            | false -> sourced
+          in
+          Lwt.return (sourced, [ defect_cost; plausibility_cost ]))
+      | None, _ | Some _, None -> Lwt.return (sourced, [])
+    in
+    let%lwt checked = Lwt_list.map_p check sourced_findings in
+    Lwt.return (List.map fst checked, List.concat_map snd checked)
+
   let run_plugins ~ctx ~job ~debug_dir =
     Telemetry.span
       ~attrs:(Review_job.span_attrs job ~fetched_files:(List.length job.Review_job.file_contents))
@@ -523,6 +708,8 @@ module Make (AI : Api.Agent_runner) = struct
         let memory_dir = memory_dir_for_context ~ctx in
         let metadata = metadata_of_job job in
         let plugins_config = config.Config_types.review_plugins in
+        let prevalidation = ref Prevalidation.empty in
+        let record_prevalidation evidence = prevalidation := Prevalidation.merge !prevalidation evidence in
         log#info "%splugins starting: general=%b security=%b files=%d diff_bytes=%d debug_dir=%s memory_dir=%s"
           log_prefix plugins_config.general.enabled plugins_config.security.enabled (List.length diff)
           (String.length job.diff_text) debug_dir memory_dir;
@@ -540,7 +727,7 @@ module Make (AI : Api.Agent_runner) = struct
                   if plugins_config.general.enabled then begin
                     let%lwt result, costs =
                       General_plugin.run_review ~ctx ~repo_url ~config ~diff_text:job.diff_text ~metadata ~debug_dir
-                        ~log_context ()
+                        ~log_context ~record_prevalidation ()
                     in
                     (match result with
                     | General_review_plugin.Completed _ -> ()
@@ -574,7 +761,7 @@ module Make (AI : Api.Agent_runner) = struct
                   (fun () ->
                     let%lwt findings, costs, failed =
                       plugin.fp_run ~ctx ~repo_url ~config ~diff ~diff_text:job.diff_text ~metadata
-                        ~log_context:(Some log_context) ~debug_dir ~memory_dir
+                        ~log_context:(Some log_context) ~debug_dir ~memory_dir ~record_prevalidation
                     in
                     Lwt.return (plugin, findings, costs, failed))
                   (function
@@ -619,6 +806,34 @@ module Make (AI : Api.Agent_runner) = struct
           @ plugin_findings
         in
         let sourced_findings = deduplicate_sourced_findings sourced in
+        let%lwt sourced_findings, build_claim_guard_costs =
+          match plugins_config.jev_build_claim_guard_enabled, (Context.secrets ctx).typesafe_api_key with
+          | false, _ -> Lwt.return (sourced_findings, [])
+          | true, None ->
+            log#warn "%sJev build-claim guard is enabled but no TypeSafe API key is configured" log_prefix;
+            Lwt.return (sourced_findings, [])
+          | true, Some api_key ->
+            let%lwt completed_commit_checks =
+              match%lwt job.fetch_commit_statuses () with
+              | Ok statuses -> Lwt.return statuses
+              | Error error ->
+                log#warn "%sfailed to fetch commit statuses for Jev build-claim guard: %s" log_prefix error;
+                Lwt.return []
+            in
+            run_build_claim_guard ~api_key ~threshold:plugins_config.jev_build_claim_guard_threshold ~diff
+              ~file_contents:job.file_contents ~fetch_file:job.fetch_file ~completed_commit_checks ~log_context
+              sourced_findings
+        in
+        let%lwt sourced_findings, suggestion_guard_costs =
+          match plugins_config.jev_suggestion_guard_enabled, (Context.secrets ctx).typesafe_api_key with
+          | false, _ -> Lwt.return (sourced_findings, [])
+          | true, None ->
+            log#warn "%sJev suggestion guard is enabled but no TypeSafe API key is configured" log_prefix;
+            Lwt.return (sourced_findings, [])
+          | true, Some api_key ->
+            run_suggestion_guard ~api_key ~threshold:plugins_config.jev_suggestion_guard_threshold ~diff ~log_context
+              sourced_findings
+        in
         let findings = List.map (fun sourced -> sourced.finding) sourced_findings in
         let plugin_costs =
           List.map
@@ -626,7 +841,11 @@ module Make (AI : Api.Agent_runner) = struct
             findings_results
         in
         let review_costs =
-          Cost_tracking.aggregate ~plugin:"general" general_costs :: plugin_costs
+          (Cost_tracking.aggregate ~plugin:"general" general_costs :: plugin_costs)
+          @ [
+              Cost_tracking.aggregate ~plugin:"jev_build_claim_guard" build_claim_guard_costs;
+              Cost_tracking.aggregate ~plugin:"jev_suggestion_guard" suggestion_guard_costs;
+            ]
           |> List.filter (fun (rc : Cost_tracking.review_cost) ->
             match rc.agents with
             | [] -> false
@@ -641,7 +860,8 @@ module Make (AI : Api.Agent_runner) = struct
         in
         log#info "%splugins complete: findings=%d general=%s findings_plugin_error=%b" log_prefix (List.length findings)
           general_status security_error;
-        Lwt.return { general_output; findings; sourced_findings; review_costs; security_error })
+        Lwt.return
+          { general_output; findings; sourced_findings; review_costs; prevalidation = !prevalidation; security_error })
 
   let route_findings ~log_context ~change_label ~filtered_diff findings =
     let log_prefix = log_context_prefix (Some log_context) in
@@ -726,6 +946,7 @@ module Make (AI : Api.Agent_runner) = struct
             unchanged_findings;
             anchor_failed_findings;
             review_costs = plugin_result.review_costs;
+            prevalidation = plugin_result.prevalidation;
             security_error = plugin_result.security_error;
             general_failed;
           })

@@ -313,6 +313,7 @@ let nonempty = Llm_provider.nonempty
 
 let env_api_key () = Stdlib.Option.bind (Sys.getenv_opt "ANTHROPIC_API_KEY") nonempty
 let env_openrouter_key () = Stdlib.Option.bind (Sys.getenv_opt "OPENROUTER_API_KEY") nonempty
+let env_typesafe_key () = Stdlib.Option.bind (Sys.getenv_opt "TYPESAFE_API_KEY") nonempty
 
 (* A secrets file is optional for local review: it only matters when the agent
    wants the API key (and any Slack/repo settings) to come from disk instead of
@@ -366,7 +367,17 @@ let build_local_context ~secrets_path ~api_key_flag ~openrouter_api_key_flag ~co
       | None -> []
     in
     let slack_access_token = Stdlib.Option.bind file_secrets (fun (s : Config_types.secrets) -> s.slack_access_token) in
-    let secrets : Config_types.secrets = { repos; anthropic_api_key; openrouter_api_key; slack_access_token } in
+    let typesafe_api_key =
+      List.find_map Fun.id
+        [
+          env_typesafe_key ();
+          Stdlib.Option.bind file_secrets (fun (s : Config_types.secrets) ->
+            Stdlib.Option.bind s.typesafe_api_key nonempty);
+        ]
+    in
+    let secrets : Config_types.secrets =
+      { repos; anthropic_api_key; openrouter_api_key; typesafe_api_key; slack_access_token }
+    in
     let state =
       match state_path with
       | Some path -> State.load ~filepath:path

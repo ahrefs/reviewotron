@@ -50,6 +50,60 @@
   (glob_files_rec mock_api_responses/github/*)))
 
 (test
+ (name test_jev_triage)
+ (modules test_jev_triage)
+ (libraries reviewotron_lib alcotest))
+
+(executable
+ (name jev_routing_benchmark)
+ (modules jev_routing_benchmark)
+ (libraries reviewotron_lib devkit lwt lwt.unix yojson)
+ (preprocess
+  (pps lwt_ppx)))
+
+(executable
+ (name jev_captured_routing_benchmark)
+ (modules jev_captured_routing_benchmark)
+ (libraries reviewotron_lib lwt lwt.unix yojson)
+ (preprocess
+  (pps lwt_ppx)))
+
+(executable
+ (name jev_dedup_benchmark)
+ (modules jev_dedup_benchmark)
+ (libraries reviewotron_lib lwt lwt.unix yojson)
+ (preprocess
+  (pps lwt_ppx)))
+
+(executable
+ (name jev_noul_benchmark)
+ (modules jev_noul_benchmark)
+ (libraries reviewotron_lib lwt lwt.unix yojson)
+ (preprocess
+  (pps lwt_ppx)))
+
+(executable
+ (name jev_candidate_validation_benchmark)
+ (modules jev_candidate_validation_benchmark)
+ (libraries reviewotron_lib lwt lwt.unix yojson)
+ (preprocess
+  (pps lwt_ppx)))
+
+(executable
+ (name jev_score_benchmark)
+ (modules jev_score_benchmark)
+ (libraries reviewotron_lib lwt lwt.unix yojson)
+ (preprocess
+  (pps lwt_ppx)))
+
+(executable
+ (name consolidation_benchmark)
+ (modules consolidation_benchmark)
+ (libraries reviewotron_lib devkit lwt lwt.unix yojson)
+ (preprocess
+  (pps lwt_ppx)))
+
+(test
  (name test_local_cli)
  (modules test_local_cli)
  (libraries reviewotron_lib alcotest extlib extunix lwt lwt.unix yojson))

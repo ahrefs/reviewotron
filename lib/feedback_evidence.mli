@@ -1,8 +1,9 @@
 (** Immutable evidence bundles for posted GitHub PR reviews.
 
     Bundles are written beside feedback target files and are intentionally
-    bounded: no raw prompts, transcripts, webhook payloads, tool outputs, or
-    fetched file contents are stored. *)
+    bounded: structured pre-validation candidates are retained, but no raw
+    prompts, transcripts, webhook payloads, tool outputs, or fetched file
+    contents are stored. *)
 
 type posted_comment = {
   feedback_id : string;

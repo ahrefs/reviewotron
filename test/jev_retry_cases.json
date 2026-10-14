@@ -1,0 +1,189 @@
+{
+  "question": {
+    "instructions": "Should this security analysis be retried because `analysis_output` failed to adequately resolve the routed security concern shown by `triage_signal` and `diff`? Judge coverage of the routed concern, not whether a later validator would ultimately confirm a candidate.",
+    "true_criteria": "The output is empty, unrelated, or dismisses concrete source-to-sink or missing-control evidence without addressing it. A focused corrective retry could recover a material candidate or a supported safe conclusion.",
+    "false_criteria": "The output either contains a candidate that addresses the routed concern, or specifically explains the code control that makes the routed concern safe. Further validation may still reject a candidate, but analysis covered its task."
+  },
+  "cases": [
+    {
+      "name": "missed_sql_injection",
+      "expected": true,
+      "state": {
+        "triage_signal": "injection in src/reports.ts",
+        "diff": "owner comes from request.query and is interpolated into `SELECT * FROM reports WHERE owner = '${owner}'`, then passed to db.query",
+        "analysis_output": {"findings": [], "notes": "No injection issues found."}
+      }
+    },
+    {
+      "name": "missed_innerhtml_xss",
+      "expected": true,
+      "state": {
+        "triage_signal": "xss in src/profile.ts",
+        "diff": "profile.displayName comes from a fetched JSON response and is assigned to target.innerHTML",
+        "analysis_output": {"findings": [], "notes": "The API responds with JSON."}
+      }
+    },
+    {
+      "name": "authz_dismissed_as_authenticated",
+      "expected": true,
+      "state": {
+        "triage_signal": "authorization in src/projects.ts",
+        "diff": "an authenticated route updates a project selected by request path id; the update filters by id only and never checks owner_id",
+        "analysis_output": {"findings": [], "notes": "The route requires a logged-in user, so project updates are protected."}
+      }
+    },
+    {
+      "name": "policy_scope_missed",
+      "expected": true,
+      "state": {
+        "triage_signal": "policy regression in infra/sudoers.pp",
+        "diff": "a new NOPASSWD rule grants `/usr/bin/systemctl *` as root to the deploy user",
+        "analysis_output": {"findings": [], "notes": "The executable path is fixed to /usr/bin/systemctl."}
+      }
+    },
+    {
+      "name": "ssrf_normalization_mistaken_for_validation",
+      "expected": true,
+      "state": {
+        "triage_signal": "ssrf in src/preview.ts",
+        "diff": "a URL query parameter is trimmed, parsed with new URL, and fetched with redirects enabled; there is no host or scheme allowlist",
+        "analysis_output": {"findings": [], "notes": "The destination is normalized with the URL parser before fetch."}
+      }
+    },
+    {
+      "name": "unrelated_candidate_does_not_cover_signal",
+      "expected": true,
+      "state": {
+        "triage_signal": "path traversal in src/export.ts",
+        "diff": "the file query parameter is decoded twice, joined to /srv/exports, and read without a resolved-path containment check",
+        "analysis_output": {
+          "findings": [{"class": "authz", "description": "download route does not require login"}],
+          "notes": "One authorization candidate found."
+        }
+      }
+    },
+    {
+      "name": "one_candidate_misses_second_sql_path",
+      "expected": true,
+      "state": {
+        "triage_signal": "injection in two changed regions of src/admin.ts",
+        "diff": "name is concatenated into a users query at line 44; search is independently concatenated into an audit query at line 77",
+        "analysis_output": {
+          "findings": [{"class": "injection", "source": "name parameter", "sink": "users query at line 44", "repair": "parameterize name"}],
+          "notes": "Found the users-query injection."
+        }
+      }
+    },
+    {
+      "name": "structurally_valid_candidate_ignores_routed_flow",
+      "expected": true,
+      "state": {
+        "triage_signal": "xss from markdown note to rendered HTML response in src/export.ts",
+        "diff": "note query input is parsed by marked and returned as an HTML response; logger.info also records the note length",
+        "analysis_output": {
+          "findings": [{"class": "xss", "source": "note length", "sink": "logger.info", "repair": "escape log text"}],
+          "notes": "One structurally valid XSS candidate returned."
+        }
+      }
+    },
+    {
+      "name": "analysis_admits_missing_helper_evidence",
+      "expected": true,
+      "state": {
+        "triage_signal": "authentication concern around verifySession",
+        "diff": "the route trusts verifySession(token).userId; verifySession is outside the provided diff",
+        "analysis_output": {"findings": [], "notes": "Could not inspect verifySession, so token expiry and issuer checks remain unknown."}
+      }
+    },
+    {
+      "name": "parameterized_sql_resolved_safe",
+      "expected": false,
+      "state": {
+        "triage_signal": "injection in src/reports.ts",
+        "diff": "owner comes from request.query and is passed as the second argument to db.query('SELECT * FROM reports WHERE owner = $1', [owner])",
+        "analysis_output": {"findings": [], "notes": "The untrusted owner is bound through the $1 parameter and never enters SQL syntax."}
+      }
+    },
+    {
+      "name": "textcontent_resolved_safe",
+      "expected": false,
+      "state": {
+        "triage_signal": "xss in src/profile.ts",
+        "diff": "profile.displayName comes from JSON and is assigned to target.textContent",
+        "analysis_output": {"findings": [], "notes": "textContent renders the value as text rather than HTML."}
+      }
+    },
+    {
+      "name": "owner_filter_resolved_safe",
+      "expected": false,
+      "state": {
+        "triage_signal": "authorization in src/projects.ts",
+        "diff": "the update query filters by both project id and currentUser.id as owner_id",
+        "analysis_output": {"findings": [], "notes": "The mutation is constrained to a project owned by the current user."}
+      }
+    },
+    {
+      "name": "sql_candidate_covers_signal",
+      "expected": false,
+      "state": {
+        "triage_signal": "injection in src/reports.ts",
+        "diff": "owner is interpolated into a reports query",
+        "analysis_output": {
+          "findings": [{"class": "injection", "source": "owner query parameter", "sink": "interpolated SQL passed to db.query", "repair": "bind owner as a parameter"}],
+          "notes": "Traced owner to the SQL execution."
+        }
+      }
+    },
+    {
+      "name": "traversal_candidate_covers_signal",
+      "expected": false,
+      "state": {
+        "triage_signal": "path traversal in src/export.ts",
+        "diff": "the decoded file parameter reaches fs.readFile through path.join",
+        "analysis_output": {
+          "findings": [{"class": "path_traversal", "source": "file query parameter", "sink": "fs.readFile", "repair": "resolve and enforce export-directory containment"}],
+          "notes": "The routed path is covered by the candidate."
+        }
+      }
+    },
+    {
+      "name": "hardcoded_command_resolved_safe",
+      "expected": false,
+      "state": {
+        "triage_signal": "command injection in lib/system_info.ml",
+        "diff": "the changed code calls Unix.create_process '/usr/bin/uname' with the fixed argument array [| 'uname'; '-a' |]",
+        "analysis_output": {"findings": [], "notes": "The executable and every argument are compile-time constants; no untrusted value reaches process creation."}
+      }
+    },
+    {
+      "name": "one_candidate_and_second_region_safe",
+      "expected": false,
+      "state": {
+        "triage_signal": "injection in two changed regions of src/admin.ts",
+        "diff": "name is concatenated into a users query at line 44; search is bound as $1 in a separate audit query at line 77",
+        "analysis_output": {
+          "findings": [{"class": "injection", "source": "name parameter", "sink": "users query at line 44", "repair": "parameterize name"}],
+          "notes": "The users query is vulnerable. The audit query binds search through $1 and is safe."
+        }
+      }
+    },
+    {
+      "name": "cross_file_helper_checked_safe",
+      "expected": false,
+      "state": {
+        "triage_signal": "authentication concern around verifySession",
+        "diff": "the route trusts verifySession(token).userId; fetched helper code verifies signature, issuer, audience, and exp before returning claims",
+        "analysis_output": {"findings": [], "notes": "Inspected verifySession: all required token validations occur before claims are returned."}
+      }
+    },
+    {
+      "name": "ssrf_redirect_policy_resolved_safe",
+      "expected": false,
+      "state": {
+        "triage_signal": "ssrf around an outbound preview request",
+        "diff": "the destination host must equal preview.example.com, the scheme must be https, redirects are disabled, then fetch is called",
+        "analysis_output": {"findings": [], "notes": "The fixed host, HTTPS requirement, and disabled redirects prevent attacker-selected destinations."}
+      }
+    }
+  ]
+}

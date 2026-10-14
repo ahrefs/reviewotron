@@ -1,0 +1,23 @@
+diff --git a/src/api/profile.ts b/src/api/profile.ts
+index 1111111..2222222 100644
+--- a/src/api/profile.ts
++++ b/src/api/profile.ts
+@@ -1,3 +1,9 @@
+ export function profileResponse(request: Request) {
+-  return Response.json({ displayName: "anonymous" });
++  const cookie = request.headers.get("cookie") ?? "";
++  const displayName = /displayName=([^;]+)/.exec(cookie)?.[1] ?? "anonymous";
++  return Response.json({ displayName: decodeURIComponent(displayName) });
+ }
+diff --git a/src/web/profile.ts b/src/web/profile.ts
+index 3333333..4444444 100644
+--- a/src/web/profile.ts
++++ b/src/web/profile.ts
+@@ -1,3 +1,8 @@
+-export function showProfile() {}
++export async function showProfile() {
++  const response = await fetch("/api/profile");
++  const profile = await response.json();
++  const target = document.querySelector("#display-name");
++  if (target) target.textContent = profile.displayName;
++}

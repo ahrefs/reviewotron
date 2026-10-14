@@ -40,6 +40,35 @@ val agent_model_tier : Config_types.model_tier -> Agent_runner.model_tier
     [always_analyze_vuln_classes]. *)
 val should_analyze : security_config:Config_types.security_plugin_config -> Security_types.triage_signal -> bool
 
+(** Keep primary triage signals whose vulnerability class Jev independently
+    supports. Classes in [always_analyze] bypass the gate. *)
+val gate_triage_signals :
+  always_analyze:Config_types.vuln_class list ->
+  jev_signals:Security_types.triage_signal list ->
+  Security_types.triage_signal list ->
+  Security_types.triage_signal list
+
+(** Preserve partial Jev signals when primary triage fails while marking the
+    combined result incomplete. *)
+val partial_triage_fallback :
+  partial:Security_types.triage_output ->
+  primary:Security_types.triage_output option ->
+  Security_types.triage_output option * bool
+
+(** Outcome of the measured Jev candidate-validation boundary. *)
+type jev_validator_decision =
+  | Confirm_candidate
+  | Reject_candidate
+  | Run_validator
+
+(** Confirm only directly supported candidates, reject only demonstrated fatal
+    defects, and send the uncertain middle to the reasoning validator. *)
+val jev_validator_decision : supported:float -> fatal_defect:float -> jev_validator_decision
+
+(** Reject a validator-confirmed candidate only when fetched evidence both
+    demonstrates a constrained source and makes direct support very unlikely. *)
+val jev_source_constraint_reject : source_constrained:float -> supported:float -> bool
+
 (** Step budget for a per-class analysis agent after routing.
 
     High-confidence signals still get enough room for multi-file evidence
@@ -117,6 +146,14 @@ val validator_results_for_candidates :
     proof are downgraded to [Rejected] with an evidence note. *)
 val enforce_validator_proofs : Security_types.validated_finding list -> Security_types.validated_finding list
 
+(** Build deterministic complete-link groups. A finding joins a group only
+    when every pair between it and the existing members was approved. *)
+val notification_groups : finding_count:int -> (int * int) list -> int list list
+
+(** Render a notification group as one anchored finding while retaining every
+    member location, message, failure scenario, and proposed replacement. *)
+val grouped_finding : Review_types.finding list -> Review_types.finding
+
 (** Security review plugin functor. File content fetching is supplied through
     {!Review_plugin.review_metadata}, so the plugin is independent of any
     specific source adapter. *)
@@ -154,6 +191,7 @@ module Make (_ : Api.Agent_runner) : sig
     log_context:string option ->
     debug_dir:string ->
     memory_dir:string ->
+    record_prevalidation:Prevalidation.recorder ->
     ((Review_types.finding * Config_types.vuln_class option) list * Cost_tracking.agent_cost list * bool) Lwt.t
 
   (** Convert a validated security finding into a review finding, choosing the
@@ -162,17 +200,6 @@ module Make (_ : Api.Agent_runner) : sig
       through one.  Exposed for testing the anchor-snapping logic. *)
   val validated_to_finding :
     ?log_context:string -> diff:Diff_parser.file_diff list -> Security_types.validated_finding -> Review_types.finding
-
-  (** Collapse candidate findings that share the same [(sink.path, sink.line)].
-
-      Per-class analysis agents independently flag the same defect under
-      different vuln_class labels.  This pass keeps one canonical candidate
-      per sink line — picked by highest confidence, then longest flow, then
-      first-seen — so the validator sees each defect exactly once.  Distinct
-      sink lines are always preserved; merging only happens at literally the
-      same file and line.  Exposed for testing. *)
-  val dedup_candidates :
-    ?log_context:string -> Security_types.candidate_finding list -> Security_types.candidate_finding list
 
   (** Build the architectural observations passed to the memory curator.
 

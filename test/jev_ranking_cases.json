@@ -1,0 +1,141 @@
+{
+  "question": {
+    "instructions": "How ready is `candidate` to receive scarce validator budget, based on whether its claimed defect is concretely supported by `diff_evidence`?",
+    "criteria": [
+      "The candidate is contradicted by the diff evidence, describes a safe pattern as vulnerable, or lacks a concrete security effect.",
+      "The candidate raises a plausible concern but its source, sink, missing control, changed-code causality, or impact is generic or materially incomplete.",
+      "The candidate gives specific evidence tied to changed code and a plausible security impact, but an important exploitability or mitigating-control question remains.",
+      "The candidate gives a concrete and internally consistent source-to-sink path or missing-control proof, a clear security impact, and no visible mitigating control."
+    ]
+  },
+  "cases": [
+    {
+      "name": "confirmed_policy_systemctl",
+      "confirmed": true,
+      "state": {
+        "candidate": {"class": "policy_regression", "source": "new user_systemctl resource", "sink": "generated NOPASSWD /usr/bin/systemctl rule", "flow": "deploy user gains unrestricted root systemctl", "impact": "root-equivalent service control"},
+        "diff_evidence": "unix_users.pp adds command => '/usr/bin/systemctl' with default NOPASSWD tags and no subcommand or unit restriction"
+      }
+    },
+    {
+      "name": "confirmed_sql_concat",
+      "confirmed": true,
+      "state": {
+        "candidate": {"class": "injection", "source": "id from HTTP query", "sink": "Db.exec raw SQL", "flow": "id concatenated into WHERE clause", "impact": "attacker alters query"},
+        "diff_evidence": "let id = Dream.query request 'id' in Db.exec ('SELECT * FROM users WHERE id = ' ^ id)"
+      }
+    },
+    {
+      "name": "confirmed_innerhtml",
+      "confirmed": true,
+      "state": {
+        "candidate": {"class": "xss", "source": "profile.displayName from JSON API", "sink": "target.innerHTML", "flow": "response JSON field assigned directly", "impact": "script execution in profile viewer"},
+        "diff_evidence": "const profile = await response.json(); target.innerHTML = profile.displayName; no sanitizer is called"
+      }
+    },
+    {
+      "name": "confirmed_command_exec",
+      "confirmed": true,
+      "state": {
+        "candidate": {"class": "command_injection", "source": "filename request parameter", "sink": "child_process.exec", "flow": "filename concatenated into shell string", "impact": "server command execution"},
+        "diff_evidence": "exec(`preview --file ${request.query.filename}`)"
+      }
+    },
+    {
+      "name": "confirmed_missing_owner",
+      "confirmed": true,
+      "state": {
+        "candidate": {"class": "authz", "source": "project id route parameter", "sink": "archive update", "flow": "id alone selects updated project", "impact": "archive another user's project"},
+        "diff_evidence": "authenticated route executes UPDATE projects SET archived=true WHERE id=$1; currentUser.id is never used"
+      }
+    },
+    {
+      "name": "confirmed_ssrf",
+      "confirmed": true,
+      "state": {
+        "candidate": {"class": "ssrf", "source": "url query parameter", "sink": "fetch with redirects", "flow": "parsed URL reaches fetch", "impact": "request internal services"},
+        "diff_evidence": "const destination = new URL(request.query.url); fetch(destination, {redirect:'follow'}); no scheme or host allowlist"
+      }
+    },
+    {
+      "name": "confirmed_traversal",
+      "confirmed": true,
+      "state": {
+        "candidate": {"class": "path_traversal", "source": "file query parameter", "sink": "fs.readFile", "flow": "decoded file joined to export root", "impact": "read files outside exports"},
+        "diff_evidence": "requested = decodeURIComponent(decodeURIComponent(file)); filename = path.join('/srv/exports', requested); fs.readFile(filename)"
+      }
+    },
+    {
+      "name": "confirmed_expired_jwt",
+      "confirmed": true,
+      "state": {
+        "candidate": {"class": "authn", "source": "bearer token", "sink": "authenticated session", "flow": "signature-verified claims trusted without expiry", "impact": "expired tokens remain valid"},
+        "diff_evidence": "jwt.verify(token, publicKey, {ignoreExpiration:true}) returns claims used as the current identity"
+      }
+    },
+    {
+      "name": "rejected_numeric_sql",
+      "confirmed": false,
+      "state": {
+        "candidate": {"class": "injection", "source": "id query parameter", "sink": "id concatenated into SQL", "flow": "raw id reaches query", "impact": "alter query syntax"},
+        "diff_evidence": "const id = parseInt(request.query.id, 10); if (!Number.isSafeInteger(id)) return badRequest(); db.query(`SELECT * FROM users WHERE id = ${id}`)"
+      }
+    },
+    {
+      "name": "rejected_parameterized_sql",
+      "confirmed": false,
+      "state": {
+        "candidate": {"class": "injection", "source": "owner query parameter", "sink": "reports query", "flow": "owner reaches database", "impact": "alter reports query"},
+        "diff_evidence": "db.query('SELECT * FROM reports WHERE owner = $1', [owner])"
+      }
+    },
+    {
+      "name": "rejected_sanitized_html",
+      "confirmed": false,
+      "state": {
+        "candidate": {"class": "xss", "source": "markdown input", "sink": "innerHTML", "flow": "rendered markdown reaches DOM", "impact": "script execution"},
+        "diff_evidence": "target.innerHTML = DOMPurify.sanitize(marked.parse(markdown), {USE_PROFILES:{html:true}})"
+      }
+    },
+    {
+      "name": "rejected_execfile_args",
+      "confirmed": false,
+      "state": {
+        "candidate": {"class": "command_injection", "source": "filename parameter", "sink": "process invocation", "flow": "filename passed to preview tool", "impact": "shell execution"},
+        "diff_evidence": "execFile('/usr/bin/preview', ['--file', filename], {shell:false})"
+      }
+    },
+    {
+      "name": "rejected_owner_helper",
+      "confirmed": false,
+      "state": {
+        "candidate": {"class": "authz", "source": "project id", "sink": "archive update", "flow": "id selects a project", "impact": "archive another user's project"},
+        "diff_evidence": "const project = await requireOwnedProject(projectId, currentUser.id); await archive(project.id); requireOwnedProject returns 404 unless owner_id matches"
+      }
+    },
+    {
+      "name": "rejected_fixed_origin_fetch",
+      "confirmed": false,
+      "state": {
+        "candidate": {"class": "ssrf", "source": "preview path parameter", "sink": "fetch", "flow": "path reaches outbound request", "impact": "request internal host"},
+        "diff_evidence": "const path = normalizeLocalPath(request.query.path); fetch(new URL(path, 'https://preview.example.com'), {redirect:'error'}); normalizeLocalPath rejects absolute URLs and leading //"
+      }
+    },
+    {
+      "name": "rejected_basename_path",
+      "confirmed": false,
+      "state": {
+        "candidate": {"class": "path_traversal", "source": "file parameter", "sink": "readFile", "flow": "file reaches export path", "impact": "read arbitrary file"},
+        "diff_evidence": "const filename = path.join('/srv/exports', path.basename(request.query.file)); fs.readFile(filename)"
+      }
+    },
+    {
+      "name": "rejected_scoped_sudo",
+      "confirmed": false,
+      "state": {
+        "candidate": {"class": "policy_regression", "source": "new deploy sudo rule", "sink": "NOPASSWD systemctl", "flow": "deploy invokes systemctl", "impact": "unrestricted root commands"},
+        "diff_evidence": "sudoers entry permits only `/usr/bin/systemctl reload reviewotron.service`; no wildcard, variable unit, shell, or other action is allowed"
+      }
+    }
+  ]
+}

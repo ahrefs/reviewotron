@@ -1,0 +1,432 @@
+# Jev semantic dedup experiment
+
+This benchmark asks whether two analysis candidates describe the same underlying
+security defect and would be resolved by one concrete repair. It runs before any
+Reviewotron integration change.
+
+Run it with:
+
+```sh
+TYPESAFE_API_KEY=... dune exec ./test/jev_dedup_benchmark.exe -- --repeats 5 > results.jsonl
+```
+
+The corpus contains 18 balanced pairs. Duplicate pairs include different anchor
+lines, cross-file evidence, paraphrased descriptions, and different vulnerability
+classes for the same command-injection sink. Distinct pairs include adjacent
+defects and separate authz and injection defects sharing the same sink line.
+
+## 2026-09-22 baseline
+
+| Method | Correct pairs |
+| --- | ---: |
+| Exact `(sink.path, sink.line)` | 10/18 |
+| Same class and sink within three lines | 11/18 |
+| Jev, one authored orientation at threshold 0.70 | 90/90 repeated decisions |
+| Jev, raw judgments in both orientations at threshold 0.70 | 175/180 repeated decisions |
+| Jev, mean of both orientations at threshold 0.65 | 90/90 repeated pair decisions |
+
+Swapping `finding_a` and `finding_b` changed probabilities by 0.037 on average
+and as much as 0.19. Combining both orientations removed that ordering artifact:
+the highest distinct-pair mean was 0.60 and the lowest duplicate-pair mean was
+0.705. The perfect threshold interval on this corpus was 0.601–0.705.
+
+The symmetric run made 180 requests with no service failures, used 116,230 input
+tokens, and cost $0.004882. Median request latency was 241 ms. The two orientations
+can be requested concurrently if this is integrated.
+
+These are hand-authored pairs based on Reviewotron's observed failure modes. The
+result shows that semantic dedup is technically plausible and materially stronger
+than line heuristics on these cases. A held-out set of real analysis outputs is
+still required before changing production deduplication.
+
+## 2026-09-25 production-output evaluation
+
+We replayed the security pipeline for 14 recent reviews and captured 26 real
+post-dedup analysis candidates. Labels and thresholds were frozen before Jev
+scoring. The development and held-out sets each contained an equal number of
+duplicate and distinct pairs.
+
+| Set | Exact sink | Jev at symmetric mean 0.50 | False merges |
+| --- | ---: | ---: | ---: |
+| Development, 18 pairs | 9/18 | 85/90 repeated decisions | 0/45 |
+| Held out, 12 pairs | 6/12 | 50/60 repeated decisions | 0/30 |
+| Combined unique patterns | 15/30 | 27/30 | 0/15 distinct pairs |
+
+Across the combined sets, Jev recovered 12 of 15 duplicate patterns with
+different anchors; exact sink matching recovered none. The 300 judgments had no
+service errors and cost $0.017657. This evidence supports the opt-in integration
+at a 0.50 threshold. The source review corpus remains private and is not vendored
+with the repository.
+
+That evaluation compared post-dedup analysis candidates. It did not measure
+same-sink claims already removed by the existing deterministic pass, evidence
+loss from selecting one candidate, or final unique-defect recall. The result
+supports semantic relationship discovery, not pre-validation suppression.
+
+## 2026-09-25 lossless confirmed-finding evaluation
+
+A second frozen corpus contains all 35 within-review pairs among 20 independently
+confirmed findings. Eight pairs were labeled as sharing a causal source or
+control; 27 required separate publication. Each finding included its validator
+evidence and proof.
+
+The strict question asked whether Jev could authorize publishing a pair as one
+finding. At threshold 0.50 it proposed none of the 40 positive repeated decisions
+and made no false proposals. The finding proofs did not establish enough shared
+source-of-truth or generation evidence for a safe merge.
+
+The lossless retrieval question instead asked whether a pair warranted shared
+verification. Requiring both orderings to reach 0.70 produced:
+
+| Repeated decisions | Result |
+| --- | ---: |
+| True proposals | 40/40 |
+| Missed proposals | 0/40 |
+| Extra verification proposals | 66/135 |
+| Correctly separate | 69/135 |
+
+This is useful as a recall-oriented proposal stage: it retrieves every labeled
+relationship while sending about 13 additional pairs per 35-pair repetition to
+a verifier. It is not precise enough to merge findings directly. Both runs
+made 700 requests with no service errors, used 1,854,060 input tokens, and cost
+$0.077871.
+
+The implementation therefore validates every candidate, preserves confirmed
+same-line findings, and records Jev grouping proposals only after validation.
+No proposal changes the published review.
+
+## 2026-09-25 consolidation-verifier evaluation
+
+The Jev proposal stage now feeds a pairwise reasoning verifier in shadow mode.
+The verifier accepts a consolidation only when it names one shared cause and
+repair, returns both member IDs and sink locations, and has no unresolved
+assumptions. Original findings and proofs remain in the debug artifact; review
+publication is unchanged.
+
+On one frozen repetition, Jev proposed 21 of the 35 confirmed-finding pairs: all
+8 labeled shared-cause pairs and 13 separate controls.
+
+| Verifier evidence | Shared-cause accepted | Separate controls rejected | Cost |
+| --- | ---: | ---: | ---: |
+| Captured finding proofs only | 1/8 | 13/13 | $0.818153 |
+| Exact reviewed diff, seven remaining positives | 0/7 | — | $0.726488 |
+| Exact diff plus located generator evidence, seven remaining positives | 7/7 | — | $1.033701 |
+
+The initial run had zero false consolidations but only 12.5% recall. Every miss
+correctly named the missing fact: the finding proofs and diff did not prove that
+`users_props.ml` generates the affected `authorized_keys` files. Adding the
+relevant `gen_authorized_keys.ml` and access-policy excerpts raised the seven
+missed positives to 7/7 while satisfying the local evidence-preservation guard.
+
+Allowing the verifier to guess repository paths was both ineffective and
+expensive. One unrestricted probe used 12 file fetches and cost $3.141607; a
+four-step targeted probe still missed the generator and cost $1.542475. The
+useful next change is bounded evidence retrieval that locates source-of-truth
+and generated-file relationships before verification. Loosening the verifier
+would trade away the zero-false-consolidation result.
+
+## 2026-09-29 bounded relationship evidence
+
+Reviewotron now derives a bounded list of companion policy and generator paths
+from changed source files and affected artifacts. It supplies the first file
+that exists, capped at 12,000 characters, and disables exploratory tools when
+that evidence is available. Exact validated sink locations are restored in code
+when the verifier copies an approximate diff line.
+
+The seven previously missed positive pairs all had one small companion access
+policy file. Supplying only that file verified 7/7 pairs for $0.914951. Supplying
+both the policy and the larger generator file increased cost and reduced the
+strict result to 5/7 because longer outputs copied two sink lines incorrectly.
+The one-file automatic locator then verified 7/7 for $1.016241.
+
+A full-fidelity corpus joined all 21 Jev proposals to their exact captured
+diffs: eight shared-cause pairs and thirteen separation controls. The first run
+exposed one false consolidation: the verifier invented a new restrictive input
+allowlist to combine two context-specific shell-escaping defects. The prompt now
+requires repository evidence for that input contract and otherwise keeps such
+sinks separate. The crux rerun preserved the valid shared-download pair and
+rejected the shell-escaping pair.
+
+On the final 21-pair run, the verifier made all 21 intended decisions for
+$1.964718: eight consolidate verdicts and thirteen keep-separate verdicts. One
+consolidation copied an affected sink at line 29 instead of its validated line
+31; deterministic sink preservation restores that exact location without
+weakening the cause, repair, member-ID, assumption, or primary-anchor checks.
+This established the lossless consolidation boundary before expanding into
+notification grouping.
+
+## 2026-09-29 notification grouping
+
+A new real pair broadened the corpus beyond generated artifacts: one change
+added `@everyone` to the separate age recipient ACLs for an incus client
+certificate and its private key. The strict verifier correctly kept them as two
+canonical findings because each ACL requires its own edit and re-encryption.
+Jev nevertheless scored the pair as one coherent remediation notification in
+all three repetitions.
+
+The notification evaluation then labeled every pair that the strict verifier
+kept separate, plus that credential pair. It contains ten positive groups and
+four controls that deliberately mix authentication, privilege escalation, or
+different attacker-controlled artifacts. Each pair was scored in both orders
+for three repetitions.
+
+At the existing 0.70 threshold, all 30 positive repetitions grouped and all 12
+negative controls stayed separate. The 84 Jev calls cost $0.009075. This stage
+is materially cheaper than the reasoning verifier and covers repeated SQL
+injection sites, two ZTP paths with the same unrestricted sudo policy, two
+representations of one fleet credential, and two shell contexts fed by the same
+input.
+
+Applying the accepted strict and notification edges to the five captured
+reviews represented by the corpus reduces 19 confirmed findings to 8 complete
+notification groups, a 58% reduction in review comments with no member finding
+removed. The later credential ACL pair reduces from two comments to one.
+
+With `jev_grouping_enabled`, verified consolidations and positive notification
+pairs now affect publication. Pair edges form complete-link groups so
+non-transitive relationships cannot over-group findings. One anchored comment
+retains every member location, description, failure scenario, and proposed
+replacement; multi-location GitHub suggestions are disabled because one
+suggestion cannot safely edit multiple sites.
+
+## 2026-09-29 candidate validation cascade
+
+The first validator-cost experiment joined 26 real analysis candidates to their
+captured validator verdicts: 23 confirmed and 3 rejected. Each candidate was
+scored three times against only the changed files named by its source, sink, and
+flow evidence. The initial four-level completeness Score could not separate the
+classes and was discarded.
+
+The successful formulation asks two independent Noul questions in one request:
+whether the evidence directly supports the complete finding, and whether it
+demonstrates a fatal validation defect. Candidates in the uncertain middle keep
+the existing validator. At the measured support/fatal boundary of 0.62/0.30,
+seven confirmed candidates crossed the auto-confirm boundary in all three
+repetitions and no rejected candidate crossed it. They were all from one captured
+review whose two validator calls cost $2.048323. Deterministic proof enforcement
+accepts six of the seven; the source-policy candidate stays on the validator path.
+The six accepted candidates include all three candidates from the review's second
+validator call, which cost $0.557326. Jev costs $0.000503 for all seven candidates,
+so eliminating that one call alone saves $0.556823 on the review. Shrinking the
+first validator call from four candidates to one should save more, but that
+unmeasured amount is not included.
+
+At the inverse reject boundary of fatal probability at least 0.70 and support at
+most 0.30, one rejected candidate was rejected in all three repetitions and no
+confirmed candidate was rejected. The other two rejected cases remained
+uncertain and correctly stayed on the reasoning path. This is a small captured
+corpus rather than an independent held-out result; the runtime path is therefore
+opt-in and fails open to the validator.
+
+## 2026-09-29 validator source-constraint challenge
+
+Two older published SSRF findings supplied the first independent disagreement
+set: both passed Reviewotron's validator and later received explicit negative
+human feedback. They claimed that YouTube video and thumbnail URLs could select
+arbitrary outbound destinations. At the exact reviewed commit, the caller
+instead constructs both URLs from UUID paths under a configured HTTPS assets
+domain.
+
+The original two-question cascade correctly refused to auto-confirm either
+finding but left both in the uncertain validator path. A broad publication-
+defect question was discarded because it missed the human-rejected cases and
+crossed confirmed cases. A direct source-provenance question separated them:
+across three repetitions, both human-rejected findings scored at least 0.64
+when supplied the candidate diff and bounded caller evidence, while all 23
+validator-confirmed controls stayed at or below 0.23. Those 84 calls cost
+$0.015958.
+
+A validator-only check confirmed the evidence effect. Sink-only prompts
+confirmed both findings in all six verdicts, including prompts carrying a Jev
+warning. Adding the caller evidence rejected both in all six verdicts. The
+runtime cascade now records files already fetched by the validator and checks
+each confirmation against those files plus the candidate diff. Rejection
+requires both source-constraint probability at least 0.60 and direct support at
+most 0.30. Missing files, credentials, or unsuccessful Jev responses preserve the
+validator result.
+
+An expanded held-out set added five independently rejected SSRF routes and
+five confirmed controls. The original generic question caught two of the five
+routes in all three repetitions. A vulnerability-class-aware fallback caught
+four of five, while preserving all controls. Keeping the original question
+first is necessary: it still catches both older human-rejected findings that
+the fallback misses. Together they separate six of seven source-constrained
+findings from all 31 controls across both corpora.
+
+The existing second gate also remained well calibrated. All seven false claims
+scored at most 0.27 for direct support, while two confirmed controls scored at
+least 0.38, preserving the current 0.30 boundary. Moving the class-aware check
+before analysis caught only three of five routes from diff evidence. More
+importantly, the existing analysis gate already removes those same routes and
+measured a $0.93 saving on the review containing the Unix-socket SSRF and SQL
+injection claims. A new pre-analysis suppressor would therefore duplicate an
+existing gate without a measured incremental gain, so no runtime path was
+added. The expanded experiment used 288 calls, cost $0.055153, and had three
+maximum-token errors in an initial oversized case that was corrected before
+measurement.
+
+## 2026-09-30 finding continuity across revisions
+
+The first continuity corpus contained two recurring security findings and five
+hard same-PR controls. Requiring both orientations to reach the threshold linked
+both repeated findings and none of the controls across three repetitions. One
+same-file command-injection control scored 0.79–0.81 in one direction but
+0.43–0.47 in reverse, establishing that a one-sided decision is unsafe.
+
+The refreshed 754-review history contained 72 pairs of distinct revisions in
+the same pull request and only 92 cross-revision finding pairs. An exhaustive
+two-orientation discovery pass over all pairs cost $0.010281. Manual labeling
+then froze nine recurring defects and eleven hard controls, covering both
+general and security findings, changed line numbers and wording, partial fixes,
+same-file defects, and new defects introduced by attempted repairs.
+
+The frozen corpus was scored in both orientations for three repetitions. The
+pair score is the lower orientation score; both calls must reach the threshold.
+
+| Threshold | Recurring findings linked | Controls linked |
+| --- | ---: | ---: |
+| 0.60 | 27/27 | 2/33 |
+| 0.65 | 27/27 | 1/33 |
+| 0.70 | 27/27 | 0/33 |
+| 0.75 | 24/27 | 0/33 |
+
+The weakest positive pair score was 0.73 and the strongest control was 0.65.
+The 120 frozen-corpus calls had no errors and cost $0.007139. Token similarity
+still could not provide this separation.
+
+A directional follow-up asked whether a current candidate could inherit a
+prior finding's validation and bypass another reasoning-validator call. At a
+0.50 threshold it accepted 24/27 repetitions, covering eight of nine recurring
+cases stably, and rejected all 33 controls. The 60 calls cost $0.003602. The
+saved reviews recorded $3.49 in total validator spend, including one $1.70
+security validator call. This is a potential saving, not a measured one: the
+retained evidence contains post-validation findings rather than raw candidates
+and does not identify every candidate sharing each batched validator call.
+
+Continuity is therefore not integrated yet. The safe notification behavior is
+to keep publishing the current validated finding and annotate it as recurring,
+never suppress it. Validator bypass needs a new corpus that retains raw
+pre-validation candidates and their validator-call membership; only an actually
+eliminated or cheaper call counts as a cost gain.
+
+## 2026-09-29 suggested-fix integrity guard
+
+Five real suggestions previously adjudicated as mechanically broken were paired
+with five upvoted, mechanically valid controls and each finding's exact reviewed
+file diff. The broken set included a no-op that left an unbound name unchanged,
+literal `\\n` text, deployment prose in a code suggestion, a duplicated log
+call, and a parallelized N+1 query that preserved the reported defect.
+
+Across three repetitions, broken suggestions scored 0.56–0.95 and controls
+scored 0.08–0.35. A 0.50 threshold removed all 15 broken repetitions and
+preserved all 15 controls. The 30 calls had no errors and cost $0.002833, or
+about $0.000094 per suggestion. A 0.60 threshold would have missed the
+deployment-prose case.
+
+The opt-in `review_plugins.jev_suggestion_guard_enabled` integration runs after
+both plugins have validated and deduplicated findings. It removes only
+`suggested_fix`; the finding, location, impact, and evidence remain unchanged.
+Missing credentials, missing diff evidence, and Jev failures preserve the
+suggestion.
+
+An expanded held-out set added 15 broken and 13 valid suggestions. The original
+one-sided 0.50 rule removed 15 of 45 broken-payload decisions but also 3 of 39
+valid-payload decisions. Requiring an opposing mechanical-plausibility score at
+or below 0.50 retained all 15 original broken-payload decisions, removed 12 of
+45 held-out broken-payload decisions, and removed 0 of 39 held-out valid-payload
+decisions. The reverse check runs only when the first score would remove a fix.
+
+## False build-claim experiment
+
+A broad “withhold unsupported finding” question did not improve the saved
+current baseline: the five historical cases it identified were already removed
+by Reviewotron. On 48 labeled candidates emitted by newer pipeline runs, it also
+failed to separate false positives from protected findings.
+
+A first narrower question identified compiler-diagnostic findings, but this
+mixed real compiler failures with false claims. The first integrated guard
+therefore asked only whether bounded post-change source directly disproved an
+explicit deterministic build claim. It reliably rejected a false unbound
+`encoder` claim while preserving the other candidates.
+
+The refreshed feedback corpus added four different false build claims and five
+real compiler failures. For each case, the experiment recovered the exact
+reviewed source and the commit statuses that had completed before Reviewotron
+published its review. The source-only guard at its original 0.70 threshold
+missed all four new false claims. A combined question using source or relevant
+exact-commit build statuses rejected all five false claims in 15/15 repeated
+decisions at a 0.60 threshold (scores 0.66–0.90), while preserving the five real
+compiler failures in 15/15 decisions (maximum 0.23). The 30 calls cost
+$0.006520. Removing status completion times made one positive decision fall to
+0.59 once, so the runtime payload retains GitHub's status update time.
+
+The smaller combined prompt was also replayed without commit statuses to test
+the source-only fallback. Across 48 current candidates, only the two generated
+versions of the known false `encoder` finding crossed 0.60; every other score
+was at most 0.21. Across 75 historical findings, only that same false finding
+crossed 0.60; the next-highest score was 0.36. These 369 calls cost $0.043486,
+38.8% less than the prior source-only prompt's $0.071068. All experiments for
+this expansion used 639 Jev calls, encountered three fail-open token-limit
+errors in an abandoned oversized prompt, and cost $0.112409.
+
+The opt-in `review_plugins.jev_build_claim_guard_enabled` integration now
+fetches completed statuses for the exact GitHub commit immediately before the
+guard runs and uses the measured 0.60 threshold after normal validation and
+deduplication. It checks only general findings, omits suggestion payloads and
+the full diff from the judgment, and fails open to source-only evidence when
+status fetching fails. Disabled configuration, missing credentials, missing
+evidence, and Jev errors preserve the finding.
+
+## Critical-severity calibration experiment
+
+A frozen corpus joined all 30 adjudicated `critical` general findings to their
+exact reviewed-file diffs: 11 had inflated severity and 19 were proportionate.
+A direct downgrade question did not separate them across three repetitions;
+mean probability was 0.267 for inflated findings and 0.290 for controls. Adding
+bounded post-change context for the 27 available files made separation slightly
+worse (0.267 versus 0.305).
+
+An affirmative rewrite instead asked whether the evidence satisfied the existing
+critical definition. At a post-hoc score below 0.22 it downgraded 1 of 11
+inflated findings and preserved all 19 controls, but the next control scored
+0.25 and aggregate means still overlapped (0.692 versus 0.723). That margin and
+recall are too weak for an integration. The 261 Jev calls had no errors and
+cost $0.030002. No severity guard is integrated.
+
+## Broad general-finding guard experiments
+
+A factual-mechanism guard covered 10 adjudicated incorrect findings and 116
+correct controls. A direct contradiction question averaged 0.100 for incorrect
+mechanisms and 0.086 for controls. Reversing the question averaged 0.804 for
+incorrect mechanisms and 0.811 for controls; adding bounded post-change context
+changed those means to 0.791 and 0.816. The overlap leaves no safe threshold.
+The 368 calls cost $0.058157, and no broad factual guard is integrated.
+
+An intent-mismatch question covered 9 findings that attacked deliberate behavior
+and 104 controls. Mismatches averaged 0.128 while controls averaged 0.118, with a
+control reaching 0.65. The 113 calls cost $0.013812. Intent mismatch remains a
+context and review-description problem rather than a Jev publication gate.
+
+## General-review cost experiments
+
+A two-question Jev cascade tested whether clearly supported general candidates
+could bypass the reasoning validator while uncertain candidates kept the
+existing path. At conservative support/fatal thresholds of 0.80/0.30, only 3
+of 22 protected candidates bypassed stably. No invalid candidate bypassed, but
+the remaining candidates still require the same batched validator call, so the
+token reduction cannot approach the $0.50 per-review cost criterion. The 288
+Jev calls cost $0.052633. This cascade is not integrated.
+
+A whole-review gate then scored 73 saved diffs representing $78.56 of general
+review spend. To preserve every saved finding and every protected historical
+finding, the highest usable threshold was 0.30. It skipped only one $0.03
+review per repetition while Jev cost $0.029491, for net savings of $0.000509;
+no review saved $0.50. Six oversized diffs also failed open with
+`max_tokens_exceeded` in every repetition. This gate is not integrated.
+
+## Next Jev experiments
+
+1. Retain raw pre-validation candidates and validator-call membership in the
+   feedback evidence, then replay continuity inheritance before validation.
+2. Measure whether inheritance eliminates or materially shrinks a validator
+   call; require unchanged quality or at least $0.50 saved on a review.

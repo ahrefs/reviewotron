@@ -23,6 +23,7 @@ let make_test_context ?state ?feedback_store ?(config = Config_types.config_of_j
       repos = [ { url = test_repo_url; auth = Some (GH_token "test-token"); gh_hook_secret = None } ];
       anthropic_api_key = Some "sk-test";
       openrouter_api_key = None;
+      typesafe_api_key = None;
       slack_access_token = None;
     }
   in

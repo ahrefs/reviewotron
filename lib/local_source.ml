@@ -160,6 +160,7 @@ let prepare_review_from_text ~root ~repo_key ?change_key ?revision ~title ~descr
           config;
           file_contents;
           fetch_file;
+          fetch_commit_statuses = (fun () -> Lwt.return (Ok []));
           trigger = Local;
           source_kind = Local;
         }

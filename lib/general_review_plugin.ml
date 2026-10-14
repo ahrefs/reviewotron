@@ -6,6 +6,11 @@ let log_context_prefix = function
   | None -> ""
   | Some context -> context ^ " "
 
+let record_prevalidation recorder evidence =
+  match recorder with
+  | Some record -> record evidence
+  | None -> ()
+
 (* Sized for a single-shot multi-finding review; tune here without touching
    call sites. *)
 let general_review_thinking_budget = 4096
@@ -129,8 +134,15 @@ module Make (AI : Api.Agent_runner) = struct
         in
         collect 0 [] candidate_findings)
 
-  let run_validator ~ctx ~repo_url ~diff_text ~candidate_findings ?debug_dir ?log_context () =
+  let run_validator ~ctx ~repo_url ~diff_text ~candidate_findings ?debug_dir ?log_context ?record_prevalidation:recorder
+    () =
     let log_prefix = log_context_prefix log_context in
+    let candidate_json = List.map Review_types.finding_to_json candidate_findings in
+    let record_call ~costs verdicts =
+      record_prevalidation recorder
+        (Prevalidation.call ~plugin:name ~validator:"general_validator" ~attempt:"1" ~candidates:candidate_json
+           ~verdicts ~costs)
+    in
     match candidate_findings with
     | [] -> Lwt.return (Ok [], [])
     | _ :: _ ->
@@ -142,6 +154,7 @@ module Make (AI : Api.Agent_runner) = struct
       (match result with
       | Error msg ->
         log#error "%sgeneral validator failed: %s" log_prefix msg;
+        record_call ~costs:[] [];
         Lwt.return (Error (Printf.sprintf "general validator failed: %s" msg), [])
       | Ok agent_result ->
         let cost =
@@ -151,12 +164,27 @@ module Make (AI : Api.Agent_runner) = struct
         | exception exn ->
           let msg = Printf.sprintf "failed to parse general validator output: %s" (Exn.str exn) in
           log#error "%s%s" log_prefix msg;
+          record_call ~costs:[ cost ] [];
           Lwt.return (Error msg, [ cost ])
         | output ->
         match confirmed_findings_by_candidate_id ?log_context candidate_findings output with
-        | Ok confirmed -> Lwt.return (Ok confirmed, [ cost ])
+        | Ok confirmed ->
+          let verdicts =
+            List.map
+              (fun (finding : Review_types.validated_finding) ->
+                let verdict =
+                  match finding.verdict with
+                  | Confirmed -> Prevalidation.Confirmed
+                  | Rejected -> Prevalidation.Rejected
+                in
+                finding.candidate_id, verdict)
+              output.results
+          in
+          record_call ~costs:[ cost ] verdicts;
+          Lwt.return (Ok confirmed, [ cost ])
         | Error msg ->
           log#error "%s%s" log_prefix msg;
+          record_call ~costs:[ cost ] [];
           Lwt.return (Error msg, [ cost ])))
 
   (* Downstream tail shared by the legacy single-pass path and the deep
@@ -165,7 +193,7 @@ module Make (AI : Api.Agent_runner) = struct
      [prior_costs] are prepended so the caller's upstream costs (the review or
      scout+deep costs) lead the returned list. *)
   let validate_review ~ctx ~repo_url ~security_covered_elsewhere ~diff_text ~(review : Review_types.review_output)
-    ~prior_costs ?debug_dir ?log_context () =
+    ~prior_costs ?debug_dir ?log_context ?record_prevalidation:recorder () =
     let log_prefix = log_context_prefix log_context in
     let counts = Hashtbl.create 8 in
     List.iter
@@ -183,8 +211,11 @@ module Make (AI : Api.Agent_runner) = struct
     log#info "%sreview agent: %d findings (%s), summary length %d" log_prefix (List.length review.findings) dist
       (String.length review.summary);
     let candidates = filter_candidates ?log_context ~security_covered_elsewhere review.findings in
+    record_prevalidation recorder
+      (Prevalidation.snapshot ~plugin:name ~candidates:(List.map Review_types.finding_to_json candidates));
     let%lwt confirmed, validator_costs =
-      run_validator ~ctx ~repo_url ~diff_text ~candidate_findings:candidates ?debug_dir ?log_context ()
+      run_validator ~ctx ~repo_url ~diff_text ~candidate_findings:candidates ?debug_dir ?log_context
+        ?record_prevalidation:recorder ()
     in
     match confirmed with
     | Error reason ->
@@ -199,7 +230,8 @@ module Make (AI : Api.Agent_runner) = struct
 
   (* Legacy single-pass review: one full-context agent call, then validation.
      Preserved verbatim as the [scout_enabled = false] rollback path. *)
-  let run_single_pass ~ctx ~repo_url ~(config : Config_types.config) ~diff_text ~metadata ?debug_dir ?log_context () =
+  let run_single_pass ~ctx ~repo_url ~(config : Config_types.config) ~diff_text ~metadata ?debug_dir ?log_context
+    ?record_prevalidation () =
     let security_covered_elsewhere = config.review_plugins.security.enabled in
     let system = Review_prompt.system_prompt ?override:config.system_prompt_override ~security_covered_elsewhere () in
     let Review_plugin.{ change_title; change_description; file_contents; _ } = metadata in
@@ -220,7 +252,7 @@ module Make (AI : Api.Agent_runner) = struct
         Lwt.return (Failed (Printf.sprintf "failed to parse general review output: %s" (Exn.str exn)), [ cost ])
       | review ->
         validate_review ~ctx ~repo_url ~security_covered_elsewhere ~diff_text ~review ~prior_costs:[ cost ] ?debug_dir
-          ?log_context ())
+          ?log_context ?record_prevalidation ())
 
   (* Scout stage: emit capped investigation leads.  No [model_id] override —
      the scout always follows its configured tier. *)
@@ -271,7 +303,7 @@ module Make (AI : Api.Agent_runner) = struct
   (* Scout → deep reviewer → validator pipeline.  Costs concatenate
      scout :: deep :: validator-costs. *)
   let run_pipeline ~ctx ~repo_url ~(config : Config_types.config) ~(general_cfg : Config_types.general_plugin_config)
-    ~diff_text ~metadata ?debug_dir ?log_context () =
+    ~diff_text ~metadata ?debug_dir ?log_context ?record_prevalidation () =
     let log_prefix = log_context_prefix log_context in
     let security_covered_elsewhere = config.review_plugins.security.enabled in
     let Review_plugin.{ change_title; change_description; _ } = metadata in
@@ -298,15 +330,19 @@ module Make (AI : Api.Agent_runner) = struct
         | Error msg -> Lwt.return (Failed msg, scout_costs @ deep_costs)
         | Ok review ->
           validate_review ~ctx ~repo_url ~security_covered_elsewhere ~diff_text ~review
-            ~prior_costs:(scout_costs @ deep_costs) ?debug_dir ?log_context ()))
+            ~prior_costs:(scout_costs @ deep_costs) ?debug_dir ?log_context ?record_prevalidation ()))
 
-  let run_review ~ctx ~repo_url ~(config : Config_types.config) ~diff_text ~metadata ?debug_dir ?log_context () =
+  let run_review ~ctx ~repo_url ~(config : Config_types.config) ~diff_text ~metadata ?debug_dir ?log_context
+    ?record_prevalidation () =
     let debug_dir = if config.debug_artifacts then debug_dir else None in
     let general_cfg = config.review_plugins.general in
     run_stage ~stage:"general" (fun () ->
       match general_cfg.scout_enabled with
-      | true -> run_pipeline ~ctx ~repo_url ~config ~general_cfg ~diff_text ~metadata ?debug_dir ?log_context ()
-      | false -> run_single_pass ~ctx ~repo_url ~config ~diff_text ~metadata ?debug_dir ?log_context ())
+      | true ->
+        run_pipeline ~ctx ~repo_url ~config ~general_cfg ~diff_text ~metadata ?debug_dir ?log_context
+          ?record_prevalidation ()
+      | false ->
+        run_single_pass ~ctx ~repo_url ~config ~diff_text ~metadata ?debug_dir ?log_context ?record_prevalidation ())
 
   let run ~ctx ~repo_url ~config ~diff:_ ~diff_text ~metadata =
     let%lwt result, costs = run_review ~ctx ~repo_url ~config ~diff_text ~metadata () in

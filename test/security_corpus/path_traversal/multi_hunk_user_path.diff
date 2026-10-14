@@ -1,0 +1,16 @@
+diff --git a/src/export/download.ts b/src/export/download.ts
+index 1111111..2222222 100644
+--- a/src/export/download.ts
++++ b/src/export/download.ts
+@@ -8,4 +8,7 @@ export async function download(request: Request) {
+-  const requested = "latest.zip";
++  const url = new URL(request.url);
++  const encoded = url.searchParams.get("file") ?? "";
++  const requested = decodeURIComponent(decodeURIComponent(encoded));
+ 
+   auditDownload(requested);
+@@ -91,3 +94,5 @@ export async function download(request: Request) {
+-  return new Response("not implemented");
++  const filename = path.join("/srv/exports", requested);
++  return new Response(await fs.readFile(filename));
+ }

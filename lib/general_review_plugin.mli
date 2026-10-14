@@ -50,6 +50,7 @@ module Make (_ : Api.Agent_runner) : sig
     metadata:Review_plugin.review_metadata ->
     ?debug_dir:string ->
     ?log_context:string ->
+    ?record_prevalidation:Prevalidation.recorder ->
     unit ->
     (review_outcome * Cost_tracking.agent_cost list) Lwt.t
 end

@@ -20,6 +20,26 @@ type source_kind =
     fetch from the PR head SHA; for pushes it should fetch from the after SHA. *)
 type fetch_file = path:string -> (string option, string) result Lwt.t
 
+(** The terminal state of a commit status. *)
+type commit_status_state =
+  | Success
+  | Failure
+  | Error
+
+(** A completed status reported for the exact reviewed commit. *)
+type commit_status = {
+  context : string;
+  state : commit_status_state;
+  description : string option;
+  completed_at : string option;
+}
+
+(** Fetch completed statuses for the exact reviewed commit. Source adapters
+    without commit-status support return an empty list. *)
+type fetch_commit_statuses = unit -> (commit_status list, string) result Lwt.t
+
+val commit_status_state_to_string : commit_status_state -> string
+
 (** [is_embeddable content] is [true] when [content] is safe to put in a model
     prompt: well-formed UTF-8 (no NUL byte or malformed sequence, including the
     unpaired surrogates the JSON request encoder rejects) and within a byte cap.
@@ -75,6 +95,7 @@ type t = {
   config : Config_types.config;
   file_contents : (string * string) list;
   fetch_file : fetch_file;
+  fetch_commit_statuses : fetch_commit_statuses;
   trigger : trigger;
   source_kind : source_kind;
 }
