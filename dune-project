@@ -38,15 +38,13 @@
   (lwt_ppx
    (< 6.0))
   melange-json-native
-  (mirage-crypto-pk
-   (< 2.1.0))
+  mirage-crypto-pk
   (ocaml-ai-sdk
    (>= 0.6.3))
   opentelemetry
   opentelemetry-lwt
   opentelemetry-client-ocurl-lwt
-  (mirage-crypto-rng
-   (< 2.1.0))
+  mirage-crypto-rng
   (ppx_deriving_jsonschema
    (>= 0.0.8))
   ptime
