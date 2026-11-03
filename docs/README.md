@@ -110,9 +110,10 @@ publishing, then re-running after each change.
   `--anthropic-api-key`, else the `OPENROUTER_API_KEY` / `ANTHROPIC_API_KEY`
   environment variables, else a `--secrets` file if you choose to provide one (in
   that order). An OpenRouter key is preferred when both are available. A
-  `secrets.json` is *not* read unless you pass `--secrets` explicitly. Jev features
-  separately read `TYPESAFE_API_KEY`, then `typesafe_api_key` from that secrets
-  file.
+  `secrets.json` is *not* read unless you pass `--secrets` explicitly. Decision
+  features read `OPENROUTER_DECISIONS_API_KEY`, then `openrouter_decisions_api_key`
+  from that secrets file, then the OpenRouter key above (see
+  [Decision models](#decision-models)).
 - **Redirectable endpoint.** On an OpenRouter key, `OPENROUTER_BASE_URL` points
   the provider at an OpenAI-compatible proxy instead of `openrouter.ai` — see
   [OpenRouter Base URL Override](#openrouter-base-url-override).
@@ -283,7 +284,6 @@ Create a `secrets.json` file (see `secrets.json.example`):
     }
   ],
   "openrouter_api_key": "sk-or-v1-xxxxxxxxxxxx",
-  "typesafe_api_key": "ts-xxxxxxxxxxxx",
   "slack_access_token": "xoxb-xxxxxxxxxxxx"
 }
 ```
@@ -302,7 +302,7 @@ Either LLM key works; `openrouter_api_key` is used when both are present. Swap i
 | `repos[].auth` | Yes* | Alternative to `gh_token` — GitHub App installation auth (see below) |
 | `openrouter_api_key` | Yes† | OpenRouter API key; preferred when both keys are set |
 | `anthropic_api_key` | Yes† | Anthropic API key for Claude, used when no OpenRouter key is present |
-| `typesafe_api_key` | No | TypeSafe API key for Jev triage, candidate validation, suggested-fix guarding, and confirmed-finding grouping. Required when a Jev feature is enabled. |
+| `openrouter_decisions_api_key` | No | OpenRouter key used only for decision features. Falls back to `openrouter_api_key`. Set it to use decisions while the review itself calls Anthropic directly, since an `openrouter_api_key` would also switch the review to OpenRouter. |
 | `slack_access_token` | No | Slack bot token for posting messages |
 
 *Either `gh_token` or `auth` must be set per repo. Using `gh_token` is the simpler option.
@@ -342,8 +342,8 @@ Instead of a personal access token, you can authenticate as a GitHub App install
 ```
 
 App installation tokens are automatically refreshed and cached (55-minute TTL).
-When `jev_build_claim_guard_enabled` is enabled, grant the app read access to
-**Commit statuses** so Jev can use completed checks for the reviewed commit.
+When `decision_build_claim_guard_enabled` is enabled, grant the app read access to
+**Commit statuses** so the decision model can use completed checks for the reviewed commit.
 Without that permission, the guard falls back to source evidence.
 
 #### OpenRouter Base URL Override
@@ -373,6 +373,50 @@ export OPENROUTER_BASE_URL=http://127.0.0.1:18080/api/v1
 - Affects the OpenRouter path only. The direct Anthropic path
   (`ANTHROPIC_API_KEY`) is unchanged, as is the cross-lab fallback routing,
   which follows whatever base URL is in effect.
+
+#### Decision models
+
+Decision features call OpenRouter's Decisions API
+(`POST https://openrouter.ai/api/alpha/decisions`), which returns calibrated
+probabilities instead of generated text. `review_plugins.decision_model` picks
+the model for all of them and defaults to `gpt-6-luna`:
+
+| `decision_model` | OpenRouter model | Input price |
+|---|---|---|
+| `jev` | `typesafe/jev-1.13` | $0.042 per million tokens |
+| `gpt-6-luna` | `openai/gpt-6-luna-decisions` | $0.10 per million tokens |
+
+Output is free for both. Reported costs come from OpenRouter's `usage.cost`.
+
+- **Key.** `OPENROUTER_DECISIONS_API_KEY` or `openrouter_decisions_api_key`,
+  falling back to the OpenRouter LLM key. A dedicated key lets an
+  Anthropic-direct deployment use decisions without moving its review to
+  OpenRouter. An OpenRouter account guardrail can block a provider; Jev needs
+  the TypeSafe provider allowed.
+- **Proxy.** With `OPENROUTER_BASE_URL` set, the trailing `/v1` is replaced
+  with `/alpha/decisions`, so `http://127.0.0.1:18080/api/v1` becomes
+  `http://127.0.0.1:18080/api/alpha/decisions`.
+- **Thresholds.** Probabilities do not transfer between models, so each model
+  carries its own calibrated defaults. A `decision_*_threshold` left `null`
+  uses them; a number overrides them for that feature.
+
+| Threshold | `jev` | `gpt-6-luna` |
+|---|---:|---:|
+| Triage | 0.80 | 0.70 |
+| Analysis gate | 0.60 | 0.60 |
+| Grouping | 0.70 | 0.30 |
+| Build-claim guard | 0.60 | 0.70 |
+| Suggestion guard | 0.50 | 0.50 |
+| Cascade confirm (support / max fatal defect) | 0.62 / 0.30 | 0.40 / 0.30 |
+| Cascade reject (fatal defect / max support) | 0.70 / 0.30 | disabled |
+| Source constraint (constraint / max support) | 0.60 / 0.30 | 0.30 / 0.30 |
+
+[`decision_model_calibration.md`](decision_model_calibration.md) records how
+the GPT-6 Luna values were measured and where it is weaker than Jev. With
+Luna, the build-claim guard and the source-constraint check rarely fire, and
+reordering the keys of the same JSON input moved one probability from 0.00 to 0.98. GPT-6 Luna
+is moderated: OpenAI can refuse a question (seen on an encrypted secrets file),
+which fails that request and takes the same fail-open path as a service error.
 
 ### GitHub Webhook
 
@@ -441,10 +485,11 @@ version control. Webhook/server commands do not read the user-global files.
   "show_review_cost": false,
   "debug_artifacts": false,
   "review_plugins": {
-    "jev_build_claim_guard_enabled": false,
-    "jev_build_claim_guard_threshold": 0.6,
-    "jev_suggestion_guard_enabled": false,
-    "jev_suggestion_guard_threshold": 0.5,
+    "decision_model": "gpt-6-luna",
+    "decision_build_claim_guard_enabled": false,
+    "decision_build_claim_guard_threshold": null,
+    "decision_suggestion_guard_enabled": false,
+    "decision_suggestion_guard_threshold": null,
     "general": {
       "enabled": true,
       "system_prompt_override": null
@@ -458,13 +503,13 @@ version control. Webhook/server commands do not read the user-global files.
       "analysis_effort": "medium",
       "validator_model_tier": "standard",
       "confidence_threshold": "medium",
-      "jev_triage_enabled": false,
-      "jev_triage_threshold": 0.8,
-      "jev_analysis_gate_enabled": false,
-      "jev_analysis_gate_threshold": 0.6,
-      "jev_validator_cascade_enabled": false,
-      "jev_grouping_enabled": false,
-      "jev_grouping_threshold": 0.7,
+      "decision_triage_enabled": false,
+      "decision_triage_threshold": null,
+      "decision_analysis_gate_enabled": false,
+      "decision_analysis_gate_threshold": null,
+      "decision_validator_cascade_enabled": false,
+      "decision_grouping_enabled": false,
+      "decision_grouping_threshold": null,
       "memory_max_tokens": 5000,
       "metrics_artifacts": false,
       "debug_artifacts": false
@@ -508,10 +553,11 @@ generated-file header markers. Broad folders such as `generated/`, `dist/`,
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `jev_build_claim_guard_enabled` | `false` | Ask Jev to reject general findings whose deterministic compile/build claim is directly contradicted by post-change file context or completed checks for the exact commit. Missing evidence, credentials, and service errors preserve the finding. |
-| `jev_build_claim_guard_threshold` | `0.6` | Minimum false-build-claim probability required to reject the finding. Must be between 0 and 1. |
-| `jev_suggestion_guard_enabled` | `false` | Ask Jev to remove mechanically defective `suggested_fix` payloads after validation. Jev must also reject the fix's mechanical plausibility. Findings remain published. Missing credentials and service errors preserve the fix. |
-| `jev_suggestion_guard_threshold` | `0.5` | Minimum defective-fix probability required to challenge the suggestion. Removal also requires mechanical plausibility at or below one minus this value. Must be between 0 and 1. |
+| `decision_model` | `"gpt-6-luna"` | Decision model for every `decision_*` feature: `gpt-6-luna` or `jev`. Each feature still has to be enabled; without an OpenRouter key, enabled features log a warning and do nothing. See [Decision models](#decision-models). |
+| `decision_build_claim_guard_enabled` | `false` | Ask the decision model to reject general findings whose deterministic compile/build claim is directly contradicted by post-change file context or completed checks for the exact commit. Missing evidence, credentials, and service errors preserve the finding. |
+| `decision_build_claim_guard_threshold` | `null` | Minimum false-build-claim probability required to reject the finding, from 0 to 1. `null` uses the model's calibrated value. |
+| `decision_suggestion_guard_enabled` | `false` | Ask the decision model to remove mechanically defective `suggested_fix` payloads after validation. The model must also reject the fix's mechanical plausibility. Findings remain published. Missing credentials and service errors preserve the fix. |
+| `decision_suggestion_guard_threshold` | `null` | Minimum defective-fix probability required to challenge the suggestion, from 0 to 1. Removal also requires mechanical plausibility at or below one minus this value. `null` uses the model's calibrated value. |
 
 #### General Plugin
 
@@ -532,13 +578,13 @@ generated-file header markers. Broad folders such as `generated/`, `dist/`,
 | `analysis_effort` | `"medium"` | Analysis effort: `"low"`, `"medium"`, `"high"`, or `"xhigh"`. OpenRouter sends it as reasoning effort; direct Anthropic sends native effort with adaptive thinking where the model supports that level. Set to `null` for the provider default. |
 | `validator_model_tier` | `"standard"` | Model tier for the adversarial validator. |
 | `confidence_threshold` | `"medium"` | Minimum triage confidence to trigger analysis for enabled classes. `"high"` = only high-confidence signals. `"medium"` = high + medium. `"low"` = all signals. |
-| `jev_triage_enabled` | `false` | Replace the generative triage call with TypeSafe Jev. If the key is absent, the service fails, or any file is not evaluated, Reviewotron falls back to the primary triage agent. Local reviews read `TYPESAFE_API_KEY` before `typesafe_api_key` in the secrets file. |
-| `jev_triage_threshold` | `0.8` | Minimum Jev Noul probability that routes a file to per-class analysis. Must be between 0 and 1. Tune against labeled repository changes. |
-| `jev_analysis_gate_enabled` | `false` | Run normal triage, then require independent Jev support before launching each per-class analysis agent. Errors and incomplete Jev evaluations fail open. This cannot be enabled with `jev_triage_enabled`. |
-| `jev_analysis_gate_threshold` | `0.6` | Minimum Jev Noul probability required by the post-triage analysis gate. Must be between 0 and 1. |
-| `jev_validator_cascade_enabled` | `false` | Ask Jev two independent questions over each analysis candidate and its exact changed-file evidence. Directly supported candidates with a concrete deterministic proof and demonstrated fatal defects bypass the reasoning validator; uncertain judgments and errors still run it. |
-| `jev_grouping_enabled` | `false` | After validation, ask TypeSafe Jev which confirmed-finding pairs warrant shared verification. Verified consolidations and coherent remediation pairs are published as one notification group that retains every member location, impact, scenario, and proposed fix. |
-| `jev_grouping_threshold` | `0.7` | Minimum probability required in both candidate orderings for a consolidation proposal or notification group. Must be between 0 and 1. |
+| `decision_triage_enabled` | `false` | Replace the generative triage call with the decision model. If the key is absent, the service fails, or any file is not evaluated, Reviewotron falls back to the primary triage agent. |
+| `decision_triage_threshold` | `null` | Minimum Noul probability that routes a file to per-class analysis, from 0 to 1. `null` uses the model's calibrated value. |
+| `decision_analysis_gate_enabled` | `false` | Run normal triage, then require independent decision-model support before launching each per-class analysis agent. Errors and incomplete evaluations fail open. This cannot be enabled with `decision_triage_enabled`. |
+| `decision_analysis_gate_threshold` | `null` | Minimum Noul probability required by the post-triage analysis gate, from 0 to 1. `null` uses the model's calibrated value. |
+| `decision_validator_cascade_enabled` | `false` | Ask the decision model two independent questions over each analysis candidate and its exact changed-file evidence. Directly supported candidates with a concrete deterministic proof, and (Jev only) demonstrated fatal defects, bypass the reasoning validator; uncertain judgments and errors still run it. |
+| `decision_grouping_enabled` | `false` | After validation, ask the decision model which confirmed-finding pairs warrant shared verification. Verified consolidations and coherent remediation pairs are published as one notification group that retains every member location, impact, scenario, and proposed fix. |
+| `decision_grouping_threshold` | `null` | Minimum probability required in both candidate orderings for a consolidation proposal or notification group, from 0 to 1. `null` uses the model's calibrated value. |
 | `memory_max_tokens` | `5000` | Target size limit for the repo's security memory file. |
 | `metrics_artifacts` | `false` | Write compact security metrics artifacts under the review debug dir's `security/` subdirectory. These omit source code and prompt bodies. |
 | `debug_artifacts` | `false` | Write full redacted per-stage security debug artifacts under the review debug dir's `security/` subdirectory. Sensitive and opt-in. |
@@ -598,17 +644,17 @@ Reviewotron skips events in these cases:
 
 When the security plugin is enabled, every diff goes through a multi-agent pipeline:
 
-### 1. Triage (Haiku or Jev)
+### 1. Triage (Haiku or a decision model)
 
 Before triage, Reviewotron runs a deterministic scan over changed paths and added hunk lines for advisory security signals such as dangerous APIs, risky paths, sensitive files, changed security controls, and stateful operations. These signals are hints only: they are summarized by category, vulnerability hint, and affected file for triage, with only the strongest exact hints included. They never become findings and never route directly to analysis.
 
 By default, the triage agent scans the diff for security-relevant patterns and classifies them by vulnerability type. This is intentionally biased toward **over-flagging** — it's cheap to run an analysis agent that finds nothing, costly to miss a real issue.
 
-When `jev_triage_enabled` is true, Jev instead asks one independent Noul question per enabled vulnerability class for every changed file. Scores at or above `jev_triage_threshold` route that file and class to analysis. The model version is pinned so a calibrated threshold cannot change silently. Reviewotron falls back to the default triager if Jev is unavailable or fails to evaluate every file.
+When `decision_triage_enabled` is true, the decision model instead answers one independent Noul question per enabled vulnerability class for every changed file. Scores at or above the triage threshold route that file and class to analysis. Model versions are pinned so a calibrated threshold cannot change silently. Reviewotron falls back to the default triager if the model is unavailable, refuses a file, or fails to evaluate every file.
 
-When `jev_analysis_gate_enabled` is true, the default triager still runs. Jev then acts as a conservative class-level gate: an analysis agent runs only when both systems route that vulnerability class. `always_analyze_vuln_classes` bypasses this gate. A missing key, service failure, or incomplete file evaluation keeps every primary route, so Jev availability cannot suppress analysis.
+When `decision_analysis_gate_enabled` is true, the default triager still runs. The decision model then acts as a conservative class-level gate: an analysis agent runs only when both systems route that vulnerability class. `always_analyze_vuln_classes` bypasses this gate. A missing key, service failure, refusal, or incomplete file evaluation keeps every primary route, so decision-model availability cannot suppress analysis.
 
-When `jev_validator_cascade_enabled` is true, Jev scores whether each candidate is directly supported and whether the evidence demonstrates a fatal validation defect. Reviewotron confirms only candidates with support at or above 0.62 and fatal-defect probability at or below 0.30, and only when its existing deterministic proof enforcement accepts the candidate. It rejects only candidates with fatal-defect probability at or above 0.70 and support at or below 0.30. Every other candidate follows the normal reasoning-validator path. After that validator confirms a candidate, Jev also checks the candidate diff against files the validator fetched. It rejects the confirmation only when those files directly constrain the claimed attacker-controlled source with probability at least 0.60 and direct support falls to at most 0.30. Missing credentials, missing evidence, and service failures preserve the normal validator result.
+When `decision_validator_cascade_enabled` is true, the decision model scores whether each candidate is directly supported and whether the evidence demonstrates a fatal validation defect. Reviewotron confirms only candidates inside the model's confirm boundary (support at or above 0.62 and fatal defect at or below 0.30 for Jev; 0.40 and 0.30 for GPT-6 Luna), and only when its existing deterministic proof enforcement accepts the candidate. With Jev it also rejects candidates with fatal defect at or above 0.70 and support at or below 0.30. GPT-6 Luna has no reject boundary, because it scored several validator-confirmed candidates as fatally defective. Every other candidate follows the normal reasoning-validator path. After that validator confirms a candidate, the decision model also checks the candidate diff against files the validator fetched. It rejects the confirmation only when those files directly constrain the claimed attacker-controlled source (probability at least 0.60 for Jev, 0.30 for GPT-6 Luna) and direct support falls to at most 0.30. Missing credentials, missing evidence, and service failures preserve the normal validator result.
 
 The triage agent outputs signals with confidence levels (`high`, `medium`, `low`). The `confidence_threshold` config controls which signals proceed to analysis for enabled vulnerability classes. `always_analyze_vuln_classes` is the explicit override that bypasses the threshold; classes listed there are implicitly enabled even if absent from `vuln_classes`.
 
@@ -633,7 +679,7 @@ Analysis depth is budgeted by vulnerability class, triage confidence, and signal
 
 ### 3. Validation (Sonnet, adversarial)
 
-By default, all candidate findings from all analysis agents pass through the validator agent. With `jev_validator_cascade_enabled`, only high-certainty Jev decisions that pass the same deterministic proof invariant bypass it; every uncertain candidate still reaches the validator. Jev then independently checks files fetched by the validator for concrete source constraints that contradict confirmed findings. Validation checks:
+By default, all candidate findings from all analysis agents pass through the validator agent. With `decision_validator_cascade_enabled`, only high-certainty decisions that pass the same deterministic proof invariant bypass it; every uncertain candidate still reaches the validator. The decision model then independently checks files fetched by the validator for concrete source constraints that contradict confirmed findings. Validation checks:
 
 - The claimed source actually accepts external input
 - The claimed sink actually performs the dangerous operation
@@ -645,17 +691,17 @@ For `policy_regression`, validation does not require a user-controlled runtime s
 
 **Findings that fail validation are dropped.** Confirmed validator results without concrete proof are downgraded after parsing and are not surfaced. This is by design — a noisy security reviewer that cries wolf loses developer trust. Dropped findings are logged for offline prompt tuning.
 
-When `jev_grouping_enabled` is true, Jev compares independently confirmed
-findings in both orders after validation. Pairs whose two probabilities reach
-`jev_grouping_threshold` are written to the sensitive debug artifact
-`jev_grouping_proposals.json`. Each proposal is checked by a reasoning verifier
+When `decision_grouping_enabled` is true, the decision model compares
+independently confirmed findings in both orders after validation. Pairs whose
+two probabilities reach the grouping threshold are written to the sensitive
+debug artifact `decision_grouping_proposals.json`. Each proposal is checked by a reasoning verifier
 that must identify one shared cause and repair, preserve both member IDs, and
 return no unresolved assumptions. Before verification, Reviewotron tries a
 bounded set of companion policy and generator paths derived from the changed
 and affected files, supplying the first file it finds. Exact sink locations are
 restored from the independently validated findings. The artifact retains both
 original confirmed findings and the verification result. When strict
-consolidation rejects an otherwise related pair, a second Jev judgment asks
+consolidation rejects an otherwise related pair, a second decision judgment asks
 whether both complete findings form one coherent remediation notification.
 Approved pair edges become deterministic complete-link groups, preventing a
 non-transitive A-B/B-C relationship from silently grouping A with C. Each group
@@ -663,20 +709,20 @@ is published as one anchored comment that lists every member location, message,
 failure scenario, and proposed replacement. Missing credentials, service
 failures, invalid outputs, and uncertain judgments leave findings separate.
 
-When `jev_suggestion_guard_enabled` is true, Jev checks each validated finding's
-optional `suggested_fix` against the exact reviewed file diff. A defect score at
-or above `jev_suggestion_guard_threshold` triggers an opposing plausibility
+When `decision_suggestion_guard_enabled` is true, the decision model checks each
+validated finding's optional `suggested_fix` against the exact reviewed file
+diff. A defect score at or above the suggestion threshold triggers an opposing plausibility
 check. The suggestion is removed only when plausibility is also at or below one
 minus that threshold; the finding and its evidence still publish. Missing
 credentials, unavailable diff evidence, and service failures preserve the
 suggestion.
 
-When `jev_build_claim_guard_enabled` is true, Jev checks validated general
+When `decision_build_claim_guard_enabled` is true, the decision model checks validated general
 findings against a bounded post-change source window and completed statuses for
 the exact reviewed commit. It rejects a finding only when that evidence directly
 disproves an explicit syntax, binding, arity, type, or linking failure. The check
 runs after existing validation and cross-plugin deduplication. Security findings,
-missing credentials, unavailable evidence, and Jev failures pass through unchanged.
+missing credentials, unavailable evidence, and decision failures pass through unchanged.
 
 ### 4. Memory Curation (Haiku, async)
 

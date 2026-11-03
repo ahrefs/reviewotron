@@ -226,37 +226,41 @@ type security_plugin_config = {
      [@json.default Standard] [@jsonschema.description "Model tier for the adversarial validator."]
   confidence_threshold : confidence;
      [@json.default Medium] [@jsonschema.description "Minimum triage confidence to trigger analysis."]
-  jev_triage_enabled : bool;
+  decision_triage_enabled : bool;
      [@json.default false]
      [@jsonschema.description
-       "Use TypeSafe Jev for security triage, falling back to the primary triage agent if Jev is unavailable. Requires \
-        typesafe_api_key in secrets or TYPESAFE_API_KEY for local reviews."]
-  jev_triage_threshold : float;
-     [@json.default 0.8]
-     [@jsonschema.description "Minimum Jev Noul probability, from 0 to 1, that triggers deeper security analysis."]
-  jev_analysis_gate_enabled : bool;
+       "Use review_plugins.decision_model for security triage, falling back to the primary triage agent if the \
+        decision model is unavailable."]
+  decision_triage_threshold : float option;
+     [@json.option]
+     [@jsonschema.description
+       "Minimum Noul probability, from 0 to 1, that triggers deeper security analysis. Null uses the decision model's \
+        calibrated value."]
+  decision_analysis_gate_enabled : bool;
      [@json.default false]
      [@jsonschema.description
-       "After primary triage, require independent Jev support before running each vulnerability-class analysis. Jev \
-        errors fail open. Requires typesafe_api_key in secrets or TYPESAFE_API_KEY for local reviews."]
-  jev_analysis_gate_threshold : float;
-     [@json.default 0.6]
-     [@jsonschema.description "Minimum Jev Noul probability, from 0 to 1, required by the post-triage analysis gate."]
-  jev_validator_cascade_enabled : bool;
+       "After primary triage, require independent decision-model support before running each vulnerability-class \
+        analysis. Decision errors fail open."]
+  decision_analysis_gate_threshold : float option;
+     [@json.option]
+     [@jsonschema.description
+       "Minimum Noul probability, from 0 to 1, required by the post-triage analysis gate. Null uses the decision \
+        model's calibrated value."]
+  decision_validator_cascade_enabled : bool;
      [@json.default false]
      [@jsonschema.description
-       "Allow high-certainty Jev judgments over candidate findings and their exact diff evidence to bypass the \
-        adversarial validator. Inconclusive judgments and errors still run the validator. Requires typesafe_api_key in \
-        secrets or TYPESAFE_API_KEY for local reviews."]
-  jev_grouping_enabled : bool;
+       "Allow high-certainty decision-model judgments over candidate findings and their exact diff evidence to bypass \
+        the adversarial validator. Inconclusive judgments and errors still run the validator."]
+  decision_grouping_enabled : bool;
      [@json.default false]
      [@jsonschema.description
-       "Use TypeSafe Jev and a consolidation verifier to publish related confirmed security findings as complete-link \
-        notification groups. Requires typesafe_api_key in secrets or TYPESAFE_API_KEY for local reviews."]
-  jev_grouping_threshold : float;
-     [@json.default 0.7]
+       "Use the decision model and a consolidation verifier to publish related confirmed security findings as \
+        complete-link notification groups."]
+  decision_grouping_threshold : float option;
+     [@json.option]
      [@jsonschema.description
-       "Minimum probability required in both Jev orientations for consolidation proposals and notification grouping."]
+       "Minimum probability required in both orientations for consolidation proposals and notification grouping. Null \
+        uses the decision model's calibrated value."]
   memory_max_tokens : int;
      [@json.default 5000] [@jsonschema.description "Target size limit for the repo security memory."]
   metrics_artifacts : bool;
@@ -292,13 +296,13 @@ let default_security_plugin_config =
     analysis_effort = Some Effort.Medium;
     validator_model_tier = Standard;
     confidence_threshold = Medium;
-    jev_triage_enabled = false;
-    jev_triage_threshold = 0.8;
-    jev_analysis_gate_enabled = false;
-    jev_analysis_gate_threshold = 0.6;
-    jev_validator_cascade_enabled = false;
-    jev_grouping_enabled = false;
-    jev_grouping_threshold = 0.7;
+    decision_triage_enabled = false;
+    decision_triage_threshold = None;
+    decision_analysis_gate_enabled = false;
+    decision_analysis_gate_threshold = None;
+    decision_validator_cascade_enabled = false;
+    decision_grouping_enabled = false;
+    decision_grouping_threshold = None;
     memory_max_tokens = 5000;
     metrics_artifacts = false;
     debug_artifacts = false;
@@ -306,25 +310,31 @@ let default_security_plugin_config =
 
 (** Aggregated review plugin configuration. *)
 type review_plugins_config = {
-  jev_build_claim_guard_enabled : bool;
+  decision_model : Decision_model.t;
+     [@json.default Decision_model.Gpt_6_luna]
+     [@jsonschema.description
+       "Decision model for every decision_* feature, called through OpenRouter's Decisions API: gpt-6-luna (default) \
+        or jev. Requires openrouter_decisions_api_key or openrouter_api_key."]
+  decision_build_claim_guard_enabled : bool;
      [@json.default false]
      [@jsonschema.description
-       "Use TypeSafe Jev with post-change file context and exact-commit statuses to reject general findings whose \
-        claimed deterministic build failure is directly contradicted. Requires typesafe_api_key in secrets or \
-        TYPESAFE_API_KEY for local reviews."]
-  jev_build_claim_guard_threshold : float;
-     [@json.default 0.6]
-     [@jsonschema.description "Minimum Jev probability, from 0 to 1, required to reject a false build claim."]
-  jev_suggestion_guard_enabled : bool;
+       "Use the decision model with post-change file context and exact-commit statuses to reject general findings \
+        whose claimed deterministic build failure is directly contradicted."]
+  decision_build_claim_guard_threshold : float option;
+     [@json.option]
+     [@jsonschema.description
+       "Minimum probability, from 0 to 1, required to reject a false build claim. Null uses the decision model's \
+        calibrated value."]
+  decision_suggestion_guard_enabled : bool;
      [@json.default false]
      [@jsonschema.description
-       "Use TypeSafe Jev to remove mechanically defective suggested-fix payloads while preserving their findings. \
-        Requires typesafe_api_key in secrets or TYPESAFE_API_KEY for local reviews."]
-  jev_suggestion_guard_threshold : float;
-     [@json.default 0.5]
+       "Use the decision model to remove mechanically defective suggested-fix payloads while preserving their findings."]
+  decision_suggestion_guard_threshold : float option;
+     [@json.option]
      [@jsonschema.description
-       "Minimum Jev defect probability, from 0 to 1, required to challenge a suggested fix. The opposing mechanical \
-        plausibility score must be at most one minus this value before the fix is removed."]
+       "Minimum defect probability, from 0 to 1, required to challenge a suggested fix. The opposing mechanical \
+        plausibility score must be at most one minus this value before the fix is removed. Null uses the decision \
+        model's calibrated value."]
   general : general_plugin_config;
      [@json.default default_general_plugin_config] [@jsonschema.description "General code-review plugin settings."]
   security : security_plugin_config;
@@ -334,10 +344,11 @@ type review_plugins_config = {
 
 let default_review_plugins_config =
   {
-    jev_build_claim_guard_enabled = false;
-    jev_build_claim_guard_threshold = 0.6;
-    jev_suggestion_guard_enabled = false;
-    jev_suggestion_guard_threshold = 0.5;
+    decision_model = Decision_model.Gpt_6_luna;
+    decision_build_claim_guard_enabled = false;
+    decision_build_claim_guard_threshold = None;
+    decision_suggestion_guard_enabled = false;
+    decision_suggestion_guard_threshold = None;
     general = default_general_plugin_config;
     security = default_security_plugin_config;
   }
@@ -445,23 +456,49 @@ let validate_ignored_file_regex ~json pattern =
          pattern)
   | Ok _ -> ()
 
+let object_field name = function
+  | `Assoc fields -> List.assoc_opt name fields
+  | _ -> None
+
+(* The jev_* fields were renamed when decisions moved to OpenRouter. Extra
+   fields are otherwise ignored, so a stale name would silently disable the
+   feature it configures. *)
+let reject_legacy_decision_fields ~json ~path section =
+  match section with
+  | Some (`Assoc fields) ->
+    List.iter
+      (fun (name, _) ->
+        match CCString.chop_prefix ~pre:"jev_" name with
+        | None -> ()
+        | Some suffix ->
+          Melange_json.of_json_error ~json
+            (Printf.sprintf
+               "%s.%s was renamed to %s.decision_%s; decision features now call OpenRouter with \
+                review_plugins.decision_model (default gpt-6-luna)"
+               path name path suffix))
+      fields
+  | Some _ | None -> ()
+
 let config_of_json (json : Yojson.Basic.t) : config =
+  let plugins_json = object_field "review_plugins" json in
+  reject_legacy_decision_fields ~json ~path:"review_plugins" plugins_json;
+  reject_legacy_decision_fields ~json ~path:"review_plugins.security"
+    (Stdlib.Option.bind plugins_json (object_field "security"));
   let config = Config_codec.of_json json in
+  let plugins = config.review_plugins in
   List.iter (validate_ignored_file_regex ~json) config.ignored_file_regexes;
-  validate_probability_threshold ~json ~name:"jev_triage_threshold" config.review_plugins.security.jev_triage_threshold;
-  validate_probability_threshold ~json ~name:"jev_analysis_gate_threshold"
-    config.review_plugins.security.jev_analysis_gate_threshold;
-  validate_probability_threshold ~json ~name:"jev_grouping_threshold"
-    config.review_plugins.security.jev_grouping_threshold;
-  validate_probability_threshold ~json ~name:"jev_suggestion_guard_threshold"
-    config.review_plugins.jev_suggestion_guard_threshold;
-  validate_probability_threshold ~json ~name:"jev_build_claim_guard_threshold"
-    config.review_plugins.jev_build_claim_guard_threshold;
-  (match
-     config.review_plugins.security.jev_triage_enabled, config.review_plugins.security.jev_analysis_gate_enabled
-   with
+  List.iter
+    (fun (name, threshold) -> Stdlib.Option.iter (validate_probability_threshold ~json ~name) threshold)
+    [
+      "decision_triage_threshold", plugins.security.decision_triage_threshold;
+      "decision_analysis_gate_threshold", plugins.security.decision_analysis_gate_threshold;
+      "decision_grouping_threshold", plugins.security.decision_grouping_threshold;
+      "decision_suggestion_guard_threshold", plugins.decision_suggestion_guard_threshold;
+      "decision_build_claim_guard_threshold", plugins.decision_build_claim_guard_threshold;
+    ];
+  (match plugins.security.decision_triage_enabled, plugins.security.decision_analysis_gate_enabled with
   | true, true ->
-    Melange_json.of_json_error ~json "jev_triage_enabled and jev_analysis_gate_enabled cannot both be true"
+    Melange_json.of_json_error ~json "decision_triage_enabled and decision_analysis_gate_enabled cannot both be true"
   | true, false | false, true | false, false -> ());
   config
 
@@ -537,7 +574,7 @@ type secrets = {
   repos : repo_config list;
   anthropic_api_key : string option; [@json.option]
   openrouter_api_key : string option; [@json.option]
-  typesafe_api_key : string option; [@json.option]
+  openrouter_decisions_api_key : string option; [@json.option]
   slack_access_token : string option; [@json.option]
 }
 [@@deriving json] [@@json.allow_extra_fields]

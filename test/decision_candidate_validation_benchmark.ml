@@ -49,7 +49,7 @@ let emit ~case ~repetition ~elapsed result =
   let json =
     match result with
     | Error error -> `Assoc (("error", `String error) :: common)
-    | Ok ({ supported; fatal_defect; cost } : Jev_triage.candidate_validation_output) ->
+    | Ok ({ supported; fatal_defect; cost } : Decision_triage.candidate_validation_output) ->
       `Assoc
         (("supported", `Float supported)
         :: ("fatal_defect", `Float fatal_defect)
@@ -60,13 +60,13 @@ let emit ~case ~repetition ~elapsed result =
   print_endline (Yojson.Basic.to_string json);
   flush stdout
 
-let run_case ~api_key ~repeats case =
+let run_case ~client ~repeats case =
   let rec repeat repetition =
     if repetition > repeats then Lwt.return_unit
     else (
       let started = Unix.gettimeofday () in
       let%lwt result =
-        Jev_triage.score_candidate_validation ~api_key ~candidate:case.candidate ~evidence:case.evidence
+        Decision_triage.score_candidate_validation client ~candidate:case.candidate ~evidence:case.evidence
       in
       emit ~case ~repetition ~elapsed:(Unix.gettimeofday () -. started) result;
       repeat (repetition + 1))
@@ -78,16 +78,13 @@ let () =
   let repeats = ref 3 in
   Arg.parse
     [
+      Decision_benchmark_env.model_spec;
       "--corpus", Arg.Set_string corpus, "FILE candidate-validation corpus";
       "--repeats", Arg.Set_int repeats, "N repetitions per case";
     ]
     (fun argument -> raise (Arg.Bad (Printf.sprintf "Unexpected argument: %s" argument)))
-    "jev_candidate_validation_benchmark --corpus FILE [options]";
+    "decision_candidate_validation_benchmark --corpus FILE [options]";
   if String.equal !corpus "" then raise (Arg.Bad "--corpus is required");
   if !repeats < 1 then raise (Arg.Bad "--repeats must be positive");
-  let api_key =
-    match Sys.getenv_opt "TYPESAFE_API_KEY" with
-    | Some api_key when not (String.equal (String.trim api_key) "") -> api_key
-    | Some _ | None -> failwith "TYPESAFE_API_KEY is required"
-  in
-  Lwt_main.run (Lwt_list.iter_s (run_case ~api_key ~repeats:!repeats) (read_corpus !corpus))
+  let client = Decision_benchmark_env.client () in
+  Lwt_main.run (Lwt_list.iter_s (run_case ~client ~repeats:!repeats) (read_corpus !corpus))

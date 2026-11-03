@@ -7,7 +7,7 @@ candidates.
 Run it with:
 
 ```sh
-TYPESAFE_API_KEY=... dune exec ./test/jev_score_benchmark.exe -- --repeats 5 > results.jsonl
+OPENROUTER_API_KEY=... dune exec ./test/decision_score_benchmark.exe -- --model jev --repeats 5 > results.jsonl
 ```
 
 The four-level Score rates candidates from contradicted or unsupported evidence

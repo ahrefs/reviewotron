@@ -43,7 +43,7 @@ let vuln_classes = Config_types.all_vuln_classes
 
 let emit review file = function
   | Error error -> `Assoc [ "review", `String review.name; "path", `String file.path; "error", `String error ]
-  | Ok (output : Jev_triage.score_output) ->
+  | Ok (output : Decision_triage.score_output) ->
     `Assoc
       [
         "review", `String review.name;
@@ -51,16 +51,16 @@ let emit review file = function
         ( "scores",
           `Assoc
             (List.map
-               (fun (score : Jev_triage.score) ->
+               (fun (score : Decision_triage.score) ->
                  Security_types.vuln_class_to_string score.vuln_class, `Float score.probability)
                output.scores) );
         "input_tokens", `Int output.cost.input_tokens;
         "cost_usd", `Float output.cost.estimated_cost_usd;
       ]
 
-let run_file ~api_key review file =
+let run_file ~client review file =
   let%lwt result =
-    Jev_triage.score_context ~api_key ~vuln_classes ~path:file.path ~status:file.status
+    Decision_triage.score_context client ~vuln_classes ~path:file.path ~status:file.status
       ~annotated_diff:file.annotated_diff
   in
   print_endline (Yojson.Basic.to_string (emit review file result));
@@ -68,14 +68,10 @@ let run_file ~api_key review file =
   Lwt.return_unit
 
 let main corpus =
-  let api_key =
-    match Sys.getenv_opt "TYPESAFE_API_KEY" with
-    | Some value when not (String.equal (String.trim value) "") -> value
-    | Some _ | None -> failwith "TYPESAFE_API_KEY is required"
-  in
-  Lwt_list.iter_s (fun review -> Lwt_list.iter_s (run_file ~api_key review) review.files) (read_cases corpus)
+  let client = Decision_benchmark_env.client () in
+  Lwt_list.iter_s (fun review -> Lwt_list.iter_s (run_file ~client review) review.files) (read_cases corpus)
 
 let () =
   match Array.to_list Sys.argv with
   | [ _; corpus ] -> Lwt_main.run (main corpus)
-  | _ -> failwith "Usage: jev_captured_routing_benchmark CORPUS"
+  | _ -> failwith "Usage: [DECISION_MODEL=jev|gpt-6-luna] decision_captured_routing_benchmark CORPUS"

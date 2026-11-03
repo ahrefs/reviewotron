@@ -40,34 +40,20 @@ val agent_model_tier : Config_types.model_tier -> Agent_runner.model_tier
     [always_analyze_vuln_classes]. *)
 val should_analyze : security_config:Config_types.security_plugin_config -> Security_types.triage_signal -> bool
 
-(** Keep primary triage signals whose vulnerability class Jev independently
-    supports. Classes in [always_analyze] bypass the gate. *)
+(** Keep primary triage signals whose vulnerability class the decision model
+    independently supports. Classes in [always_analyze] bypass the gate. *)
 val gate_triage_signals :
   always_analyze:Config_types.vuln_class list ->
-  jev_signals:Security_types.triage_signal list ->
+  decision_signals:Security_types.triage_signal list ->
   Security_types.triage_signal list ->
   Security_types.triage_signal list
 
-(** Preserve partial Jev signals when primary triage fails while marking the
+(** Preserve partial decision signals when primary triage fails while marking the
     combined result incomplete. *)
 val partial_triage_fallback :
   partial:Security_types.triage_output ->
   primary:Security_types.triage_output option ->
   Security_types.triage_output option * bool
-
-(** Outcome of the measured Jev candidate-validation boundary. *)
-type jev_validator_decision =
-  | Confirm_candidate
-  | Reject_candidate
-  | Run_validator
-
-(** Confirm only directly supported candidates, reject only demonstrated fatal
-    defects, and send the uncertain middle to the reasoning validator. *)
-val jev_validator_decision : supported:float -> fatal_defect:float -> jev_validator_decision
-
-(** Reject a validator-confirmed candidate only when fetched evidence both
-    demonstrates a constrained source and makes direct support very unlikely. *)
-val jev_source_constraint_reject : source_constrained:float -> supported:float -> bool
 
 (** Step budget for a per-class analysis agent after routing.
 

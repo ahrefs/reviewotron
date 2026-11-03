@@ -95,7 +95,7 @@ let contexts arm case =
       };
     ]
 
-let score_json (score : Jev_triage.score) =
+let score_json (score : Decision_triage.score) =
   Security_types.vuln_class_to_string score.vuln_class, `Float score.probability
 
 let emit_result ~case ~arm ~repetition ~context ~elapsed result =
@@ -113,7 +113,7 @@ let emit_result ~case ~arm ~repetition ~context ~elapsed result =
   let json =
     match result with
     | Error error -> `Assoc (("error", `String error) :: common)
-    | Ok ({ scores; cost } : Jev_triage.score_output) ->
+    | Ok ({ scores; cost } : Decision_triage.score_output) ->
       `Assoc
         (("scores", `Assoc (List.map score_json scores))
         :: ("input_tokens", `Int cost.input_tokens)
@@ -123,16 +123,16 @@ let emit_result ~case ~arm ~repetition ~context ~elapsed result =
   print_endline (Yojson.Basic.to_string json);
   flush stdout
 
-let run_context ~api_key ~case ~arm ~repetition context =
+let run_context ~client ~case ~arm ~repetition context =
   let started = Unix.gettimeofday () in
   let%lwt result =
-    Jev_triage.score_context ~api_key ~vuln_classes:Config_types.all_vuln_classes ~path:context.path
+    Decision_triage.score_context client ~vuln_classes:Config_types.all_vuln_classes ~path:context.path
       ~status:context.status ~annotated_diff:context.annotated_diff
   in
   emit_result ~case ~arm ~repetition ~context ~elapsed:(Unix.gettimeofday () -. started) result;
   Lwt.return_unit
 
-let run ~api_key ~repeats cases =
+let run ~client ~repeats cases =
   let arms = [ Per_file; Per_hunk; Whole_diff ] in
   Lwt_list.iter_s
     (fun case ->
@@ -141,7 +141,7 @@ let run ~api_key ~repeats cases =
           let rec repeat repetition =
             if repetition > repeats then Lwt.return_unit
             else (
-              let%lwt () = Lwt_list.iter_s (run_context ~api_key ~case ~arm ~repetition) (contexts arm case) in
+              let%lwt () = Lwt_list.iter_s (run_context ~client ~case ~arm ~repetition) (contexts arm case) in
               repeat (repetition + 1))
           in
           repeat 1)
@@ -165,26 +165,52 @@ let self_test cases =
   Printf.printf "ok: %d cases (%d vulnerable, %d safe)\n" (List.length cases) (List.length vulnerable)
     (List.length safe)
 
+(* Per-file triage states in the calibration-corpus format, so
+   decision_calibration_benchmark can score them under perturbations. *)
+let dump_calibration_corpus cases =
+  let case_json case context =
+    `Assoc
+      [
+        "name", `String (Printf.sprintf "%s:%s" case.name context.path);
+        ( "expected",
+          `Assoc
+            [
+              "vulnerable", `Bool case.vulnerable;
+              "class", `String (Security_types.vuln_class_to_string case.expected_class);
+            ] );
+        ( "state",
+          `Assoc
+            [
+              "path", `String context.path;
+              "status", `String context.status;
+              "annotated_diff", `String context.annotated_diff;
+            ] );
+      ]
+  in
+  `Assoc [ "cases", `List (List.concat_map (fun case -> List.map (case_json case) (contexts Per_file case)) cases) ]
+  |> Yojson.Basic.to_string
+  |> print_endline
+
 let () =
   let corpus = ref "test/security_corpus" in
+  let dump = ref false in
   let repeats = ref 5 in
   let self_test_only = ref false in
   Arg.parse
     [
+      Decision_benchmark_env.model_spec;
       "--corpus", Arg.Set_string corpus, "DIR Security corpus directory";
       "--repeats", Arg.Set_int repeats, "N Repetitions per context";
       "--self-test", Arg.Set self_test_only, "Validate benchmark inputs without API calls";
+      "--dump-calibration-corpus", Arg.Set dump, "Print per-file states for decision_calibration_benchmark";
     ]
     (fun argument -> raise (Arg.Bad (Printf.sprintf "Unexpected argument: %s" argument)))
-    "jev_routing_benchmark [options]";
+    "decision_routing_benchmark [options]";
   let cases = read_cases !corpus in
-  match !self_test_only with
-  | true -> self_test cases
-  | false ->
+  match !self_test_only, !dump with
+  | true, _ -> self_test cases
+  | false, true -> dump_calibration_corpus cases
+  | false, false ->
     if !repeats < 1 then raise (Arg.Bad "--repeats must be positive");
-    let api_key =
-      match Sys.getenv_opt "TYPESAFE_API_KEY" with
-      | Some api_key when not (String.equal (String.trim api_key) "") -> api_key
-      | Some _ | None -> failwith "TYPESAFE_API_KEY is required"
-    in
-    Lwt_main.run (run ~api_key ~repeats:!repeats cases)
+    let client = Decision_benchmark_env.client () in
+    Lwt_main.run (run ~client ~repeats:!repeats cases)

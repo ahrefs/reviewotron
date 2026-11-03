@@ -50,49 +50,60 @@
   (glob_files_rec mock_api_responses/github/*)))
 
 (test
- (name test_jev_triage)
- (modules test_jev_triage)
+ (name test_decision_triage)
+ (modules test_decision_triage)
  (libraries reviewotron_lib alcotest))
 
+(library
+ (name decision_benchmark_env)
+ (modules decision_benchmark_env)
+ (libraries reviewotron_lib containers))
+
 (executable
- (name jev_routing_benchmark)
- (modules jev_routing_benchmark)
- (libraries reviewotron_lib devkit lwt lwt.unix yojson)
+ (name decision_routing_benchmark)
+ (modules decision_routing_benchmark)
+ (libraries
+  reviewotron_lib
+  decision_benchmark_env
+  devkit
+  lwt
+  lwt.unix
+  yojson)
  (preprocess
   (pps lwt_ppx)))
 
 (executable
- (name jev_captured_routing_benchmark)
- (modules jev_captured_routing_benchmark)
- (libraries reviewotron_lib lwt lwt.unix yojson)
+ (name decision_captured_routing_benchmark)
+ (modules decision_captured_routing_benchmark)
+ (libraries reviewotron_lib decision_benchmark_env lwt lwt.unix yojson)
  (preprocess
   (pps lwt_ppx)))
 
 (executable
- (name jev_dedup_benchmark)
- (modules jev_dedup_benchmark)
- (libraries reviewotron_lib lwt lwt.unix yojson)
+ (name decision_dedup_benchmark)
+ (modules decision_dedup_benchmark)
+ (libraries reviewotron_lib decision_benchmark_env lwt lwt.unix yojson)
  (preprocess
   (pps lwt_ppx)))
 
 (executable
- (name jev_noul_benchmark)
- (modules jev_noul_benchmark)
- (libraries reviewotron_lib lwt lwt.unix yojson)
+ (name decision_noul_benchmark)
+ (modules decision_noul_benchmark)
+ (libraries reviewotron_lib decision_benchmark_env lwt lwt.unix yojson)
  (preprocess
   (pps lwt_ppx)))
 
 (executable
- (name jev_candidate_validation_benchmark)
- (modules jev_candidate_validation_benchmark)
- (libraries reviewotron_lib lwt lwt.unix yojson)
+ (name decision_candidate_validation_benchmark)
+ (modules decision_candidate_validation_benchmark)
+ (libraries reviewotron_lib decision_benchmark_env lwt lwt.unix yojson)
  (preprocess
   (pps lwt_ppx)))
 
 (executable
- (name jev_score_benchmark)
- (modules jev_score_benchmark)
- (libraries reviewotron_lib lwt lwt.unix yojson)
+ (name decision_score_benchmark)
+ (modules decision_score_benchmark)
+ (libraries reviewotron_lib decision_benchmark_env lwt lwt.unix yojson)
  (preprocess
   (pps lwt_ppx)))
 
@@ -107,3 +118,17 @@
  (name test_local_cli)
  (modules test_local_cli)
  (libraries reviewotron_lib alcotest extlib extunix lwt lwt.unix yojson))
+
+(executable
+ (name decision_calibration_benchmark)
+ (modules decision_calibration_benchmark)
+ (libraries
+  reviewotron_lib
+  decision_benchmark_env
+  containers
+  lwt
+  lwt.unix
+  unix
+  yojson)
+ (preprocess
+  (pps lwt_ppx)))

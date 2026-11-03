@@ -309,7 +309,7 @@ let test_llm_provider_resolve () =
       repos = [];
       anthropic_api_key = anthropic;
       openrouter_api_key = openrouter;
-      typesafe_api_key = None;
+      openrouter_decisions_api_key = None;
       slack_access_token = None;
     }
   in
@@ -368,7 +368,7 @@ let test_llm_provider_base_url_reaches_sdk () =
       repos = [];
       anthropic_api_key = None;
       openrouter_api_key = Some "sk-or-test";
-      typesafe_api_key = None;
+      openrouter_decisions_api_key = None;
       slack_access_token = None;
     }
   in
@@ -679,10 +679,16 @@ let test_generic_openrouter_403_retries_one_provider_request () =
 
 let test_config_review_plugins_defaults () =
   let config = Config_types.config_of_json (Melange_json.of_string {|{}|}) in
-  (check bool) "Jev build-claim guard default off" false config.review_plugins.jev_build_claim_guard_enabled;
-  (check (float 0.0001)) "Jev build-claim threshold default" 0.6 config.review_plugins.jev_build_claim_guard_threshold;
-  (check bool) "Jev suggestion guard default off" false config.review_plugins.jev_suggestion_guard_enabled;
-  (check (float 0.0001)) "Jev suggestion threshold default" 0.5 config.review_plugins.jev_suggestion_guard_threshold;
+  (check bool) "gpt-6-luna is the default decision model" true
+    (match config.review_plugins.decision_model with
+    | Decision_model.Gpt_6_luna -> true
+    | Decision_model.Jev -> false);
+  (check bool) "decision build-claim guard default off" false config.review_plugins.decision_build_claim_guard_enabled;
+  (check bool) "decision build-claim threshold follows the model" true
+    (Option.is_none config.review_plugins.decision_build_claim_guard_threshold);
+  (check bool) "decision suggestion guard default off" false config.review_plugins.decision_suggestion_guard_enabled;
+  (check bool) "decision suggestion threshold follows the model" true
+    (Option.is_none config.review_plugins.decision_suggestion_guard_threshold);
   (check bool) "general enabled" true config.review_plugins.general.enabled;
   (check bool) "general prompt override" true (Option.is_none config.review_plugins.general.system_prompt_override);
   (check bool) "security disabled by default" false config.review_plugins.security.enabled;
@@ -700,14 +706,17 @@ let test_config_review_plugins_defaults () =
   (match config.review_plugins.security.analysis_effort with
   | Some Config_types.Effort.Medium -> ()
   | Some Config_types.Effort.Low | Some High | Some Xhigh | None -> fail "expected medium analysis effort by default");
-  (check bool) "Jev triage default off" false config.review_plugins.security.jev_triage_enabled;
-  (check (float 0.0001)) "Jev threshold default" 0.8 config.review_plugins.security.jev_triage_threshold;
-  (check bool) "Jev analysis gate default off" false config.review_plugins.security.jev_analysis_gate_enabled;
-  (check (float 0.0001))
-    "Jev analysis gate threshold default" 0.6 config.review_plugins.security.jev_analysis_gate_threshold;
-  (check bool) "Jev validator cascade default off" false config.review_plugins.security.jev_validator_cascade_enabled;
-  (check bool) "Jev grouping default off" false config.review_plugins.security.jev_grouping_enabled;
-  (check (float 0.0001)) "Jev grouping threshold default" 0.7 config.review_plugins.security.jev_grouping_threshold;
+  (check bool) "decision triage default off" false config.review_plugins.security.decision_triage_enabled;
+  (check bool) "decision triage threshold follows the model" true
+    (Option.is_none config.review_plugins.security.decision_triage_threshold);
+  (check bool) "decision analysis gate default off" false config.review_plugins.security.decision_analysis_gate_enabled;
+  (check bool) "decision analysis gate threshold follows the model" true
+    (Option.is_none config.review_plugins.security.decision_analysis_gate_threshold);
+  (check bool) "decision validator cascade default off" false
+    config.review_plugins.security.decision_validator_cascade_enabled;
+  (check bool) "decision grouping default off" false config.review_plugins.security.decision_grouping_enabled;
+  (check bool) "decision grouping threshold follows the model" true
+    (Option.is_none config.review_plugins.security.decision_grouping_threshold);
   (check int) "memory_max_tokens" 5000 config.review_plugins.security.memory_max_tokens;
   (check bool) "metrics_artifacts default off" false config.review_plugins.security.metrics_artifacts;
   (check bool) "debug_artifacts default off" false config.review_plugins.security.debug_artifacts;
@@ -724,10 +733,11 @@ let test_config_review_plugins_explicit () =
     "ignored_file_regexes": ["^snapshots/.*\\.golden$"],
     "ignore_generated_files": false,
     "review_plugins": {
-      "jev_build_claim_guard_enabled": true,
-      "jev_build_claim_guard_threshold": 0.72,
-      "jev_suggestion_guard_enabled": true,
-      "jev_suggestion_guard_threshold": 0.55,
+      "decision_model": "jev",
+      "decision_build_claim_guard_enabled": true,
+      "decision_build_claim_guard_threshold": 0.72,
+      "decision_suggestion_guard_enabled": true,
+      "decision_suggestion_guard_threshold": 0.55,
       "general": { "enabled": false },
       "security": {
         "enabled": true,
@@ -736,11 +746,11 @@ let test_config_review_plugins_explicit () =
         "triage_model_tier": "standard",
         "analysis_effort": "medium",
         "confidence_threshold": "high",
-        "jev_analysis_gate_enabled": true,
-        "jev_analysis_gate_threshold": 0.62,
-        "jev_validator_cascade_enabled": true,
-        "jev_grouping_enabled": true,
-        "jev_grouping_threshold": 0.75,
+        "decision_analysis_gate_enabled": true,
+        "decision_analysis_gate_threshold": 0.62,
+        "decision_validator_cascade_enabled": true,
+        "decision_grouping_enabled": true,
+        "decision_grouping_threshold": 0.75,
         "memory_max_tokens": 10000,
         "metrics_artifacts": true,
         "debug_artifacts": true
@@ -753,10 +763,16 @@ let test_config_review_plugins_explicit () =
   (check bool) "agent debug_artifacts" true config.debug_artifacts;
   (check (list string)) "ignored_file_regexes explicit" [ "^snapshots/.*\\.golden$" ] config.ignored_file_regexes;
   (check bool) "ignore_generated_files explicit off" false config.ignore_generated_files;
-  (check bool) "Jev build-claim guard" true config.review_plugins.jev_build_claim_guard_enabled;
-  (check (float 0.0001)) "Jev build-claim threshold" 0.72 config.review_plugins.jev_build_claim_guard_threshold;
-  (check bool) "Jev suggestion guard" true config.review_plugins.jev_suggestion_guard_enabled;
-  (check (float 0.0001)) "Jev suggestion threshold" 0.55 config.review_plugins.jev_suggestion_guard_threshold;
+  (check bool) "explicit decision model overrides the default" true
+    (match config.review_plugins.decision_model with
+    | Decision_model.Jev -> true
+    | Decision_model.Gpt_6_luna -> false);
+  (check bool) "decision build-claim guard" true config.review_plugins.decision_build_claim_guard_enabled;
+  (check (option (float 0.0001)))
+    "decision build-claim threshold" (Some 0.72) config.review_plugins.decision_build_claim_guard_threshold;
+  (check bool) "decision suggestion guard" true config.review_plugins.decision_suggestion_guard_enabled;
+  (check (option (float 0.0001)))
+    "decision suggestion threshold" (Some 0.55) config.review_plugins.decision_suggestion_guard_threshold;
   (check bool) "general disabled" false config.review_plugins.general.enabled;
   (check bool) "security enabled" true config.review_plugins.security.enabled;
   (check int) "vuln_classes count" 2 (List.length config.review_plugins.security.vuln_classes);
@@ -768,11 +784,13 @@ let test_config_review_plugins_explicit () =
   (match config.review_plugins.security.analysis_effort with
   | Some Config_types.Effort.Medium -> ()
   | Some Config_types.Effort.Low | Some High | Some Xhigh | None -> fail "expected medium analysis effort");
-  (check bool) "Jev analysis gate" true config.review_plugins.security.jev_analysis_gate_enabled;
-  (check (float 0.0001)) "Jev analysis gate threshold" 0.62 config.review_plugins.security.jev_analysis_gate_threshold;
-  (check bool) "Jev validator cascade" true config.review_plugins.security.jev_validator_cascade_enabled;
-  (check bool) "Jev grouping" true config.review_plugins.security.jev_grouping_enabled;
-  (check (float 0.0001)) "Jev grouping threshold" 0.75 config.review_plugins.security.jev_grouping_threshold;
+  (check bool) "decision analysis gate" true config.review_plugins.security.decision_analysis_gate_enabled;
+  (check (option (float 0.0001)))
+    "decision analysis gate threshold" (Some 0.62) config.review_plugins.security.decision_analysis_gate_threshold;
+  (check bool) "decision validator cascade" true config.review_plugins.security.decision_validator_cascade_enabled;
+  (check bool) "decision grouping" true config.review_plugins.security.decision_grouping_enabled;
+  (check (option (float 0.0001)))
+    "decision grouping threshold" (Some 0.75) config.review_plugins.security.decision_grouping_threshold;
   (check int) "memory_max_tokens" 10000 config.review_plugins.security.memory_max_tokens;
   (check bool) "metrics_artifacts" true config.review_plugins.security.metrics_artifacts;
   (check bool) "debug_artifacts" true config.review_plugins.security.debug_artifacts
@@ -794,72 +812,61 @@ let test_config_rejects_broad_ignored_file_regex () =
         (check bool) "error names ignored_file_regexes" true (contains_sub ~sub:"ignored_file_regexes" msg))
     [ ".*"; ".+"; "^.*$"; "^.+$"; "^" ]
 
-let test_config_rejects_invalid_jev_threshold () =
-  match
+let expect_config_error ~json ~sub =
+  match Config_types.config_of_json (Melange_json.of_string json) with
+  | (_ : Config_types.config) -> fail (Printf.sprintf "expected config to be rejected: %s" json)
+  | exception Melange_json.Of_json_error (Melange_json.Json_error msg) ->
+    (check bool) (Printf.sprintf "error mentions %S: %s" sub msg) true (contains_sub ~sub msg)
+
+let test_config_rejects_invalid_decision_thresholds () =
+  List.iter
+    (fun (json, sub) -> expect_config_error ~json ~sub)
+    [
+      {|{"review_plugins":{"security":{"decision_triage_threshold":1.1}}}|}, "decision_triage_threshold";
+      {|{"review_plugins":{"security":{"decision_analysis_gate_threshold":-0.1}}}|}, "decision_analysis_gate_threshold";
+      {|{"review_plugins":{"security":{"decision_grouping_threshold":-0.1}}}|}, "decision_grouping_threshold";
+      {|{"review_plugins":{"decision_suggestion_guard_threshold":1.1}}|}, "decision_suggestion_guard_threshold";
+      {|{"review_plugins":{"decision_build_claim_guard_threshold":-0.1}}|}, "decision_build_claim_guard_threshold";
+    ]
+
+let test_config_rejects_both_decision_routing_modes () =
+  expect_config_error
+    ~json:
+      {|{"review_plugins":{"decision_model":"jev","security":{"decision_triage_enabled":true,"decision_analysis_gate_enabled":true}}}|}
+    ~sub:"cannot both be true"
+
+let test_config_decision_feature_defaults_to_luna () =
+  let config =
     Config_types.config_of_json
-      (Melange_json.of_string {|{"review_plugins":{"security":{"jev_triage_threshold":1.1}}}|})
-  with
-  | (_ : Config_types.config) -> fail "expected out-of-range Jev threshold to be rejected"
-  | exception Melange_json.Of_json_error (Melange_json.Json_error msg) ->
-    (check bool) "error names Jev threshold" true (contains_sub ~sub:"jev_triage_threshold" msg)
+      (Melange_json.of_string {|{"review_plugins":{"decision_suggestion_guard_enabled":true}}|})
+  in
+  (check bool) "enabled feature without a model uses gpt-6-luna" true
+    (match config.review_plugins.decision_model with
+    | Decision_model.Gpt_6_luna -> true
+    | Decision_model.Jev -> false)
 
-let test_config_rejects_invalid_jev_analysis_gate_threshold () =
-  match
-    Config_types.config_of_json
-      (Melange_json.of_string {|{"review_plugins":{"security":{"jev_analysis_gate_threshold":-0.1}}}|})
-  with
-  | (_ : Config_types.config) -> fail "expected out-of-range Jev analysis gate threshold to be rejected"
-  | exception Melange_json.Of_json_error (Melange_json.Json_error msg) ->
-    (check bool) "error names Jev analysis gate threshold" true (contains_sub ~sub:"jev_analysis_gate_threshold" msg)
+let test_config_rejects_legacy_jev_fields () =
+  expect_config_error ~json:{|{"review_plugins":{"jev_suggestion_guard_enabled":true}}|}
+    ~sub:"review_plugins.jev_suggestion_guard_enabled was renamed to review_plugins.decision_suggestion_guard_enabled";
+  expect_config_error ~json:{|{"review_plugins":{"security":{"jev_triage_threshold":0.8}}}|}
+    ~sub:"review_plugins.security.jev_triage_threshold was renamed to review_plugins.security.decision_triage_threshold"
 
-let test_config_rejects_both_jev_routing_modes () =
-  match
-    Config_types.config_of_json
-      (Melange_json.of_string
-         {|{"review_plugins":{"security":{"jev_triage_enabled":true,"jev_analysis_gate_enabled":true}}}|})
-  with
-  | (_ : Config_types.config) -> fail "expected mutually exclusive Jev routing modes to be rejected"
-  | exception Melange_json.Of_json_error (Melange_json.Json_error msg) ->
-    (check bool) "error names both Jev modes" true (contains_sub ~sub:"cannot both be true" msg)
+let test_config_rejects_unknown_decision_model () =
+  expect_config_error ~json:{|{"review_plugins":{"decision_model":"jev-latest"}}|} ~sub:"decision_model"
 
-let test_config_rejects_invalid_jev_grouping_threshold () =
-  match
-    Config_types.config_of_json
-      (Melange_json.of_string {|{"review_plugins":{"security":{"jev_grouping_threshold":-0.1}}}|})
-  with
-  | (_ : Config_types.config) -> fail "expected out-of-range Jev grouping threshold to be rejected"
-  | exception Melange_json.Of_json_error (Melange_json.Json_error msg) ->
-    (check bool) "error names Jev grouping threshold" true (contains_sub ~sub:"jev_grouping_threshold" msg)
-
-let test_config_rejects_invalid_jev_suggestion_guard_threshold () =
-  match
-    Config_types.config_of_json (Melange_json.of_string {|{"review_plugins":{"jev_suggestion_guard_threshold":1.1}}|})
-  with
-  | (_ : Config_types.config) -> fail "expected out-of-range Jev suggestion threshold to be rejected"
-  | exception Melange_json.Of_json_error (Melange_json.Json_error msg) ->
-    (check bool) "error names Jev suggestion threshold" true (contains_sub ~sub:"jev_suggestion_guard_threshold" msg)
-
-let test_config_rejects_invalid_jev_build_claim_guard_threshold () =
-  match
-    Config_types.config_of_json (Melange_json.of_string {|{"review_plugins":{"jev_build_claim_guard_threshold":-0.1}}|})
-  with
-  | (_ : Config_types.config) -> fail "expected out-of-range Jev build-claim threshold to be rejected"
-  | exception Melange_json.Of_json_error (Melange_json.Json_error msg) ->
-    (check bool) "error names Jev build-claim threshold" true (contains_sub ~sub:"jev_build_claim_guard_threshold" msg)
-
-let test_jev_suggestion_guard_threshold () =
+let test_decision_suggestion_guard_threshold () =
   let removes defect_probability plausibility_probability =
-    Review_engine.jev_suggestion_guard_removes ~threshold:0.5 ~defect_probability ~plausibility_probability
+    Decision_model.suggestion_guard_removes ~threshold:0.5 ~defect_probability ~plausibility_probability
   in
   (check bool) "low defect score preserves fix" false (removes 0.49 0.1);
   (check bool) "plausible fix is preserved" false (removes 0.9 0.51);
   (check bool) "opposing boundaries remove fix" true (removes 0.5 0.5)
 
-let test_jev_build_claim_guard () =
+let test_decision_build_claim_guard () =
   (check bool) "below threshold preserves finding" false
-    (Review_engine.jev_build_claim_guard_rejects ~threshold:0.6 ~probability:0.59);
+    (Decision_model.build_claim_guard_rejects ~threshold:0.6 ~probability:0.59);
   (check bool) "threshold rejects finding" true
-    (Review_engine.jev_build_claim_guard_rejects ~threshold:0.6 ~probability:0.6);
+    (Decision_model.build_claim_guard_rejects ~threshold:0.6 ~probability:0.6);
   let content = List.init 200 (fun index -> Printf.sprintf "line %d" (index + 1)) |> String.concat "\n" in
   let context = Review_engine.reviewed_file_context ~line:100 content |> String.split_on_char '\n' in
   (check int) "context line count" 161 (List.length context);
@@ -1017,13 +1024,13 @@ let test_security_plugin_config_roundtrip () =
       analysis_effort = Some Config_types.Effort.Medium;
       validator_model_tier = Strong;
       confidence_threshold = High;
-      jev_triage_enabled = false;
-      jev_triage_threshold = 0.6;
-      jev_analysis_gate_enabled = true;
-      jev_analysis_gate_threshold = 0.62;
-      jev_validator_cascade_enabled = true;
-      jev_grouping_enabled = true;
-      jev_grouping_threshold = 0.75;
+      decision_triage_enabled = false;
+      decision_triage_threshold = Some 0.6;
+      decision_analysis_gate_enabled = true;
+      decision_analysis_gate_threshold = None;
+      decision_validator_cascade_enabled = true;
+      decision_grouping_enabled = true;
+      decision_grouping_threshold = Some 0.75;
       memory_max_tokens = 3000;
       metrics_artifacts = true;
       debug_artifacts = false;
@@ -1032,13 +1039,13 @@ let test_security_plugin_config_roundtrip () =
   let json = Config_types.security_plugin_config_to_json cfg in
   let parsed = Config_types.security_plugin_config_of_json json in
   (check bool) "enabled" true parsed.enabled;
-  (check bool) "Jev triage" false parsed.jev_triage_enabled;
-  (check (float 0.0001)) "Jev threshold" 0.6 parsed.jev_triage_threshold;
-  (check bool) "Jev analysis gate" true parsed.jev_analysis_gate_enabled;
-  (check (float 0.0001)) "Jev analysis gate threshold" 0.62 parsed.jev_analysis_gate_threshold;
-  (check bool) "Jev validator cascade" true parsed.jev_validator_cascade_enabled;
-  (check bool) "Jev grouping" true parsed.jev_grouping_enabled;
-  (check (float 0.0001)) "Jev grouping threshold" 0.75 parsed.jev_grouping_threshold;
+  (check bool) "decision triage" false parsed.decision_triage_enabled;
+  (check (option (float 0.0001))) "decision triage threshold" (Some 0.6) parsed.decision_triage_threshold;
+  (check bool) "decision analysis gate" true parsed.decision_analysis_gate_enabled;
+  (check (option (float 0.0001))) "unset threshold stays unset" None parsed.decision_analysis_gate_threshold;
+  (check bool) "decision validator cascade" true parsed.decision_validator_cascade_enabled;
+  (check bool) "decision grouping" true parsed.decision_grouping_enabled;
+  (check (option (float 0.0001))) "decision grouping threshold" (Some 0.75) parsed.decision_grouping_threshold;
   (check int) "vuln_classes" 2 (List.length parsed.vuln_classes);
   (check int) "always_analyze_vuln_classes" 1 (List.length parsed.always_analyze_vuln_classes);
   (check int) "memory_max_tokens" 3000 parsed.memory_max_tokens;
@@ -3249,12 +3256,12 @@ let test_security_always_analyze_implies_enabled () =
   (check bool) "High always_analyze-only class triggers" true
     (Security_review_plugin.should_analyze ~security_config high_injection)
 
-let test_security_jev_analysis_gate () =
+let test_security_decision_analysis_gate () =
   let injection = make_triage_signal ~vuln_class:Injection ~confidence:High in
   let xss = make_triage_signal ~vuln_class:Xss ~confidence:Medium in
   let ssrf = make_triage_signal ~vuln_class:Ssrf ~confidence:Low in
   let kept =
-    Security_review_plugin.gate_triage_signals ~always_analyze:[ Injection ] ~jev_signals:[ xss ]
+    Security_review_plugin.gate_triage_signals ~always_analyze:[ Injection ] ~decision_signals:[ xss ]
       [ injection; xss; ssrf ]
   in
   (check int) "keeps supported and bypassed classes" 2 (List.length kept);
@@ -3263,7 +3270,7 @@ let test_security_jev_analysis_gate () =
        (fun (signal : Security_types.triage_signal) ->
          Security_review_plugin.vuln_class_equal signal.vuln_class Injection)
        kept);
-  (check bool) "Jev-supported class passes gate" true
+  (check bool) "decision-supported class passes gate" true
     (List.exists
        (fun (signal : Security_types.triage_signal) -> Security_review_plugin.vuln_class_equal signal.vuln_class Xss)
        kept);
@@ -3272,7 +3279,7 @@ let test_security_jev_analysis_gate () =
        (fun (signal : Security_types.triage_signal) -> Security_review_plugin.vuln_class_equal signal.vuln_class Ssrf)
        kept)
 
-let test_security_partial_jev_fallback_stays_incomplete () =
+let test_security_partial_decision_fallback_stays_incomplete () =
   let partial : Security_types.triage_output =
     {
       signals = [ make_triage_signal ~vuln_class:Xss ~confidence:High ];
@@ -9782,17 +9789,14 @@ let () =
           test_case "review_plugins explicit" `Quick test_config_review_plugins_explicit;
           test_case "invalid ignored file regex rejected" `Quick test_config_rejects_invalid_ignored_file_regex;
           test_case "broad ignored file regex rejected" `Quick test_config_rejects_broad_ignored_file_regex;
-          test_case "invalid Jev threshold rejected" `Quick test_config_rejects_invalid_jev_threshold;
-          test_case "invalid Jev analysis gate threshold rejected" `Quick
-            test_config_rejects_invalid_jev_analysis_gate_threshold;
-          test_case "Jev routing modes are mutually exclusive" `Quick test_config_rejects_both_jev_routing_modes;
-          test_case "invalid Jev grouping threshold rejected" `Quick test_config_rejects_invalid_jev_grouping_threshold;
-          test_case "invalid Jev suggestion threshold rejected" `Quick
-            test_config_rejects_invalid_jev_suggestion_guard_threshold;
-          test_case "Jev suggestion threshold boundary" `Quick test_jev_suggestion_guard_threshold;
-          test_case "invalid Jev build-claim threshold rejected" `Quick
-            test_config_rejects_invalid_jev_build_claim_guard_threshold;
-          test_case "Jev build-claim guard" `Quick test_jev_build_claim_guard;
+          test_case "invalid decision thresholds rejected" `Quick test_config_rejects_invalid_decision_thresholds;
+          test_case "decision routing modes are mutually exclusive" `Quick
+            test_config_rejects_both_decision_routing_modes;
+          test_case "decision feature defaults to gpt-6-luna" `Quick test_config_decision_feature_defaults_to_luna;
+          test_case "legacy jev fields rejected with rename" `Quick test_config_rejects_legacy_jev_fields;
+          test_case "unknown decision model rejected" `Quick test_config_rejects_unknown_decision_model;
+          test_case "decision suggestion threshold boundary" `Quick test_decision_suggestion_guard_threshold;
+          test_case "decision build-claim guard" `Quick test_decision_build_claim_guard;
           test_case "general scout config defaults" `Quick test_config_general_scout_defaults;
           test_case "general scout config explicit" `Quick test_config_general_scout_explicit;
           test_case "max_leads = 0 rejected" `Quick test_config_max_leads_zero_rejected;
@@ -10033,8 +10037,9 @@ let () =
           test_case "should analyze below threshold not in config" `Quick
             test_security_should_analyze_below_threshold_not_in_config;
           test_case "always_analyze implies enabled" `Quick test_security_always_analyze_implies_enabled;
-          test_case "Jev analysis gate" `Quick test_security_jev_analysis_gate;
-          test_case "partial Jev fallback stays incomplete" `Quick test_security_partial_jev_fallback_stays_incomplete;
+          test_case "decision analysis gate" `Quick test_security_decision_analysis_gate;
+          test_case "partial decision fallback stays incomplete" `Quick
+            test_security_partial_decision_fallback_stays_incomplete;
           test_case "should analyze high threshold" `Quick test_security_should_analyze_high_threshold;
           test_case "should analyze high threshold restricted" `Quick
             test_security_should_analyze_high_threshold_restricted;

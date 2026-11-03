@@ -6,7 +6,7 @@ validator stages. It does not run or post a review.
 Run it with:
 
 ```sh
-TYPESAFE_API_KEY=... dune exec ./test/jev_routing_benchmark.exe -- --repeats 5 > results.jsonl
+OPENROUTER_API_KEY=... dune exec ./test/decision_routing_benchmark.exe -- --model jev --repeats 5 > results.jsonl
 ```
 
 The corpus has 22 diffs: 15 vulnerable cases and 7 safe controls. It includes

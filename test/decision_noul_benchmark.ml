@@ -23,7 +23,7 @@ let bool name json =
   | `Bool value -> value
   | _ -> failwith (Printf.sprintf "%S must be a boolean" name)
 
-let question_of_json json : Jev_triage.noul_question =
+let question_of_json json : Decision_client.noul_question =
   {
     instructions = string "instructions" json;
     true_criteria = string "true_criteria" json;
@@ -54,7 +54,7 @@ let emit ~case ~repetition ~elapsed result =
   let json =
     match result with
     | Error error -> `Assoc (("error", `String error) :: common)
-    | Ok ({ probability; cost } : Jev_triage.noul_output) ->
+    | Ok ({ probability; cost } : Decision_client.noul_output) ->
       `Assoc
         (("probability", `Float probability)
         :: ("input_tokens", `Int cost.input_tokens)
@@ -64,12 +64,12 @@ let emit ~case ~repetition ~elapsed result =
   print_endline (Yojson.Basic.to_string json);
   flush stdout
 
-let run_case ~api_key ~question ~repeats case =
+let run_case ~client ~question ~repeats case =
   let rec repeat repetition =
     if repetition > repeats then Lwt.return_unit
     else (
       let started = Unix.gettimeofday () in
-      let%lwt result = Jev_triage.score_noul ~api_key ~state:case.state ~question in
+      let%lwt result = Decision_client.score_noul client ~state:case.state ~question in
       emit ~case ~repetition ~elapsed:(Unix.gettimeofday () -. started) result;
       repeat (repetition + 1))
   in
@@ -88,21 +88,18 @@ let () =
   let self_test_only = ref false in
   Arg.parse
     [
+      Decision_benchmark_env.model_spec;
       "--corpus", Arg.Set_string corpus, "FILE Noul benchmark corpus";
       "--repeats", Arg.Set_int repeats, "N Repetitions per case";
       "--self-test", Arg.Set self_test_only, "Validate benchmark inputs without API calls";
     ]
     (fun argument -> raise (Arg.Bad (Printf.sprintf "Unexpected argument: %s" argument)))
-    "jev_noul_benchmark --corpus FILE [options]";
+    "decision_noul_benchmark --corpus FILE [options]";
   if String.equal !corpus "" then raise (Arg.Bad "--corpus is required");
   let question, cases = read_corpus !corpus in
   match !self_test_only with
   | true -> self_test cases
   | false ->
     if !repeats < 1 then raise (Arg.Bad "--repeats must be positive");
-    let api_key =
-      match Sys.getenv_opt "TYPESAFE_API_KEY" with
-      | Some api_key when not (String.equal (String.trim api_key) "") -> api_key
-      | Some _ | None -> failwith "TYPESAFE_API_KEY is required"
-    in
-    Lwt_main.run (Lwt_list.iter_s (run_case ~api_key ~question ~repeats:!repeats) cases)
+    let client = Decision_benchmark_env.client () in
+    Lwt_main.run (Lwt_list.iter_s (run_case ~client ~question ~repeats:!repeats) cases)

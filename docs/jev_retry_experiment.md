@@ -7,7 +7,7 @@ routed security concern and deserves one corrective retry.
 Run it with:
 
 ```sh
-TYPESAFE_API_KEY=... dune exec ./test/jev_noul_benchmark.exe -- \
+OPENROUTER_API_KEY=... dune exec ./test/decision_noul_benchmark.exe -- --model jev \
   --corpus test/jev_retry_cases.json --repeats 5 > results.jsonl
 ```
 

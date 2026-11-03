@@ -38,7 +38,7 @@ let make_corpus_context ~api_key =
       repos = [];
       anthropic_api_key = Some api_key;
       openrouter_api_key = None;
-      typesafe_api_key = None;
+      openrouter_decisions_api_key = None;
       slack_access_token = None;
     }
   in

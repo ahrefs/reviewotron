@@ -1,5 +1,9 @@
 # Jev semantic dedup experiment
 
+> These experiments ran against TypeSafe's API. The `jev_*` settings named
+> below are now `decision_*` settings with `"decision_model": "jev"`, served
+> through OpenRouter; see [Decision models](README.md#decision-models).
+
 This benchmark asks whether two analysis candidates describe the same underlying
 security defect and would be resolved by one concrete repair. It runs before any
 Reviewotron integration change.
@@ -7,7 +11,7 @@ Reviewotron integration change.
 Run it with:
 
 ```sh
-TYPESAFE_API_KEY=... dune exec ./test/jev_dedup_benchmark.exe -- --repeats 5 > results.jsonl
+OPENROUTER_API_KEY=... dune exec ./test/decision_dedup_benchmark.exe -- --model jev --repeats 5 > results.jsonl
 ```
 
 The corpus contains 18 balanced pairs. Duplicate pairs include different anchor
