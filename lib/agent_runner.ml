@@ -165,7 +165,7 @@ let should_retry_generic_openrouter_403 (error : Ai_provider.Provider_error.t) =
     && Int.equal status 403
     && String.equal (String.trim body) "[Anthropic] Request not allowed"
   | Ai_provider.Provider_error.Network_error _ | Ai_provider.Provider_error.Deserialization_error _
-  | Ai_provider.Provider_error.Timeout _ ->
+  | Ai_provider.Provider_error.Timeout _ | Ai_provider.Provider_error.Unexpected_error _ ->
     false
 
 let format_provider_error (error : Ai_provider.Provider_error.t) =
@@ -182,7 +182,7 @@ let format_provider_error (error : Ai_provider.Provider_error.t) =
     in
     Printf.sprintf "provider error from %s (HTTP %d, %s%s): %s" error.provider status retryability classification body
   | Ai_provider.Provider_error.Network_error _ | Ai_provider.Provider_error.Deserialization_error _
-  | Ai_provider.Provider_error.Timeout _ ->
+  | Ai_provider.Provider_error.Timeout _ | Ai_provider.Provider_error.Unexpected_error _ ->
     Printf.sprintf "provider error from %s (%s): %s" error.provider retryability
       (Ai_provider.Provider_error.to_string error)
 
@@ -596,6 +596,7 @@ let run_agent_untraced ~provider ~model ?tools ?(max_retries = 2) ?debug_dir ?lo
          err.message)
   | Ai_provider.Provider_error.Provider_error err ->
     fail (Printf.sprintf "agent %s: %s" config.name (format_provider_error err))
+  | Lwt.Canceled -> Lwt.fail Lwt.Canceled
   | exn -> fail (Printf.sprintf "agent %s: unexpected provider failure: %s" config.name (Printexc.to_string exn))
 
 let add_reported_cost_attr = function
