@@ -524,6 +524,21 @@ let test_llm_provider_usage_metadata_combines_openrouter_costs () =
     "non-BYOK charge is not doubled" (Some 0.0000257)
     (usage_of ~cost:(Some 0.0000257) ~upstream_inference_cost:(Some 0.0000257)).cost;
   (check (option (float 1e-9))) "BYOK reports the provider charge" (Some 0.5) usage.cost;
+  let anthropic =
+    Llm_provider.usage_metadata Llm_provider.Anthropic
+      (Some
+         (Ai_provider_anthropic.Convert_usage.to_provider_metadata
+            {
+              input_tokens = 1;
+              output_tokens = 1;
+              cache_read_input_tokens = Some 3;
+              cache_creation_input_tokens = Some 5;
+              cache_creation = None;
+              service_tier = None;
+              inference_geo = None;
+            }))
+  in
+  (check (pair int int)) "Anthropic cache counts" (3, 5) (anthropic.cache_read, anthropic.cache_write);
   (check (option (float 1e-9)))
     "lone cost passes through" (Some 0.02) (usage_of ~cost:(Some 0.02) ~upstream_inference_cost:None).cost;
   (check (option (float 1e-9)))

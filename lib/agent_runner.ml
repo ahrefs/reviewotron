@@ -68,47 +68,16 @@ type agent_result = {
   refused_attempt : agent_result option;
 }
 
-(** Extract cache token counts from the raw Anthropic response body.
-    The SDK's [Usage.t] only has [input_tokens] and [output_tokens]; cache
-    breakdowns live in the provider response JSON under [usage].
-
-    TODO: get these from the provider response headers directly once
-    ocaml-ai-sdk populates [response_info.headers] (currently empty). *)
-let extract_cache_tokens (response_body : Yojson.Basic.t) =
-  let int_field obj key =
-    match List.assoc_opt key obj with
-    | Some (`Int n) -> n
-    | _ -> 0
-  in
-  match response_body with
-  | `Assoc fields ->
-    (match List.assoc_opt "usage" fields with
-    | Some (`Assoc usage_fields) ->
-      let cache_read = int_field usage_fields "cache_read_input_tokens" in
-      let cache_creation = int_field usage_fields "cache_creation_input_tokens" in
-      cache_read, cache_creation
-    | _ -> 0, 0)
-  | _ -> 0, 0
-
 (** Read [(cache_read, cache_write, reported_cost_usd)] for a completed
-    generation, picking the source the provider actually populates:
-    - [Anthropic] reports cache counts in the raw response body's [usage] block,
-      parsed by {!extract_cache_tokens}; it reports no USD cost, so the cost is
-      [None] and {!Cost_tracking} estimates from the pricing table.
-    - [Openrouter] reports them per-step in [provider_metadata]; sum the cache
-      counts and the billed USD cost across all steps via
-      {!Llm_provider.usage_metadata}. *)
+    generation, summed over every step's [provider_metadata] via
+    {!Llm_provider.usage_metadata}. Only OpenRouter reports a USD cost; on the
+    Anthropic path it stays [None] and {!Cost_tracking} estimates it. *)
 let usage_of_result ~provider (result : Ai_core.Generate_text_result.t) =
-  match provider with
-  | Llm_provider.Anthropic ->
-    let cache_read, cache_write = extract_cache_tokens result.response.body in
-    cache_read, cache_write, None
-  | Llm_provider.Openrouter ->
-    List.fold_left
-      (fun (r, w, cost) (step : Ai_core.Generate_text_result.step) ->
-        let u = Llm_provider.usage_metadata Openrouter step.provider_metadata in
-        r + u.cache_read, w + u.cache_write, Llm_provider.sum_cost cost u.cost)
-      (0, 0, None) result.steps
+  List.fold_left
+    (fun (r, w, cost) (step : Ai_core.Generate_text_result.step) ->
+      let u = Llm_provider.usage_metadata provider step.provider_metadata in
+      r + u.cache_read, w + u.cache_write, Llm_provider.sum_cost cost u.cost)
+    (0, 0, None) result.steps
 
 (** Non-cached prompt tokens, so the three prompt buckets stay disjoint.
 

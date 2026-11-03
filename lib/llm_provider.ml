@@ -243,15 +243,20 @@ type usage = {
 let empty_usage = { cache_read = 0; cache_write = 0; cost = None }
 
 let usage_metadata provider meta =
-  match provider with
-  | Anthropic ->
-    (* Anthropic cache counts are parsed from the raw body in agent_runner; see
-       Task 5. There is no reported USD cost on the direct path. *)
-    empty_usage
-  | Openrouter ->
   match meta with
   | None -> empty_usage
   | Some m ->
+  match provider with
+  | Anthropic ->
+    (match Ai_provider_anthropic.Convert_usage.of_provider_metadata m with
+    | None -> empty_usage
+    | Some u ->
+      {
+        cache_read = Option.default 0 u.cache_read_input_tokens;
+        cache_write = Option.default 0 u.cache_creation_input_tokens;
+        cost = None;
+      })
+  | Openrouter ->
   match Ai_provider.Provider_options.find Ai_provider_openrouter.Convert_usage.Openrouter_usage m with
   | None -> empty_usage
   | Some u ->
