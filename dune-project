@@ -4,7 +4,7 @@
 
 (name reviewotron)
 
-(version 0.16.1)
+(version 0.17.0)
 
 (source
  (github ahrefs/reviewotron))

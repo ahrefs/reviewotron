@@ -60,15 +60,34 @@ type agent_result = {
     (** The provider's actual billed USD cost for the run, when it reports one
           (OpenRouter). [None] on the Anthropic path, where {!Cost_tracking}
           estimates from its pricing table instead. *)
+  refused_attempt : agent_result option;
+    (** The run a 5.5 safety classifier refused before this result's model
+        took over. Its tokens stay out of the fields above, since they belong to
+        another model; {!Cost_tracking} prices it at that model's rates. *)
 }
 
-(** Default model ID for a tier.
-    Uses {!Ai_provider_anthropic.Model_catalog} to resolve correct model IDs.
+(** Default model ID for a tier under [provider].
 
-    - [Fast] → [Claude_haiku_4_5]
-    - [Standard] → [claude-sonnet-5]
-    - [Strong] → [claude-opus-4-8] *)
-val default_model_id : model_tier -> string
+    - [Fast] → [claude-haiku-5-5] / [~anthropic/claude-haiku-latest]
+    - [Standard] → [claude-sonnet-5-5] / [~anthropic/claude-sonnet-latest]
+    - [Strong] → [claude-opus-5-5] / [~anthropic/claude-opus-latest]
+
+    OpenRouter gets its [latest] aliases, which follow each family's newest
+    release. The direct Anthropic API has no such alias, and a new ID also needs
+    an ocaml-ai-sdk catalog entry, so those IDs are pinned and bumped by hand. *)
+val default_model_id : Llm_provider.t -> model_tier -> string
+
+(** Model to retry on when [model_id] refuses a request: the 5.5 model's
+    predecessor, which has no safety classifier. [model_id] is the provider's
+    normalized ID, so OpenRouter's [latest] aliases map too. [None] for any
+    other model, which is not retried.
+
+    - [claude-opus-5-5] → [claude-opus-4-8]; [claude-sonnet-5-5] →
+      [claude-sonnet-5]; [claude-haiku-5-5] → [claude-haiku-4-5-20251001]
+    - [~anthropic/claude-opus-latest] or [anthropic/claude-opus-5.5] →
+      [anthropic/claude-opus-4.8], and likewise for Sonnet ([claude-sonnet-5])
+      and Haiku ([claude-haiku-4.5]) *)
+val refusal_fallback_model_id : string -> string option
 
 (** Non-cached prompt tokens, keeping the three prompt buckets
     ([input_tokens], [cache_read_input_tokens], [cache_creation_input_tokens])
@@ -145,7 +164,11 @@ val retry_generic_openrouter_403_once :
       option encoding and usage parsing.  [model] must have been built for this
       same provider (see {!Llm_provider.language_model}).
     @param model Language model instance (create via provider, e.g.
-      [Ai_provider_anthropic.language_model ~model:"claude-sonnet-5" ()])
+      [Ai_provider_anthropic.language_model ~model:"claude-sonnet-5-5" ()])
+    @param refusal_fallback
+      Model to rerun the agent on, once, when [model] refuses the request
+      ([stop_reason: "refusal"], surfaced as a content-filter finish). The
+      refused attempt's tokens and cost are added to the result.
     @param tools Named tool definitions for context expansion
     @param max_retries Per-call retry count (default 2)
     @param debug_dir Directory for debug dumps on parse failure
@@ -155,6 +178,7 @@ val retry_generic_openrouter_403_once :
 val run_agent :
   provider:Llm_provider.t ->
   model:Ai_provider.Language_model.t ->
+  ?refusal_fallback:Ai_provider.Language_model.t ->
   ?tools:(string * Ai_core.Core_tool.t) list ->
   ?max_retries:int ->
   ?debug_dir:string ->

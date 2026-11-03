@@ -427,7 +427,6 @@ version control. Webhook/server commands do not read the user-global files.
   "max_diff_lines": 2000,
   "max_files": 50,
   "max_tokens_per_review": 100000,
-  "model": "claude-sonnet-4-6",
   "ignored_paths": ["*.test.js", "vendor/**"],
   "ignored_file_regexes": ["^snapshots/.*\\.golden$"],
   "ignore_generated_files": true,
@@ -481,7 +480,7 @@ version control. Webhook/server commands do not read the user-global files.
 | `max_diff_lines` | `2000` | Maximum total diff lines to review. PRs exceeding this are skipped. |
 | `max_files` | `50` | Maximum files to review after ignored, custom-regex, and generated files are removed. |
 | `max_tokens_per_review` | `100000` | Token budget hint for the review agent. |
-| `model` | `claude-sonnet-4-6` | Model ID for the general review agent. |
+| `model` | (absent) | Model ID override for the general deep reviewer, and for the single-pass review agent when `scout_enabled` is `false`. When absent, `deep_reviewer_model_tier` decides (`claude-opus-5-5` by default, `~anthropic/claude-opus-latest` on OpenRouter). |
 | `ignored_paths` | `[]` | Glob patterns for files to exclude from review. Supports `*` and `**` wildcards. |
 | `ignored_file_regexes` | `[]` | Regular expressions matched against repository-relative file paths to exclude from review. Catch-all patterns are rejected; use explicit `ignored_paths` entries when you intentionally want to exclude a complete set of files. |
 | `ignore_generated_files` | `true` | Exclude conservatively detected generated files before `max_files` and `max_diff_lines` are enforced. Set to `false` to review generated artifacts. |
@@ -546,11 +545,26 @@ generated-file header markers. Broad folders such as `generated/`, `dist/`,
 
 #### Model Tiers
 
-| Tier | Model | Typical Use |
-|------|-------|-------------|
-| `"fast"` | `claude-haiku-4-5-20251001` | Triage, memory curator |
-| `"standard"` | `claude-sonnet-5` | Analysis agents, validator, general review |
-| `"strong"` | `claude-opus-4-8` | Reserved for complex codebases |
+| Tier | Anthropic model | OpenRouter model | Typical Use |
+|------|-----------------|------------------|-------------|
+| `"fast"` | `claude-haiku-5-5` | `~anthropic/claude-haiku-latest` | Triage, memory curator |
+| `"standard"` | `claude-sonnet-5-5` | `~anthropic/claude-sonnet-latest` | Analysis agents, validator, general review |
+| `"strong"` | `claude-opus-5-5` | `~anthropic/claude-opus-latest` | Reserved for complex codebases |
+
+OpenRouter's `latest` aliases follow each family's newest release, so the
+OpenRouter path moves to a new model without a reviewotron release. The direct
+Anthropic API has no such alias, and a new model ID also needs an entry in the
+ocaml-ai-sdk model catalog, so the Anthropic models are pinned and bumped by
+hand. The logs record the model that actually answered each agent call, and
+warn when OpenRouter hands a call to its cross-lab fallback.
+
+The 5.5 models have safety classifiers that can refuse a request, and benign
+security work can trigger them. A refused agent run, including a refusal while
+finalizing, is retried once on the refusing model's predecessor, which has no
+classifier: Haiku 4.5, Sonnet 5 or Opus 4.8. The log names the refusal category,
+and the refused attempt is added to the review cost at its own model's rates.
+That is an upper bound, since Anthropic does not bill most refusals that arrive
+before any output.
 
 #### Vulnerability Classes
 
@@ -1208,15 +1222,22 @@ Cost footer example:
 
 ### Pricing
 
-Costs are estimated using a built-in pricing table that includes prompt caching rates:
+On OpenRouter, the cost is the USD figure OpenRouter reports for each call. On
+the direct Anthropic API, which reports no cost, it is estimated from a built-in
+pricing table that includes prompt caching rates. OpenRouter calls fall back to
+the same table only if a response carries no cost:
 
 | Model Family | Input | Output | Cache Write (5m) | Cache Read |
 |--------------|-------|--------|------------------|------------|
+| Claude Opus 5.5 | $4.00/MTok | $20.00/MTok | $5.00/MTok | $0.20/MTok |
 | Claude Opus 4.x | $5.00/MTok | $25.00/MTok | $6.25/MTok | $0.50/MTok |
+| Claude Sonnet 5.5 | $2.00/MTok | $10.00/MTok | $2.50/MTok | $0.10/MTok |
+| Claude Sonnet 5 | $2.00/MTok | $10.00/MTok | $2.50/MTok | $0.20/MTok |
 | Claude Sonnet 4.x | $3.00/MTok | $15.00/MTok | $3.75/MTok | $0.30/MTok |
+| Claude Haiku 5.5 | $0.10/MTok | $0.50/MTok | $0.125/MTok | $0.01/MTok |
 | Claude Haiku 4.5 | $1.00/MTok | $5.00/MTok | $1.25/MTok | $0.10/MTok |
 
-Cache write tokens are charged at 1.25x the base input price (5-minute TTL). Cache read tokens are charged at 0.1x the base input price. Cache token counts are extracted from the Anthropic API response and tracked per-agent.
+Cache write tokens are charged at 1.25x the base input price (5-minute TTL). Cache read tokens are charged at 0.1x the base input price, or 0.05x on Opus 5.5 and Sonnet 5.5. Haiku 5.5 bills prompts over 100K tokens at 5x the rates above; the estimate always uses the short-prompt rate, so it reads low for those calls. Cache token counts are extracted from the Anthropic API response and tracked per-agent.
 
 The pricing table is a single record in the codebase (`lib/cost_tracking.ml`) — update it when prices change.
 

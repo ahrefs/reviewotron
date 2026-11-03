@@ -65,6 +65,7 @@ type agent_result = {
   tool_results_count : int;
   model_id : string;
   reported_cost_usd : float option;
+  refused_attempt : agent_result option;
 }
 
 (** Extract cache token counts from the raw Anthropic response body.
@@ -195,6 +196,25 @@ let response_model_id ~provider ~requested_model_id response_model =
   | Llm_provider.Openrouter, Some model_id -> model_id
   | Openrouter, None | Anthropic, None | Anthropic, Some _ -> requested_model_id
 
+(* OpenRouter routes each step on its own and moves a failing step to the
+   cross-lab fallback without an error, so check every step, not only the last. *)
+let warn_on_fallback_steps ~provider ~log_prefix ~agent_name ~requested_model_id
+  (steps : Ai_core.Generate_text_result.step list) =
+  match provider with
+  | Llm_provider.Anthropic -> ()
+  | Openrouter ->
+    let fallback_models =
+      steps
+      |> List.filter_map (fun (step : Ai_core.Generate_text_result.step) -> step.response_model)
+      |> List.filter (fun served_model_id -> Llm_provider.served_by_fallback ~requested_model_id ~served_model_id)
+      |> List.sort_uniq String.compare
+    in
+    (match fallback_models with
+    | [] -> ()
+    | _ :: _ ->
+      log#warn "%sagent %s: OpenRouter served %s instead of %s" log_prefix agent_name
+        (String.concat ", " fallback_models) requested_model_id)
+
 let retry_generic_openrouter_403_once ?(sleep = Lwt_unix.sleep) ~log_prefix ~agent_name f =
   Lwt.catch f (function
     | Ai_provider.Provider_error.Provider_error error when should_retry_generic_openrouter_403 error ->
@@ -211,12 +231,43 @@ let retry_generic_openrouter_403_model ~log_prefix ~agent_name model =
   end in
   Ai_provider.Middleware.apply (module Retry_generic_openrouter_403) model
 
-let default_model_id =
-  let open Ai_provider_anthropic.Model_catalog in
-  function
-  | Fast -> to_model_id Claude_haiku_4_5
-  | Standard -> "claude-sonnet-5"
-  | Strong -> "claude-opus-4-8"
+(* OpenRouter's [~]-prefixed aliases follow each family's newest release, so the
+   OpenRouter path moves forward without a code change.  The direct API has no
+   such alias, and every new ID also needs an ocaml-ai-sdk catalog entry, so the
+   Anthropic path stays pinned and is bumped by hand. *)
+let default_model_id provider tier =
+  match provider, tier with
+  | Llm_provider.Anthropic, Fast -> "claude-haiku-5-5"
+  | Anthropic, Standard -> "claude-sonnet-5-5"
+  | Anthropic, Strong -> "claude-opus-5-5"
+  | Openrouter, Fast -> "~anthropic/claude-haiku-latest"
+  | Openrouter, Standard -> "~anthropic/claude-sonnet-latest"
+  | Openrouter, Strong -> "~anthropic/claude-opus-latest"
+
+(* The 5.5 generation's safety classifiers can refuse a request, and benign
+   security work can trip them.  Each 5.5 model's predecessor has no such
+   classifier, so a refused run is retried there once.  Keyed on the model that
+   refused, so a [model] override falls back within its own family. *)
+let refusal_fallback_model_id = function
+  | "claude-opus-5-5" -> Some "claude-opus-4-8"
+  | "claude-sonnet-5-5" -> Some "claude-sonnet-5"
+  | "claude-haiku-5-5" -> Some "claude-haiku-4-5-20251001"
+  | "~anthropic/claude-opus-latest" | "anthropic/claude-opus-5.5" -> Some "anthropic/claude-opus-4.8"
+  | "~anthropic/claude-sonnet-latest" | "anthropic/claude-sonnet-5.5" -> Some "anthropic/claude-sonnet-5"
+  | "~anthropic/claude-haiku-latest" | "anthropic/claude-haiku-5.5" -> Some "anthropic/claude-haiku-4.5"
+  | _ -> None
+
+(* Anthropic names the policy area of a refusal in [stop_details.category]. *)
+let refusal_category (body : Yojson.Basic.t) =
+  match body with
+  | `Assoc fields ->
+    (match List.assoc_opt "stop_details" fields with
+    | Some (`Assoc details) ->
+      (match List.assoc_opt "category" details with
+      | Some (`String category) -> Some category
+      | Some _ | None -> None)
+    | Some _ | None -> None)
+  | _ -> None
 
 (** Recursively create a directory path, like [mkdir -p].
     Silently succeeds if the directory already exists. *)
@@ -376,9 +427,9 @@ let finalization_instruction ~reason =
     user-role evidence transcript because step results can omit protocol state
     required to replay assistant turns.
 
-    Returns [Some finalized_result] on success with combined usage/steps,
-    [None] when the recovery itself fails (the caller then errors out as
-    before). *)
+    Returns [Some second] whenever the finalization call completes, with or
+    without structured output (a refusal lands here too), and [None] when the
+    call itself fails. *)
 let finalize_after_budget_exhaustion ~log_prefix ~provider ~model ~config ~provider_options ~input ~output_spec
   ~max_retries ~reason ~(first : Ai_core.Generate_text_result.t) =
   (* Reuse the same cache breakpoint on the input block we put there in
@@ -410,10 +461,9 @@ let finalize_after_budget_exhaustion ~log_prefix ~provider ~model ~config ~provi
         log_prefix config.name second.usage.input_tokens second.usage.output_tokens;
       Lwt.return (Some second)
     | None ->
-      log#warn "%sagent %s: finalization still returned no structured output (finish_reason=%s); giving up" log_prefix
-        config.name
+      log#warn "%sagent %s: finalization still returned no structured output (finish_reason=%s)" log_prefix config.name
         (Ai_provider.Finish_reason.to_string second.finish_reason);
-      Lwt.return None
+      Lwt.return (Some second)
   with
   | Ai_core.Retry.Retry_error err ->
     log#warn "%sagent %s: finalization retries exhausted (%s): %s" log_prefix config.name
@@ -424,7 +474,8 @@ let finalize_after_budget_exhaustion ~log_prefix ~provider ~model ~config ~provi
     log#warn "%sagent %s: finalization provider error: %s" log_prefix config.name (format_provider_error err);
     Lwt.return None
 
-let run_agent_untraced ~provider ~model ?tools ?(max_retries = 2) ?debug_dir ?log_context ~config ~input () =
+let rec run_agent_untraced ~provider ~model ?refusal_fallback ?tools ?(max_retries = 2) ?debug_dir ?log_context ~config
+  ~input () =
   let log_prefix = log_context_prefix log_context in
   let fail msg =
     log#error "%s%s" log_prefix msg;
@@ -494,6 +545,7 @@ let run_agent_untraced ~provider ~model ?tools ?(max_retries = 2) ?debug_dir ?lo
     in
     log#info "%sagent %s: finished (%d steps, %d input tokens, %d output tokens, model=%s)" log_prefix config.name
       steps_count result.usage.input_tokens result.usage.output_tokens result_model_id;
+    warn_on_fallback_steps ~provider ~log_prefix ~agent_name:config.name ~requested_model_id result.steps;
     let make_result ~output ~usage ~extra_cache_read ~extra_cache_write ~extra_cost ~extra_steps ~extra_tool_calls
       ~extra_tool_results ~model_id =
       let total_cache_read = cache_read_input_tokens + extra_cache_read in
@@ -520,74 +572,74 @@ let run_agent_untraced ~provider ~model ?tools ?(max_retries = 2) ?debug_dir ?lo
         tool_results_count = List.length result.tool_results + extra_tool_results;
         model_id;
         reported_cost_usd = Llm_provider.sum_cost reported_cost_usd extra_cost;
+        refused_attempt = None;
       }
     in
-    match result.output with
-    | Some output ->
+    let missing_output ~finalization_failed =
+      let msg =
+        missing_structured_output_message ~agent_name:config.name ~finish_reason:result.finish_reason
+          ~finalization_failed
+      in
+      (match debug_dir with
+      | Some dir ->
+        (match
+           write_debug_dump ~dir ~config ~finish_reason:result.finish_reason ~steps:result.steps ~usage:result.usage
+         with
+        | Some filepath ->
+          log#warn "%sagent %s: structured output missing, debug dump at %s" log_prefix config.name filepath
+        | None -> log#warn "%s%s" log_prefix msg)
+      | None -> log#warn "%s%s" log_prefix msg);
+      Lwt.return_error msg
+    in
+    (* Rerun the whole agent on the fallback, which has no classifier and gets
+       no fallback of its own.  The refused attempt rides along so its cost is
+       priced at its own model's rates. *)
+    let retry_refused ~(refused : agent_result) ~response_body fallback =
+      log#warn "%sagent %s: %s refused the request (category=%s); retrying once on %s" log_prefix config.name
+        refused.model_id
+        (Option.default "unreported" (refusal_category response_body))
+        (Ai_provider.Language_model.model_id fallback);
+      let%lwt retried =
+        run_agent_untraced ~provider ~model:fallback ~tools ~max_retries ?debug_dir ?log_context ~config ~input ()
+      in
+      Lwt.return (Result.map (fun retried -> { retried with refused_attempt = Some refused }) retried)
+    in
+    let finalize ~reason =
+      let%lwt recovered =
+        finalize_after_budget_exhaustion ~log_prefix ~provider ~model ~config ~provider_options ~input ~output_spec
+          ~max_retries ~reason ~first:result
+      in
+      match recovered with
+      | None -> missing_output ~finalization_failed:true
+      | Some second ->
+        let usage = Ai_core.Generate_text_result.add_usage result.usage second.usage in
+        let extra_cache_read, extra_cache_write, extra_cost = usage_of_result ~provider second in
+        let model_id = response_model_id ~provider ~requested_model_id second.response.model in
+        let finalized ~output =
+          make_result ~output ~usage ~extra_cache_read ~extra_cache_write ~extra_cost
+            ~extra_steps:(List.length second.steps) ~extra_tool_calls:(List.length second.tool_calls)
+            ~extra_tool_results:(List.length second.tool_results) ~model_id
+        in
+        (match second.output, second.finish_reason, refusal_fallback with
+        | Some output, _, _ -> Lwt.return_ok (finalized ~output)
+        | None, Ai_provider.Finish_reason.Content_filter, Some fallback ->
+          retry_refused ~refused:(finalized ~output:`Null) ~response_body:second.response.body fallback
+        | None, _, _ -> missing_output ~finalization_failed:true)
+    in
+    match result.output, result.finish_reason, refusal_fallback with
+    | Some output, _, _ ->
       Lwt.return_ok
         (make_result ~output ~usage:result.usage ~extra_cache_read:0 ~extra_cache_write:0 ~extra_cost:None
            ~extra_steps:0 ~extra_tool_calls:0 ~extra_tool_results:0 ~model_id:result_model_id)
-    | None ->
-      let recoverable_exhaustion =
-        match result.finish_reason with
-        | Ai_provider.Finish_reason.Tool_calls -> Some "it reached the tool-use budget"
-        | Ai_provider.Finish_reason.Length -> Some "it reached the model output length limit"
-        | Ai_provider.Finish_reason.Stop | Ai_provider.Finish_reason.Content_filter | Ai_provider.Finish_reason.Error
-        | Ai_provider.Finish_reason.Other _ | Ai_provider.Finish_reason.Unknown ->
-          None
+    | None, Ai_provider.Finish_reason.Content_filter, Some fallback ->
+      let refused =
+        make_result ~output:`Null ~usage:result.usage ~extra_cache_read:0 ~extra_cache_write:0 ~extra_cost:None
+          ~extra_steps:0 ~extra_tool_calls:0 ~extra_tool_results:0 ~model_id:result_model_id
       in
-      (match recoverable_exhaustion with
-      | None ->
-        let msg =
-          missing_structured_output_message ~agent_name:config.name ~finish_reason:result.finish_reason
-            ~finalization_failed:false
-        in
-        (match debug_dir with
-        | Some dir ->
-          (match
-             write_debug_dump ~dir ~config ~finish_reason:result.finish_reason ~steps:result.steps ~usage:result.usage
-           with
-          | Some filepath ->
-            log#warn "%sagent %s: structured output missing, debug dump at %s" log_prefix config.name filepath
-          | None -> log#warn "%s%s" log_prefix msg)
-        | None -> log#warn "%s%s" log_prefix msg);
-        Lwt.return_error msg
-      | Some reason ->
-        let%lwt recovered =
-          finalize_after_budget_exhaustion ~log_prefix ~provider ~model ~config ~provider_options ~input ~output_spec
-            ~max_retries ~reason ~first:result
-        in
-        (match recovered with
-        | Some second ->
-          let usage = Ai_core.Generate_text_result.add_usage result.usage second.usage in
-          let extra_cache_read, extra_cache_write, extra_cost = usage_of_result ~provider second in
-          (match second.output with
-          | Some output ->
-            let model_id = response_model_id ~provider ~requested_model_id second.response.model in
-            Lwt.return_ok
-              (make_result ~output ~usage ~extra_cache_read ~extra_cache_write ~extra_cost
-                 ~extra_steps:(List.length second.steps) ~extra_tool_calls:(List.length second.tool_calls)
-                 ~extra_tool_results:(List.length second.tool_results) ~model_id)
-          | None ->
-            (* Impossible: finalize returns Some only when second.output is Some. *)
-            let msg = Printf.sprintf "agent %s: finalization returned empty output" config.name in
-            log#error "%s%s" log_prefix msg;
-            Lwt.return_error msg)
-        | None ->
-          let msg =
-            missing_structured_output_message ~agent_name:config.name ~finish_reason:result.finish_reason
-              ~finalization_failed:true
-          in
-          (match debug_dir with
-          | Some dir ->
-            (match
-               write_debug_dump ~dir ~config ~finish_reason:result.finish_reason ~steps:result.steps ~usage:result.usage
-             with
-            | Some filepath ->
-              log#warn "%sagent %s: structured output missing, debug dump at %s" log_prefix config.name filepath
-            | None -> log#warn "%s%s" log_prefix msg)
-          | None -> log#warn "%s%s" log_prefix msg);
-          Lwt.return_error msg))
+      retry_refused ~refused ~response_body:result.response.body fallback
+    | None, Ai_provider.Finish_reason.Tool_calls, _ -> finalize ~reason:"it reached the tool-use budget"
+    | None, Length, _ -> finalize ~reason:"it reached the model output length limit"
+    | None, (Stop | Content_filter | Error | Other _ | Unknown), _ -> missing_output ~finalization_failed:false
   with
   | Ai_core.Retry.Retry_error err ->
     fail
@@ -603,7 +655,7 @@ let add_reported_cost_attr = function
   | None -> ()
   | Some cost -> Telemetry.add_attrs [ "gen_ai.usage.reported_cost_usd", `Float cost ]
 
-let run_agent ~provider ~model ?tools ?(max_retries = 2) ?debug_dir ?log_context ~config ~input () =
+let run_agent ~provider ~model ?refusal_fallback ?tools ?(max_retries = 2) ?debug_dir ?log_context ~config ~input () =
   let requested_model_id = Ai_provider.Language_model.model_id model in
   let thinking_attrs =
     match config.thinking_budget with
@@ -635,7 +687,8 @@ let run_agent ~provider ~model ?tools ?(max_retries = 2) ?debug_dir ?log_context
   in
   Telemetry.span_result ~error_to_string:Fun.id ~attrs "reviewotron.agent.run" (fun () ->
     let%lwt result =
-      run_agent_untraced ~provider ~model ?tools ~max_retries ?debug_dir ?log_context ~config ~input ()
+      run_agent_untraced ~provider ~model ?refusal_fallback ?tools ~max_retries ?debug_dir ?log_context ~config ~input
+        ()
     in
     (match result with
     | Ok result ->
@@ -645,7 +698,9 @@ let run_agent ~provider ~model ?tools ?(max_retries = 2) ?debug_dir ?log_context
           "reviewotron.agent.tool_calls", `Int result.tool_calls_count;
           "reviewotron.agent.tool_results", `Int result.tool_results_count;
           "gen_ai.response.model", `String result.model_id;
-          "reviewotron.agent.model_fallback", `Bool (not (String.equal requested_model_id result.model_id));
+          ( "reviewotron.agent.model_fallback",
+            `Bool (Llm_provider.served_by_fallback ~requested_model_id ~served_model_id:result.model_id) );
+          "reviewotron.agent.refusal_fallback", `Bool (Option.is_some result.refused_attempt);
           "gen_ai.usage.input_tokens", `Int result.usage.input_tokens;
           "gen_ai.usage.output_tokens", `Int result.usage.output_tokens;
           "gen_ai.usage.cache_read_input_tokens", `Int result.cache_read_input_tokens;

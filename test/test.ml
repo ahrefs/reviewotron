@@ -452,33 +452,82 @@ let test_llm_provider_base_url_reaches_sdk () =
 
 let test_model_ids_no_regression () =
   let expect tier ~anthropic_id ~openrouter_id =
-    (check string) "anthropic tier id" anthropic_id (Agent_runner.default_model_id tier);
+    let anthropic_default = Agent_runner.default_model_id Llm_provider.Anthropic tier in
+    (check string) "anthropic tier id" anthropic_id anthropic_default;
+    (* An ID the SDK catalog does not know becomes [Custom], which has no native
+       structured output and a 4096-token cap: the 5.5 models then reject the
+       forced tool choice.  Every pinned tier must be a known model. *)
+    (check bool)
+      (anthropic_id ^ " has native structured output in the SDK catalog")
+      true Ai_provider_anthropic.Model_catalog.(capabilities (of_model_id anthropic_default)).supports_structured_output;
+    (* The OpenRouter alias must survive normalization untouched. *)
     (check string) "openrouter tier id" openrouter_id
-      (Llm_provider.normalize_model_id Llm_provider.Openrouter (Agent_runner.default_model_id tier))
+      (Llm_provider.normalize_model_id Llm_provider.Openrouter
+         (Agent_runner.default_model_id Llm_provider.Openrouter tier))
   in
-  expect Agent_runner.Fast ~anthropic_id:"claude-haiku-4-5-20251001" ~openrouter_id:"anthropic/claude-haiku-4.5";
-  expect Agent_runner.Standard ~anthropic_id:"claude-sonnet-5" ~openrouter_id:"anthropic/claude-sonnet-5";
-  expect Agent_runner.Strong ~anthropic_id:"claude-opus-4-8" ~openrouter_id:"anthropic/claude-opus-4.8";
-  (* config.model default flows through the same normalization *)
-  (check string) "config.model default on OR" "anthropic/claude-sonnet-4.6"
-    (Llm_provider.normalize_model_id Llm_provider.Openrouter "claude-sonnet-4-6")
+  expect Agent_runner.Fast ~anthropic_id:"claude-haiku-5-5" ~openrouter_id:"~anthropic/claude-haiku-latest";
+  expect Agent_runner.Standard ~anthropic_id:"claude-sonnet-5-5" ~openrouter_id:"~anthropic/claude-sonnet-latest";
+  expect Agent_runner.Strong ~anthropic_id:"claude-opus-5-5" ~openrouter_id:"~anthropic/claude-opus-latest";
+  (* A config.model override still pins a concrete OpenRouter model. *)
+  (check string) "config.model override on OR" "anthropic/claude-sonnet-4.6"
+    (Llm_provider.normalize_model_id Llm_provider.Openrouter "claude-sonnet-4-6");
+  (check string) "pinned 5.5 override on OR" "anthropic/claude-sonnet-5.5"
+    (Llm_provider.normalize_model_id Llm_provider.Openrouter "claude-sonnet-5-5");
+  (* Every default can fall back on a refusal, to its own family's predecessor;
+     models without the 5.5 classifiers are never retried. *)
+  let fallback = Agent_runner.refusal_fallback_model_id in
+  List.iter
+    (fun (requested, expected) ->
+      (check (option string)) ("refusal fallback for " ^ requested) expected (fallback requested))
+    [
+      "claude-haiku-5-5", Some "claude-haiku-4-5-20251001";
+      "claude-sonnet-5-5", Some "claude-sonnet-5";
+      "claude-opus-5-5", Some "claude-opus-4-8";
+      "~anthropic/claude-haiku-latest", Some "anthropic/claude-haiku-4.5";
+      "~anthropic/claude-sonnet-latest", Some "anthropic/claude-sonnet-5";
+      "~anthropic/claude-opus-latest", Some "anthropic/claude-opus-4.8";
+      "anthropic/claude-opus-5.5", Some "anthropic/claude-opus-4.8";
+      "claude-sonnet-5", None;
+      "anthropic/claude-opus-4.8", None;
+      "openai/gpt-5.6-terra", None;
+    ];
+  List.iter
+    (fun provider ->
+      List.iter
+        (fun tier ->
+          let default = Agent_runner.default_model_id provider tier in
+          (check bool) (default ^ " has a refusal fallback") true (Option.is_some (fallback default)))
+        [ Agent_runner.Fast; Standard; Strong ])
+    [ Llm_provider.Anthropic; Openrouter ]
 
 let test_llm_provider_usage_metadata_combines_openrouter_costs () =
-  let metadata =
-    Ai_provider.Provider_options.set Ai_provider_openrouter.Convert_usage.Openrouter_usage
-      {
-        Ai_provider_openrouter.Convert_usage.cache_read_tokens = 7;
-        cache_write_tokens = 11;
-        reasoning_tokens = 13;
-        cost = Some 0.02;
-        upstream_inference_cost = Some 0.5;
-      }
-      Ai_provider.Provider_options.empty
+  let usage_of ~cost ~upstream_inference_cost =
+    let metadata =
+      Ai_provider.Provider_options.set Ai_provider_openrouter.Convert_usage.Openrouter_usage
+        {
+          Ai_provider_openrouter.Convert_usage.cache_read_tokens = 7;
+          cache_write_tokens = 11;
+          reasoning_tokens = 13;
+          cost;
+          upstream_inference_cost;
+        }
+        Ai_provider.Provider_options.empty
+    in
+    Llm_provider.usage_metadata Llm_provider.Openrouter (Some metadata)
   in
-  let usage = Llm_provider.usage_metadata Llm_provider.Openrouter (Some metadata) in
+  let usage = usage_of ~cost:(Some 0.02) ~upstream_inference_cost:(Some 0.5) in
   (check int) "cache read" 7 usage.cache_read;
   (check int) "cache write" 11 usage.cache_write;
-  (check (option (float 1e-9))) "total reported cost" (Some 0.52) usage.cost
+  (* Without BYOK, OpenRouter repeats the full charge as the upstream cost (seen
+     live: cost 0.0000257, upstream_inference_cost 0.0000257). *)
+  (check (option (float 1e-9)))
+    "non-BYOK charge is not doubled" (Some 0.0000257)
+    (usage_of ~cost:(Some 0.0000257) ~upstream_inference_cost:(Some 0.0000257)).cost;
+  (check (option (float 1e-9))) "BYOK reports the provider charge" (Some 0.5) usage.cost;
+  (check (option (float 1e-9)))
+    "lone cost passes through" (Some 0.02) (usage_of ~cost:(Some 0.02) ~upstream_inference_cost:None).cost;
+  (check (option (float 1e-9)))
+    "nothing reported stays None" None (usage_of ~cost:None ~upstream_inference_cost:None).cost
 
 let test_openrouter_cross_lab_routing () =
   let prefs = Llm_provider.openrouter_provider_prefs in
@@ -488,13 +537,31 @@ let test_openrouter_cross_lab_routing () =
   (check (list string)) "only model labs" [ "anthropic"; "openai" ] prefs.only;
   (check (list string)) "OpenRouter keeps default load balancing" [] prefs.order;
   (check (list string))
+    "Opus alias falls back to Sol" [ "openai/gpt-5.6-sol" ]
+    (Llm_provider.openrouter_fallback_models "~anthropic/claude-opus-latest");
+  (check (list string))
+    "Sonnet alias falls back to Terra" [ "openai/gpt-5.6-terra" ]
+    (Llm_provider.openrouter_fallback_models "~anthropic/claude-sonnet-latest");
+  (check (list string))
+    "Haiku alias falls back to Luna" [ "openai/gpt-5.6-luna" ]
+    (Llm_provider.openrouter_fallback_models "~anthropic/claude-haiku-latest");
+  (check (list string))
     "Opus falls back to Sol" [ "openai/gpt-5.6-sol" ]
-    (Llm_provider.openrouter_fallback_models "anthropic/claude-opus-4.8");
+    (Llm_provider.openrouter_fallback_models "anthropic/claude-opus-5.5");
   (check (list string))
     "Sonnet falls back to Terra" [ "openai/gpt-5.6-terra" ]
-    (Llm_provider.openrouter_fallback_models "anthropic/claude-sonnet-5");
+    (Llm_provider.openrouter_fallback_models "anthropic/claude-sonnet-5.5");
   (check (list string))
     "Haiku falls back to Luna" [ "openai/gpt-5.6-luna" ]
+    (Llm_provider.openrouter_fallback_models "anthropic/claude-haiku-5.5");
+  (check (list string))
+    "previous Opus keeps its fallback" [ "openai/gpt-5.6-sol" ]
+    (Llm_provider.openrouter_fallback_models "anthropic/claude-opus-4.8");
+  (check (list string))
+    "previous Sonnet keeps its fallback" [ "openai/gpt-5.6-terra" ]
+    (Llm_provider.openrouter_fallback_models "anthropic/claude-sonnet-5");
+  (check (list string))
+    "previous Haiku keeps its fallback" [ "openai/gpt-5.6-luna" ]
     (Llm_provider.openrouter_fallback_models "anthropic/claude-haiku-4.5");
   (check (list string))
     "custom models stay explicit" []
@@ -510,6 +577,20 @@ let test_response_model_id () =
   (check string) "direct Anthropic keeps requested model" "claude-sonnet-5"
     (Agent_runner.response_model_id ~provider:Llm_provider.Anthropic ~requested_model_id:"claude-sonnet-5"
        (Some "claude-sonnet-5-20260801"))
+
+let test_served_by_fallback () =
+  let fallback requested served =
+    Llm_provider.served_by_fallback ~requested_model_id:requested ~served_model_id:served
+  in
+  (check bool) "alias answered by its target" false
+    (fallback "~anthropic/claude-sonnet-latest" "anthropic/claude-sonnet-5.5");
+  (check bool) "alias answered by the cross-lab fallback" true
+    (fallback "~anthropic/claude-sonnet-latest" "openai/gpt-5.6-terra");
+  (check bool) "pinned slug answered by itself" false (fallback "anthropic/claude-opus-5.5" "anthropic/claude-opus-5.5");
+  (check bool) "pinned slug answered by the cross-lab fallback" true
+    (fallback "anthropic/claude-opus-5.5" "openai/gpt-5.6-sol");
+  (check bool) "direct Anthropic reports the requested model" false (fallback "claude-opus-5-5" "claude-opus-5-5");
+  (check bool) "direct Anthropic IDs name no lab" false (fallback "claude-opus-5-5" "claude-opus-4-8")
 
 let test_openrouter_maps_error_finish_reason () =
   let is_error =
@@ -3275,9 +3356,10 @@ let test_security_agent_model_tier () =
     | Strong -> true
     | Fast | Standard -> false)
 
-let test_security_standard_tier_uses_sonnet_5 () =
+let test_security_standard_tier_uses_sonnet_5_5 () =
   let tier = Security_review_plugin.agent_model_tier Config_types.default_security_plugin_config.analysis_model_tier in
-  (check string) "security standard tier" "claude-sonnet-5" (Agent_runner.default_model_id tier)
+  (check string) "security standard tier" "claude-sonnet-5-5"
+    (Agent_runner.default_model_id Llm_provider.Anthropic tier)
 
 let test_security_analysis_step_budget () =
   let high_authn = make_triage_signal ~vuln_class:Authn ~confidence:High in
@@ -4306,6 +4388,7 @@ module Capturing_agent_runner = struct
              tool_results_count = 0;
              model_id = config.name;
              reported_cost_usd = None;
+             refused_attempt = None;
            })
 end
 
@@ -7234,14 +7317,24 @@ let test_estimate_cost_opus () =
   (check (float 1e-6)) "opus 100k in + 10k out" 0.75 cost
 
 let test_estimate_cost_default_tier_models () =
-  (* Regression guard: the Standard/Strong tier defaults (Agent_runner.default_model_id)
-     must resolve to non-zero pricing, or cost tracking silently reports $0. *)
-  let cost_sonnet_5 =
-    Cost_tracking.estimate_cost ~model_id:"claude-sonnet-5" ~input_tokens:1_000_000 ~output_tokens:1_000_000
-      ~cache_read_input_tokens:0 ~cache_creation_input_tokens:0
+  (* Regression guard: every tier default (Agent_runner.default_model_id) must
+     resolve to its own pricing row, or cost tracking silently reports $0.  The
+     cache read differs between Sonnet 5.5 ($0.10) and Sonnet 5 ($0.20), so it
+     also catches a [claude-sonnet-5] prefix shadowing [claude-sonnet-5-5]. *)
+  let cost_1m_each model_id =
+    Cost_tracking.estimate_cost ~model_id ~input_tokens:1_000_000 ~output_tokens:1_000_000
+      ~cache_read_input_tokens:1_000_000 ~cache_creation_input_tokens:0
   in
-  (* Sonnet 5: $3/M input, $15/M output -> 3.0 + 15.0 = 18.0 *)
-  (check (float 1e-6)) "sonnet-5 1M in + 1M out" 18.0 cost_sonnet_5;
+  let tier_cost tier = cost_1m_each (Agent_runner.default_model_id Llm_provider.Anthropic tier) in
+  (check (float 1e-6)) "fast tier (haiku-5-5)" 0.61 (tier_cost Agent_runner.Fast);
+  (check (float 1e-6)) "standard tier (sonnet-5-5)" 12.10 (tier_cost Agent_runner.Standard);
+  (check (float 1e-6)) "strong tier (opus-5-5)" 24.20 (tier_cost Agent_runner.Strong);
+  (* Sonnet 5's $2/$10 launch price became its standard price. *)
+  (check (float 1e-6)) "sonnet-5" 12.20 (cost_1m_each "claude-sonnet-5");
+  (* OpenRouter reports the served slug, dotted, when it reports no cost. *)
+  (check (float 1e-6)) "OpenRouter haiku-5.5 slug" 0.61 (cost_1m_each "anthropic/claude-haiku-5.5");
+  (check (float 1e-6)) "OpenRouter sonnet-5.5 slug" 12.10 (cost_1m_each "anthropic/claude-sonnet-5.5");
+  (check (float 1e-6)) "OpenRouter opus-5.5 slug" 24.20 (cost_1m_each "anthropic/claude-opus-5.5");
   let cost_opus_4_8 =
     Cost_tracking.estimate_cost ~model_id:"claude-opus-4-8" ~input_tokens:100_000 ~output_tokens:10_000
       ~cache_read_input_tokens:0 ~cache_creation_input_tokens:0
@@ -7308,6 +7401,7 @@ let test_of_agent_result () =
       tool_results_count = 2;
       model_id = "claude-sonnet-4-6-20260414";
       reported_cost_usd = None;
+      refused_attempt = None;
     }
   in
   let cost = Cost_tracking.of_agent_result ~agent_name:"test_agent" ~files_fetched:2 result in
@@ -9047,15 +9141,22 @@ let test_provider_options_omits_thinking_for_custom_model () =
   (check bool) "no Anthropic options for custom model" true
     (Option.is_none (Ai_provider_anthropic.Anthropic_options.of_provider_options po))
 
-let test_provider_options_preserves_openrouter_thinking_budget () =
+(* OpenRouter drops [reasoning.max_tokens] for the adaptive generation, so a
+   budget must go out as the effort it maps to, never as a token count. *)
+let test_provider_options_maps_openrouter_thinking_budget_to_effort () =
   let cfg = mk_agent_config ~thinking_budget:4096 () in
   let po =
-    Agent_runner.build_provider_options ~provider:Llm_provider.Openrouter ~model_id:"anthropic/claude-sonnet-5" cfg
+    Agent_runner.build_provider_options ~provider:Llm_provider.Openrouter ~model_id:"~anthropic/claude-opus-latest" cfg
   in
   let open Ai_provider_openrouter.Openrouter_options in
   match of_provider_options po with
-  | Some { reasoning = Some { enabled = Some true; exclude = None; budget = Max_tokens 4096 }; _ } -> ()
-  | None | Some _ -> fail "expected OpenRouter reasoning.max_tokens=4096"
+  | Some { reasoning = Some ({ enabled = Some true; exclude = None; budget = Effort Medium } as reasoning); _ } ->
+    (match reasoning_config_to_json reasoning with
+    | `Assoc fields ->
+      (check string) "serialized effort" "medium" (json_string_field fields "effort");
+      (check bool) "no token budget" false (List.mem_assoc "max_tokens" fields)
+    | _ -> fail "expected OpenRouter reasoning JSON object")
+  | None | Some _ -> fail "expected OpenRouter reasoning.effort=medium"
 
 let test_provider_options_reach_anthropic_fetch () =
   let check_reaches_fetch ?recovery_steps ~model_id cfg =
@@ -9094,12 +9195,253 @@ let test_provider_options_reach_anthropic_fetch () =
   in
   List.iter
     (fun tier ->
-      check_reaches_fetch ~model_id:(Agent_runner.default_model_id tier) (mk_agent_config ~thinking_budget:4096 ()))
+      check_reaches_fetch
+        ~model_id:(Agent_runner.default_model_id Llm_provider.Anthropic tier)
+        (mk_agent_config ~thinking_budget:4096 ()))
+    [ Agent_runner.Fast; Standard; Strong ];
+  (* The refusal fallbacks must take every option shape an agent can send. *)
+  List.iter
+    (fun tier ->
+      List.iter
+        (check_reaches_fetch
+           ~model_id:
+             (CCOption.get_exn_or __LOC__
+                (Agent_runner.refusal_fallback_model_id (Agent_runner.default_model_id Llm_provider.Anthropic tier))))
+        [
+          mk_agent_config ();
+          mk_agent_config ~thinking_budget:2048 ();
+          mk_agent_config ~thinking_budget:4096 ();
+          mk_agent_config ~effort:Config_types.Effort.Medium ();
+          mk_agent_config ~effort:Config_types.Effort.Xhigh ();
+        ])
     [ Agent_runner.Fast; Standard; Strong ];
   check_reaches_fetch ~recovery_steps:(recovery_test_steps ()) ~model_id:"claude-sonnet-5" (mk_agent_config ());
   check_reaches_fetch ~model_id:"claude-opus-4-8" (mk_agent_config ~effort:Config_types.Effort.Medium ());
   check_reaches_fetch ~recovery_steps:(recovery_test_steps ()) ~model_id:"claude-sonnet-5"
     (mk_agent_config ~thinking_budget:4096 ())
+
+(* Every option shape an agent sends, on every pinned Anthropic tier, with a tool
+   and structured output as the agents send them: the request must pass the
+   SDK's own checks and carry nothing the 5.5 generation rejects (manual
+   budgets, disabled thinking, sampling parameters, a forced tool choice). *)
+let test_anthropic_tier_request_shapes () =
+  let schema : Ai_provider.Mode.json_schema =
+    {
+      name = "out";
+      schema =
+        `Assoc
+          [
+            "type", `String "object";
+            "properties", `Assoc [ "ok", `Assoc [ "type", `String "boolean" ] ];
+            "required", `List [ `String "ok" ];
+            "additionalProperties", `Bool false;
+          ];
+    }
+  in
+  let tool : Ai_provider.Tool.t =
+    {
+      name = "get_file_content";
+      description = Some "Fetch a file";
+      parameters =
+        `Assoc [ "type", `String "object"; "properties", `Assoc [ "path", `Assoc [ "type", `String "string" ] ] ];
+      provider_options = Ai_provider.Provider_options.empty;
+    }
+  in
+  let request_body ~model_id cfg =
+    let captured = ref None in
+    let fetch ~abort_signal:_ ~url:_ ~headers:_ ~body =
+      captured := Some (Yojson.Basic.from_string body);
+      Lwt.return
+        (`Assoc
+           [
+             "id", `String "msg_test";
+             "model", `String model_id;
+             "content", `List [];
+             "stop_reason", `String "end_turn";
+             "usage", `Assoc [ "input_tokens", `Int 0; "output_tokens", `Int 0 ];
+           ])
+    in
+    let model =
+      Ai_provider_anthropic.Anthropic_model.create
+        ~config:(Ai_provider_anthropic.Config.create ~api_key:"test" ~fetch ())
+        ~model:model_id
+    in
+    let prompt =
+      [
+        Ai_provider.Prompt.User
+          {
+            content =
+              [ Text { text = "ping"; provider_options = Agent_runner.cached_input_provider_options Anthropic } ];
+          };
+      ]
+    in
+    let call =
+      {
+        (Ai_provider.Call_options.default ~prompt) with
+        mode = Object_json (Some schema);
+        tools = [ tool ];
+        provider_options = Agent_runner.build_provider_options ~provider:Llm_provider.Anthropic ~model_id cfg;
+      }
+    in
+    ignore (Lwt_main.run (Ai_provider.Language_model.generate model call) : Ai_provider.Generate_result.t);
+    match !captured with
+    | Some (`Assoc fields) -> fields
+    | Some _ | None -> failf "%s: request never reached fetch" model_id
+  in
+  let shapes =
+    [
+      "no options", mk_agent_config (), None;
+      "budget 2048", mk_agent_config ~thinking_budget:2048 (), Some "low";
+      "budget 4096", mk_agent_config ~thinking_budget:4096 (), Some "medium";
+      "effort low", mk_agent_config ~effort:Config_types.Effort.Low (), Some "low";
+      "effort medium", mk_agent_config ~effort:Config_types.Effort.Medium (), Some "medium";
+      "effort high", mk_agent_config ~effort:Config_types.Effort.High (), Some "high";
+      "effort xhigh", mk_agent_config ~effort:Config_types.Effort.Xhigh (), Some "xhigh";
+    ]
+  in
+  List.iter
+    (fun tier ->
+      let model_id = Agent_runner.default_model_id Llm_provider.Anthropic tier in
+      List.iter
+        (fun (shape, cfg, expected_effort) ->
+          let label what = Printf.sprintf "%s / %s: %s" model_id shape what in
+          let body = request_body ~model_id cfg in
+          List.iter
+            (fun field -> (check bool) (label ("no " ^ field)) false (List.mem_assoc field body))
+            [ "temperature"; "top_p"; "top_k" ];
+          (check bool)
+            (label "thinking is adaptive or left to the model")
+            true
+            (match List.assoc_opt "thinking" body with
+            | None -> true
+            | Some (`Assoc thinking) ->
+              (match List.assoc_opt "type" thinking with
+              | Some (`String "adaptive") -> not (List.mem_assoc "budget_tokens" thinking)
+              | Some _ | None -> false)
+            | Some _ -> false);
+          (check bool) (label "tool choice is not forced") true
+            (match List.assoc_opt "tool_choice" body with
+            | None -> true
+            | Some (`Assoc choice) ->
+              (match List.assoc_opt "type" choice with
+              | Some (`String "auto") -> true
+              | Some _ | None -> false)
+            | Some _ -> false);
+          let output_config =
+            match List.assoc_opt "output_config" body with
+            | Some (`Assoc output_config) -> output_config
+            | Some _ | None -> failf "%s" (label "missing output_config")
+          in
+          (check bool) (label "native structured output") true (List.mem_assoc "format" output_config);
+          (check (option string))
+            (label "effort") expected_effort
+            (match List.assoc_opt "effort" output_config with
+            | Some (`String effort) -> Some effort
+            | Some _ | None -> None))
+        shapes)
+    [ Agent_runner.Fast; Standard; Strong ]
+
+(* A 5.5 classifier refusal ends the run with no output; the agent must rerun
+   once on the refusal fallback, keep the refused attempt apart so it is priced
+   at its own model's rates, catch a refusal during finalization too, and never
+   loop when the fallback refuses as well. *)
+let test_refusal_retries_once_on_fallback () =
+  let response ~model_id ~finish_reason ~content : Ai_provider.Generate_result.t =
+    {
+      content;
+      finish_reason;
+      usage = { Ai_provider.Usage.input_tokens = 1_000_000; output_tokens = 0; total_tokens = None };
+      warnings = [];
+      provider_metadata = Ai_provider.Provider_options.empty;
+      request = { body = `Null };
+      response = { id = None; model = Some model_id; headers = []; body = `Null };
+    }
+  in
+  let refuses = Ai_provider.Finish_reason.Content_filter, [] in
+  let answers = Ai_provider.Finish_reason.Stop, [ Ai_provider.Content.Text { text = {|{"ok":true}|} } ] in
+  let asks_for_a_file =
+    ( Ai_provider.Finish_reason.Tool_calls,
+      [
+        Ai_provider.Content.Tool_call
+          {
+            tool_call_type = "function";
+            tool_call_id = "call-1";
+            tool_name = "get_file_content";
+            args = {|{"path":"app/users.py"}|};
+          };
+      ] )
+  in
+  (* Answers each call with the next scripted step, repeating the last. *)
+  let fake ~model_id ~calls script : Ai_provider.Language_model.t =
+    (module struct
+      let specification_version = "V3"
+      let provider = "anthropic"
+      let model_id = model_id
+      let generate (_ : Ai_provider.Call_options.t) =
+        incr calls;
+        let finish_reason, content = List.nth script (min !calls (List.length script) - 1) in
+        Lwt.return (response ~model_id ~finish_reason ~content)
+      let stream (_ : Ai_provider.Call_options.t) = Lwt.fail_with "stream is not used by agents"
+    end)
+  in
+  let tools = [ Security_tools.make_get_file_content ~fetch_file:(fun _ -> Lwt.return (Ok (Some "x = 1"))) ] in
+  let run ?refusal_fallback primary =
+    Lwt_main.run
+      (Agent_runner.run_agent ~provider:Llm_provider.Anthropic ~model:primary ?refusal_fallback ~tools
+         ~config:(mk_agent_config ()) ~input:"review this" ())
+  in
+  let primary_calls = ref 0
+  and fallback_calls = ref 0 in
+  (match
+     run
+       ~refusal_fallback:(fake ~model_id:"claude-sonnet-5" ~calls:fallback_calls [ answers ])
+       (fake ~model_id:"claude-sonnet-5-5" ~calls:primary_calls [ refuses ])
+   with
+  | Ok result ->
+    (check int) "refused once" 1 !primary_calls;
+    (check int) "fallback answered once" 1 !fallback_calls;
+    (check string) "fallback model reported" "claude-sonnet-5" result.model_id;
+    (check int) "only the fallback's tokens" 1_000_000 result.usage.input_tokens;
+    (match result.refused_attempt with
+    | Some refused ->
+      (check string) "refused model kept" "claude-sonnet-5-5" refused.model_id;
+      (check int) "refused tokens kept" 1_000_000 refused.usage.input_tokens
+    | None -> fail "expected the refused attempt to be kept");
+    (* 1M input each: Sonnet 5 at $2 plus the refused Sonnet 5.5 at its own $2. *)
+    (check (float 1e-6))
+      "both attempts priced at their own rates" 4.0
+      (Cost_tracking.of_agent_result ~agent_name:"test_agent" ~files_fetched:0 result).estimated_cost_usd
+  | Error msg -> failf "expected the fallback to answer, got: %s" msg);
+  (* Out of steps after a tool call, then refused while finalizing. *)
+  let primary_calls = ref 0
+  and fallback_calls = ref 0 in
+  (match
+     run
+       ~refusal_fallback:(fake ~model_id:"claude-opus-4-8" ~calls:fallback_calls [ answers ])
+       (fake ~model_id:"claude-opus-5-5" ~calls:primary_calls [ asks_for_a_file; refuses ])
+   with
+  | Ok result ->
+    (check int) "tool step and finalization" 2 !primary_calls;
+    (check int) "fallback answered once" 1 !fallback_calls;
+    (check string) "fallback model reported" "claude-opus-4-8" result.model_id;
+    (check (option int))
+      "refused attempt covers both calls" (Some 2)
+      (Option.map (fun (r : Agent_runner.agent_result) -> r.steps_count) result.refused_attempt)
+  | Error msg -> failf "expected the fallback to answer a finalization refusal, got: %s" msg);
+  (match run (fake ~model_id:"claude-sonnet-5-5" ~calls:(ref 0) [ refuses ]) with
+  | Ok _ -> fail "a refusal without a fallback must fail"
+  | Error _ -> ());
+  let primary_calls = ref 0
+  and fallback_calls = ref 0 in
+  match
+    run
+      ~refusal_fallback:(fake ~model_id:"claude-sonnet-5" ~calls:fallback_calls [ refuses ])
+      (fake ~model_id:"claude-sonnet-5-5" ~calls:primary_calls [ refuses ])
+  with
+  | Ok _ -> fail "two refusals must fail"
+  | Error _ ->
+    (check int) "primary called once" 1 !primary_calls;
+    (check int) "fallback called once, no loop" 1 !fallback_calls
 
 let test_provider_options_carries_openrouter_medium_effort () =
   let cfg = mk_agent_config ~effort:Config_types.Effort.Medium () in
@@ -9115,23 +9457,23 @@ let test_provider_options_carries_openrouter_medium_effort () =
     | _ -> fail "expected OpenRouter reasoning JSON object")
   | Some _ -> fail "expected OpenRouter reasoning.effort=medium"
 
-(* The Anthropic thinking rework must not reach OpenRouter users.  The three
-   general-review agents keep their tuned budgets, so OpenRouter must still
-   receive each one verbatim as [reasoning.max_tokens] — the budget-to-effort
-   translation is confined to the direct-Anthropic branch. *)
-let test_openrouter_budgets_unaffected_by_anthropic_mapping () =
+(* Both providers translate the three general-review budgets the same way, so
+   an agent runs at the same effort whichever path it takes. *)
+let test_openrouter_budgets_match_anthropic_effort () =
   List.iter
-    (fun (label, budget) ->
+    (fun (label, budget, expected) ->
       let po =
-        Agent_runner.build_provider_options ~provider:Llm_provider.Openrouter ~model_id:"anthropic/claude-sonnet-5"
+        Agent_runner.build_provider_options ~provider:Llm_provider.Openrouter
+          ~model_id:"~anthropic/claude-sonnet-latest"
           (mk_agent_config ~thinking_budget:budget ())
       in
       let open Ai_provider_openrouter.Openrouter_options in
       match of_provider_options po with
-      | Some { reasoning = Some { enabled = Some true; exclude = None; budget = Max_tokens actual }; _ } ->
-        (check int) label budget actual
-      | None | Some _ -> failf "expected OpenRouter reasoning.max_tokens=%d for %s" budget label)
-    [ "scout", 2048; "general review", 4096; "deep reviewer", 4096 ]
+      | Some { reasoning = Some { enabled = Some true; exclude = None; budget = Effort actual }; _ } ->
+        (check string) label (reasoning_effort_to_string expected) (reasoning_effort_to_string actual)
+      | None | Some _ -> failf "expected OpenRouter reasoning.effort for %s" label)
+    Ai_provider_openrouter.Openrouter_options.
+      [ "scout", 2048, Low; "general review", 4096, Medium; "deep reviewer", 4096, Medium ]
 
 (** The general review agent must opt into Anthropic extended thinking.
     This is what gives the model a real reasoning channel instead of leaking
@@ -9170,6 +9512,7 @@ module General_plugin_agent_runner = struct
                tool_results_count = 0;
                model_id = "mock";
                reported_cost_usd = None;
+               refused_attempt = None;
              })
 end
 
@@ -9610,6 +9953,7 @@ let () =
           test_case "llm_provider openrouter base url reaches sdk" `Quick test_llm_provider_base_url_reaches_sdk;
           test_case "model ids no regression" `Quick test_model_ids_no_regression;
           test_case "llm_provider usage metadata cost" `Quick test_llm_provider_usage_metadata_combines_openrouter_costs;
+          test_case "served by fallback" `Quick test_served_by_fallback;
           test_case "openrouter cross-lab routing" `Quick test_openrouter_cross_lab_routing;
           test_case "response model attribution" `Quick test_response_model_id;
           test_case "openrouter maps error finish reason" `Quick test_openrouter_maps_error_finish_reason;
@@ -9883,7 +10227,7 @@ let () =
             test_security_should_analyze_high_threshold_restricted;
           test_case "should analyze low threshold" `Quick test_security_should_analyze_low_threshold;
           test_case "agent model tier conversion" `Quick test_security_agent_model_tier;
-          test_case "standard tier uses Sonnet 5" `Quick test_security_standard_tier_uses_sonnet_5;
+          test_case "standard tier uses Sonnet 5.5" `Quick test_security_standard_tier_uses_sonnet_5_5;
           test_case "analysis step budget" `Quick test_security_analysis_step_budget;
         ] );
       ( "triage_corpus",
@@ -10275,14 +10619,15 @@ let () =
             test_provider_options_omits_unsupported_anthropic_effort;
           test_case "provider_options omits thinking for custom model" `Quick
             test_provider_options_omits_thinking_for_custom_model;
-          test_case "provider_options preserves OpenRouter thinking budget" `Quick
-            test_provider_options_preserves_openrouter_thinking_budget;
+          test_case "provider_options maps OpenRouter thinking budget to effort" `Quick
+            test_provider_options_maps_openrouter_thinking_budget_to_effort;
           test_case "provider_options reach Anthropic fetch" `Quick test_provider_options_reach_anthropic_fetch;
+          test_case "Anthropic tier request shapes" `Quick test_anthropic_tier_request_shapes;
+          test_case "refusal retries once on fallback" `Quick test_refusal_retries_once_on_fallback;
           test_case "provider_options carries OpenRouter medium effort" `Quick
             test_provider_options_carries_openrouter_medium_effort;
           test_case "provider_options clamps budget to 1024 minimum" `Quick test_provider_options_clamps_below_minimum;
-          test_case "OpenRouter budgets unaffected by Anthropic mapping" `Quick
-            test_openrouter_budgets_unaffected_by_anthropic_mapping;
+          test_case "OpenRouter budgets match Anthropic effort" `Quick test_openrouter_budgets_match_anthropic_effort;
           test_case "general review agent_config enables thinking" `Quick
             test_general_review_agent_config_enables_thinking;
         ] );

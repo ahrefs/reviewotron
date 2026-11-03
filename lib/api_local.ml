@@ -339,6 +339,7 @@ module Agent_runner : Api.Agent_runner = struct
           tool_results_count = 0;
           model_id = "mock";
           reported_cost_usd = None;
+          refused_attempt = None;
         }
 
   let validator_output ~path ~line ~severity ~category ~message =
