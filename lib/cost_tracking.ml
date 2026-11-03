@@ -43,8 +43,7 @@ type review_cost = {
     and Sonnet 5.5.
     See https://platform.claude.com/docs/en/about-claude/pricing
     Entries are matched by prefix against model IDs; first match wins, so a
-    more specific prefix ([claude-sonnet-5-5]) must precede a shorter one
-    ([claude-sonnet-5]). *)
+    longer prefix must come before a shorter one it extends. *)
 let pricing_table =
   [
     {
@@ -149,7 +148,7 @@ let rec attempt_cost ~log_prefix (result : Agent_runner.agent_result) =
         ~output_tokens:result.usage.output_tokens ~cache_read_input_tokens:result.cache_read_input_tokens
         ~cache_creation_input_tokens:result.cache_creation_input_tokens
   in
-  own +. Option.default 0.0 (Option.map (attempt_cost ~log_prefix) result.refused_attempt)
+  own +. Option.map_default (attempt_cost ~log_prefix) 0.0 result.refused_attempt
 
 let of_agent_result ?log_context ~agent_name ~files_fetched (result : Agent_runner.agent_result) =
   let input_tokens = result.usage.input_tokens in

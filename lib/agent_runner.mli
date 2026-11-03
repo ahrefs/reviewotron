@@ -78,15 +78,9 @@ type agent_result = {
 val default_model_id : Llm_provider.t -> model_tier -> string
 
 (** Model to retry on when [model_id] refuses a request: the 5.5 model's
-    predecessor, which has no safety classifier. [model_id] is the provider's
-    normalized ID, so OpenRouter's [latest] aliases map too. [None] for any
-    other model, which is not retried.
-
-    - [claude-opus-5-5] → [claude-opus-4-8]; [claude-sonnet-5-5] →
-      [claude-sonnet-5]; [claude-haiku-5-5] → [claude-haiku-4-5-20251001]
-    - [~anthropic/claude-opus-latest] or [anthropic/claude-opus-5.5] →
-      [anthropic/claude-opus-4.8], and likewise for Sonnet ([claude-sonnet-5])
-      and Haiku ([claude-haiku-4.5]) *)
+    predecessor, which has no safety classifier, as a direct API ID for
+    {!Llm_provider.normalize_model_id}. Covers the tier defaults of both
+    providers; [None] for any other model, which is not retried. *)
 val refusal_fallback_model_id : string -> string option
 
 (** Non-cached prompt tokens, keeping the three prompt buckets

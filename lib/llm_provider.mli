@@ -63,9 +63,8 @@ val effort_options : t -> model_id:string -> effort:Config_types.Effort.t -> Ai_
 (** Cache-control marker for the cached input prefix. *)
 val cached_input_options : t -> Ai_provider.Provider_options.t
 
-(** Cross-lab fallback model for each [latest] alias and for the listed concrete
-    Claude slugs, which a [model] override can still select. Any other model ID
-    receives no implicit fallback. *)
+(** Cross-lab fallback model for each [latest] alias and for the models a
+    refusal retries on. Any other model ID receives no implicit fallback. *)
 val openrouter_fallback_models : string -> string list
 
 (** Whether OpenRouter answered with a fallback model: the served model belongs

@@ -447,7 +447,9 @@ module Agent_runner : Api.Agent_runner = struct
       let model = Llm_provider.language_model provider ~secrets ~model_id in
       let refusal_fallback =
         Option.map
-          (fun model_id -> Llm_provider.language_model provider ~secrets ~model_id)
+          (fun fallback_id ->
+            Llm_provider.language_model provider ~secrets
+              ~model_id:(Llm_provider.normalize_model_id provider fallback_id))
           (Agent_runner.refusal_fallback_model_id model_id)
       in
       Agent_runner.run_agent ~provider ~model ?refusal_fallback ?tools ?debug_dir ?log_context ~config ~input ()

@@ -77,12 +77,9 @@ let normalize_model_id provider model_id =
   | Openrouter -> normalize_anthropic_model_for_openrouter model_id
 
 let openrouter_fallback_models = function
-  | "~anthropic/claude-opus-latest" | "anthropic/claude-opus-5.5" | "anthropic/claude-opus-4.8" ->
-    [ "openai/gpt-5.6-sol" ]
-  | "~anthropic/claude-sonnet-latest" | "anthropic/claude-sonnet-5.5" | "anthropic/claude-sonnet-5" ->
-    [ "openai/gpt-5.6-terra" ]
-  | "~anthropic/claude-haiku-latest" | "anthropic/claude-haiku-5.5" | "anthropic/claude-haiku-4.5" ->
-    [ "openai/gpt-5.6-luna" ]
+  | "~anthropic/claude-opus-latest" | "anthropic/claude-opus-4.8" -> [ "openai/gpt-5.6-sol" ]
+  | "~anthropic/claude-sonnet-latest" | "anthropic/claude-sonnet-5" -> [ "openai/gpt-5.6-terra" ]
+  | "~anthropic/claude-haiku-latest" | "anthropic/claude-haiku-4.5" -> [ "openai/gpt-5.6-luna" ]
   | _ -> []
 
 (* The lab is the part before the first [/], ignoring an alias's [~].  An alias
