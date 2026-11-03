@@ -4,7 +4,7 @@
 
 (name reviewotron)
 
-(version 0.16.0)
+(version 0.16.1)
 
 (source
  (github ahrefs/reviewotron))
@@ -40,7 +40,7 @@
   melange-json-native
   mirage-crypto-pk
   (ocaml-ai-sdk
-   (>= 0.6.3))
+   (>= 0.8))
   opentelemetry
   opentelemetry-lwt
   opentelemetry-client-ocurl-lwt

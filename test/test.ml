@@ -421,8 +421,8 @@ let test_llm_provider_base_url_reaches_sdk () =
                   | read -> read_request_line (acc ^ Bytes.sub_string buf 0 read))
               in
               let%lwt request_line = read_request_line "" in
-              (* Answer with an error the SDK understands: closing without a
-                 reply makes cohttp raise [Connection.Retry] instead. *)
+              (* Answer with an API error so the request ends on a parsed
+                 reply instead of libcurl's empty-reply network error. *)
               let body = {|{"error":{"message":"test listener"}}|} in
               let response =
                 Printf.sprintf
@@ -2665,12 +2665,14 @@ let test_security_tools_result_missing_fields () =
   (check (option string)) "content" None parsed.content;
   (check (option string)) "error" None parsed.error
 
+let tool_execute_options = Ai_core.Core_tool.execute_options ~tool_call_id:"test-call" ()
+
 let test_security_tools_execute_success () =
   let fetch_file _path = Lwt.return (Ok (Some "file content here")) in
   let _name, tool = Security_tools.make_get_file_content ~fetch_file in
   let args = `Assoc [ "path", `String "lib/auth.ml" ] in
   let execute = CCOption.get_exn_or __LOC__ tool.execute in
-  let result_json = Lwt_main.run (execute args) in
+  let result_json = Lwt_main.run (execute args tool_execute_options) in
   let result = Security_tools.get_file_content_result_of_json result_json in
   (* The tool wraps raw content with a [# File: <path>] header and a
      per-line gutter so the agent can anchor findings without counting. *)
@@ -2682,7 +2684,7 @@ let test_security_tools_execute_not_found () =
   let _name, tool = Security_tools.make_get_file_content ~fetch_file in
   let args = `Assoc [ "path", `String "nonexistent.ml" ] in
   let execute = CCOption.get_exn_or __LOC__ tool.execute in
-  let result_json = Lwt_main.run (execute args) in
+  let result_json = Lwt_main.run (execute args tool_execute_options) in
   let result = Security_tools.get_file_content_result_of_json result_json in
   (check (option string)) "content" None result.content;
   (check bool) "has error" true (Option.is_some result.error)
@@ -2692,7 +2694,7 @@ let test_security_tools_execute_api_error () =
   let _name, tool = Security_tools.make_get_file_content ~fetch_file in
   let args = `Assoc [ "path", `String "lib/db.ml" ] in
   let execute = CCOption.get_exn_or __LOC__ tool.execute in
-  let result_json = Lwt_main.run (execute args) in
+  let result_json = Lwt_main.run (execute args tool_execute_options) in
   let result = Security_tools.get_file_content_result_of_json result_json in
   (check (option string)) "content" None result.content;
   (check (option string)) "error" (Some "rate limited") result.error
@@ -2702,7 +2704,7 @@ let test_security_tools_execute_invalid_params () =
   let _name, tool = Security_tools.make_get_file_content ~fetch_file in
   let args = `Assoc [ "wrong_key", `Int 42 ] in
   let execute = CCOption.get_exn_or __LOC__ tool.execute in
-  let result_json = Lwt_main.run (execute args) in
+  let result_json = Lwt_main.run (execute args tool_execute_options) in
   let result = Security_tools.get_file_content_result_of_json result_json in
   (check (option string)) "content" None result.content;
   (check bool) "has error" true (Option.is_some result.error)
@@ -8976,7 +8978,7 @@ let test_provider_options_carries_manual_thinking_when_set () =
   | None -> fail "expected thinking config to be populated"
   | Some (Enabled { budget_tokens; _ }) ->
     (check int) "thinking budget matches" 4096 (Ai_provider_anthropic.Thinking.to_int budget_tokens)
-  | Some (Adaptive _ | Disabled) -> fail "expected thinking to be enabled with an explicit budget"
+  | Some (Adaptive _ | Disabled | Between_tools) -> fail "expected thinking to be enabled with an explicit budget"
 
 (* Adaptive-only models reject manual budgets, so a configured budget must
    arrive as adaptive thinking carrying the mapped effort level rather than
@@ -8996,7 +8998,7 @@ let test_provider_options_uses_adaptive_thinking_when_required () =
       | Some { thinking = Some (Adaptive { display = Some (Summarized | Omitted) }); _ }
       | Some { thinking = Some (Adaptive _); effort = None; _ }
       | None
-      | Some { thinking = None | Some (Enabled _ | Disabled); _ } ->
+      | Some { thinking = None | Some (Enabled _ | Disabled | Between_tools); _ } ->
         failf "expected adaptive thinking with mapped effort for %s" model_id)
     [
       (* scout *)
@@ -9019,7 +9021,8 @@ let test_provider_options_carries_native_anthropic_effort () =
       | Some opts ->
         (match opts.thinking with
         | Some (Adaptive { display = None }) -> ()
-        | Some (Adaptive { display = Some (Summarized | Omitted) }) | Some (Enabled _ | Disabled) | None ->
+        | Some (Adaptive { display = Some (Summarized | Omitted) }) | Some (Enabled _ | Disabled | Between_tools) | None
+          ->
           fail "expected adaptive thinking with native effort");
         (match opts.effort with
         | Some actual ->
@@ -9057,7 +9060,7 @@ let test_provider_options_preserves_openrouter_thinking_budget () =
 let test_provider_options_reach_anthropic_fetch () =
   let check_reaches_fetch ?recovery_steps ~model_id cfg =
     let reached_fetch = ref false in
-    let fetch ~url:_ ~headers:_ ~body:_ =
+    let fetch ~abort_signal:_ ~url:_ ~headers:_ ~body:_ =
       reached_fetch := true;
       Lwt.return
         (`Assoc
@@ -9559,7 +9562,7 @@ let test_provider_options_clamps_below_minimum () =
   | None -> fail "expected Anthropic options to be present"
   | Some { thinking = Some (Enabled { budget_tokens; _ }); _ } ->
     (check int) "budget clamped to 1024 minimum" 1024 (Ai_provider_anthropic.Thinking.to_int budget_tokens)
-  | Some { thinking = Some (Adaptive _ | Disabled); _ } ->
+  | Some { thinking = Some (Adaptive _ | Disabled | Between_tools); _ } ->
     fail "expected thinking to be enabled with an explicit budget"
   | Some { thinking = None; _ } -> fail "expected thinking config to be populated"
 

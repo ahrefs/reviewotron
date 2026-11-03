@@ -20,7 +20,7 @@ type get_file_content_result = {
 [@@deriving json, jsonschema]
 
 let make_get_file_content ~fetch_file =
-  let execute args =
+  let execute args (_ : Ai_core.Core_tool.execute_options) =
     let params =
       try Ok (get_file_content_params_of_json args)
       with Melange_json.Of_json_error (Json_error msg | Unexpected_variant msg) ->
