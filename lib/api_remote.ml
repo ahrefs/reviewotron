@@ -440,10 +440,19 @@ module Agent_runner : Api.Agent_runner = struct
     match Llm_provider.resolve secrets with
     | Error msg -> Lwt.return_error msg
     | Ok provider ->
-      let base_model_id = Option.default (Agent_runner.default_model_id config.Agent_runner.model_tier) model_id in
+      let base_model_id =
+        Option.default (Agent_runner.default_model_id provider config.Agent_runner.model_tier) model_id
+      in
       let model_id = Llm_provider.normalize_model_id provider base_model_id in
       let model = Llm_provider.language_model provider ~secrets ~model_id in
-      Agent_runner.run_agent ~provider ~model ?tools ?debug_dir ?log_context ~config ~input ()
+      let refusal_fallback =
+        Option.map
+          (fun fallback_id ->
+            Llm_provider.language_model provider ~secrets
+              ~model_id:(Llm_provider.normalize_model_id provider fallback_id))
+          (Agent_runner.refusal_fallback_model_id model_id)
+      in
+      Agent_runner.run_agent ~provider ~model ?refusal_fallback ?tools ?debug_dir ?log_context ~config ~input ()
 end
 
 (** {2 Slack API} *)

@@ -39,11 +39,20 @@ type review_cost = {
 
 (** Pricing table — update when Anthropic changes rates.
     Prices in USD per million tokens.  Cache write = 1.25x base input
-    (5-minute TTL); cache read = 0.1x base input.
+    (5-minute TTL); cache read = 0.1x base input, except 0.05x on Opus 5.5
+    and Sonnet 5.5.
     See https://platform.claude.com/docs/en/about-claude/pricing
-    Entries are matched by prefix against model IDs; first match wins. *)
+    Entries are matched by prefix against model IDs; first match wins, so a
+    longer prefix must come before a shorter one it extends. *)
 let pricing_table =
   [
+    {
+      model_id_prefix = "claude-opus-5-5";
+      input_per_million = 4.0;
+      output_per_million = 20.0;
+      cache_write_per_million = 5.0;
+      cache_read_per_million = 0.20;
+    };
     {
       model_id_prefix = "claude-opus-4";
       input_per_million = 5.0;
@@ -52,11 +61,18 @@ let pricing_table =
       cache_read_per_million = 0.50;
     };
     {
+      model_id_prefix = "claude-sonnet-5-5";
+      input_per_million = 2.0;
+      output_per_million = 10.0;
+      cache_write_per_million = 2.50;
+      cache_read_per_million = 0.10;
+    };
+    {
       model_id_prefix = "claude-sonnet-5";
-      input_per_million = 3.0;
-      output_per_million = 15.0;
-      cache_write_per_million = 3.75;
-      cache_read_per_million = 0.30;
+      input_per_million = 2.0;
+      output_per_million = 10.0;
+      cache_write_per_million = 2.50;
+      cache_read_per_million = 0.20;
     };
     {
       model_id_prefix = "claude-sonnet-4";
@@ -64,6 +80,17 @@ let pricing_table =
       output_per_million = 15.0;
       cache_write_per_million = 3.75;
       cache_read_per_million = 0.30;
+    };
+    (* Haiku 5.5 bills a prompt over 100K tokens at 5x these rates.  Usage is
+       summed across an agent's turns, so the per-request prompt size is gone
+       by the time we price it.  The short-prompt rate under-prices a call whose
+       prompt passes 100K, such as triage over a very large diff. *)
+    {
+      model_id_prefix = "claude-haiku-5-5";
+      input_per_million = 0.10;
+      output_per_million = 0.50;
+      cache_write_per_million = 0.125;
+      cache_read_per_million = 0.01;
     };
     {
       model_id_prefix = "claude-haiku-4";
@@ -74,12 +101,15 @@ let pricing_table =
     };
   ]
 
+(* OpenRouter slugs carry an [anthropic/] prefix and dotted versions
+   ([anthropic/claude-opus-5.5]); map them onto the API IDs the table uses. *)
 let pricing_model_id model_id =
-  let openrouter_prefix = "anthropic/" in
-  match String.starts_with ~prefix:openrouter_prefix model_id with
-  | true ->
-    String.sub model_id (String.length openrouter_prefix) (String.length model_id - String.length openrouter_prefix)
-  | false -> model_id
+  let model_id = Option.default model_id (CCString.chop_prefix ~pre:"anthropic/" model_id) in
+  String.map
+    (function
+      | '.' -> '-'
+      | c -> c)
+    model_id
 
 let find_pricing ~model_id =
   let model_id = pricing_model_id model_id in
@@ -103,22 +133,30 @@ let estimate_cost ~model_id ~input_tokens ~output_tokens ~cache_read_input_token
   estimate_cost_with_prefix ~log_prefix:"" ~model_id ~input_tokens ~output_tokens ~cache_read_input_tokens
     ~cache_creation_input_tokens
 
+(* Prefer the provider's actual billed cost (OpenRouter reports it per run);
+   otherwise estimate from the pricing table, which stays correct on the
+   Anthropic path, where model IDs remain bare.  A run a safety classifier
+   refused is priced the same way at its own model's rates.  That is an upper
+   bound: Anthropic does not bill a refusal that arrives before any output in
+   most categories, and the logged category says which. *)
+let rec attempt_cost ~log_prefix (result : Agent_runner.agent_result) =
+  let own =
+    match result.reported_cost_usd with
+    | Some c -> c
+    | None ->
+      estimate_cost_with_prefix ~log_prefix ~model_id:result.model_id ~input_tokens:result.usage.input_tokens
+        ~output_tokens:result.usage.output_tokens ~cache_read_input_tokens:result.cache_read_input_tokens
+        ~cache_creation_input_tokens:result.cache_creation_input_tokens
+  in
+  own +. Option.map_default (attempt_cost ~log_prefix) 0.0 result.refused_attempt
+
 let of_agent_result ?log_context ~agent_name ~files_fetched (result : Agent_runner.agent_result) =
   let input_tokens = result.usage.input_tokens in
   let output_tokens = result.usage.output_tokens in
   let cache_read_input_tokens = result.cache_read_input_tokens in
   let cache_creation_input_tokens = result.cache_creation_input_tokens in
   let model = result.model_id in
-  let estimated_cost_usd =
-    (* Prefer the provider's actual billed cost (OpenRouter reports it per run);
-       otherwise estimate from the pricing table — which stays correct on the
-       Anthropic path, where model IDs remain bare. *)
-    match result.reported_cost_usd with
-    | Some c -> c
-    | None ->
-      estimate_cost_with_prefix ~log_prefix:(log_context_prefix log_context) ~model_id:model ~input_tokens
-        ~output_tokens ~cache_read_input_tokens ~cache_creation_input_tokens
-  in
+  let estimated_cost_usd = attempt_cost ~log_prefix:(log_context_prefix log_context) result in
   {
     agent_name;
     model;

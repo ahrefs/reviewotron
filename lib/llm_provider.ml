@@ -20,9 +20,8 @@ let base_url_of_env raw =
 let openrouter_base_url () = base_url_of_env (Sys.getenv_opt "OPENROUTER_BASE_URL")
 
 (* Combine two optional USD costs: [None] means "no figure reported", a lone
-   figure passes through, and two figures sum.  Shared by the per-step OpenRouter
-   totalling in {!Agent_runner} and the [cost]/[upstream_inference_cost]
-   combination below, so both treat "no figure" identically. *)
+   figure passes through, and two figures sum.  Used for the per-step OpenRouter
+   totalling in {!Agent_runner}. *)
 let sum_cost a b =
   match a, b with
   | None, None -> None
@@ -41,6 +40,9 @@ let api_key_exn key = CCOption.get_exn_or __LOC__ (normalize_key key)
    [anthropic/] prefix. Keep the mappings explicit for known Claude aliases so
    the OpenRouter path calls the same underlying Claude model family/version. *)
 let normalize_anthropic_model_for_openrouter = function
+  | "claude-opus-5-5" | "anthropic/claude-opus-5-5" -> "anthropic/claude-opus-5.5"
+  | "claude-sonnet-5-5" | "anthropic/claude-sonnet-5-5" -> "anthropic/claude-sonnet-5.5"
+  | "claude-haiku-5-5" | "anthropic/claude-haiku-5-5" -> "anthropic/claude-haiku-5.5"
   | "claude-sonnet-5" | "anthropic/claude-sonnet-5" -> "anthropic/claude-sonnet-5"
   | "claude-opus-4-8" | "anthropic/claude-opus-4-8" -> "anthropic/claude-opus-4.8"
   | "claude-opus-4-7" | "anthropic/claude-opus-4-7" -> "anthropic/claude-opus-4.7"
@@ -64,7 +66,8 @@ let normalize_anthropic_model_for_openrouter = function
   | "claude-opus-4-20250514" | "claude-opus-4-0" | "anthropic/claude-opus-4-20250514" | "anthropic/claude-opus-4-0" ->
     "anthropic/claude-opus-4"
   | model_id ->
-  match String.starts_with ~prefix:"anthropic/" model_id with
+  (* [~] marks an OpenRouter alias such as [~anthropic/claude-sonnet-latest]. *)
+  match String.starts_with ~prefix:"anthropic/" model_id || String.starts_with ~prefix:"~" model_id with
   | true -> model_id
   | false -> "anthropic/" ^ model_id
 
@@ -74,10 +77,23 @@ let normalize_model_id provider model_id =
   | Openrouter -> normalize_anthropic_model_for_openrouter model_id
 
 let openrouter_fallback_models = function
-  | "anthropic/claude-opus-4.8" -> [ "openai/gpt-5.6-sol" ]
-  | "anthropic/claude-sonnet-5" -> [ "openai/gpt-5.6-terra" ]
-  | "anthropic/claude-haiku-4.5" -> [ "openai/gpt-5.6-luna" ]
+  | "~anthropic/claude-opus-latest" | "anthropic/claude-opus-4.8" -> [ "openai/gpt-5.6-sol" ]
+  | "~anthropic/claude-sonnet-latest" | "anthropic/claude-sonnet-5" -> [ "openai/gpt-5.6-terra" ]
+  | "~anthropic/claude-haiku-latest" | "anthropic/claude-haiku-4.5" -> [ "openai/gpt-5.6-luna" ]
   | _ -> []
+
+(* The lab is the part before the first [/], ignoring an alias's [~].  An alias
+   is answered under the concrete model it resolves to, so an exact ID match
+   would flag every alias call; the fallbacks above all cross labs instead.
+   Direct Anthropic IDs name no lab and never cross one. *)
+let model_lab model_id =
+  let model_id = Option.default model_id (CCString.chop_prefix ~pre:"~" model_id) in
+  Option.map (fun i -> String.sub model_id 0 i) (String.index_opt model_id '/')
+
+let served_by_fallback ~requested_model_id ~served_model_id =
+  match model_lab requested_model_id, model_lab served_model_id with
+  | Some requested, Some served -> not (String.equal requested served)
+  | Some _, None | None, Some _ | None, None -> false
 
 (* Keep source-bearing review prompts on the model labs' own endpoints while
    allowing an independent OpenAI fallback when Anthropic is unavailable. *)
@@ -148,42 +164,6 @@ let anthropic_options ?effort thinking =
   let opts = { Ai_provider_anthropic.Anthropic_options.default with thinking = Some thinking; effort } in
   Ai_provider_anthropic.Anthropic_options.to_provider_options opts
 
-(* Adaptive-generation Anthropic models reject manual [budget_tokens] with a 400,
-   so a configured budget cannot reach them as a budget.  The SDK is explicit
-   that no faithful budget-to-effort conversion exists, so rather than let a
-   configured budget evaporate we translate it here, in the only branch that
-   needs it, against the two budgets the general-review agents actually use: the
-   scout's 2048 and the 4096 shared by the general review and deep reviewer.
-   Keeping the table in this module means agent definitions and the OpenRouter
-   encoding stay untouched: OpenRouter still receives the raw budget as
-   [reasoning.max_tokens]. *)
-let anthropic_effort_for_budget budget_tokens =
-  match budget_tokens <= 2048 with
-  | true -> Ai_provider_anthropic.Effort.Low
-  | false -> Ai_provider_anthropic.Effort.Medium
-
-let thinking_options provider ~model_id ~budget_tokens =
-  match provider with
-  | Anthropic ->
-    (match anthropic_thinking_capabilities model_id with
-    | Some { manual = true; _ } ->
-      anthropic_options
-        (Ai_provider_anthropic.Thinking.Enabled
-           { budget_tokens = Ai_provider_anthropic.Thinking.budget_exn budget_tokens; display = None })
-    | Some { manual = false; adaptive = true; effort_levels; _ } ->
-      let effort = anthropic_effort_for_budget budget_tokens in
-      let thinking = Ai_provider_anthropic.Thinking.Adaptive { display = None } in
-      (match List.mem effort effort_levels with
-      | true -> anthropic_options ~effort thinking
-      | false -> anthropic_options thinking)
-    | Some { manual = false; adaptive = false; _ } | None -> Ai_provider.Provider_options.empty)
-  | Openrouter ->
-    let reasoning : Ai_provider_openrouter.Openrouter_options.reasoning_config =
-      { enabled = Some true; exclude = None; budget = Max_tokens budget_tokens }
-    in
-    let opts = { Ai_provider_openrouter.Openrouter_options.default with reasoning = Some reasoning } in
-    Ai_provider_openrouter.Openrouter_options.to_provider_options opts
-
 let openrouter_effort = function
   | Config_types.Effort.Low -> Ai_provider_openrouter.Openrouter_options.Low
   | Medium -> Medium
@@ -211,6 +191,37 @@ let effort_options provider ~model_id ~effort =
     let opts = { Ai_provider_openrouter.Openrouter_options.default with reasoning = Some reasoning } in
     Ai_provider_openrouter.Openrouter_options.to_provider_options opts
 
+(* A configured thinking budget cannot reach the adaptive generation as a
+   budget: direct Anthropic rejects manual [budget_tokens] with a 400, and
+   OpenRouter drops [reasoning.max_tokens] for those models, leaving the model's
+   default effort.  The SDK is explicit that no faithful budget-to-effort
+   conversion exists, so translate the two budgets the general-review agents
+   actually use: the scout's 2048 and the 4096 shared by the general review and
+   deep reviewer. *)
+let effort_for_budget budget_tokens =
+  match budget_tokens <= 2048 with
+  | true -> Config_types.Effort.Low
+  | false -> Config_types.Effort.Medium
+
+(* Pre-adaptive Anthropic models still take a manual budget, so the direct
+   path keeps it there. *)
+let thinking_options provider ~model_id ~budget_tokens =
+  match provider with
+  | Anthropic ->
+    (match anthropic_thinking_capabilities model_id with
+    | Some { manual = true; _ } ->
+      anthropic_options
+        (Ai_provider_anthropic.Thinking.Enabled
+           { budget_tokens = Ai_provider_anthropic.Thinking.budget_exn budget_tokens; display = None })
+    | Some { manual = false; adaptive = true; effort_levels; _ } ->
+      let effort = anthropic_effort (effort_for_budget budget_tokens) in
+      let thinking = Ai_provider_anthropic.Thinking.Adaptive { display = None } in
+      (match List.mem effort effort_levels with
+      | true -> anthropic_options ~effort thinking
+      | false -> anthropic_options thinking)
+    | Some { manual = false; adaptive = false; _ } | None -> Ai_provider.Provider_options.empty)
+  | Openrouter -> effort_options Openrouter ~model_id ~effort:(effort_for_budget budget_tokens)
+
 let cached_input_options provider =
   match provider with
   | Anthropic ->
@@ -229,17 +240,31 @@ type usage = {
 let empty_usage = { cache_read = 0; cache_write = 0; cost = None }
 
 let usage_metadata provider meta =
-  match provider with
-  | Anthropic ->
-    (* Anthropic cache counts are parsed from the raw body in agent_runner; see
-       Task 5. There is no reported USD cost on the direct path. *)
-    empty_usage
-  | Openrouter ->
   match meta with
   | None -> empty_usage
   | Some m ->
+  match provider with
+  | Anthropic ->
+    (match Ai_provider_anthropic.Convert_usage.of_provider_metadata m with
+    | None -> empty_usage
+    | Some u ->
+      {
+        cache_read = Option.default 0 u.cache_read_input_tokens;
+        cache_write = Option.default 0 u.cache_creation_input_tokens;
+        cost = None;
+      })
+  | Openrouter ->
   match Ai_provider.Provider_options.find Ai_provider_openrouter.Convert_usage.Openrouter_usage m with
   | None -> empty_usage
   | Some u ->
-    let cost = sum_cost u.cost u.upstream_inference_cost in
+    (* Without BYOK, [upstream_inference_cost] repeats [cost] (both are the full
+       charge), so summing them doubles it.  With BYOK, [cost] is only
+       OpenRouter's fee and the upstream figure is the provider's charge.  The
+       SDK does not expose [is_byok], so take the larger figure: exact without
+       BYOK, and short only of OpenRouter's fee with it. *)
+    let cost =
+      match u.cost, u.upstream_inference_cost with
+      | Some cost, Some upstream -> Some (Float.max cost upstream)
+      | cost, None | None, cost -> cost
+    in
     { cache_read = u.cache_read_tokens; cache_write = u.cache_write_tokens; cost }
