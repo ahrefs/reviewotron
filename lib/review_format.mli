@@ -14,9 +14,14 @@ val feedback_prompt : string
 (** Append {!feedback_prompt} to a review body. *)
 val with_feedback_prompt : string -> string
 
-(** Format a finding as a GitHub review comment body with badge, message,
-    and optional code suggestion block. *)
+(** Format a finding as a GitHub review comment body: badge, message, the
+    failure scenario as its own paragraph (omitted when empty or already
+    contained in the message), and an optional code suggestion block.  The
+    text is never shortened. *)
 val format_finding_body : Review_types.finding -> string
+
+(** Slack attachment title for a push, e.g. [alice pushed 2 commits]. *)
+val push_title : pusher_name:string -> num_commits:int -> string
 
 (** Count findings by severity. Returns [(critical, warnings, suggestions)]. *)
 val count_by_severity : Review_types.finding list -> int * int * int

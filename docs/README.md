@@ -900,7 +900,7 @@ persistence for GitHub PR review bodies and inline PR review comments. Review
 bodies and inline findings include this prompt:
 
 ```markdown
-Was this review helpful? React with :+1: or :-1:.
+Helpful? React with :+1: or :-1:.
 ```
 
 Each inline finding comment also gets a hidden marker:

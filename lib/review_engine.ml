@@ -263,10 +263,7 @@ let finding_to_review_comment ?log_context ~diff finding =
   | Positioned c -> Some c
   | File_not_in_diff | Anchor_failed -> None
 
-let security_error_notice =
-  "\n\n\
-   _Note: The security review plugin encountered an error and may not have completed. Security analysis may be \
-   incomplete._"
+let security_error_notice = "\n\n_Note: the security review hit an error, so its results may be incomplete._"
 
 (** Body used when the security stage failed and produced no findings.
 
@@ -280,9 +277,9 @@ let security_error_notice =
     also raised by triage and analysis failures that have no candidate count. *)
 let security_incomplete_body =
   ":robot: **REVIEW**\n\n\
-   :warning: **Security review did not complete** — the security stage failed, so any candidate findings it produced \
-   were withheld rather than posted unvalidated.\n\n\
-   This is **not** an all-clear: the change has not been fully reviewed. Please re-trigger the review."
+   :warning: **Security review did not complete.** The security stage failed, so reviewotron withheld its unvalidated \
+   findings.\n\n\
+   This is **not** an all-clear. Re-trigger the review."
 
 type plugin_result = {
   general_output : General_review_plugin.review_outcome option;
@@ -353,10 +350,10 @@ let cost_plugin_ran ~plugin review_costs =
 let retry_guidance reason =
   match CCString.mem ~sub:"HTTP 403" reason with
   | true ->
-    "The provider rejected the review request (HTTP 403). You can re-trigger the review once in case the block was \
-     transient. If it persists, ask a Reviewotron service operator to check the OpenRouter/Anthropic credentials, \
-     permissions, guardrails, and provider classification."
-  | false -> "Please re-trigger the review. If this persists, ask a Reviewotron service operator to investigate."
+    "The provider rejected the request with HTTP 403. Re-trigger the review once in case the block was transient. If \
+     it fails again, ask a Reviewotron operator to check the provider credentials, permissions, guardrails, and \
+     classification."
+  | false -> "Re-trigger the review. If it fails again, ask a Reviewotron operator to investigate."
 
 let retry_guidance_for_403 reason =
   match CCString.mem ~sub:"HTTP 403" reason with
@@ -381,17 +378,13 @@ let review_body ~log_context ~change_label ~general_output ~findings ~unchanged_
   ~review_costs ~security_error ~(config : Config_types.config) =
   let log_prefix = log_context_prefix (Some log_context) in
   let unchanged_section =
-    render_section ~title:"### Findings on unchanged code (please investigate)"
-      ~lead:
-        "These security-relevant findings reference files that were not changed here. Investigate whether they should \
-         be addressed in this change or opened as a separate issue:"
+    render_section ~title:"### Findings in unchanged files"
+      ~lead:"These point at files this change does not touch. Fix them here or open an issue:"
       unchanged_findings
   in
   let anchor_failed_section =
-    render_section ~title:"### Findings we couldn't anchor (please investigate)"
-      ~lead:
-        "These findings matched a changed file but could not be anchored to a line in the diff. Likely agent \
-         mis-anchoring — please report:"
+    render_section ~title:"### Findings without a diff line"
+      ~lead:"These match a changed file but no line in the diff, so the agent likely mis-anchored them. Please report:"
       anchor_failed_findings
   in
   let security_completed =
@@ -402,15 +395,14 @@ let review_body ~log_context ~change_label ~general_output ~findings ~unchanged_
     let notice =
       match findings, security_completed with
       | _ :: _, _ ->
-        "\xE2\x9A\xA0\xEF\xB8\x8F **Review partially failed** \xE2\x80\x94 the general code review agent encountered \
-         an error. Findings that completed successfully are shown below. You may want to re-trigger the review."
+        "\xE2\x9A\xA0\xEF\xB8\x8F **Review partially failed.** The general review agent hit an error. Findings from \
+         the stages that finished are below. Re-trigger the review to retry."
       | [], true ->
-        "\xE2\x9A\xA0\xEF\xB8\x8F **General review failed** \xE2\x80\x94 the general code review agent encountered an \
-         error. The security review completed and found no confirmed security findings. Please re-trigger the review \
-         if you need the general review results."
+        "\xE2\x9A\xA0\xEF\xB8\x8F **General review failed.** The general review agent hit an error. The security \
+         review finished with no confirmed findings. Re-trigger the review to get general results."
       | [], false ->
-        "\xE2\x9A\xA0\xEF\xB8\x8F **Review failed** \xE2\x80\x94 the code review encountered an error and could not \
-         produce results. Please re-trigger the review. If this persists, check the service logs."
+        "\xE2\x9A\xA0\xEF\xB8\x8F **Review failed.** The review hit an error and produced no results. Re-trigger the \
+         review. If it fails again, check the service logs."
     in
     let guidance =
       match reason with
@@ -424,24 +416,25 @@ let review_body ~log_context ~change_label ~general_output ~findings ~unchanged_
   in
   let validation_failure_notice ~candidates_withheld ~reason =
     let findings_word = Cost_tracking.pluralize ~n:candidates_withheld "finding" in
+    let pronoun =
+      match Int.equal candidates_withheld 1 with
+      | true -> "it"
+      | false -> "them"
+    in
     log#error "%sreview validation failed for %s; withholding %d candidate %s" log_prefix change_label
       candidates_withheld findings_word;
     let completed_security_summary =
       match findings, security_completed with
-      | _ :: _, _ -> "Findings from completed review stages are shown below."
-      | [], true -> "The security review completed and found no confirmed security findings."
-      | [], false -> "Other review stages may not have completed."
+      | _ :: _, _ -> "Findings from the stages that finished are below."
+      | [], true -> "The security review finished with no confirmed findings."
+      | [], false -> "Other review stages may not have finished."
     in
     let notice =
       Printf.sprintf
-        "\xE2\x9A\xA0\xEF\xB8\x8F **General review validation failed** \xE2\x80\x94 the `general-validator` stage \
-         could not validate %d potential %s, which %s withheld rather than posted without validation. %s\n\n\
+        "\xE2\x9A\xA0\xEF\xB8\x8F **General review validation failed.** The `general-validator` stage could not check \
+         %d potential %s, so reviewotron withheld %s instead of posting %s unchecked. %s\n\n\
          %s"
-        candidates_withheld findings_word
-        (match Int.equal candidates_withheld 1 with
-        | true -> "was"
-        | false -> "were")
-        completed_security_summary (retry_guidance reason)
+        candidates_withheld findings_word pronoun pronoun completed_security_summary (retry_guidance reason)
     in
     with_failure_details ~reason:(Some reason) notice
   in

@@ -7,17 +7,17 @@
     [Review_types.review_output] as the legacy single-pass review, so the
     downstream candidate filter and validator are unchanged. *)
 
-let system_prompt =
+let review_method =
   {|You are a deep code reviewer. A scout has flagged investigation leads in this
-change. Your job is to verify each lead — not to re-review the whole diff.
+change. Your job is to verify each lead, not to re-review the whole diff.
 
-## Method — for every lead, in order
+## Method: for every lead, in order
 
 1. Restate the lead's hypothesis in your own words.
 2. Try to DISPROVE it: look for the guard, the caller contract, the test, the
    sibling update, or the invariant that makes the code correct despite the
    scout's suspicion. Most leads should die here.
-3. Only if you cannot disprove it: establish the concrete failure — the input,
+3. Only if you cannot disprove it, establish the concrete failure: the input,
    state, or sequence that triggers it, and what goes observably wrong.
 4. A confirmed lead becomes a finding with evidence copied verbatim from the
    provided code, anchored to the changed line responsible.
@@ -27,7 +27,7 @@ change. Your job is to verify each lead — not to re-review the whole diff.
 - Investigate every lead; do not skip any.
 - Do not sweep the diff for new issues. If verifying a lead directly exposes a
   different defect in the same code you are reading (e.g. you check a guard and
-  the guard itself is inverted), you may report it — nothing else.
+  the guard itself is inverted), you may report it. Report nothing else.
 - If the provided file contents are insufficient to confirm a lead, say so in
   the finding only when the risk is severe (critical severity with the missing
   context named in failure_scenario); otherwise drop the lead. Never guess.
@@ -35,22 +35,25 @@ change. Your job is to verify each lead — not to re-review the whole diff.
 ## Findings
 
 Only emit findings for defects with a concrete failure scenario. No style,
-naming, documentation, praise, or "consider" comments — those are rejected
-downstream and waste the lead's slot. severity: critical for likely breakage,
+naming, documentation, praise, or "consider" comments. The validator rejects
+them, so they waste the lead's slot. severity: critical for likely breakage,
 data loss, or corruption; warning for realistic failure paths; suggestion only
 for a directly actionable correctness improvement. confidence reflects how
-solid your verification evidence is.
+solid your verification evidence is.|}
 
-## Output
+let output_section =
+  {|## Output
 
 A single JSON object matching the schema (summary, findings, overall
-assessment). In `summary`, one line per lead: "L<n> <path>:<line> —
-confirmed/refuted: <ten words>". `findings` contains only confirmed leads (and
+assessment). In `summary`, one line per lead: "L<n> <path>:<line>
+confirmed: <ten words>" or "L<n> <path>:<line> refuted: <ten words>". `findings` contains only confirmed leads (and
 any directly-observed defect per Scope discipline). Each finding's fields
 follow the schema; `evidence_snippet` must be verbatim code from the provided
 diff or file contents; `line` must be copied from the annotated diff's left
 column or a file's numbered content, never estimated. No markdown fences, no
 prose outside the JSON.|}
+
+let system_prompt = String.concat "\n\n" [ review_method; Comment_style.prompt_fragment; output_section ]
 
 (* Sized for a single-shot batched verification with a private reasoning
    channel.  Independent of [General_review_plugin.general_review_thinking_budget]

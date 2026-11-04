@@ -711,9 +711,9 @@ let grouped_finding members =
       let fix =
         match finding.suggested_fix with
         | None -> ""
-        | Some fix -> Printf.sprintf "\n\n  Proposed replacement:\n\n  ```\n%s\n  ```" fix
+        | Some fix -> Printf.sprintf "\n\n  Fix:\n\n  ```\n%s\n  ```" fix
       in
-      Printf.sprintf "- `%s:%d` — %s%s" finding.path finding.line finding.message fix
+      Printf.sprintf "- `%s:%d` %s%s" finding.path finding.line finding.message fix
     in
     let detail name field =
       members
@@ -721,21 +721,20 @@ let grouped_finding members =
         let value = String.trim (field finding) in
         match String.equal value "" with
         | true -> None
-        | false -> Some (Printf.sprintf "- `%s:%d` — %s" finding.path finding.line value))
+        | false -> Some (Printf.sprintf "- `%s:%d` %s" finding.path finding.line value))
       |> function
       | [] -> ""
-      | values -> Printf.sprintf "\n\n%s:\n\n%s" name (String.concat "\n" values)
+      | values -> Printf.sprintf "%s:\n\n%s" name (String.concat "\n" values)
     in
     {
       primary with
       severity;
       message =
-        Printf.sprintf "These %d independently confirmed findings form one remediation group:\n\n%s"
-          (List.length members)
+        Printf.sprintf "These %d confirmed findings share one cause and one fix:\n\n%s" (List.length members)
           (members |> List.map member_text |> String.concat "\n");
-      failure_scenario = detail "Confirmed failure scenarios" (fun finding -> finding.failure_scenario);
+      failure_scenario = detail "Scenarios" (fun finding -> finding.failure_scenario);
       evidence_snippet = detail "Evidence" (fun finding -> finding.evidence_snippet);
-      why_now = detail "Why this change" (fun finding -> finding.why_now);
+      why_now = detail "Why now" (fun finding -> finding.why_now);
       confidence;
       suggested_fix = None;
     }
@@ -1471,51 +1470,62 @@ module Make (AI : Api.Agent_runner) = struct
         | false -> None))
 
   (** If the inline anchor differs from the sink (we snapped onto a flow or
-      source step), prepend a short "Related" line so the reader sees the
-      enforcement/sink location too.  When the anchor IS the sink, return the
-      description unchanged. *)
+      source step), append the sink location so the reader can find the
+      enforcement point too.  The description leads because it names the
+      defect.  When the anchor IS the sink, return the description unchanged.
+
+      Snapping only happens when the sink's file is absent from the diff, so
+      the sink always lives in unchanged code here. *)
   let enrich_message_with_sink ~anchor_kind ~(f : Security_types.candidate_finding) =
     match anchor_kind with
     | `Sink -> f.description
     | `Flow | `Source ->
-      Printf.sprintf "**Related sink:** `%s:%d` — %s\n\n%s" f.sink.path f.sink.line f.sink.description f.description
+      Printf.sprintf "%s\n\nThe sink is in unchanged code at `%s:%d`: %s" f.description f.sink.path f.sink.line
+        f.sink.description
 
-  let truncate_text ~max_len s =
-    match String.length s <= max_len with
-    | true -> s
-    | false -> String.sub s 0 max_len ^ "..."
-
-  let first_n n values =
-    let rec aux remaining acc = function
-      | [] -> List.rev acc
-      | _ :: _ when remaining <= 0 -> List.rev acc
-      | value :: rest -> aux (remaining - 1) (value :: acc) rest
-    in
-    aux n [] values
+  (** Trim [s] and end it with a period unless it already ends a sentence. *)
+  let as_sentence s =
+    let s = String.trim s in
+    match String.length s with
+    | 0 -> s
+    | len ->
+    match s.[len - 1] with
+    | '.' | '!' | '?' -> s
+    | _ -> s ^ "."
 
   let fallback_trace (f : Security_types.candidate_finding) =
     Printf.sprintf "%s:%d source -> %s:%d sink" f.source.path f.source.line f.sink.path f.sink.line
 
+  (** Compose the proof fields of a validated finding into the review
+      finding's [failure_scenario], [evidence_snippet] and [why_now].
+
+      Nothing is cut: the validator prompt asks for short proof fields, and the
+      full text is what the developer needs.  Each output carries one piece of
+      information so the fields do not repeat each other. *)
   let proof_summaries (vf : Security_types.validated_finding) =
     let f = vf.finding in
     match vf.proof_by_construction with
     | None -> "", "", ""
     | Some proof ->
       let failure_scenario =
-        Printf.sprintf "Trigger: %s Impact: %s" proof.trigger proof.expected_impact |> truncate_text ~max_len:420
-      in
-      let trace =
-        match proof.source_to_sink_trace with
-        | [] -> fallback_trace f
-        | _ :: _ -> proof.source_to_sink_trace |> first_n 4 |> String.concat " -> "
+        [
+          (match String.trim proof.trigger with
+          | "" -> ""
+          | trigger -> as_sentence ("Trigger: " ^ trigger));
+          as_sentence proof.expected_impact;
+        ]
+        |> List.filter (fun part -> not (String.equal part ""))
+        |> String.concat " "
       in
       let evidence_snippet =
-        Printf.sprintf "%s. Control: %s" trace proof.missing_or_inadequate_control |> truncate_text ~max_len:520
+        match proof.source_to_sink_trace with
+        | [] -> fallback_trace f
+        | _ :: _ -> String.concat " -> " proof.source_to_sink_trace
       in
       let why_now =
-        Printf.sprintf "The reviewed change leaves this path reaching `%s:%d` without %s." f.sink.path f.sink.line
-          proof.missing_or_inadequate_control
-        |> truncate_text ~max_len:320
+        Printf.sprintf "This change lets the path reach `%s:%d` without this control: %s" f.sink.path f.sink.line
+          (String.trim proof.missing_or_inadequate_control)
+        |> as_sentence
       in
       failure_scenario, evidence_snippet, why_now
 

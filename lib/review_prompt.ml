@@ -112,7 +112,6 @@ let guidelines =
 - For each finding, populate `message`, `failure_scenario`, `evidence_snippet`, `why_now`, and `confidence`. This shape is consumed by a downstream validator.
 - For each finding, suggest a fix when possible.
 - Do not use "praise" or "nitpick" severity for inline findings.
-- Be concise — one clear sentence per finding.
 - If the code looks good, say so briefly with few or no findings.|}
 
 let output_hygiene =
@@ -124,7 +123,8 @@ let build_system_prompt ~security_covered_elsewhere =
     | true -> focus_without_security
     | false -> focus_with_security
   in
-  String.concat "\n\n" [ preamble; focus; workflow; non_findings; calibration; guidelines; output_hygiene ]
+  String.concat "\n\n"
+    [ preamble; focus; workflow; non_findings; calibration; guidelines; Comment_style.prompt_fragment; output_hygiene ]
 
 let review_schema : Yojson.Safe.t = (Review_types.review_output_jsonschema :> Yojson.Safe.t)
 
