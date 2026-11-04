@@ -140,6 +140,7 @@ type config = {
   ignored_file_regexes : string list;
   ignore_generated_files : bool;
   ignored_authors : string list;
+  allowed_bots : string list;
   auto_review_pr_open : bool;
   auto_review_pr_sync : bool;
   review_pushes_to_develop : bool;

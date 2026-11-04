@@ -58,6 +58,9 @@ module Make (SRC : Api.Github_review_source) = struct
 
   let is_bot_sender login = CCString.suffix ~suf:"[bot]" login
 
+  let is_skipped_bot ~(config : Config_types.config) login =
+    is_bot_sender login && not (List.exists (String.equal login) config.allowed_bots)
+
   let pr_skip_reason ~ctx ~(config : Config_types.config) (pr : Github_types.pr_notification) =
     let state = Context.state ctx in
     let head_sha = pr.pull_request.head.sha in
@@ -70,7 +73,7 @@ module Make (SRC : Api.Github_review_source) = struct
     in
     let is_duplicate = State.is_pr_reviewed state ~repo_url:pr.repository.url ~pr_number:pr.number ~head_sha in
     match () with
-    | () when is_bot_sender pr.sender.login -> Some (Printf.sprintf "bot sender %s" pr.sender.login)
+    | () when is_skipped_bot ~config pr.sender.login -> Some (Printf.sprintf "bot sender %s" pr.sender.login)
     | () when is_ignored_author -> Some (Printf.sprintf "ignored author %s" pr.sender.login)
     | () when not is_reviewable_action -> Some (Printf.sprintf "action %s not reviewable" pr.action)
     | () when pr.pull_request.draft && not config.review_draft_prs -> Some "draft PR"
@@ -84,7 +87,7 @@ module Make (SRC : Api.Github_review_source) = struct
     let is_ignored_author = List.exists (fun a -> String.equal a push.sender.login) config.ignored_authors in
     let is_duplicate = State.is_push_reviewed state ~repo_url:push.repository.url ~after_sha:push.after in
     match () with
-    | () when is_bot_sender push.sender.login -> Some (Printf.sprintf "bot sender %s" push.sender.login)
+    | () when is_skipped_bot ~config push.sender.login -> Some (Printf.sprintf "bot sender %s" push.sender.login)
     | () when not config.review_pushes_to_develop -> Some "push reviews disabled"
     | () when not is_develop -> Some (Printf.sprintf "ref %s is not develop" push.ref_)
     | () when push.created -> Some "branch creation"
@@ -102,7 +105,7 @@ module Make (SRC : Api.Github_review_source) = struct
     | () when Option.is_none n.issue.pull_request -> Some "comment is on an issue, not a PR"
     | () when not (String.equal n.issue.state "open") -> Some (Printf.sprintf "PR state is %s" n.issue.state)
     | () when not config.auto_review_on_comment -> Some "auto_review_on_comment disabled"
-    | () when is_bot_sender n.sender.login -> Some (Printf.sprintf "bot sender %s" n.sender.login)
+    | () when is_skipped_bot ~config n.sender.login -> Some (Printf.sprintf "bot sender %s" n.sender.login)
     | () when is_ignored_author -> Some (Printf.sprintf "ignored author %s" n.sender.login)
     | () -> None
 
