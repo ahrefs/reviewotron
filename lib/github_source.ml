@@ -58,7 +58,6 @@ module Make (SRC : Api.Github_review_source) = struct
 
   let is_bot_sender login = CCString.suffix ~suf:"[bot]" login
 
-  (* Bot senders are skipped unless the repo config lists them in [allowed_bots]. *)
   let is_skipped_bot ~(config : Config_types.config) login =
     is_bot_sender login && not (List.exists (String.equal login) config.allowed_bots)
 
