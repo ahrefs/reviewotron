@@ -372,6 +372,11 @@ let reviewed_file_context ~line content =
   |> List.mapi (fun index text -> Printf.sprintf "%6d | %s" (first_line + index) text)
   |> String.concat "\n"
 
+let cost_footer ~(config : Config_types.config) review_costs =
+  match config.show_review_cost with
+  | true -> Cost_tracking.format_footer review_costs
+  | false -> ""
+
 let review_body ~log_context ~change_label ~general_output ~findings ~unchanged_findings ~anchor_failed_findings
   ~review_costs ~security_error ~(config : Config_types.config) =
   let log_prefix = log_context_prefix (Some log_context) in
@@ -472,7 +477,7 @@ let review_body ~log_context ~change_label ~general_output ~findings ~unchanged_
     | true -> body ^ security_error_notice
     | false -> body
   in
-  if config.show_review_cost then body ^ Cost_tracking.format_footer review_costs else body
+  body ^ cost_footer ~config review_costs
 
 module Make (AI : Api.Agent_runner) = struct
   module General_plugin = General_review_plugin.Make (AI)

@@ -4107,6 +4107,42 @@ let test_pr_empty_findings_review () =
   | Github.Unknown _ ->
     fail "expected pull_request event"
 
+(* Run the empty-findings quiet-success PR review under [config] and return the
+   GitHub write log. *)
+let run_quiet_success_pr_review ~config =
+  Test_helpers.reset_test_state ();
+  Api_local.set_agent_response_path "mock_api_responses/claude/empty_findings_response.json";
+  Api_local.set_agent_response_map [ "general_scout", "mock_api_responses/scout/leads_empty.json" ];
+  let ctx = Test_helpers.make_test_context ~config () in
+  let payload = read_file "mock_payloads/pr_opened.json" in
+  let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
+  Lwt_main.run (R_test.process_event ctx ~event);
+  Api_local.get_write_log ()
+
+(* The quiet LGTM comment is the only message a clean PR review posts, so it
+   must carry the cost footer whenever a full review would. *)
+let test_pr_quiet_success_shows_review_cost () =
+  let config =
+    Config_types.config_of_json
+      (Melange_json.of_string
+         {|{"auto_review_pr_open": true, "auto_review_pr_sync": true, "review_pushes_to_develop": true,
+            "show_review_cost": true}|})
+  in
+  let write_log = run_quiet_success_pr_review ~config in
+  let lgtm_pos = CCString.find ~sub:"LGTM :+1:" write_log in
+  let cost_pos = CCString.find ~sub:"*Review cost: " write_log in
+  let commit_pos = CCString.find ~sub:(reviewed_commit_sub "abc123def456789012345678901234567890abcd") write_log in
+  (check bool) "quiet success comment says LGTM" true (lgtm_pos >= 0);
+  (check bool) "quiet success comment shows review cost" true (cost_pos > lgtm_pos);
+  (check bool) "cost footer precedes reviewed commit, as in a full review" true (commit_pos > cost_pos);
+  (check bool) "cost footer names the general plugin" true (contains_sub ~sub:"general: " write_log);
+  (check bool) "no PR review when there is nothing to add" false (contains_sub ~sub:"[create_pr_review]" write_log)
+
+let test_pr_quiet_success_hides_review_cost_when_disabled () =
+  let write_log = run_quiet_success_pr_review ~config:Test_helpers.auto_review_enabled_config in
+  (check bool) "quiet success comment says LGTM" true (contains_sub ~sub:"LGTM :+1:" write_log);
+  (check bool) "no cost footer when show_review_cost is off" false (contains_sub ~sub:"Review cost" write_log)
+
 let test_pr_large_diff_posts_comment () =
   Test_helpers.reset_test_state ();
   (* Set max_diff_lines very low so the normal PR 42 diff exceeds it *)
@@ -7462,7 +7498,19 @@ let test_format_footer_empty_plugin () =
   in
   let footer = Cost_tracking.format_footer [ rc ] in
   (check bool) "contains 0 agents" true (CCString.find ~sub:"0 agents" footer >= 0);
-  (check bool) "does not list empty plugin" true (CCString.find ~sub:"security:" footer < 0)
+  (check bool) "does not list empty plugin" true (CCString.find ~sub:"security:" footer < 0);
+  (check bool) "no empty breakdown" true (CCString.find ~sub:"()" footer < 0)
+
+let test_format_footer_no_costs () =
+  (check string) "footer with no cost records" "\n\n---\n*Review cost: 0 agents, ~$0.00*"
+    (Cost_tracking.format_footer [])
+
+let test_cost_footer_follows_config () =
+  let rc = Cost_tracking.aggregate ~plugin:"general" [ general_agent_cost ] in
+  let config_with show = Config_types.config_of_json (`Assoc [ "show_review_cost", `Bool show ]) in
+  (check string) "footer when enabled" (Cost_tracking.format_footer [ rc ])
+    (Review_engine.cost_footer ~config:(config_with true) [ rc ]);
+  (check string) "nothing when disabled" "" (Review_engine.cost_footer ~config:(config_with false) [ rc ])
 
 let test_agent_cost_json_roundtrip () =
   let cost : Cost_tracking.agent_cost =
@@ -10167,6 +10215,9 @@ let () =
           test_case "PR synchronize triggers review" `Quick test_pr_synchronize_review;
           test_case "PR with all ignored paths posts skip comment" `Quick test_pr_all_ignored_paths_posts_skip_comment;
           test_case "PR with empty findings posts LGTM comment" `Quick test_pr_empty_findings_review;
+          test_case "PR quiet LGTM shows review cost" `Quick test_pr_quiet_success_shows_review_cost;
+          test_case "PR quiet LGTM hides review cost when disabled" `Quick
+            test_pr_quiet_success_hides_review_cost_when_disabled;
           test_case "large PR over max_diff_lines posts comment" `Quick test_pr_large_diff_posts_comment;
           test_case "generated files filtered before PR file limit" `Quick
             test_pr_generated_files_filtered_before_file_limit;
@@ -10339,6 +10390,8 @@ let () =
           test_case "aggregate" `Quick test_aggregate;
           test_case "format footer" `Quick test_format_footer;
           test_case "format footer empty plugin" `Quick test_format_footer_empty_plugin;
+          test_case "format footer no costs" `Quick test_format_footer_no_costs;
+          test_case "cost footer follows show_review_cost" `Quick test_cost_footer_follows_config;
           test_case "agent_cost JSON roundtrip" `Quick test_agent_cost_json_roundtrip;
           test_case "review_cost JSON roundtrip" `Quick test_review_cost_json_roundtrip;
           test_case "state roundtrip with costs" `Quick test_state_roundtrip_with_costs;
