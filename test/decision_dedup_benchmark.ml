@@ -7,27 +7,13 @@ type pair_case = {
   finding_b : Yojson.Basic.t;
 }
 
-let assoc name = function
-  | `Assoc fields ->
-    (match List.assoc_opt name fields with
-    | Some value -> value
-    | None -> failwith (Printf.sprintf "Missing %S" name))
-  | _ -> failwith "Expected a JSON object"
+let assoc = Decision_benchmark_env.Corpus_json.assoc
 
-let string name json =
-  match assoc name json with
-  | `String value -> value
-  | _ -> failwith (Printf.sprintf "%S must be a string" name)
+let string = Decision_benchmark_env.Corpus_json.string
 
-let bool name json =
-  match assoc name json with
-  | `Bool value -> value
-  | _ -> failwith (Printf.sprintf "%S must be a boolean" name)
+let bool = Decision_benchmark_env.Corpus_json.bool
 
-let int name json =
-  match assoc name json with
-  | `Int value -> value
-  | _ -> failwith (Printf.sprintf "%S must be an integer" name)
+let int = Decision_benchmark_env.Corpus_json.int
 
 let pair_case_of_json json =
   {
@@ -60,7 +46,7 @@ let nearby_same_class_duplicate case =
   && String.equal path_a path_b
   && Int.abs (line_a - line_b) <= 3
 
-let dedup_question : Jev_triage.noul_question =
+let dedup_question : Decision_client.noul_question =
   {
     instructions =
       "Should `finding_a` and `finding_b` be merged because they describe the same underlying security defect and one \
@@ -75,7 +61,7 @@ let dedup_question : Jev_triage.noul_question =
        handler alone is insufficient.";
   }
 
-let consolidation_question : Jev_triage.noul_question =
+let consolidation_question : Decision_client.noul_question =
   {
     instructions =
       "Can `finding_a` and `finding_b` be safely published as one security finding because they are independently \
@@ -88,21 +74,6 @@ let consolidation_question : Jev_triage.noul_question =
       "The findings require separate edits or repairs, repeat a vulnerability pattern at independent sites, describe \
        prerequisite or companion defects, or cannot be combined without hiding an affected location, proof, impact, or \
        remediation step. A broad patch that could happen to address both is insufficient.";
-  }
-
-let grouping_proposal_question : Jev_triage.noul_question =
-  {
-    instructions =
-      "Should `finding_a` and `finding_b` be sent together to a consolidation verifier because they plausibly arise \
-       from the same causal defect or missing control and may share one repair? This judgment only retrieves possible \
-       groups; it does not merge or suppress either confirmed finding.";
-    true_criteria =
-      "The findings plausibly share one causal source, source-of-truth policy, generated artifact, unsafe input, or \
-       missing control such that one repair may resolve both. Include cases needing repository evidence to confirm the \
-       relationship.";
-    false_criteria =
-      "The findings are independent defects or merely repeat a vulnerability pattern, principal, file, feature, or \
-       review context without a plausible shared causal source or control.";
   }
 
 let emit ~case ~order ~repetition ~elapsed result =
@@ -120,7 +91,7 @@ let emit ~case ~order ~repetition ~elapsed result =
   let json =
     match result with
     | Error error -> `Assoc (("error", `String error) :: common)
-    | Ok ({ probability; cost } : Jev_triage.noul_output) ->
+    | Ok ({ probability; cost } : Decision_client.noul_output) ->
       `Assoc
         (("probability", `Float probability)
         :: ("input_tokens", `Int cost.input_tokens)
@@ -130,19 +101,19 @@ let emit ~case ~order ~repetition ~elapsed result =
   print_endline (Yojson.Basic.to_string json);
   flush stdout
 
-let run_order ~api_key ~question ~case ~repetition (order, finding_a, finding_b) =
+let run_order ~client ~question ~case ~repetition (order, finding_a, finding_b) =
   let state = `Assoc [ "finding_a", finding_a; "finding_b", finding_b ] in
   let started = Unix.gettimeofday () in
-  let%lwt result = Jev_triage.score_noul ~api_key ~state ~question in
+  let%lwt result = Decision_client.score_noul client ~agent_name:"decision_dedup_benchmark" ~state ~question in
   emit ~case ~order ~repetition ~elapsed:(Unix.gettimeofday () -. started) result;
   Lwt.return_unit
 
-let run_case ~api_key ~question ~repeats case =
+let run_case ~client ~question ~repeats case =
   let orders = [ "ab", case.finding_a, case.finding_b; "ba", case.finding_b, case.finding_a ] in
   let rec repeat repetition =
     if repetition > repeats then Lwt.return_unit
     else (
-      let%lwt () = Lwt_list.iter_s (run_order ~api_key ~question ~case ~repetition) orders in
+      let%lwt () = Lwt_list.iter_s (run_order ~client ~question ~case ~repetition) orders in
       repeat (repetition + 1))
   in
   repeat 1
@@ -163,6 +134,7 @@ let () =
   let grouping_proposal = ref false in
   Arg.parse
     [
+      Decision_benchmark_env.model_spec;
       "--corpus", Arg.Set_string corpus, "FILE Dedup pair corpus";
       "--repeats", Arg.Set_int repeats, "N Repetitions per pair";
       "--self-test", Arg.Set self_test_only, "Validate benchmark inputs without API calls";
@@ -170,22 +142,18 @@ let () =
       "--grouping-proposal", Arg.Set grouping_proposal, "Ask whether confirmed findings warrant shared verification";
     ]
     (fun argument -> raise (Arg.Bad (Printf.sprintf "Unexpected argument: %s" argument)))
-    "jev_dedup_benchmark [options]";
+    "decision_dedup_benchmark [options]";
   let cases = read_cases !corpus in
   match !self_test_only with
   | true -> self_test cases
   | false ->
     if !repeats < 1 then raise (Arg.Bad "--repeats must be positive");
-    let api_key =
-      match Sys.getenv_opt "TYPESAFE_API_KEY" with
-      | Some api_key when not (String.equal (String.trim api_key) "") -> api_key
-      | Some _ | None -> failwith "TYPESAFE_API_KEY is required"
-    in
+    let client = Decision_benchmark_env.client () in
     let question =
       match !consolidation, !grouping_proposal with
       | true, false -> consolidation_question
-      | false, true -> grouping_proposal_question
+      | false, true -> Decision_questions.grouping_proposal
       | false, false -> dedup_question
       | true, true -> raise (Arg.Bad "choose only one benchmark question")
     in
-    Lwt_main.run (Lwt_list.iter_s (run_case ~api_key ~question ~repeats:!repeats) cases)
+    Lwt_main.run (Lwt_list.iter_s (run_case ~client ~question ~repeats:!repeats) cases)

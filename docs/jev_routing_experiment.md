@@ -1,12 +1,18 @@
 # Jev routing experiment
 
+> These experiments ran against TypeSafe's API. Per-file routing is now
+> `"decision_triage": "route"` and the captured-review cost gate is
+> `"decision_triage": "gate"`, both with `"decision_model": "jev"` served
+> through OpenRouter. Gate is the default on OpenRouter reviews; see
+> [Decision models](README.md#decision-models).
+
 This benchmark isolates security-class routing from Reviewotron's analysis and
 validator stages. It does not run or post a review.
 
 Run it with:
 
 ```sh
-TYPESAFE_API_KEY=... dune exec ./test/jev_routing_benchmark.exe -- --repeats 5 > results.jsonl
+OPENROUTER_API_KEY=... dune exec ./test/decision_routing_benchmark.exe -- --model jev --repeats 5 > results.jsonl
 ```
 
 The corpus has 22 diffs: 15 vulnerable cases and 7 safe controls. It includes

@@ -53,12 +53,13 @@ let should_analyze ~security_config (signal : Security_types.triage_signal) =
   let above_threshold = confidence_rank signal.confidence >= confidence_rank threshold in
   enabled && (above_threshold || always_analyze)
 
-let gate_triage_signals ~always_analyze ~jev_signals =
+let gate_triage_signals ~always_analyze ~decision_signals =
   List.filter (fun (signal : Security_types.triage_signal) ->
     List.exists (vuln_class_equal signal.vuln_class) always_analyze
     || List.exists
-         (fun (jev_signal : Security_types.triage_signal) -> vuln_class_equal signal.vuln_class jev_signal.vuln_class)
-         jev_signals)
+         (fun (decision_signal : Security_types.triage_signal) ->
+           vuln_class_equal signal.vuln_class decision_signal.vuln_class)
+         decision_signals)
 
 let partial_triage_fallback ~(partial : Security_types.triage_output) ~primary =
   match primary, partial.signals with
@@ -66,19 +67,6 @@ let partial_triage_fallback ~(partial : Security_types.triage_output) ~primary =
   | None, _ :: _ -> Some partial, true
   | Some primary, [] -> Some primary, false
   | Some primary, _ :: _ -> Some { primary with signals = primary.signals @ partial.signals; skip_reason = None }, false
-
-type jev_validator_decision =
-  | Confirm_candidate
-  | Reject_candidate
-  | Run_validator
-
-let jev_validator_decision ~supported ~fatal_defect =
-  match () with
-  | () when supported >= 0.62 && fatal_defect <= 0.30 -> Confirm_candidate
-  | () when fatal_defect >= 0.70 && supported <= 0.30 -> Reject_candidate
-  | () -> Run_validator
-
-let jev_source_constraint_reject ~source_constrained ~supported = source_constrained >= 0.60 && supported <= 0.30
 
 let highest_signal_confidence signals =
   List.fold_left
@@ -426,11 +414,12 @@ let enforce_validator_proofs results =
       | Rejected, Some _ | Rejected, None -> vf)
     results
 
-let jev_confirmed_finding finding =
+let decision_confirmed_finding finding =
   let proof : Security_types.exploitation_proof =
     {
       trigger = proof_repair_trigger finding;
-      preconditions = [ "The reviewed source and sink sites are present in the diff evidence scored by Jev." ];
+      preconditions =
+        [ "The reviewed source and sink sites are present in the diff evidence scored by the decision model." ];
       source_to_sink_trace = proof_trace_from_finding finding;
       missing_or_inadequate_control = proof_repair_control finding;
       expected_impact = proof_repair_impact finding;
@@ -443,7 +432,8 @@ let jev_confirmed_finding finding =
       finding;
       verdict = Confirmed;
       evidence_notes =
-        Printf.sprintf "Jev directly supported the candidate against exact diff evidence at %s:%d and %s:%d."
+        Printf.sprintf
+          "The decision model directly supported the candidate against exact diff evidence at %s:%d and %s:%d."
           finding.source.path finding.source.line finding.sink.path finding.sink.line;
       proof_by_construction = Some proof;
     }
@@ -760,53 +750,24 @@ module Make (AI : Api.Agent_runner) = struct
 
   let run_agent ~config f = run_stage ~stage:(Printf.sprintf "agent %s" config.Agent_runner.name) f
 
-  let grouping_proposal_question : Jev_triage.noul_question =
-    {
-      instructions =
-        "Should `finding_a` and `finding_b` be sent together to a consolidation verifier because they plausibly arise \
-         from the same causal defect or missing control and may share one repair? This judgment only retrieves \
-         possible groups; it does not merge or suppress either confirmed finding.";
-      true_criteria =
-        "The findings plausibly share one causal source, source-of-truth policy, generated artifact, unsafe input, or \
-         missing control such that one repair may resolve both. Include cases needing repository evidence to confirm \
-         the relationship.";
-      false_criteria =
-        "The findings are independent defects or merely repeat a vulnerability pattern, principal, file, feature, or \
-         review context without a plausible shared causal source or control.";
-    }
-  let notification_grouping_question : Jev_triage.noul_question =
-    {
-      instructions =
-        "Should these independently confirmed findings appear under one review notification group while retaining both \
-         complete findings, locations, impacts, and fixes?";
-      true_criteria =
-        "One accurate title and remediation plan can describe both findings because they belong to the same introduced \
-         policy change, credential, input, unsafe operation, or repeated repair campaign. A source-of-truth finding \
-         and manifestations in its generated artifacts are one group. A developer can resolve the group as one \
-         coherent review action even when every affected site still needs its own edit.";
-      false_criteria =
-        "Grouping would mix different threat models, controls, assets, owners, urgency, or remediation plans. Keep \
-         credential acquisition or authentication defects separate from post-authentication privilege escalation even \
-         when they can form one attack chain. A shared vulnerability class, file, feature, attacker, or broad \
-         hardening theme alone is insufficient.";
-    }
-  let run_jev_triage ~ctx ~security_config ~diff ~artifacts ?log_context () =
+  let run_decision_triage ~decision ~mode ~security_config ~diff ~artifacts ?log_context () =
     let log_prefix = log_context_prefix log_context in
-    let enabled, threshold =
-      match security_config.Config_types.jev_triage_enabled, security_config.Config_types.jev_analysis_gate_enabled with
-      | true, false -> true, security_config.jev_triage_threshold
-      | false, true -> true, security_config.jev_analysis_gate_threshold
-      | true, true -> true, security_config.jev_triage_threshold
-      | false, false -> false, security_config.jev_triage_threshold
+    let calibrated_threshold : (Decision_model.thresholds -> float) option =
+      match (mode : Config_types.decision_triage_mode) with
+      | Off -> None
+      | Route -> Some (fun thresholds -> thresholds.triage)
+      | Gate -> Some (fun thresholds -> thresholds.analysis_gate)
     in
-    match enabled with
-    | false -> Lwt.return_none
-    | true ->
-    match (Context.secrets ctx).typesafe_api_key with
-    | None ->
-      log#warn "%sJev triage is enabled but no TypeSafe API key is configured" log_prefix;
+    match calibrated_threshold, decision with
+    | None, _ -> Lwt.return_none
+    | Some _, None ->
+      log#warn "%sdecision triage is enabled but no OpenRouter key is configured" log_prefix;
       Lwt.return_none
-    | Some api_key ->
+    | Some calibrated_threshold, Some decision ->
+      let threshold =
+        Stdlib.Option.value security_config.Config_types.decision_triage_threshold
+          ~default:(calibrated_threshold (Decision_client.thresholds decision))
+      in
       let vuln_classes =
         List.fold_left
           (fun classes vuln_class ->
@@ -815,14 +776,14 @@ module Make (AI : Api.Agent_runner) = struct
             | false -> vuln_class :: classes)
           security_config.vuln_classes security_config.always_analyze_vuln_classes
       in
-      let%lwt result = Jev_triage.run ?log_context ~api_key ~threshold ~vuln_classes ~diff () in
+      let%lwt result = Decision_triage.run ?log_context decision ~threshold ~vuln_classes ~diff () in
       (match result with
       | Error error ->
-        log#warn "%sJev triage failed: %s" log_prefix error;
+        log#warn "%sdecision triage failed: %s" log_prefix error;
         Lwt.return_none
       | Ok output ->
-        log#info "%sJev triage: %d signal(s)" log_prefix (List.length output.signals);
-        Security_artifacts.write_debug_json artifacts ~filename:"jev_triage_signals.json"
+        log#info "%sdecision triage: %d signal(s)" log_prefix (List.length output.signals);
+        Security_artifacts.write_debug_json artifacts ~filename:"decision_triage_signals.json"
           (`List (List.map Security_types.triage_signal_to_json output.signals));
         Lwt.return_some output)
   let candidate_diff_evidence ~diff (candidate : Security_types.candidate_finding) =
@@ -834,28 +795,13 @@ module Make (AI : Api.Agent_runner) = struct
     in
     paths |> List.filter_map (Diff_anchor.find_file_diff_by_path ~diff) |> Diff_parser.to_string_annotated
 
-  let source_constraint_question : Jev_triage.noul_question =
-    {
-      instructions =
-        "Does `evidence` directly contradict the candidate's claimed attacker-controlled source-to-sink influence by \
-         showing that the exact value reaching the sink is constructed exclusively from fixed, trusted, typed, \
-         UUID-derived, configured, or allowlisted components that prevent control of the security-sensitive component \
-         named by the candidate?";
-      true_criteria =
-        "The evidence traces the value reaching the sink and shows the claimed attacker-controlled host, scheme, \
-         command, path, principal, or equivalent security-sensitive component is fixed or constrained so the described \
-         exploit cannot occur.";
-      false_criteria =
-        "The relevant component can still be attacker-controlled, or the evidence does not establish a complete \
-         constraining provenance for the exact value reaching the sink.";
-    }
-
   let source_constraint_evidence ~diff (finding : Security_types.candidate_finding) ~path ~content =
     Printf.sprintf "%s\n\n%s" (candidate_diff_evidence ~diff finding) (Diff_parser.annotate_file_content ~path content)
 
-  let run_jev_source_constraint ~api_key ~diff ~fetched_files ?log_context
+  let run_decision_source_constraint decision ~diff ~fetched_files ?log_context
     (validated : Security_types.validated_finding) =
     let log_prefix = log_context_prefix log_context in
+    let thresholds = Decision_client.thresholds decision in
     let rec check costs judgments = function
       | [] -> Lwt.return (validated, List.rev costs, List.rev judgments)
       | (path, content) :: rest ->
@@ -864,13 +810,15 @@ module Make (AI : Api.Agent_runner) = struct
           `Assoc
             [ "candidate", Security_types.candidate_finding_to_json validated.finding; "evidence", `String evidence ]
         in
-        let%lwt constrained = Jev_triage.score_noul ~api_key ~state ~question:source_constraint_question in
+        let%lwt constrained =
+          Decision_client.score_noul decision ~agent_name:"decision_source_constraint" ~state
+            ~question:Decision_questions.source_constraint
+        in
         (match constrained with
         | Error error ->
-          log#warn "%sJev source-constraint check failed for %s: %s" log_prefix path error;
+          log#warn "%sdecision source-constraint check failed for %s: %s" log_prefix path error;
           check costs judgments rest
         | Ok constrained ->
-          let constrained_cost = { constrained.cost with agent_name = "jev_source_constraint" } in
           let judgment probability supported decision =
             let supported =
               match supported with
@@ -886,20 +834,23 @@ module Make (AI : Api.Agent_runner) = struct
                 "candidate", Security_types.candidate_finding_to_json validated.finding;
               ]
           in
-          (match constrained.probability >= 0.60 with
+          (match constrained.probability >= thresholds.source_constraint_min with
           | false ->
-            check (constrained_cost :: costs) (judgment constrained.probability None "confirmed" :: judgments) rest
+            check (constrained.cost :: costs) (judgment constrained.probability None "confirmed" :: judgments) rest
           | true ->
-            let%lwt support = Jev_triage.score_candidate_validation ~api_key ~candidate:validated.finding ~evidence in
+            let%lwt support =
+              Decision_triage.score_candidate_validation decision ~agent_name:"decision_source_constraint_support"
+                ~candidate:validated.finding ~evidence
+            in
             (match support with
             | Error error ->
-              log#warn "%sJev source-constraint support check failed for %s: %s" log_prefix path error;
-              check (constrained_cost :: costs) (judgment constrained.probability None "confirmed" :: judgments) rest
+              log#warn "%sdecision source-constraint support check failed for %s: %s" log_prefix path error;
+              check (constrained.cost :: costs) (judgment constrained.probability None "confirmed" :: judgments) rest
             | Ok support ->
-              let support_cost = { support.cost with agent_name = "jev_source_constraint_support" } in
-              let costs = support_cost :: constrained_cost :: costs in
+              let costs = support.cost :: constrained.cost :: costs in
               (match
-                 jev_source_constraint_reject ~source_constrained:constrained.probability ~supported:support.supported
+                 Decision_model.source_constraint_rejects thresholds ~source_constrained:constrained.probability
+                   ~supported:support.supported
                with
               | false ->
                 check costs (judgment constrained.probability (Some support.supported) "confirmed" :: judgments) rest
@@ -910,8 +861,8 @@ module Make (AI : Api.Agent_runner) = struct
                     verdict = Rejected;
                     evidence_notes =
                       Printf.sprintf
-                        "Jev found that %s constrains the claimed attacker-controlled source (constraint %.3f, support \
-                         %.3f)."
+                        "The decision model found that %s constrains the claimed attacker-controlled source \
+                         (constraint %.3f, support %.3f)."
                         path constrained.probability support.supported;
                     proof_by_construction = None;
                   }
@@ -925,89 +876,103 @@ module Make (AI : Api.Agent_runner) = struct
     | Rejected -> Lwt.return (validated, [], [])
     | Confirmed -> check [] [] fetched_files
 
-  let run_jev_validator_cascade ~ctx ~security_config ~diff ~artifacts ?log_context ?record_prevalidation:recorder
-    candidates =
+  let run_decision_validator_cascade ~decision ~security_config ~diff ~artifacts ?log_context
+    ?record_prevalidation:recorder candidates =
     let log_prefix = log_context_prefix log_context in
     let record_call ~attempt ~costs ~verdict candidate =
       record_prevalidation recorder
-        (Prevalidation.call ~plugin:name ~validator:"jev_validator_cascade" ~attempt
+        (Prevalidation.call ~plugin:name ~validator:"decision_validator_cascade" ~attempt
            ~candidates:[ Security_types.candidate_finding_to_json candidate ]
            ~verdicts:[ 0, verdict ]
            ~costs)
     in
-    match security_config.Config_types.jev_validator_cascade_enabled, candidates with
+    match
+      Decision_client.enabled decision security_config.Config_types.decision_validator_cascade_enabled, candidates
+    with
     | false, _ | true, [] -> Lwt.return ([], candidates, [])
     | true, _ :: _ ->
-    match (Context.secrets ctx).typesafe_api_key with
+    match decision with
     | None ->
-      log#warn "%sJev validator cascade is enabled but no TypeSafe API key is configured" log_prefix;
+      log#warn "%sdecision validator cascade is enabled but no OpenRouter key is configured" log_prefix;
       Lwt.return ([], candidates, [])
-    | Some api_key ->
-      let%lwt resolved, remaining, costs, judgments =
-        Lwt_list.fold_left_s
-          (fun (resolved, remaining, costs, judgments) (index, candidate) ->
-            let attempt = Printf.sprintf "candidate_%d" (index + 1) in
+    | Some decision ->
+      let thresholds = Decision_client.thresholds decision in
+      (* Candidates are scored concurrently, then folded in order so recorded
+         calls and judgments keep the candidate order. *)
+      let%lwt scored =
+        Lwt_list.map_p
+          (fun candidate ->
             let evidence = candidate_diff_evidence ~diff candidate in
             match String.trim evidence with
-            | "" -> Lwt.return (resolved, candidate :: remaining, costs, judgments)
+            | "" -> Lwt.return (candidate, None)
             | _ ->
-              let%lwt result = Jev_triage.score_candidate_validation ~api_key ~candidate ~evidence in
-              (match result with
-              | Error error ->
-                log#warn "%sJev candidate validation failed: %s" log_prefix error;
-                record_call ~attempt ~costs:[] ~verdict:Prevalidation.Forwarded candidate;
-                Lwt.return
-                  ( resolved,
-                    candidate :: remaining,
-                    costs,
-                    `Assoc [ "error", `String error; "candidate", Security_types.candidate_finding_to_json candidate ]
-                    :: judgments )
-              | Ok ({ supported; fatal_defect; cost } : Jev_triage.candidate_validation_output) ->
-                let cost = { cost with agent_name = "jev_validator_cascade" } in
-                let decision = jev_validator_decision ~supported ~fatal_defect in
-                let decision_name, verdict, resolved, remaining =
-                  match decision with
-                  | Confirm_candidate ->
-                    (match jev_confirmed_finding candidate with
-                    | Some validated -> "confirmed", Prevalidation.Confirmed, validated :: resolved, remaining
-                    | None -> "validator", Prevalidation.Forwarded, resolved, candidate :: remaining)
-                  | Reject_candidate ->
-                    let validated : Security_types.validated_finding =
-                      {
-                        candidate_id = 0;
-                        finding = candidate;
-                        verdict = Rejected;
-                        evidence_notes =
-                          Printf.sprintf
-                            "Jev found a demonstrated fatal validation defect (support %.3f, fatal defect %.3f)."
-                            supported fatal_defect;
-                        proof_by_construction = None;
-                      }
-                    in
-                    "rejected", Prevalidation.Rejected, validated :: resolved, remaining
-                  | Run_validator -> "validator", Prevalidation.Forwarded, resolved, candidate :: remaining
-                in
-                record_call ~attempt ~costs:[ cost ] ~verdict candidate;
-                let judgment =
-                  `Assoc
-                    [
-                      "decision", `String decision_name;
-                      "supported_probability", `Float supported;
-                      "fatal_defect_probability", `Float fatal_defect;
-                      "candidate", Security_types.candidate_finding_to_json candidate;
-                    ]
-                in
-                Lwt.return (resolved, remaining, cost :: costs, judgment :: judgments)))
+              let%lwt result =
+                Decision_triage.score_candidate_validation decision ~agent_name:"decision_validator_cascade" ~candidate
+                  ~evidence
+              in
+              Lwt.return (candidate, Some result))
+          candidates
+      in
+      let resolved, remaining, costs, judgments =
+        List.fold_left
+          (fun (resolved, remaining, costs, judgments) (index, (candidate, result)) ->
+            let attempt = Printf.sprintf "candidate_%d" (index + 1) in
+            match result with
+            | None -> resolved, candidate :: remaining, costs, judgments
+            | Some (Error error) ->
+              log#warn "%sdecision candidate validation failed: %s" log_prefix error;
+              record_call ~attempt ~costs:[] ~verdict:Prevalidation.Forwarded candidate;
+              ( resolved,
+                candidate :: remaining,
+                costs,
+                `Assoc [ "error", `String error; "candidate", Security_types.candidate_finding_to_json candidate ]
+                :: judgments )
+            | Some (Ok ({ supported; fatal_defect; cost } : Decision_triage.candidate_validation_output)) ->
+              let decision_name, verdict, resolved, remaining =
+                match Decision_model.cascade_decision thresholds ~supported ~fatal_defect with
+                | Confirm_candidate ->
+                  (match decision_confirmed_finding candidate with
+                  | Some validated -> "confirmed", Prevalidation.Confirmed, validated :: resolved, remaining
+                  | None -> "validator", Prevalidation.Forwarded, resolved, candidate :: remaining)
+                | Reject_candidate ->
+                  let validated : Security_types.validated_finding =
+                    {
+                      candidate_id = 0;
+                      finding = candidate;
+                      verdict = Rejected;
+                      evidence_notes =
+                        Printf.sprintf
+                          "The decision model found a demonstrated fatal validation defect (support %.3f, fatal defect \
+                           %.3f)."
+                          supported fatal_defect;
+                      proof_by_construction = None;
+                    }
+                  in
+                  "rejected", Prevalidation.Rejected, validated :: resolved, remaining
+                | Run_validator -> "validator", Prevalidation.Forwarded, resolved, candidate :: remaining
+              in
+              record_call ~attempt ~costs:[ cost ] ~verdict candidate;
+              let judgment =
+                `Assoc
+                  [
+                    "decision", `String decision_name;
+                    "supported_probability", `Float supported;
+                    "fatal_defect_probability", `Float fatal_defect;
+                    "candidate", Security_types.candidate_finding_to_json candidate;
+                  ]
+              in
+              resolved, remaining, cost :: costs, judgment :: judgments)
           ([], [], [], [])
-          (List.mapi (fun index candidate -> index, candidate) candidates)
+          (List.mapi (fun index scored -> index, scored) scored)
       in
       let resolved = List.rev resolved in
       let remaining = List.rev remaining in
-      Security_artifacts.write_debug_json artifacts ~filename:"jev_validator_cascade.json" (`List (List.rev judgments));
-      log#info "%sJev validator cascade resolved %d of %d candidate(s); %d sent to validator" log_prefix
+      Security_artifacts.write_debug_json artifacts ~filename:"decision_validator_cascade.json"
+        (`List (List.rev judgments));
+      log#info "%sdecision validator cascade resolved %d of %d candidate(s); %d sent to validator" log_prefix
         (List.length resolved) (List.length candidates) (List.length remaining);
       Lwt.return (resolved, remaining, List.rev costs)
-  let score_pair ~api_key ~question ~agent_name ?log_context finding_a finding_b =
+  let score_pair decision ~question ~agent_name ?log_context finding_a finding_b =
     let log_prefix = log_context_prefix log_context in
     let state finding_a finding_b =
       `Assoc
@@ -1017,17 +982,13 @@ module Make (AI : Api.Agent_runner) = struct
         ]
     in
     let score finding_a finding_b =
-      let%lwt result = Jev_triage.score_noul ~api_key ~state:(state finding_a finding_b) ~question in
-      Lwt.return
-        (Result.map
-           (fun (output : Jev_triage.noul_output) -> { output with cost = { output.cost with agent_name } })
-           result)
+      Decision_client.score_noul decision ~agent_name ~state:(state finding_a finding_b) ~question
     in
     let%lwt forward, reverse = Lwt.both (score finding_a finding_b) (score finding_b finding_a) in
     let costs =
       [ forward; reverse ]
       |> List.filter_map (function
-        | Ok (output : Jev_triage.noul_output) -> Some output.cost
+        | Ok (output : Decision_client.noul_output) -> Some output.cost
         | Error _ -> None)
     in
     match forward, reverse with
@@ -1097,17 +1058,21 @@ module Make (AI : Api.Agent_runner) = struct
     :: finding.finding.sink.path
     :: List.map (fun (site : Security_types.flow_step) -> site.path) finding.finding.flow
 
-  let run_jev_grouping ~ctx ~repo_url ~fetch_file ~diff ~diff_text ~security_config ~artifacts ?debug_dir ?log_context
-    confirmed =
+  let run_decision_grouping ~ctx ~decision ~repo_url ~fetch_file ~diff ~diff_text ~security_config ~artifacts ?debug_dir
+    ?log_context confirmed =
     let log_prefix = log_context_prefix log_context in
-    match security_config.Config_types.jev_grouping_enabled, confirmed with
+    match Decision_client.enabled decision security_config.Config_types.decision_grouping_enabled, confirmed with
     | false, _ | true, [] | true, [ _ ] -> Lwt.return ([], [])
     | true, _ :: _ :: _ ->
-    match (Context.secrets ctx).typesafe_api_key with
+    match decision with
     | None ->
-      log#warn "%sJev grouping is enabled but no TypeSafe API key is configured" log_prefix;
+      log#warn "%sdecision grouping is enabled but no OpenRouter key is configured" log_prefix;
       Lwt.return ([], [])
-    | Some api_key ->
+    | Some decision ->
+      let grouping_threshold =
+        Stdlib.Option.value security_config.decision_grouping_threshold
+          ~default:(Decision_client.thresholds decision).grouping
+      in
       (* ponytail: confirmed finding sets are normally single digits; shortlist
          deterministically before this O(n²) experiment if latency becomes material. *)
       let indexed = List.mapi (fun index finding -> index, finding) confirmed in
@@ -1129,20 +1094,27 @@ module Make (AI : Api.Agent_runner) = struct
           let new_pairs = List.map (fun (right_id, right) -> left_id, left, right_id, right) rest in
           pairs (List.rev_append new_pairs acc) rest
       in
+      (* Every pair's proposal judgment is independent, so they run concurrently.
+         Verification of proposed pairs stays sequential below. *)
+      let%lwt proposals =
+        Lwt_list.map_p
+          (fun ((_, left, _, right) as pair) ->
+            let%lwt scored =
+              score_pair decision ~question:Decision_questions.grouping_proposal ~agent_name:"decision_grouping"
+                ?log_context left right
+            in
+            Lwt.return (pair, scored))
+          (pairs [] indexed)
+      in
       let%lwt judgments, proposed_count, grouped_count, grouping_edges, costs =
         Lwt_list.fold_left_s
-          (fun (judgments, proposed_count, grouped_count, grouping_edges, costs) (left_id, left, right_id, right) ->
-            let%lwt probabilities, pair_costs =
-              score_pair ~api_key ~question:grouping_proposal_question ~agent_name:"jev_grouping" ?log_context left
-                right
-            in
+          (fun (judgments, proposed_count, grouped_count, grouping_edges, costs)
+               ((left_id, left, right_id, right), (probabilities, pair_costs)) ->
             let common = [ "left_id", `Int left_id; "right_id", `Int right_id ] in
             let%lwt judgment, proposed, grouped, decision_costs =
               match probabilities with
               | Some (forward, reverse) ->
-                let proposed =
-                  Jev_triage.relationship_proposed ~threshold:security_config.jev_grouping_threshold ~forward ~reverse
-                in
+                let proposed = Decision_triage.relationship_proposed ~threshold:grouping_threshold ~forward ~reverse in
                 (match proposed with
                 | false ->
                   Lwt.return
@@ -1168,15 +1140,14 @@ module Make (AI : Api.Agent_runner) = struct
                     | Inconclusive_verification -> Lwt.return (`Null, false, [])
                     | Keep_findings_separate ->
                       let%lwt probabilities, costs =
-                        score_pair ~api_key ~question:notification_grouping_question
-                          ~agent_name:"jev_notification_grouping" ?log_context left right
+                        score_pair decision ~question:Decision_questions.notification_grouping
+                          ~agent_name:"decision_notification_grouping" ?log_context left right
                       in
                       (match probabilities with
                       | None -> Lwt.return (`Assoc [ "error", `String "judgment_failed" ], false, costs)
                       | Some (forward, reverse) ->
                         let grouped =
-                          Jev_triage.relationship_proposed ~threshold:security_config.jev_grouping_threshold ~forward
-                            ~reverse
+                          Decision_triage.relationship_proposed ~threshold:grouping_threshold ~forward ~reverse
                         in
                         Lwt.return
                           ( `Assoc
@@ -1219,11 +1190,11 @@ module Make (AI : Api.Agent_runner) = struct
             let grouping_edges = if grouped then (left_id, right_id) :: grouping_edges else grouping_edges in
             let costs = List.rev_append decision_costs (List.rev_append pair_costs costs) in
             Lwt.return (judgment :: judgments, proposed_count, grouped_count, grouping_edges, costs))
-          ([], 0, 0, [], []) (pairs [] indexed)
+          ([], 0, 0, [], []) proposals
       in
       let judgments = List.rev judgments in
-      Security_artifacts.write_debug_json artifacts ~filename:"jev_grouping_proposals.json" (`List judgments);
-      log#info "%sJev grouping proposed %d of %d confirmed-finding pair(s); %d pair(s) grouped for publication"
+      Security_artifacts.write_debug_json artifacts ~filename:"decision_grouping_proposals.json" (`List judgments);
+      log#info "%sdecision grouping proposed %d of %d confirmed-finding pair(s); %d pair(s) grouped for publication"
         log_prefix proposed_count (List.length judgments) grouped_count;
       Lwt.return (List.rev grouping_edges, List.rev costs)
 
@@ -1598,8 +1569,8 @@ module Make (AI : Api.Agent_runner) = struct
       A failed agent call or an unparseable response degrades to "every
       candidate in this call is missing"; it never discards results from other
       calls. *)
-  let run_validator_call ~ctx ~repo_url ~fetch_file ~agent_config ~diff ~diff_text ~jev_api_key ~candidates ~artifacts
-    ~attempt_label ?debug_dir ?log_context ?record_prevalidation:recorder () =
+  let run_validator_call ~ctx ~repo_url ~fetch_file ~agent_config ~diff ~diff_text ~source_constraint_decision
+    ~candidates ~artifacts ~attempt_label ?debug_dir ?log_context ?record_prevalidation:recorder () =
     let log_prefix = log_context_prefix log_context in
     let candidate_json = List.map Security_types.candidate_finding_to_json candidates in
     let record_call ~costs validated =
@@ -1670,26 +1641,27 @@ module Make (AI : Api.Agent_runner) = struct
              attempt_label downgraded
          | false -> ());
          let fetched_files = List.sort_uniq (fun (left, _) (right, _) -> String.compare left right) !fetched_files in
-         let%lwt matched, jev_costs, jev_judgments =
-           match jev_api_key, fetched_files with
+         let%lwt matched, decision_costs, decision_judgments =
+           match source_constraint_decision, fetched_files with
            | None, _ | Some _, [] -> Lwt.return (join.matched, [], [])
-           | Some api_key, _ :: _ ->
-             Lwt_list.fold_left_s
-               (fun (matched, costs, judgments) validated ->
-                 let%lwt validated, next_costs, next_judgments =
-                   run_jev_source_constraint ~api_key ~diff ~fetched_files ?log_context validated
-                 in
-                 Lwt.return (validated :: matched, costs @ next_costs, judgments @ next_judgments))
-               ([], [], []) join.matched
-             |> Lwt.map (fun (matched, costs, judgments) -> List.rev matched, costs, judgments)
+           | Some decision, _ :: _ ->
+             (* Findings are checked concurrently; each finding's files stay
+                sequential so the first rejecting file ends its checks. *)
+             let%lwt checked =
+               Lwt_list.map_p (run_decision_source_constraint decision ~diff ~fetched_files ?log_context) join.matched
+             in
+             Lwt.return
+               ( List.map (fun (validated, _, _) -> validated) checked,
+                 List.concat_map (fun (_, costs, _) -> costs) checked,
+                 List.concat_map (fun (_, _, judgments) -> judgments) checked )
          in
-         (match jev_judgments with
+         (match decision_judgments with
          | [] -> ()
          | _ :: _ ->
            Security_artifacts.write_debug_json artifacts
-             ~filename:(Printf.sprintf "jev_source_constraint_%s.json" attempt_label)
-             (`List jev_judgments));
-         let costs = cost :: jev_costs in
+             ~filename:(Printf.sprintf "decision_source_constraint_%s.json" attempt_label)
+             (`List decision_judgments));
+         let costs = cost :: decision_costs in
          record_call ~costs matched;
          Lwt.return (matched, join.missing, costs)
        with exn ->
@@ -1705,19 +1677,19 @@ module Make (AI : Api.Agent_runner) = struct
       verdict. Candidates still unanswered after their retry are withheld and
       raise the failure flag; results obtained for other candidates are always
       preserved. *)
-  let run_validator ~ctx ~repo_url ~fetch_file ~security_config ~diff ~diff_text ~candidate_findings ~artifacts
-    ?debug_dir ?log_context ?record_prevalidation () =
+  let run_validator ~ctx ~decision ~repo_url ~fetch_file ~security_config ~diff ~diff_text ~candidate_findings
+    ~artifacts ?debug_dir ?log_context ?record_prevalidation () =
     let log_prefix = log_context_prefix log_context in
     let model_tier = agent_model_tier security_config.Config_types.validator_model_tier in
     let agent_config = Validator_agent.config ~model_tier in
-    let jev_api_key =
-      match security_config.Config_types.jev_validator_cascade_enabled with
+    let source_constraint_decision =
+      match Decision_client.enabled decision security_config.Config_types.decision_validator_cascade_enabled with
       | false -> None
-      | true -> (Context.secrets ctx).typesafe_api_key
+      | true -> decision
     in
     let call =
-      run_validator_call ~ctx ~repo_url ~fetch_file ~agent_config ~diff ~diff_text ~jev_api_key ~artifacts ?debug_dir
-        ?log_context ?record_prevalidation
+      run_validator_call ~ctx ~repo_url ~fetch_file ~agent_config ~diff ~diff_text ~source_constraint_decision
+        ~artifacts ?debug_dir ?log_context ?record_prevalidation
     in
     let chunks = CCList.chunks max_candidates_per_validator_call candidate_findings in
     (* Chunks run sequentially: the validator fetches files through a shared
@@ -1779,8 +1751,8 @@ module Make (AI : Api.Agent_runner) = struct
       single agent invocation with all relevant triage context.  Candidate
       findings are passed through the validator agent; only confirmed
       findings are converted to review findings. *)
-  let run_analysis ~ctx ~repo_url ~fetch_file ~security_config ~diff ~diff_text ~file_paths ~language_hints ~artifacts
-    ?debug_dir ?log_context ?record_prevalidation:recorder signals =
+  let run_analysis ~ctx ~decision ~repo_url ~fetch_file ~security_config ~diff ~diff_text ~file_paths ~language_hints
+    ~artifacts ?debug_dir ?log_context ?record_prevalidation:recorder signals =
     let log_prefix = log_context_prefix log_context in
     let actionable = List.filter (should_analyze ~security_config) signals in
     match actionable with
@@ -1880,20 +1852,20 @@ module Make (AI : Api.Agent_runner) = struct
         in
         Lwt.return ([], analysis_costs, metrics, analysis_failed)
       | _ :: _ ->
-        let%lwt jev_validated, validator_candidates, jev_validator_costs =
-          run_jev_validator_cascade ~ctx ~security_config ~diff ~artifacts ?log_context ?record_prevalidation:recorder
-            raw_candidates
+        let%lwt decision_validated, validator_candidates, decision_validator_costs =
+          run_decision_validator_cascade ~decision ~security_config ~diff ~artifacts ?log_context
+            ?record_prevalidation:recorder raw_candidates
         in
         let%lwt validated, validator_costs, validator_failed =
           match validator_candidates with
           | [] -> Lwt.return ([], [], false)
           | _ :: _ ->
             run_stage ~stage:"security_validator" (fun () ->
-              run_validator ~ctx ~repo_url ~fetch_file ~security_config ~diff ~diff_text
+              run_validator ~ctx ~decision ~repo_url ~fetch_file ~security_config ~diff ~diff_text
                 ~candidate_findings:validator_candidates ~artifacts ?debug_dir ?log_context
                 ?record_prevalidation:recorder ())
         in
-        let validated = jev_validated @ validated in
+        let validated = decision_validated @ validated in
         log_rejected ?log_context validated;
         let confirmed =
           List.filter_map
@@ -1905,9 +1877,9 @@ module Make (AI : Api.Agent_runner) = struct
         in
         log#info "%svalidation complete: %d confirmed, %d rejected" log_prefix (List.length confirmed)
           (List.length validated - List.length confirmed);
-        let%lwt grouping_edges, jev_grouping_costs =
-          run_jev_grouping ~ctx ~repo_url ~fetch_file ~diff ~diff_text ~security_config ~artifacts ?debug_dir
-            ?log_context confirmed
+        let%lwt grouping_edges, decision_grouping_costs =
+          run_decision_grouping ~ctx ~decision ~repo_url ~fetch_file ~diff ~diff_text ~security_config ~artifacts
+            ?debug_dir ?log_context confirmed
         in
         let confirmed = Array.of_list confirmed in
         let classified_findings =
@@ -1939,7 +1911,7 @@ module Make (AI : Api.Agent_runner) = struct
         in
         Lwt.return
           ( classified_findings,
-            analysis_costs @ jev_validator_costs @ validator_costs @ jev_grouping_costs,
+            analysis_costs @ decision_validator_costs @ validator_costs @ decision_grouping_costs,
             metrics,
             analysis_failed || validator_failed ))
 
@@ -2034,62 +2006,72 @@ module Make (AI : Api.Agent_runner) = struct
         run_triage ~ctx ~repo_url ~security_config ~diff_text ~file_paths ~deterministic_signals ~artifacts
           ?security_memory ?debug_dir:agent_debug_dir ?log_context ())
     in
-    let jev_triage_output (output : Jev_triage.output) =
+    let decision = metadata.decision in
+    let decision_triage_output (output : Decision_triage.output) =
       {
         Security_types.signals = output.signals;
         language_hints = Triage_agent.detect_languages file_paths;
         skip_reason = None;
       }
     in
-    let%lwt jev_output = run_jev_triage ~ctx ~security_config ~diff ~artifacts ?log_context () in
+    let triage_mode = Decision_client.triage_mode decision security_config.decision_triage in
+    let run_decision_triage () =
+      run_decision_triage ~decision ~mode:triage_mode ~security_config ~diff ~artifacts ?log_context ()
+    in
     let primary_failed = function
       | None -> true
       | Some _ -> false
     in
-    let%lwt triage_result, primary_triage_costs, triage_failed =
-      match security_config.jev_triage_enabled, security_config.jev_analysis_gate_enabled with
-      | true, _ ->
-        (match jev_output with
-        | Some output when output.complete -> Lwt.return (Some (jev_triage_output output), [], false)
+    let%lwt decision_output, (triage_result, primary_triage_costs, triage_failed) =
+      match triage_mode with
+      | Route ->
+        (* Primary triage runs only as a fallback, so it waits for the decision model. *)
+        let%lwt decision_output = run_decision_triage () in
+        (match decision_output with
+        | Some output when output.complete ->
+          Lwt.return (decision_output, (Some (decision_triage_output output), [], false))
         | Some output ->
-          log#warn "%sJev triage did not evaluate every file; falling back to primary triage" log_prefix;
+          log#warn "%sdecision triage did not evaluate every file; falling back to primary triage" log_prefix;
           let%lwt primary_result, primary_costs = run_primary_triage () in
           let triage_result, triage_failed =
-            partial_triage_fallback ~partial:(jev_triage_output output) ~primary:primary_result
+            partial_triage_fallback ~partial:(decision_triage_output output) ~primary:primary_result
           in
-          Lwt.return (triage_result, primary_costs, triage_failed)
+          Lwt.return (decision_output, (triage_result, primary_costs, triage_failed))
         | None ->
           let%lwt primary_result, primary_costs = run_primary_triage () in
-          Lwt.return (primary_result, primary_costs, primary_failed primary_result))
-      | false, true ->
-        let%lwt primary_result, primary_costs = run_primary_triage () in
+          Lwt.return (decision_output, (primary_result, primary_costs, primary_failed primary_result)))
+      | Gate ->
+        (* The gate only filters primary routes, so both triages run at once. *)
+        let%lwt decision_output, (primary_result, primary_costs) =
+          Lwt.both (run_decision_triage ()) (run_primary_triage ())
+        in
         let triage_result =
-          match primary_result, jev_output with
+          match primary_result, decision_output with
           | Some primary, Some output when output.complete ->
             let signals =
               gate_triage_signals ~always_analyze:security_config.always_analyze_vuln_classes
-                ~jev_signals:output.signals primary.signals
+                ~decision_signals:output.signals primary.signals
             in
-            log#info "%sJev analysis gate kept %d/%d primary triage signal(s)" log_prefix (List.length signals)
+            log#info "%sdecision analysis gate kept %d/%d primary triage signal(s)" log_prefix (List.length signals)
               (List.length primary.signals);
             Some { primary with signals }
           | Some primary, Some _ ->
-            log#warn "%sJev analysis gate did not evaluate every file; keeping all primary routes" log_prefix;
+            log#warn "%sdecision analysis gate did not evaluate every file; keeping all primary routes" log_prefix;
             Some primary
           | Some primary, None -> Some primary
           | None, Some _ | None, None -> None
         in
-        Lwt.return (triage_result, primary_costs, primary_failed primary_result)
-      | false, false ->
+        Lwt.return (decision_output, (triage_result, primary_costs, primary_failed primary_result))
+      | Off ->
         let%lwt primary_result, primary_costs = run_primary_triage () in
-        Lwt.return (primary_result, primary_costs, primary_failed primary_result)
+        Lwt.return (None, (primary_result, primary_costs, primary_failed primary_result))
     in
-    let jev_costs =
-      match jev_output with
+    let decision_costs =
+      match decision_output with
       | Some output -> output.costs
       | None -> []
     in
-    let triage_costs = primary_triage_costs @ jev_costs in
+    let triage_costs = primary_triage_costs @ decision_costs in
     match triage_result with
     | None ->
       let metrics = empty_analysis_metrics ~actionable_triage_signal_count:0 in
@@ -2129,9 +2111,9 @@ module Make (AI : Api.Agent_runner) = struct
       | None ->
         let%lwt classified_findings, analysis_costs, analysis_metrics, analysis_failed =
           run_stage ~stage:"security_analysis" (fun () ->
-            run_analysis ~ctx ~repo_url ~fetch_file:metadata.fetch_file ~security_config ~diff ~diff_text ~file_paths
-              ~language_hints:triage_output.language_hints ~artifacts ?debug_dir:agent_debug_dir ?log_context
-              ~record_prevalidation triage_output.signals)
+            run_analysis ~ctx ~decision ~repo_url ~fetch_file:metadata.fetch_file ~security_config ~diff ~diff_text
+              ~file_paths ~language_hints:triage_output.language_hints ~artifacts ?debug_dir:agent_debug_dir
+              ?log_context ~record_prevalidation triage_output.signals)
         in
         let costs = triage_costs @ analysis_costs in
         log_stage_metrics ~log_context ~changed_file_count:(List.length file_paths) ~deterministic_signals

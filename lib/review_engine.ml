@@ -363,10 +363,6 @@ let retry_guidance_for_403 reason =
   | true -> Some (retry_guidance reason)
   | false -> None
 
-let jev_suggestion_guard_removes ~threshold ~defect_probability ~plausibility_probability =
-  Float.compare defect_probability threshold >= 0 && Float.compare plausibility_probability (1.0 -. threshold) <= 0
-let jev_build_claim_guard_rejects ~threshold ~probability = probability >= threshold
-
 let reviewed_file_context ~line content =
   let first_line = max 1 (line - 80) in
   content
@@ -527,59 +523,15 @@ module Make (AI : Api.Agent_runner) = struct
     let sha_prefix = String.sub job.head_sha 0 (min 8 (String.length job.head_sha)) in
     Filename.concat (Filename.concat (debug_root ~ctx) slug) sha_prefix
 
-  let metadata_of_job (job : Review_job.t) =
+  let metadata_of_job ~decision (job : Review_job.t) =
     Review_plugin.
       {
         change_title = job.title;
         change_description = job.description;
         file_contents = job.file_contents;
         fetch_file = job.fetch_file;
+        decision;
       }
-
-  let suggestion_guard_question : Jev_triage.noul_question =
-    {
-      instructions =
-        "Is `suggested_fix` mechanically defective or harmful as an actionable replacement for the validated finding, "
-        ^ "given the exact reviewed file diff? Judge only the fix payload; do not reject the underlying finding.";
-      true_criteria =
-        "The payload is a no-op; contains literal escape text instead of required newlines; is prose rather than "
-        ^ "applicable code; duplicates existing behavior; leaves the stated defect unchanged; introduces an evident "
-        ^ "syntax, type, or behavioral defect; or cannot plausibly replace the indicated lines.";
-      false_criteria =
-        "The payload is a concrete, mechanically plausible change that addresses the stated defect in the shown code. "
-        ^ "It need not be the only or most elegant repair, and incomplete repository context alone is not a defect.";
-    }
-
-  let suggestion_plausibility_question : Jev_triage.noul_question =
-    {
-      instructions =
-        "Is `suggested_fix` a concrete, mechanically plausible actionable replacement for the validated finding at "
-        ^ "its indicated location, given the exact reviewed-file diff? Judge only the fix payload.";
-      true_criteria =
-        "The payload can plausibly replace the indicated code and address the stated defect without an evident syntax, "
-        ^ "type, control-flow, ordering, or behavioral error. It need not be the only or most elegant repair.";
-      false_criteria =
-        "The payload is a no-op, prose, placeholder code, anchored to incompatible lines, duplicates existing \
-         behavior, "
-        ^ "leaves the defect unchanged, or introduces an evident defect. Missing repository context alone is "
-        ^ "uncertainty, not proof of invalidity.";
-    }
-
-  let build_claim_guard_question : Jev_triage.noul_question =
-    {
-      instructions =
-        "Do `reviewed_file_context` or `completed_commit_checks` directly disprove the finding's claimed "
-        ^ "deterministic compile or build failure at this exact commit? Answer only about explicit syntax, binding, "
-        ^ "name-resolution, arity, type, or linking claims.";
-      true_criteria =
-        "Either the shown source directly establishes the disputed construct is valid, or a successful completed "
-        ^ "check clearly compiled the affected language/component at this exact commit and no clearly relevant build "
-        ^ "check failed. Unrelated failed checks do not outweigh a relevant successful build.";
-      false_criteria =
-        "The claimed build defect is real, a clearly relevant build check failed, neither source nor checks directly "
-        ^ "disprove the exact claim, the finding concerns runtime behavior, or evidence is uncertain. Uncertainty is "
-        ^ "false.";
-    }
 
   let commit_status_to_json ({ context; state; description; completed_at } : Review_job.commit_status) =
     let fields = [ "context", `String context; "state", `String (Review_job.commit_status_state_to_string state) ] in
@@ -592,7 +544,7 @@ module Make (AI : Api.Agent_runner) = struct
     | None -> `Assoc fields
     | Some value -> `Assoc (("completed_at", `String value) :: fields)
 
-  let run_build_claim_guard ~api_key ~threshold ~diff ~file_contents ~fetch_file ~completed_commit_checks ?log_context
+  let run_build_claim_guard decision ~threshold ~diff ~file_contents ~fetch_file ~completed_commit_checks ?log_context
     sourced_findings =
     let log_prefix = log_context_prefix log_context in
     let fetch path =
@@ -608,7 +560,7 @@ module Make (AI : Api.Agent_runner) = struct
         let%lwt reviewed_file_context =
           match%lwt fetch finding.path with
           | Error error ->
-            log#warn "%sJev build-claim guard failed to fetch %s: %s" log_prefix finding.path error;
+            log#warn "%sdecision build-claim guard failed to fetch %s: %s" log_prefix finding.path error;
             Lwt.return None
           | Ok None -> Lwt.return None
           | Ok (Some content) -> Lwt.return (Some (reviewed_file_context ~line:finding.line content))
@@ -627,21 +579,24 @@ module Make (AI : Api.Agent_runner) = struct
           in
           Lwt.catch
             (fun () ->
-              let%lwt result = Jev_triage.score_noul ~api_key ~state ~question:build_claim_guard_question in
+              let%lwt result =
+                Decision_client.score_noul decision ~agent_name:"decision_build_claim_guard" ~state
+                  ~question:Decision_questions.build_claim
+              in
               match result with
               | Error error ->
-                log#warn "%sJev build-claim guard failed for %s:%d: %s" log_prefix finding.path finding.line error;
+                log#warn "%sdecision build-claim guard failed for %s:%d: %s" log_prefix finding.path finding.line error;
                 Lwt.return (Some sourced, None)
-              | Ok ({ probability; cost } : Jev_triage.noul_output) ->
-                let cost = { cost with agent_name = "jev_build_claim_guard" } in
-                (match jev_build_claim_guard_rejects ~threshold ~probability with
-                | true ->
-                  log#info "%sJev build-claim guard rejected false claim at %s:%d (Noul %.3f)" log_prefix finding.path
-                    finding.line probability;
-                  Lwt.return (None, Some cost)
-                | false -> Lwt.return (Some sourced, Some cost)))
+              | Ok ({ probability; cost } : Decision_client.noul_output) ->
+              match Decision_model.build_claim_guard_rejects ~threshold ~probability with
+              | true ->
+                log#info "%sdecision build-claim guard rejected false claim at %s:%d (Noul %.3f)" log_prefix
+                  finding.path finding.line probability;
+                Lwt.return (None, Some cost)
+              | false -> Lwt.return (Some sourced, Some cost))
             (fun exn ->
-              log#warn "%sJev build-claim guard raised for %s:%d: %s" log_prefix finding.path finding.line (Exn.str exn);
+              log#warn "%sdecision build-claim guard raised for %s:%d: %s" log_prefix finding.path finding.line
+                (Exn.str exn);
               Lwt.return (Some sourced, None)))
     in
     let%lwt checked = Lwt_list.map_p check sourced_findings in
@@ -656,11 +611,11 @@ module Make (AI : Api.Agent_runner) = struct
         "exact_file_diff", `String (Diff_parser.to_string_annotated [ diff ]);
       ]
 
-  let run_suggestion_guard ~api_key ~threshold ~diff ?log_context sourced_findings =
+  let run_suggestion_guard decision ~threshold ~diff ?log_context sourced_findings =
     let log_prefix = log_context_prefix log_context in
-    let score ~state ~question =
+    let score ~agent_name ~state ~question =
       Lwt.catch
-        (fun () -> Jev_triage.score_noul ~api_key ~state ~question)
+        (fun () -> Decision_client.score_noul decision ~agent_name ~state ~question)
         (fun exn -> Lwt.return (Error (Exn.str exn)))
     in
     let check sourced =
@@ -668,23 +623,29 @@ module Make (AI : Api.Agent_runner) = struct
       match finding.suggested_fix, Diff_anchor.find_file_diff_by_path ~diff finding.path with
       | Some suggested_fix, Some file_diff ->
         let state = suggestion_guard_state ~diff:file_diff finding suggested_fix in
-        (match%lwt score ~state ~question:suggestion_guard_question with
+        (match%lwt
+           score ~agent_name:"decision_suggestion_guard" ~state ~question:Decision_questions.suggestion_defect
+         with
         | Error error ->
-          log#warn "%sJev suggestion guard failed for %s:%d: %s" log_prefix finding.path finding.line error;
+          log#warn "%sdecision suggestion guard failed for %s:%d: %s" log_prefix finding.path finding.line error;
           Lwt.return (sourced, [])
-        | Ok ({ probability = defect_probability; cost = defect_cost } : Jev_triage.noul_output) ->
+        | Ok ({ probability = defect_probability; cost = defect_cost } : Decision_client.noul_output) ->
         match Float.compare defect_probability threshold >= 0 with
         | false -> Lwt.return (sourced, [ defect_cost ])
         | true ->
-        match%lwt score ~state ~question:suggestion_plausibility_question with
+        match%lwt
+          score ~agent_name:"decision_suggestion_plausibility" ~state
+            ~question:Decision_questions.suggestion_plausibility
+        with
         | Error error ->
-          log#warn "%sJev suggestion plausibility check failed for %s:%d: %s" log_prefix finding.path finding.line error;
+          log#warn "%sdecision suggestion plausibility check failed for %s:%d: %s" log_prefix finding.path finding.line
+            error;
           Lwt.return (sourced, [ defect_cost ])
-        | Ok ({ probability = plausibility_probability; cost = plausibility_cost } : Jev_triage.noul_output) ->
+        | Ok ({ probability = plausibility_probability; cost = plausibility_cost } : Decision_client.noul_output) ->
           let sourced =
-            match jev_suggestion_guard_removes ~threshold ~defect_probability ~plausibility_probability with
+            match Decision_model.suggestion_guard_removes ~threshold ~defect_probability ~plausibility_probability with
             | true ->
-              log#info "%sJev suggestion guard removed defective fix at %s:%d (defect %.3f, plausibility %.3f)"
+              log#info "%sdecision suggestion guard removed defective fix at %s:%d (defect %.3f, plausibility %.3f)"
                 log_prefix finding.path finding.line defect_probability plausibility_probability;
               { sourced with finding = { finding with suggested_fix = None } }
             | false -> sourced
@@ -706,8 +667,9 @@ module Make (AI : Api.Agent_runner) = struct
         let config = job.config in
         let diff = job.filtered_diff in
         let memory_dir = memory_dir_for_context ~ctx in
-        let metadata = metadata_of_job job in
         let plugins_config = config.Config_types.review_plugins in
+        let decision = Decision_client.of_secrets ~model:plugins_config.decision_model (Context.secrets ctx) in
+        let metadata = metadata_of_job ~decision job in
         let prevalidation = ref Prevalidation.empty in
         let record_prevalidation evidence = prevalidation := Prevalidation.merge !prevalidation evidence in
         log#info "%splugins starting: general=%b security=%b files=%d diff_bytes=%d debug_dir=%s memory_dir=%s"
@@ -807,32 +769,38 @@ module Make (AI : Api.Agent_runner) = struct
         in
         let sourced_findings = deduplicate_sourced_findings sourced in
         let%lwt sourced_findings, build_claim_guard_costs =
-          match plugins_config.jev_build_claim_guard_enabled, (Context.secrets ctx).typesafe_api_key with
+          match Decision_client.enabled decision plugins_config.decision_build_claim_guard_enabled, decision with
           | false, _ -> Lwt.return (sourced_findings, [])
           | true, None ->
-            log#warn "%sJev build-claim guard is enabled but no TypeSafe API key is configured" log_prefix;
+            log#warn "%sdecision build-claim guard is enabled but no OpenRouter key is configured" log_prefix;
             Lwt.return (sourced_findings, [])
-          | true, Some api_key ->
+          | true, Some decision ->
             let%lwt completed_commit_checks =
               match%lwt job.fetch_commit_statuses () with
               | Ok statuses -> Lwt.return statuses
               | Error error ->
-                log#warn "%sfailed to fetch commit statuses for Jev build-claim guard: %s" log_prefix error;
+                log#warn "%sfailed to fetch commit statuses for decision build-claim guard: %s" log_prefix error;
                 Lwt.return []
             in
-            run_build_claim_guard ~api_key ~threshold:plugins_config.jev_build_claim_guard_threshold ~diff
-              ~file_contents:job.file_contents ~fetch_file:job.fetch_file ~completed_commit_checks ~log_context
-              sourced_findings
+            let threshold =
+              Stdlib.Option.value plugins_config.decision_build_claim_guard_threshold
+                ~default:(Decision_client.thresholds decision).build_claim_guard
+            in
+            run_build_claim_guard decision ~threshold ~diff ~file_contents:job.file_contents ~fetch_file:job.fetch_file
+              ~completed_commit_checks ~log_context sourced_findings
         in
         let%lwt sourced_findings, suggestion_guard_costs =
-          match plugins_config.jev_suggestion_guard_enabled, (Context.secrets ctx).typesafe_api_key with
+          match Decision_client.enabled decision plugins_config.decision_suggestion_guard_enabled, decision with
           | false, _ -> Lwt.return (sourced_findings, [])
           | true, None ->
-            log#warn "%sJev suggestion guard is enabled but no TypeSafe API key is configured" log_prefix;
+            log#warn "%sdecision suggestion guard is enabled but no OpenRouter key is configured" log_prefix;
             Lwt.return (sourced_findings, [])
-          | true, Some api_key ->
-            run_suggestion_guard ~api_key ~threshold:plugins_config.jev_suggestion_guard_threshold ~diff ~log_context
-              sourced_findings
+          | true, Some decision ->
+            let threshold =
+              Stdlib.Option.value plugins_config.decision_suggestion_guard_threshold
+                ~default:(Decision_client.thresholds decision).suggestion_guard
+            in
+            run_suggestion_guard decision ~threshold ~diff ~log_context sourced_findings
         in
         let findings = List.map (fun sourced -> sourced.finding) sourced_findings in
         let plugin_costs =
@@ -843,8 +811,8 @@ module Make (AI : Api.Agent_runner) = struct
         let review_costs =
           (Cost_tracking.aggregate ~plugin:"general" general_costs :: plugin_costs)
           @ [
-              Cost_tracking.aggregate ~plugin:"jev_build_claim_guard" build_claim_guard_costs;
-              Cost_tracking.aggregate ~plugin:"jev_suggestion_guard" suggestion_guard_costs;
+              Cost_tracking.aggregate ~plugin:"decision_build_claim_guard" build_claim_guard_costs;
+              Cost_tracking.aggregate ~plugin:"decision_suggestion_guard" suggestion_guard_costs;
             ]
           |> List.filter (fun (rc : Cost_tracking.review_cost) ->
             match rc.agents with

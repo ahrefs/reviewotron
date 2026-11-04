@@ -36,6 +36,15 @@ val confidence_to_string : confidence -> string
 val confidence_to_json : confidence -> Yojson.Basic.t
 val confidence_of_json : Yojson.Basic.t -> confidence
 
+(** How the decision model takes part in security triage. *)
+type decision_triage_mode =
+  | Off
+  | Route  (** Replace primary triage, falling back to it when the decision model is unavailable or skips a file. *)
+  | Gate  (** Run primary triage, then require decision-model support before each class analysis. *)
+
+(** Config spelling: ["off"], ["route"] or ["gate"]. *)
+val decision_triage_mode_to_string : decision_triage_mode -> string
+
 (** Model performance tier for per-agent configuration in plugin settings.
     Structurally identical to {!Agent_runner.model_tier} but defined
     separately to avoid coupling config types to the agent runner. *)
@@ -87,13 +96,15 @@ type security_plugin_config = {
   analysis_effort : Effort.t option;
   validator_model_tier : model_tier;
   confidence_threshold : confidence;
-  jev_triage_enabled : bool;
-  jev_triage_threshold : float;
-  jev_analysis_gate_enabled : bool;
-  jev_analysis_gate_threshold : float;
-  jev_validator_cascade_enabled : bool;
-  jev_grouping_enabled : bool;
-  jev_grouping_threshold : float;
+  decision_triage : decision_triage_mode option;
+    (** [None] follows the provider default; see {!Decision_client.triage_mode}. *)
+  decision_triage_threshold : float option;
+    (** Applies to the active [decision_triage] mode. [None] uses the decision model's calibrated value for it. *)
+  decision_validator_cascade_enabled : bool option;
+    (** This and the other [decision_*_enabled] fields: [None] follows the provider default; see
+        {!Decision_client.enabled}. *)
+  decision_grouping_enabled : bool option;
+  decision_grouping_threshold : float option;
   memory_max_tokens : int;
   metrics_artifacts : bool;
   debug_artifacts : bool;
@@ -105,10 +116,11 @@ val default_security_plugin_config : security_plugin_config
 
 (** Aggregated review plugin configuration. *)
 type review_plugins_config = {
-  jev_build_claim_guard_enabled : bool;
-  jev_build_claim_guard_threshold : float;
-  jev_suggestion_guard_enabled : bool;
-  jev_suggestion_guard_threshold : float;
+  decision_model : Decision_model.t;  (** Defaults to {!Decision_model.Gpt_6_luna}. *)
+  decision_build_claim_guard_enabled : bool option;
+  decision_build_claim_guard_threshold : float option;
+  decision_suggestion_guard_enabled : bool option;
+  decision_suggestion_guard_threshold : float option;
   general : general_plugin_config;
   security : security_plugin_config;
 }
@@ -172,7 +184,7 @@ type secrets = {
   repos : repo_config list;
   anthropic_api_key : string option;
   openrouter_api_key : string option;
-  typesafe_api_key : string option;
+  openrouter_decisions_api_key : string option;  (** Used only for decisions; falls back to [openrouter_api_key]. *)
   slack_access_token : string option;
 }
 [@@deriving json]

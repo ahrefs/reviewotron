@@ -38,7 +38,7 @@ let make_corpus_context ~api_key =
       repos = [];
       anthropic_api_key = Some api_key;
       openrouter_api_key = None;
-      typesafe_api_key = None;
+      openrouter_decisions_api_key = None;
       slack_access_token = None;
     }
   in
@@ -74,7 +74,7 @@ let run_triage ~ctx ~diff_text ~file_paths : Security_types.triage_output =
 let run_classified_pipeline ~ctx ~diff_text ~diff =
   let fetch_file ~path:_ = Lwt.return (Ok None) in
   let metadata : Review_plugin.review_metadata =
-    { change_title = "corpus test"; change_description = ""; file_contents = []; fetch_file }
+    { change_title = "corpus test"; change_description = ""; file_contents = []; fetch_file; decision = None }
   in
   let config = Context.get_config ctx ~repo_key:corpus_repo_url in
   let findings, _costs, failed =

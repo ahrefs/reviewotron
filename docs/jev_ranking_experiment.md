@@ -1,19 +1,18 @@
 # Jev candidate-ranking experiment
 
-This benchmark tests whether a TypeSafe Score can order security candidates by
-readiness for scarce validator budget. It does not replace validation or discard
-candidates.
+This experiment tested whether a TypeSafe Score could order security
+candidates by readiness for scarce validator budget. It did not replace
+validation or discard candidates.
 
-Run it with:
+The production-output evaluation below ruled the idea out, so Reviewotron no
+longer has a Score client, benchmark, or corpus. To rerun the experiment, check
+out commit `6782da4` and run `test/jev_score_benchmark.ml` against
+`test/jev_ranking_cases.json`.
 
-```sh
-TYPESAFE_API_KEY=... dune exec ./test/jev_score_benchmark.exe -- --repeats 5 > results.jsonl
-```
-
-The four-level Score rates candidates from contradicted or unsupported evidence
+The four-level Score rated candidates from contradicted or unsupported evidence
 through a concrete source-to-sink or missing-control proof. The balanced corpus
-contains eight confirmed and eight rejected candidates across all supported
-security classes. It includes mitigating controls such as parameter binding,
+contained eight confirmed and eight rejected candidates across all supported
+security classes. It included mitigating controls such as parameter binding,
 numeric reduction, contextual HTML sanitization, ownership helpers, destination
 constraints, basename reduction, and scoped sudo rules.
 
