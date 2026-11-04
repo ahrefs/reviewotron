@@ -683,10 +683,12 @@ let test_config_review_plugins_defaults () =
     (match config.review_plugins.decision_model with
     | Decision_model.Gpt_6_luna -> true
     | Decision_model.Jev -> false);
-  (check bool) "decision build-claim guard default off" false config.review_plugins.decision_build_claim_guard_enabled;
+  (check (option bool))
+    "decision build-claim guard follows the provider" None config.review_plugins.decision_build_claim_guard_enabled;
   (check bool) "decision build-claim threshold follows the model" true
     (Option.is_none config.review_plugins.decision_build_claim_guard_threshold);
-  (check bool) "decision suggestion guard default off" false config.review_plugins.decision_suggestion_guard_enabled;
+  (check (option bool))
+    "decision suggestion guard follows the provider" None config.review_plugins.decision_suggestion_guard_enabled;
   (check bool) "decision suggestion threshold follows the model" true
     (Option.is_none config.review_plugins.decision_suggestion_guard_threshold);
   (check bool) "general enabled" true config.review_plugins.general.enabled;
@@ -706,15 +708,15 @@ let test_config_review_plugins_defaults () =
   (match config.review_plugins.security.analysis_effort with
   | Some Config_types.Effort.Medium -> ()
   | Some Config_types.Effort.Low | Some High | Some Xhigh | None -> fail "expected medium analysis effort by default");
-  (check bool) "decision triage default off" true
-    (match config.review_plugins.security.decision_triage with
-    | Off -> true
-    | Route | Gate -> false);
+  (check bool) "decision triage follows the provider" true
+    (Option.is_none config.review_plugins.security.decision_triage);
   (check bool) "decision triage threshold follows the model" true
     (Option.is_none config.review_plugins.security.decision_triage_threshold);
-  (check bool) "decision validator cascade default off" false
+  (check (option bool))
+    "decision validator cascade follows the provider" None
     config.review_plugins.security.decision_validator_cascade_enabled;
-  (check bool) "decision grouping default off" false config.review_plugins.security.decision_grouping_enabled;
+  (check (option bool))
+    "decision grouping follows the provider" None config.review_plugins.security.decision_grouping_enabled;
   (check bool) "decision grouping threshold follows the model" true
     (Option.is_none config.review_plugins.security.decision_grouping_threshold);
   (check int) "memory_max_tokens" 5000 config.review_plugins.security.memory_max_tokens;
@@ -767,10 +769,11 @@ let test_config_review_plugins_explicit () =
     (match config.review_plugins.decision_model with
     | Decision_model.Jev -> true
     | Decision_model.Gpt_6_luna -> false);
-  (check bool) "decision build-claim guard" true config.review_plugins.decision_build_claim_guard_enabled;
+  (check (option bool))
+    "decision build-claim guard" (Some true) config.review_plugins.decision_build_claim_guard_enabled;
   (check (option (float 0.0001)))
     "decision build-claim threshold" (Some 0.72) config.review_plugins.decision_build_claim_guard_threshold;
-  (check bool) "decision suggestion guard" true config.review_plugins.decision_suggestion_guard_enabled;
+  (check (option bool)) "decision suggestion guard" (Some true) config.review_plugins.decision_suggestion_guard_enabled;
   (check (option (float 0.0001)))
     "decision suggestion threshold" (Some 0.55) config.review_plugins.decision_suggestion_guard_threshold;
   (check bool) "general disabled" false config.review_plugins.general.enabled;
@@ -786,12 +789,13 @@ let test_config_review_plugins_explicit () =
   | Some Config_types.Effort.Low | Some High | Some Xhigh | None -> fail "expected medium analysis effort");
   (check bool) "decision analysis gate" true
     (match config.review_plugins.security.decision_triage with
-    | Gate -> true
-    | Off | Route -> false);
+    | Some Gate -> true
+    | Some Off | Some Route | None -> false);
   (check (option (float 0.0001)))
     "decision triage threshold" (Some 0.62) config.review_plugins.security.decision_triage_threshold;
-  (check bool) "decision validator cascade" true config.review_plugins.security.decision_validator_cascade_enabled;
-  (check bool) "decision grouping" true config.review_plugins.security.decision_grouping_enabled;
+  (check (option bool))
+    "decision validator cascade" (Some true) config.review_plugins.security.decision_validator_cascade_enabled;
+  (check (option bool)) "decision grouping" (Some true) config.review_plugins.security.decision_grouping_enabled;
   (check (option (float 0.0001)))
     "decision grouping threshold" (Some 0.75) config.review_plugins.security.decision_grouping_threshold;
   (check int) "memory_max_tokens" 10000 config.review_plugins.security.memory_max_tokens;
@@ -852,11 +856,8 @@ let test_config_ignores_removed_jev_fields () =
       (Melange_json.of_string
          {|{"review_plugins":{"jev_suggestion_guard_enabled":true,"security":{"jev_triage_enabled":true,"jev_triage_threshold":0.8}}}|})
   in
-  (check bool) "suggestion guard stays off" false config.review_plugins.decision_suggestion_guard_enabled;
-  (check bool) "decision triage stays off" true
-    (match config.review_plugins.security.decision_triage with
-    | Off -> true
-    | Route | Gate -> false)
+  (check (option bool)) "suggestion guard stays unset" None config.review_plugins.decision_suggestion_guard_enabled;
+  (check bool) "decision triage stays unset" true (Option.is_none config.review_plugins.security.decision_triage)
 
 let test_config_rejects_unknown_decision_model () =
   expect_config_error ~json:{|{"review_plugins":{"decision_model":"jev-latest"}}|} ~sub:"decision_model"
@@ -1031,10 +1032,10 @@ let test_security_plugin_config_roundtrip () =
       analysis_effort = Some Config_types.Effort.Medium;
       validator_model_tier = Strong;
       confidence_threshold = High;
-      decision_triage = Route;
+      decision_triage = Some Route;
       decision_triage_threshold = None;
-      decision_validator_cascade_enabled = true;
-      decision_grouping_enabled = true;
+      decision_validator_cascade_enabled = Some false;
+      decision_grouping_enabled = None;
       decision_grouping_threshold = Some 0.75;
       memory_max_tokens = 3000;
       metrics_artifacts = true;
@@ -1044,10 +1045,12 @@ let test_security_plugin_config_roundtrip () =
   let json = Config_types.security_plugin_config_to_json cfg in
   let parsed = Config_types.security_plugin_config_of_json json in
   (check bool) "enabled" true parsed.enabled;
-  (check string) "decision triage mode" "route" (Config_types.decision_triage_mode_to_string parsed.decision_triage);
+  (check (option string))
+    "decision triage mode" (Some "route")
+    (Option.map Config_types.decision_triage_mode_to_string parsed.decision_triage);
   (check (option (float 0.0001))) "unset threshold stays unset" None parsed.decision_triage_threshold;
-  (check bool) "decision validator cascade" true parsed.decision_validator_cascade_enabled;
-  (check bool) "decision grouping" true parsed.decision_grouping_enabled;
+  (check (option bool)) "explicit opt-out survives" (Some false) parsed.decision_validator_cascade_enabled;
+  (check (option bool)) "unset feature stays unset" None parsed.decision_grouping_enabled;
   (check (option (float 0.0001))) "decision grouping threshold" (Some 0.75) parsed.decision_grouping_threshold;
   (check int) "vuln_classes" 2 (List.length parsed.vuln_classes);
   (check int) "always_analyze_vuln_classes" 1 (List.length parsed.always_analyze_vuln_classes);

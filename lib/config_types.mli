@@ -96,11 +96,14 @@ type security_plugin_config = {
   analysis_effort : Effort.t option;
   validator_model_tier : model_tier;
   confidence_threshold : confidence;
-  decision_triage : decision_triage_mode;
+  decision_triage : decision_triage_mode option;
+    (** [None] follows the provider default; see {!Decision_client.triage_mode}. *)
   decision_triage_threshold : float option;
     (** Applies to the active [decision_triage] mode. [None] uses the decision model's calibrated value for it. *)
-  decision_validator_cascade_enabled : bool;
-  decision_grouping_enabled : bool;
+  decision_validator_cascade_enabled : bool option;
+    (** This and the other [decision_*_enabled] fields: [None] follows the provider default; see
+        {!Decision_client.enabled}. *)
+  decision_grouping_enabled : bool option;
   decision_grouping_threshold : float option;
   memory_max_tokens : int;
   metrics_artifacts : bool;
@@ -114,9 +117,9 @@ val default_security_plugin_config : security_plugin_config
 (** Aggregated review plugin configuration. *)
 type review_plugins_config = {
   decision_model : Decision_model.t;  (** Defaults to {!Decision_model.Gpt_6_luna}. *)
-  decision_build_claim_guard_enabled : bool;
+  decision_build_claim_guard_enabled : bool option;
   decision_build_claim_guard_threshold : float option;
-  decision_suggestion_guard_enabled : bool;
+  decision_suggestion_guard_enabled : bool option;
   decision_suggestion_guard_threshold : float option;
   general : general_plugin_config;
   security : security_plugin_config;

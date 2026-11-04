@@ -252,28 +252,32 @@ type security_plugin_config = {
      [@json.default Standard] [@jsonschema.description "Model tier for the adversarial validator."]
   confidence_threshold : confidence;
      [@json.default Medium] [@jsonschema.description "Minimum triage confidence to trigger analysis."]
-  decision_triage : decision_triage_mode;
-     [@json.default Off]
+  decision_triage : decision_triage_mode option;
+     [@json.option]
      [@jsonschema.description
        "How review_plugins.decision_model takes part in security triage. off: not at all. route: replace the primary \
         triage agent, falling back to it when the decision model is unavailable or skips a file. gate: run primary \
         triage, then require independent decision-model support before each vulnerability-class analysis; decision \
-        errors fail open."]
+        errors fail open. Null (the default) means gate when reviews run through OpenRouter and off for other \
+        providers."]
   decision_triage_threshold : float option;
      [@json.option]
      [@jsonschema.description
        "Minimum Noul probability, from 0 to 1, for the active decision_triage mode. Null uses the decision model's \
         calibrated value for that mode."]
-  decision_validator_cascade_enabled : bool;
-     [@json.default false]
+  decision_validator_cascade_enabled : bool option;
+     [@json.option]
      [@jsonschema.description
        "Allow high-certainty decision-model judgments over candidate findings and their exact diff evidence to bypass \
-        the adversarial validator. Inconclusive judgments and errors still run the validator."]
-  decision_grouping_enabled : bool;
-     [@json.default false]
+        the adversarial validator, and check validator confirmations against fetched source. Inconclusive judgments \
+        and errors still run the validator. Null (the default) turns it on when reviews run through OpenRouter and \
+        leaves it off for other providers."]
+  decision_grouping_enabled : bool option;
+     [@json.option]
      [@jsonschema.description
        "Use the decision model and a consolidation verifier to publish related confirmed security findings as \
-        complete-link notification groups."]
+        complete-link notification groups. Null (the default) turns it on when reviews run through OpenRouter and \
+        leaves it off for other providers."]
   decision_grouping_threshold : float option;
      [@json.option]
      [@jsonschema.description
@@ -314,10 +318,10 @@ let default_security_plugin_config =
     analysis_effort = Some Effort.Medium;
     validator_model_tier = Standard;
     confidence_threshold = Medium;
-    decision_triage = Off;
+    decision_triage = None;
     decision_triage_threshold = None;
-    decision_validator_cascade_enabled = false;
-    decision_grouping_enabled = false;
+    decision_validator_cascade_enabled = None;
+    decision_grouping_enabled = None;
     decision_grouping_threshold = None;
     memory_max_tokens = 5000;
     metrics_artifacts = false;
@@ -331,20 +335,23 @@ type review_plugins_config = {
      [@jsonschema.description
        "Decision model for every decision_* feature, called through OpenRouter's Decisions API: gpt-6-luna (default) \
         or jev. Requires openrouter_decisions_api_key or openrouter_api_key."]
-  decision_build_claim_guard_enabled : bool;
-     [@json.default false]
+  decision_build_claim_guard_enabled : bool option;
+     [@json.option]
      [@jsonschema.description
        "Use the decision model with post-change file context and exact-commit statuses to reject general findings \
-        whose claimed deterministic build failure is directly contradicted."]
+        whose claimed deterministic build failure is directly contradicted. Null (the default) turns it on when \
+        reviews run through OpenRouter and leaves it off for other providers."]
   decision_build_claim_guard_threshold : float option;
      [@json.option]
      [@jsonschema.description
        "Minimum probability, from 0 to 1, required to reject a false build claim. Null uses the decision model's \
         calibrated value."]
-  decision_suggestion_guard_enabled : bool;
-     [@json.default false]
+  decision_suggestion_guard_enabled : bool option;
+     [@json.option]
      [@jsonschema.description
-       "Use the decision model to remove mechanically defective suggested-fix payloads while preserving their findings."]
+       "Use the decision model to remove mechanically defective suggested-fix payloads while preserving their \
+        findings. Null (the default) turns it on when reviews run through OpenRouter and leaves it off for other \
+        providers."]
   decision_suggestion_guard_threshold : float option;
      [@json.option]
      [@jsonschema.description
@@ -361,9 +368,9 @@ type review_plugins_config = {
 let default_review_plugins_config =
   {
     decision_model = Decision_model.default;
-    decision_build_claim_guard_enabled = false;
+    decision_build_claim_guard_enabled = None;
     decision_build_claim_guard_threshold = None;
-    decision_suggestion_guard_enabled = false;
+    decision_suggestion_guard_enabled = None;
     decision_suggestion_guard_threshold = None;
     general = default_general_plugin_config;
     security = default_security_plugin_config;

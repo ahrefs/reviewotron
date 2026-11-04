@@ -11,15 +11,35 @@ type t = {
   model : Decision_model.t;
   api_key : string;
   endpoint : string;
+  on_by_default : bool;
 }
 
-let create ?(endpoint = default_endpoint) ~model ~api_key () = { model; api_key; endpoint }
+let create ?(endpoint = default_endpoint) ?(on_by_default = false) ~model ~api_key () =
+  { model; api_key; endpoint; on_by_default }
 
 let of_secrets ~model (secrets : Config_types.secrets) =
   [ secrets.openrouter_decisions_api_key; secrets.openrouter_api_key ]
   |> List.find_map (fun key -> Stdlib.Option.bind key Llm_provider.nonempty)
   |> Stdlib.Option.map (fun api_key ->
-    create ~endpoint:(endpoint_of_base_url (Llm_provider.openrouter_base_url ())) ~model ~api_key ())
+    let on_by_default =
+      match Llm_provider.resolve secrets with
+      | Ok Openrouter -> true
+      | Ok Anthropic | Error _ -> false
+    in
+    create ~endpoint:(endpoint_of_base_url (Llm_provider.openrouter_base_url ())) ~on_by_default ~model ~api_key ())
+
+let on_by_default = function
+  | Some client -> client.on_by_default
+  | None -> false
+
+let enabled client setting = Stdlib.Option.value setting ~default:(on_by_default client)
+
+let triage_mode client setting =
+  Stdlib.Option.value setting
+    ~default:
+      (match on_by_default client with
+      | true -> Config_types.Gate
+      | false -> Off)
 
 let model client = client.model
 let thresholds client = Decision_model.thresholds client.model

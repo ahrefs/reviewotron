@@ -768,7 +768,7 @@ module Make (AI : Api.Agent_runner) = struct
         let sourced_findings = deduplicate_sourced_findings sourced in
         let decision = Decision_client.of_secrets ~model:plugins_config.decision_model (Context.secrets ctx) in
         let%lwt sourced_findings, build_claim_guard_costs =
-          match plugins_config.decision_build_claim_guard_enabled, decision with
+          match Decision_client.enabled decision plugins_config.decision_build_claim_guard_enabled, decision with
           | false, _ -> Lwt.return (sourced_findings, [])
           | true, None ->
             log#warn "%sdecision build-claim guard is enabled but no OpenRouter key is configured" log_prefix;
@@ -789,7 +789,7 @@ module Make (AI : Api.Agent_runner) = struct
               ~completed_commit_checks ~log_context sourced_findings
         in
         let%lwt sourced_findings, suggestion_guard_costs =
-          match plugins_config.decision_suggestion_guard_enabled, decision with
+          match Decision_client.enabled decision plugins_config.decision_suggestion_guard_enabled, decision with
           | false, _ -> Lwt.return (sourced_findings, [])
           | true, None ->
             log#warn "%sdecision suggestion guard is enabled but no OpenRouter key is configured" log_prefix;

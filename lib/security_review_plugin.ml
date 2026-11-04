@@ -750,10 +750,10 @@ module Make (AI : Api.Agent_runner) = struct
 
   let run_agent ~config f = run_stage ~stage:(Printf.sprintf "agent %s" config.Agent_runner.name) f
 
-  let run_decision_triage ~decision ~security_config ~diff ~artifacts ?log_context () =
+  let run_decision_triage ~decision ~mode ~security_config ~diff ~artifacts ?log_context () =
     let log_prefix = log_context_prefix log_context in
     let calibrated_threshold : (Decision_model.thresholds -> float) option =
-      match security_config.Config_types.decision_triage with
+      match (mode : Config_types.decision_triage_mode) with
       | Off -> None
       | Route -> Some (fun thresholds -> thresholds.triage)
       | Gate -> Some (fun thresholds -> thresholds.analysis_gate)
@@ -765,7 +765,7 @@ module Make (AI : Api.Agent_runner) = struct
       Lwt.return_none
     | Some calibrated_threshold, Some decision ->
       let threshold =
-        Stdlib.Option.value security_config.decision_triage_threshold
+        Stdlib.Option.value security_config.Config_types.decision_triage_threshold
           ~default:(calibrated_threshold (Decision_client.thresholds decision))
       in
       let vuln_classes =
@@ -886,7 +886,9 @@ module Make (AI : Api.Agent_runner) = struct
            ~verdicts:[ 0, verdict ]
            ~costs)
     in
-    match security_config.Config_types.decision_validator_cascade_enabled, candidates with
+    match
+      Decision_client.enabled decision security_config.Config_types.decision_validator_cascade_enabled, candidates
+    with
     | false, _ | true, [] -> Lwt.return ([], candidates, [])
     | true, _ :: _ ->
     match decision with
@@ -1051,7 +1053,7 @@ module Make (AI : Api.Agent_runner) = struct
   let run_decision_grouping ~ctx ~decision ~repo_url ~fetch_file ~diff ~diff_text ~security_config ~artifacts ?debug_dir
     ?log_context confirmed =
     let log_prefix = log_context_prefix log_context in
-    match security_config.Config_types.decision_grouping_enabled, confirmed with
+    match Decision_client.enabled decision security_config.Config_types.decision_grouping_enabled, confirmed with
     | false, _ | true, [] | true, [ _ ] -> Lwt.return ([], [])
     | true, _ :: _ :: _ ->
     match decision with
@@ -1663,7 +1665,7 @@ module Make (AI : Api.Agent_runner) = struct
     let model_tier = agent_model_tier security_config.Config_types.validator_model_tier in
     let agent_config = Validator_agent.config ~model_tier in
     let source_constraint_decision =
-      match security_config.Config_types.decision_validator_cascade_enabled with
+      match Decision_client.enabled decision security_config.Config_types.decision_validator_cascade_enabled with
       | false -> None
       | true -> decision
     in
@@ -1994,13 +1996,16 @@ module Make (AI : Api.Agent_runner) = struct
         skip_reason = None;
       }
     in
-    let%lwt decision_output = run_decision_triage ~decision ~security_config ~diff ~artifacts ?log_context () in
+    let triage_mode = Decision_client.triage_mode decision security_config.decision_triage in
+    let%lwt decision_output =
+      run_decision_triage ~decision ~mode:triage_mode ~security_config ~diff ~artifacts ?log_context ()
+    in
     let primary_failed = function
       | None -> true
       | Some _ -> false
     in
     let%lwt triage_result, primary_triage_costs, triage_failed =
-      match security_config.decision_triage with
+      match triage_mode with
       | Route ->
         (match decision_output with
         | Some output when output.complete -> Lwt.return (Some (decision_triage_output output), [], false)

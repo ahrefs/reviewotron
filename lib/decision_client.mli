@@ -11,12 +11,23 @@ type t
     [/alpha/decisions]. [None] gives OpenRouter's public endpoint. *)
 val endpoint_of_base_url : string option -> string
 
-val create : ?endpoint:string -> model:Decision_model.t -> api_key:string -> unit -> t
+(** [on_by_default] (default [false]) is what {!enabled} and {!triage_mode}
+    use for unset settings. *)
+val create : ?endpoint:string -> ?on_by_default:bool -> model:Decision_model.t -> api_key:string -> unit -> t
 
 (** Build a client from the decisions-only OpenRouter key, falling back to the
     general OpenRouter key. The endpoint follows [OPENROUTER_BASE_URL]. [None]
-    when neither key is set. *)
+    when neither key is set. Decision features are on by default when the
+    review's LLM provider is OpenRouter, and opt-in for other providers. *)
 val of_secrets : model:Decision_model.t -> Config_types.secrets -> t option
+
+(** Whether a decision feature runs. An explicit setting wins; [None] follows
+    the client's provider default, and is off without a client. *)
+val enabled : t option -> bool option -> bool
+
+(** The security triage mode. An explicit setting wins; [None] is [Gate] when
+    decision features are on by default and [Off] otherwise. *)
+val triage_mode : t option -> Config_types.decision_triage_mode option -> Config_types.decision_triage_mode
 
 val model : t -> Decision_model.t
 

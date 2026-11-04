@@ -130,6 +130,32 @@ let test_decisions_key_falls_back_to_openrouter_key () =
   check bool "Anthropic key alone is not enough" true
     (Stdlib.Option.is_none (Decision_client.of_secrets ~model:Jev (secrets ~decisions:None ~openrouter:None)))
 
+(* Decision features run by default on OpenRouter reviews and are opt-in for
+   other providers; an explicit setting always wins. *)
+let test_features_follow_the_review_provider () =
+  let client ~openrouter ~decisions =
+    Decision_client.of_secrets ~model:Gpt_6_luna
+      {
+        repos = [];
+        anthropic_api_key = Some "sk-ant";
+        openrouter_api_key = openrouter;
+        openrouter_decisions_api_key = decisions;
+        slack_access_token = None;
+      }
+  in
+  let openrouter = client ~openrouter:(Some "sk-or") ~decisions:None in
+  let anthropic = client ~openrouter:None ~decisions:(Some "sk-or-d") in
+  let mode client setting = Config_types.decision_triage_mode_to_string (Decision_client.triage_mode client setting) in
+  check bool "OpenRouter review: on by default" true (Decision_client.enabled openrouter None);
+  check string "OpenRouter review: gate by default" "gate" (mode openrouter None);
+  check bool "OpenRouter review: opt out" false (Decision_client.enabled openrouter (Some false));
+  check string "OpenRouter review: triage opt out" "off" (mode openrouter (Some Off));
+  check bool "Anthropic review: off by default" false (Decision_client.enabled anthropic None);
+  check string "Anthropic review: triage off by default" "off" (mode anthropic None);
+  check bool "Anthropic review: opt in" true (Decision_client.enabled anthropic (Some true));
+  check string "Anthropic review: triage opt in" "route" (mode anthropic (Some Route));
+  check bool "no key: off" false (Decision_client.enabled None None)
+
 let test_refusal_is_not_retried () =
   check bool "refusal" true
     (Decision_client.refusal
@@ -196,6 +222,7 @@ let () =
           test_case "request wire format" `Quick test_request_body_wire_format;
           test_case "endpoint follows base URL" `Quick test_endpoint_follows_base_url;
           test_case "decisions key fallback" `Quick test_decisions_key_falls_back_to_openrouter_key;
+          test_case "features follow the review provider" `Quick test_features_follow_the_review_provider;
           test_case "refusal is not retried" `Quick test_refusal_is_not_retried;
           test_case "thresholds follow the model" `Quick test_client_thresholds_follow_model;
         ] );

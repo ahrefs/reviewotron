@@ -342,7 +342,7 @@ Instead of a personal access token, you can authenticate as a GitHub App install
 ```
 
 App installation tokens are automatically refreshed and cached (55-minute TTL).
-When `decision_build_claim_guard_enabled` is enabled, grant the app read access to
+When the decision build-claim guard runs, grant the app read access to
 **Commit statuses** so the decision model can use completed checks for the reviewed commit.
 Without that permission, the guard falls back to source evidence.
 
@@ -388,6 +388,11 @@ the model for all of them and defaults to `gpt-6-luna`:
 
 Output is free for both. Reported costs come from OpenRouter's `usage.cost`.
 
+- **Defaults.** When reviews run through OpenRouter, every decision feature is
+  on and security triage uses `"gate"`. A `decision_*` setting left `null`
+  follows that default; set a feature to `false`, or `decision_triage` to
+  `"off"`, to opt out. When reviews run on Anthropic directly, the features stay
+  off until set to `true` or a triage mode, and they need a decisions key.
 - **Key.** `OPENROUTER_DECISIONS_API_KEY` or `openrouter_decisions_api_key`,
   falling back to the OpenRouter LLM key. A dedicated key lets an
   Anthropic-direct deployment use decisions without moving its review to
@@ -488,9 +493,9 @@ version control. Webhook/server commands do not read the user-global files.
   "debug_artifacts": false,
   "review_plugins": {
     "decision_model": "gpt-6-luna",
-    "decision_build_claim_guard_enabled": false,
+    "decision_build_claim_guard_enabled": null,
     "decision_build_claim_guard_threshold": null,
-    "decision_suggestion_guard_enabled": false,
+    "decision_suggestion_guard_enabled": null,
     "decision_suggestion_guard_threshold": null,
     "general": {
       "enabled": true,
@@ -505,10 +510,10 @@ version control. Webhook/server commands do not read the user-global files.
       "analysis_effort": "medium",
       "validator_model_tier": "standard",
       "confidence_threshold": "medium",
-      "decision_triage": "off",
+      "decision_triage": null,
       "decision_triage_threshold": null,
-      "decision_validator_cascade_enabled": false,
-      "decision_grouping_enabled": false,
+      "decision_validator_cascade_enabled": null,
+      "decision_grouping_enabled": null,
       "decision_grouping_threshold": null,
       "memory_max_tokens": 5000,
       "metrics_artifacts": false,
@@ -554,9 +559,9 @@ generated-file header markers. Broad folders such as `generated/`, `dist/`,
 | Field | Default | Description |
 |-------|---------|-------------|
 | `decision_model` | `"gpt-6-luna"` | Decision model for every `decision_*` feature: `gpt-6-luna` or `jev`. Each feature still has to be enabled; without an OpenRouter key, enabled features log a warning and do nothing. See [Decision models](#decision-models). |
-| `decision_build_claim_guard_enabled` | `false` | Ask the decision model to reject general findings whose deterministic compile/build claim is directly contradicted by post-change file context or completed checks for the exact commit. Missing evidence, credentials, and service errors preserve the finding. |
+| `decision_build_claim_guard_enabled` | `null` | On for OpenRouter reviews, off otherwise. Ask the decision model to reject general findings whose deterministic compile/build claim is directly contradicted by post-change file context or completed checks for the exact commit. Missing evidence, credentials, and service errors preserve the finding. |
 | `decision_build_claim_guard_threshold` | `null` | Minimum false-build-claim probability required to reject the finding, from 0 to 1. `null` uses the model's calibrated value. |
-| `decision_suggestion_guard_enabled` | `false` | Ask the decision model to remove mechanically defective `suggested_fix` payloads after validation. The model must also reject the fix's mechanical plausibility. Findings remain published. Missing credentials and service errors preserve the fix. |
+| `decision_suggestion_guard_enabled` | `null` | On for OpenRouter reviews, off otherwise. Ask the decision model to remove mechanically defective `suggested_fix` payloads after validation. The model must also reject the fix's mechanical plausibility. Findings remain published. Missing credentials and service errors preserve the fix. |
 | `decision_suggestion_guard_threshold` | `null` | Minimum defective-fix probability required to challenge the suggestion, from 0 to 1. Removal also requires mechanical plausibility at or below one minus this value. `null` uses the model's calibrated value. |
 
 #### General Plugin
@@ -578,10 +583,10 @@ generated-file header markers. Broad folders such as `generated/`, `dist/`,
 | `analysis_effort` | `"medium"` | Analysis effort: `"low"`, `"medium"`, `"high"`, or `"xhigh"`. OpenRouter sends it as reasoning effort; direct Anthropic sends native effort with adaptive thinking where the model supports that level. Set to `null` for the provider default. |
 | `validator_model_tier` | `"standard"` | Model tier for the adversarial validator. |
 | `confidence_threshold` | `"medium"` | Minimum triage confidence to trigger analysis for enabled classes. `"high"` = only high-confidence signals. `"medium"` = high + medium. `"low"` = all signals. |
-| `decision_triage` | `"off"` | How the decision model takes part in security triage. `"route"` replaces the generative triage call; if the key is absent, the service fails, or any file is not evaluated, Reviewotron falls back to the primary triage agent. `"gate"` runs normal triage, then requires independent decision-model support before launching each per-class analysis agent; errors and incomplete evaluations fail open. |
+| `decision_triage` | `null` | How the decision model takes part in security triage. `null` means `"gate"` for OpenRouter reviews and `"off"` otherwise. `"route"` replaces the generative triage call; if the key is absent, the service fails, or any file is not evaluated, Reviewotron falls back to the primary triage agent. `"gate"` runs normal triage, then requires independent decision-model support before launching each per-class analysis agent; errors and incomplete evaluations fail open. |
 | `decision_triage_threshold` | `null` | Minimum Noul probability for the active `decision_triage` mode, from 0 to 1. `null` uses the model's calibrated value for that mode. |
-| `decision_validator_cascade_enabled` | `false` | Ask the decision model two independent questions over each analysis candidate and its exact changed-file evidence. Directly supported candidates with a concrete deterministic proof, and (Jev only) demonstrated fatal defects, bypass the reasoning validator; uncertain judgments and errors still run it. |
-| `decision_grouping_enabled` | `false` | After validation, ask the decision model which confirmed-finding pairs warrant shared verification. Verified consolidations and coherent remediation pairs are published as one notification group that retains every member location, impact, scenario, and proposed fix. |
+| `decision_validator_cascade_enabled` | `null` | On for OpenRouter reviews, off otherwise. Ask the decision model two independent questions over each analysis candidate and its exact changed-file evidence. Directly supported candidates with a concrete deterministic proof, and (Jev only) demonstrated fatal defects, bypass the reasoning validator; uncertain judgments and errors still run it. |
+| `decision_grouping_enabled` | `null` | On for OpenRouter reviews, off otherwise. After validation, ask the decision model which confirmed-finding pairs warrant shared verification. Verified consolidations and coherent remediation pairs are published as one notification group that retains every member location, impact, scenario, and proposed fix. |
 | `decision_grouping_threshold` | `null` | Minimum probability required in both candidate orderings for a consolidation proposal or notification group, from 0 to 1. `null` uses the model's calibrated value. |
 | `memory_max_tokens` | `5000` | Target size limit for the repo's security memory file. |
 | `metrics_artifacts` | `false` | Write compact security metrics artifacts under the review debug dir's `security/` subdirectory. These omit source code and prompt bodies. |
@@ -652,7 +657,7 @@ When `decision_triage` is `"route"`, the decision model instead answers one inde
 
 When `decision_triage` is `"gate"`, the default triager still runs. The decision model then acts as a conservative class-level gate: an analysis agent runs only when both systems route that vulnerability class. `always_analyze_vuln_classes` bypasses this gate. A missing key, service failure, refusal, or incomplete file evaluation keeps every primary route, so decision-model availability cannot suppress analysis.
 
-When `decision_validator_cascade_enabled` is true, the decision model scores whether each candidate is directly supported and whether the evidence demonstrates a fatal validation defect. Reviewotron confirms only candidates inside the model's confirm boundary (support at or above 0.62 and fatal defect at or below 0.30 for Jev; 0.40 and 0.30 for GPT-6 Luna), and only when its existing deterministic proof enforcement accepts the candidate. With Jev it also rejects candidates with fatal defect at or above 0.70 and support at or below 0.30. GPT-6 Luna has no reject boundary, because it scored several validator-confirmed candidates as fatally defective. Every other candidate follows the normal reasoning-validator path. After that validator confirms a candidate, the decision model also checks the candidate diff against files the validator fetched. It rejects the confirmation only when those files directly constrain the claimed attacker-controlled source (probability at least 0.60 for Jev, 0.30 for GPT-6 Luna) and direct support falls to at most 0.30. Missing credentials, missing evidence, and service failures preserve the normal validator result.
+When `decision_validator_cascade_enabled` is on, the decision model scores whether each candidate is directly supported and whether the evidence demonstrates a fatal validation defect. Reviewotron confirms only candidates inside the model's confirm boundary (support at or above 0.62 and fatal defect at or below 0.30 for Jev; 0.40 and 0.30 for GPT-6 Luna), and only when its existing deterministic proof enforcement accepts the candidate. With Jev it also rejects candidates with fatal defect at or above 0.70 and support at or below 0.30. GPT-6 Luna has no reject boundary, because it scored several validator-confirmed candidates as fatally defective. Every other candidate follows the normal reasoning-validator path. After that validator confirms a candidate, the decision model also checks the candidate diff against files the validator fetched. It rejects the confirmation only when those files directly constrain the claimed attacker-controlled source (probability at least 0.60 for Jev, 0.30 for GPT-6 Luna) and direct support falls to at most 0.30. Missing credentials, missing evidence, and service failures preserve the normal validator result.
 
 The triage agent outputs signals with confidence levels (`high`, `medium`, `low`). The `confidence_threshold` config controls which signals proceed to analysis for enabled vulnerability classes. `always_analyze_vuln_classes` is the explicit override that bypasses the threshold; classes listed there are implicitly enabled even if absent from `vuln_classes`.
 
@@ -677,7 +682,7 @@ Analysis depth is budgeted by vulnerability class, triage confidence, and signal
 
 ### 3. Validation (Sonnet, adversarial)
 
-By default, all candidate findings from all analysis agents pass through the validator agent. With `decision_validator_cascade_enabled`, only high-certainty decisions that pass the same deterministic proof invariant bypass it; every uncertain candidate still reaches the validator. The decision model then independently checks files fetched by the validator for concrete source constraints that contradict confirmed findings. Validation checks:
+Without the decision cascade, all candidate findings from all analysis agents pass through the validator agent. With `decision_validator_cascade_enabled` (on by default for OpenRouter reviews), only high-certainty decisions that pass the same deterministic proof invariant bypass it; every uncertain candidate still reaches the validator. The decision model then independently checks files fetched by the validator for concrete source constraints that contradict confirmed findings. Validation checks:
 
 - The claimed source actually accepts external input
 - The claimed sink actually performs the dangerous operation
@@ -689,7 +694,7 @@ For `policy_regression`, validation does not require a user-controlled runtime s
 
 **Findings that fail validation are dropped.** Confirmed validator results without concrete proof are downgraded after parsing and are not surfaced. This is by design — a noisy security reviewer that cries wolf loses developer trust. Dropped findings are logged for offline prompt tuning.
 
-When `decision_grouping_enabled` is true, the decision model compares
+When `decision_grouping_enabled` is on, the decision model compares
 independently confirmed findings in both orders after validation. Pairs whose
 two probabilities reach the grouping threshold are written to the sensitive
 debug artifact `decision_grouping_proposals.json`. Each proposal is checked by a reasoning verifier
@@ -707,7 +712,7 @@ is published as one anchored comment that lists every member location, message,
 failure scenario, and proposed replacement. Missing credentials, service
 failures, invalid outputs, and uncertain judgments leave findings separate.
 
-When `decision_suggestion_guard_enabled` is true, the decision model checks each
+When `decision_suggestion_guard_enabled` is on, the decision model checks each
 validated finding's optional `suggested_fix` against the exact reviewed file
 diff. A defect score at or above the suggestion threshold triggers an opposing plausibility
 check. The suggestion is removed only when plausibility is also at or below one
@@ -715,7 +720,7 @@ minus that threshold; the finding and its evidence still publish. Missing
 credentials, unavailable diff evidence, and service failures preserve the
 suggestion.
 
-When `decision_build_claim_guard_enabled` is true, the decision model checks validated general
+When `decision_build_claim_guard_enabled` is on, the decision model checks validated general
 findings against a bounded post-change source window and completed statuses for
 the exact reviewed commit. It rejects a finding only when that evidence directly
 disproves an explicit syntax, binding, arity, type, or linking failure. The check
