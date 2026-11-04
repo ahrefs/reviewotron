@@ -24,9 +24,11 @@ let t_jsonschema : Yojson.Basic.t =
       "description", `String "Decision model served through OpenRouter's Decisions API.";
     ]
 
+(* Dated snapshots: the undated IDs are aliases OpenRouter can repoint. These
+   are the snapshots the thresholds below were calibrated against. *)
 let openrouter_id = function
-  | Jev -> "typesafe/jev-1.13"
-  | Gpt_6_luna -> "openai/gpt-6-luna-decisions"
+  | Jev -> "typesafe/jev-1.13-20260917"
+  | Gpt_6_luna -> "openai/gpt-6-luna-decisions-20261006"
 
 (* NaN fails both comparisons. *)
 let is_probability value = value >= 0.0 && value <= 1.0

@@ -126,8 +126,9 @@ back to the primary triager, and the analysis gate keeps every primary route.
 ## Not yet measured
 
 - **Jev through OpenRouter.** The Jev thresholds were measured against
-  TypeSafe's own API (`jev-1.13.0`). Reviewotron now calls `typesafe/jev-1.13`
-  through OpenRouter, which reports the same version, but the account used
+  TypeSafe's own API (`jev-1.13.0`). Reviewotron now calls the pinned
+  `typesafe/jev-1.13-20260917` through OpenRouter, which reports the same
+  version, but the account used
   here blocks the TypeSafe provider. Rerun the corpora with `--model jev
   --orders original,sorted,reversed` once the provider is allowed. That run
   also shows whether Jev is as sensitive to key order as Luna.

@@ -383,10 +383,12 @@ the model for all of them and defaults to `gpt-6-luna`:
 
 | `decision_model` | OpenRouter model | Input price |
 |---|---|---|
-| `jev` | `typesafe/jev-1.13` | $0.042 per million tokens |
-| `gpt-6-luna` | `openai/gpt-6-luna-decisions` | $0.10 per million tokens |
+| `jev` | `typesafe/jev-1.13-20260917` | $0.042 per million tokens |
+| `gpt-6-luna` | `openai/gpt-6-luna-decisions-20261006` | $0.10 per million tokens |
 
-Output is free for both. Reported costs come from OpenRouter's `usage.cost`.
+Both IDs are dated snapshots, the ones the thresholds were calibrated on, so
+OpenRouter cannot move a calibrated model to a new version. Output is free for
+both. Reported costs come from OpenRouter's `usage.cost`.
 
 - **Defaults.** When reviews run through OpenRouter, every decision feature is
   on and security triage uses `"gate"`. A `decision_*` setting left `null`

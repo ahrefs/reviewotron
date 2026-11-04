@@ -101,7 +101,7 @@ let test_request_body_wire_format () =
         ]
   in
   check string "OpenRouter decisions body"
-    {|{"model":"openai/gpt-6-luna-decisions","state":{"diff":"+x"},"questions":{"triage":{"type":"noul","instructions":"Is it risky?","criteria":{"true":"Risky.","false":"Safe."}},"secret":{"type":"noul","instructions":"Is a secret exposed?","criteria":{"true":"Exposed.","false":"Hidden."}}}}|}
+    {|{"model":"openai/gpt-6-luna-decisions-20261006","state":{"diff":"+x"},"questions":{"triage":{"type":"noul","instructions":"Is it risky?","criteria":{"true":"Risky.","false":"Safe."}},"secret":{"type":"noul","instructions":"Is a secret exposed?","criteria":{"true":"Exposed.","false":"Hidden."}}}}|}
     body
 
 let test_endpoint_follows_base_url () =
