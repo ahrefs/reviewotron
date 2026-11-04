@@ -22,6 +22,9 @@ type candidate_validation_output = {
   cost : Cost_tracking.agent_cost;
 }
 
+(** A file's diff status as triage spells it in [state]. *)
+val status_string : Diff_parser.file_status -> string
+
 (** Parse raw per-class scores and usage from one successful response body. *)
 val scores_of_body :
   model:Decision_model.t -> vuln_classes:Config_types.vuln_class list -> string -> (score_output, string) result
@@ -37,19 +40,19 @@ val score_context :
   (score_output, string) result Lwt.t
 
 (** Parse one successful two-question candidate-validation response body. *)
-val candidate_validation_of_body : model:Decision_model.t -> string -> (candidate_validation_output, string) result
-
-(** Return [true] when the mean of the two orderings reaches [threshold]. *)
-val semantic_duplicate : threshold:float -> forward:float -> reverse:float -> bool
+val candidate_validation_of_body :
+  agent_name:string -> model:Decision_model.t -> string -> (candidate_validation_output, string) result
 
 (** Return [true] only when both orderings reach [threshold]. *)
 val relationship_proposed : threshold:float -> forward:float -> reverse:float -> bool
 
 (** Score whether supplied diff evidence directly supports a candidate and
     whether it demonstrates a fatal validation defect. Both independent Noul
-    judgments are sent in one request. *)
+    judgments are sent in one request, whose cost is reported under
+    [agent_name]. *)
 val score_candidate_validation :
   Decision_client.t ->
+  agent_name:string ->
   candidate:Security_types.candidate_finding ->
   evidence:string ->
   (candidate_validation_output, string) result Lwt.t

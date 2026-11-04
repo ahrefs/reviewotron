@@ -24,11 +24,7 @@ let arm_name = function
   | Per_hunk -> "per_hunk"
   | Whole_diff -> "whole_diff"
 
-let status_string = function
-  | Diff_parser.Added -> "added"
-  | Deleted -> "deleted"
-  | Modified -> "modified"
-  | Renamed -> "renamed"
+let status_string = Decision_triage.status_string
 
 let has_suffix ~suffix value =
   let suffix_length = String.length suffix in

@@ -7,6 +7,12 @@
 
      {"cases": [{"name": "...", "expected": <any JSON>, "state": {...}}]}
 
+   The [corpus] feature instead asks the Noul question in the corpus's own
+   ["question"] field, for evaluating a question that is not in production:
+
+     {"question": {"instructions", "true_criteria", "false_criteria"},
+      "cases": [...]}
+
    Output is one JSON line per case and repetition. *)
 
 open Reviewotron_lib
@@ -18,21 +24,9 @@ type request = {
 
 let single label question = { label; questions = [ "decision", question ] }
 
-let candidate_validation =
-  {
-    label = "candidate_validation";
-    questions =
-      [ "supported", Decision_questions.candidate_supported; "fatal_defect", Decision_questions.candidate_fatal_defect ];
-  }
+let candidate_validation = { label = "candidate_validation"; questions = Decision_questions.candidate_validation }
 
-let triage =
-  {
-    label = "triage";
-    questions =
-      List.map
-        (fun vuln_class -> Security_types.vuln_class_to_string vuln_class, Decision_questions.triage vuln_class)
-        Config_types.all_vuln_classes;
-  }
+let triage = { label = "triage"; questions = Decision_questions.triage_questions Config_types.all_vuln_classes }
 
 let features =
   [
@@ -49,6 +43,23 @@ let features =
     "source_constraint", [ single "source_constraint" Decision_questions.source_constraint; candidate_validation ];
   ]
 
+(* Asks the question stored in the corpus file; see the header comment. *)
+let corpus_feature = "corpus"
+
+let feature_names = List.map fst features @ [ corpus_feature ]
+
+let question_of_json json : Decision_client.noul_question =
+  let text = Decision_benchmark_env.Corpus_json.string in
+  {
+    instructions = text "instructions" json;
+    true_criteria = text "true_criteria" json;
+    false_criteria = text "false_criteria" json;
+  }
+
+let corpus_request path =
+  single corpus_feature
+    (question_of_json (Decision_benchmark_env.Corpus_json.assoc "question" (Yojson.Basic.from_file path)))
+
 let question_json (question : Decision_client.noul_question) =
   `Assoc
     [
@@ -58,13 +69,7 @@ let question_json (question : Decision_client.noul_question) =
     ]
 
 let dump_questions () =
-  let triage =
-    List.map
-      (fun vuln_class ->
-        "triage." ^ Security_types.vuln_class_to_string vuln_class, question_json (Decision_questions.triage vuln_class))
-      Config_types.all_vuln_classes
-  in
-  let feature_questions =
+  let questions =
     List.concat_map
       (fun (_, requests) ->
         List.concat_map
@@ -76,21 +81,13 @@ let dump_questions () =
       features
     |> List.sort_uniq (fun (left, _) (right, _) -> String.compare left right)
   in
-  print_endline (Yojson.Basic.pretty_to_string (`Assoc (triage @ feature_questions)))
+  print_endline (Yojson.Basic.pretty_to_string (`Assoc questions))
 
 (* Replace production questions by "label.name" key, for trying variants
    before they reach {!Decision_questions}. *)
 let apply_overrides path requests =
-  let json = Yojson.Basic.from_file path in
-  let text name = function
-    | `Assoc fields ->
-      (match List.assoc_opt name fields with
-      | Some (`String value) -> value
-      | Some _ | None -> failwith (Printf.sprintf "override is missing string %S" name))
-    | _ -> failwith "override must be an object"
-  in
   let overrides =
-    match json with
+    match Yojson.Basic.from_file path with
     | `Assoc fields -> fields
     | _ -> failwith "override file must map label.name to a question"
   in
@@ -108,12 +105,7 @@ let apply_overrides path requests =
                 | None -> name, question
                 | Some override ->
                   used := key :: !used;
-                  ( name,
-                    {
-                      Decision_client.instructions = text "instructions" override;
-                      true_criteria = text "true_criteria" override;
-                      false_criteria = text "false_criteria" override;
-                    } ))
+                  name, question_of_json override)
               request.questions;
         })
       requests
@@ -164,35 +156,26 @@ type case = {
 }
 
 let read_corpus path =
-  let field name json =
-    match json with
-    | `Assoc fields ->
-      (match List.assoc_opt name fields with
-      | Some value -> value
-      | None -> failwith (Printf.sprintf "corpus case is missing %S" name))
-    | _ -> failwith "corpus case must be an object"
-  in
-  match field "cases" (Yojson.Basic.from_file path) with
+  let module J = Decision_benchmark_env.Corpus_json in
+  match J.assoc "cases" (Yojson.Basic.from_file path) with
   | `List cases ->
     List.map
-      (fun json ->
-        let name =
-          match field "name" json with
-          | `String name -> name
-          | _ -> failwith "case name must be a string"
-        in
-        { name; expected = field "expected" json; state = field "state" json })
+      (fun json -> { name = J.string "name" json; expected = J.assoc "expected" json; state = J.assoc "state" json })
       cases
   | _ -> failwith "corpus cases must be a list"
 
+type request_result = {
+  answers : (string * Yojson.Basic.t) list;
+  errors : Yojson.Basic.t list;
+  cost : Cost_tracking.agent_cost option;
+}
+
 let run_request client ~state request =
-  let questions = List.map (fun (name, question) -> name, Decision_client.Noul question) request.questions in
-  let%lwt response = Decision_client.decide client ~state ~questions in
+  let%lwt response = Decision_client.decide client ~agent_name:request.label ~state ~questions:request.questions in
   Lwt.return
     (match response with
-    | Error error -> [], [ `String (Printf.sprintf "%s: %s" request.label error) ], 0.0, 0, None
+    | Error error -> { answers = []; errors = [ `String (Printf.sprintf "%s: %s" request.label error) ]; cost = None }
     | Ok response ->
-      let cost = Decision_client.cost response in
       let answers, errors =
         List.partition_map
           (fun (name, _) ->
@@ -202,18 +185,19 @@ let run_request client ~state request =
             | Error error -> Right (`String (Printf.sprintf "%s: %s" key error)))
           request.questions
       in
-      answers, errors, cost.estimated_cost_usd, cost.input_tokens, Some cost.model)
+      { answers; errors; cost = Some (Decision_client.cost response) })
 
 let run_case client ~requests ~repetition ~order case =
   let started = Unix.gettimeofday () in
   let%lwt results = Lwt_list.map_s (run_request client ~state:(reorder order case.state)) requests in
-  let answers = List.concat_map (fun (answers, _, _, _, _) -> answers) results in
-  let errors = List.concat_map (fun (_, errors, _, _, _) -> errors) results in
-  let cost = List.fold_left (fun total (_, _, cost, _, _) -> total +. cost) 0.0 results in
-  let tokens = List.fold_left (fun total (_, _, _, tokens, _) -> total + tokens) 0 results in
-  let response_models =
-    List.filter_map (fun (_, _, _, _, model) -> Stdlib.Option.map (fun model -> `String model) model) results
+  let answers = List.concat_map (fun result -> result.answers) results in
+  let errors = List.concat_map (fun result -> result.errors) results in
+  let costs = List.filter_map (fun result -> result.cost) results in
+  let cost =
+    List.fold_left (fun total (cost : Cost_tracking.agent_cost) -> total +. cost.estimated_cost_usd) 0.0 costs
   in
+  let tokens = List.fold_left (fun total (cost : Cost_tracking.agent_cost) -> total + cost.input_tokens) 0 costs in
+  let response_models = List.map (fun (cost : Cost_tracking.agent_cost) -> `String cost.model) costs in
   `Assoc
     [
       "case", `String case.name;
@@ -239,10 +223,12 @@ let run client ~requests ~repeats ~orders ~concurrency cases =
       (fun repetition -> List.concat_map (fun order -> List.map (fun case -> repetition, order, case) cases) orders)
       (List.init repeats succ)
   in
-  Lwt_list.iter_s
-    (fun chunk ->
-      Lwt_list.iter_p (fun (repetition, order, case) -> run_case client ~requests ~repetition ~order case) chunk)
-    (CCList.chunks concurrency jobs)
+  (* A pool, not fixed chunks, so one slow case backing off a rate limit does
+     not idle the other slots. *)
+  let pool = Lwt_pool.create concurrency (fun () -> Lwt.return_unit) in
+  Lwt_list.iter_p
+    (fun (repetition, order, case) -> Lwt_pool.use pool (fun () -> run_case client ~requests ~repetition ~order case))
+    jobs
 
 let () =
   let feature = ref "" in
@@ -255,7 +241,7 @@ let () =
   Arg.parse
     [
       Decision_benchmark_env.model_spec;
-      "--feature", Arg.Set_string feature, Printf.sprintf "NAME One of: %s" (String.concat ", " (List.map fst features));
+      "--feature", Arg.Set_string feature, Printf.sprintf "NAME One of: %s" (String.concat ", " feature_names);
       "--corpus", Arg.Set_string corpus, "FILE Calibration corpus";
       "--repeats", Arg.Set_int repeats, "N Repetitions per case (default 3)";
       "--concurrency", Arg.Set_int concurrency, "N Cases scored in parallel (default 4)";
@@ -270,18 +256,18 @@ let () =
   match !dump with
   | true -> dump_questions ()
   | false ->
+    if String.equal !corpus "" then raise (Arg.Bad "--corpus is required");
     let requests =
       match List.assoc_opt !feature features with
       | Some requests -> requests
-      | None ->
-        raise (Arg.Bad (Printf.sprintf "--feature must be one of: %s" (String.concat ", " (List.map fst features))))
+      | None when String.equal !feature corpus_feature -> [ corpus_request !corpus ]
+      | None -> raise (Arg.Bad (Printf.sprintf "--feature must be one of: %s" (String.concat ", " feature_names)))
     in
     let requests =
       match !override with
       | "" -> requests
       | path -> apply_overrides path requests
     in
-    if String.equal !corpus "" then raise (Arg.Bad "--corpus is required");
     if !repeats < 1 || !concurrency < 1 then raise (Arg.Bad "--repeats and --concurrency must be positive");
     let cases = read_corpus !corpus in
     let client = Decision_benchmark_env.client () in

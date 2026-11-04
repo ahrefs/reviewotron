@@ -23,7 +23,8 @@ The corpus format is `{"cases": [{"name", "expected", "state"}]}`, with `state`
 in the exact shape production sends. `decision_routing_benchmark
 --dump-calibration-corpus` writes the triage corpus. `--dump-questions` prints
 the production questions, and `--override FILE` swaps a question for an
-experiment.
+experiment. `--feature corpus` asks a question that is not in production,
+taken from the corpus's own `question` field (see `jev_retry_experiment.md`).
 
 Apart from the in-repo security corpus, the corpora come from captured
 reviews of a private codebase and are not vendored. They are the same labeled

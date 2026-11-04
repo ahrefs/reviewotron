@@ -1,65 +1,104 @@
-let triage_text = function
+let triage : Config_types.vuln_class -> Decision_client.noul_question = function
   | Config_types.Injection ->
-    ( "Does `annotated_diff` warrant dedicated injection analysis because changed code may let untrusted data alter a \
-       database query, template expression, interpreter input, or another data-language expression?",
-      "The changed code contains a plausible untrusted-data source and interpreter or query sink without clearly \
-       adequate contextual parameterization.",
-      "The changed code has no plausible injection path, or the only relevant values are constants or clearly use \
-       adequate parameterization." )
+    {
+      instructions =
+        "Does `annotated_diff` warrant dedicated injection analysis because changed code may let untrusted data alter \
+         a database query, template expression, interpreter input, or another data-language expression?";
+      true_criteria =
+        "The changed code contains a plausible untrusted-data source and interpreter or query sink without clearly \
+         adequate contextual parameterization.";
+      false_criteria =
+        "The changed code has no plausible injection path, or the only relevant values are constants or clearly use \
+         adequate parameterization.";
+    }
   | Xss ->
-    ( "Does `annotated_diff` warrant dedicated cross-site scripting analysis because changed code may carry untrusted \
-       data into HTML, JavaScript, CSS, a browser-executable URL, markdown-rendered HTML, or a response that can later \
-       reach one of those browser contexts? Consider multi-step flows, attacker-controlled content types, cookie or \
-       JSON reflection, and javascript: links.",
-      "The changed code contains a plausible untrusted-data source and browser-executable sink or intermediate \
-       representation without clearly adequate context-specific sanitization.",
-      "The changed code has no plausible browser-executable data flow, or all relevant data is clearly encoded or \
-       sanitized for its eventual browser context." )
+    {
+      instructions =
+        "Does `annotated_diff` warrant dedicated cross-site scripting analysis because changed code may carry \
+         untrusted data into HTML, JavaScript, CSS, a browser-executable URL, markdown-rendered HTML, or a response \
+         that can later reach one of those browser contexts? Consider multi-step flows, attacker-controlled content \
+         types, cookie or JSON reflection, and javascript: links.";
+      true_criteria =
+        "The changed code contains a plausible untrusted-data source and browser-executable sink or intermediate \
+         representation without clearly adequate context-specific sanitization.";
+      false_criteria =
+        "The changed code has no plausible browser-executable data flow, or all relevant data is clearly encoded or \
+         sanitized for its eventual browser context.";
+    }
   | Command_injection ->
-    ( "Does `annotated_diff` warrant dedicated command-injection analysis because changed code may let untrusted data \
-       influence a shell command, process invocation, executable, or command argument?",
-      "The changed code contains a plausible untrusted-data source and process or shell sink without clearly safe \
-       argument handling.",
-      "The changed code has no plausible command-execution path, or the command and arguments are fixed or safely \
-       separated from untrusted input." )
+    {
+      instructions =
+        "Does `annotated_diff` warrant dedicated command-injection analysis because changed code may let untrusted \
+         data influence a shell command, process invocation, executable, or command argument?";
+      true_criteria =
+        "The changed code contains a plausible untrusted-data source and process or shell sink without clearly safe \
+         argument handling.";
+      false_criteria =
+        "The changed code has no plausible command-execution path, or the command and arguments are fixed or safely \
+         separated from untrusted input.";
+    }
   | Authn ->
-    ( "Does `annotated_diff` warrant dedicated authentication analysis because it changes how identities, credentials, \
-       sessions, passwords, API keys, OAuth flows, or tokens are created, checked, or trusted?",
-      "The changed code affects an authentication boundary or may accept an identity or credential without every \
-       required validation.",
-      "The changed code does not affect authentication, or it preserves clearly complete credential and identity \
-       validation." )
+    {
+      instructions =
+        "Does `annotated_diff` warrant dedicated authentication analysis because it changes how identities, \
+         credentials, sessions, passwords, API keys, OAuth flows, or tokens are created, checked, or trusted?";
+      true_criteria =
+        "The changed code affects an authentication boundary or may accept an identity or credential without every \
+         required validation.";
+      false_criteria =
+        "The changed code does not affect authentication, or it preserves clearly complete credential and identity \
+         validation.";
+    }
   | Authz ->
-    ( "Does `annotated_diff` warrant dedicated authorization analysis because it changes access control, ownership \
-       checks, roles, permissions, or a read or mutation selected by an untrusted resource identifier?",
-      "The changed code affects who can perform an action or access a resource, with a plausible missing or weakened \
-       permission or ownership check.",
-      "The changed code does not affect authorization, or every affected action is clearly constrained by the required \
-       permission and resource ownership checks." )
+    {
+      instructions =
+        "Does `annotated_diff` warrant dedicated authorization analysis because it changes access control, ownership \
+         checks, roles, permissions, or a read or mutation selected by an untrusted resource identifier?";
+      true_criteria =
+        "The changed code affects who can perform an action or access a resource, with a plausible missing or weakened \
+         permission or ownership check.";
+      false_criteria =
+        "The changed code does not affect authorization, or every affected action is clearly constrained by the \
+         required permission and resource ownership checks.";
+    }
   | Ssrf ->
-    ( "Does `annotated_diff` warrant dedicated server-side request forgery analysis because untrusted data may \
-       influence the host, scheme, port, path, redirect, or destination of an outbound request?",
-      "The changed code contains a plausible untrusted-data source and outbound network sink without a clearly \
-       adequate destination allowlist and redirect policy.",
-      "The changed code has no plausible attacker-influenced outbound destination, or destinations are clearly and \
-       completely constrained." )
+    {
+      instructions =
+        "Does `annotated_diff` warrant dedicated server-side request forgery analysis because untrusted data may \
+         influence the host, scheme, port, path, redirect, or destination of an outbound request?";
+      true_criteria =
+        "The changed code contains a plausible untrusted-data source and outbound network sink without a clearly \
+         adequate destination allowlist and redirect policy.";
+      false_criteria =
+        "The changed code has no plausible attacker-influenced outbound destination, or destinations are clearly and \
+         completely constrained.";
+    }
   | Path_traversal ->
-    ( "Does `annotated_diff` warrant dedicated path-traversal analysis because an untrusted path, filename, or archive \
-       member may influence a file read, write, delete, extraction, or response?",
-      "The changed code contains a plausible untrusted path component and filesystem sink without a clear \
-       resolved-path containment check or safe basename or allowlist reduction.",
-      "The changed code has no plausible attacker-controlled filesystem path, or every affected path is clearly \
-       confined to the intended location." )
+    {
+      instructions =
+        "Does `annotated_diff` warrant dedicated path-traversal analysis because an untrusted path, filename, or \
+         archive member may influence a file read, write, delete, extraction, or response?";
+      true_criteria =
+        "The changed code contains a plausible untrusted path component and filesystem sink without a clear \
+         resolved-path containment check or safe basename or allowlist reduction.";
+      false_criteria =
+        "The changed code has no plausible attacker-controlled filesystem path, or every affected path is clearly \
+         confined to the intended location.";
+    }
   | Policy_regression ->
-    ( "Does `annotated_diff` warrant dedicated security-policy analysis because it may broaden privileges or weaken a \
-       security control in IAM, RBAC, CI, deployment, TLS, sandbox, or operating-system configuration?",
-      "The changed policy or configuration plausibly grants a broader capability or weakens a named security control.",
-      "The change does not broaden privilege or weaken a security control, or it is clearly constrained to the same or \
-       a narrower capability." )
+    {
+      instructions =
+        "Does `annotated_diff` warrant dedicated security-policy analysis because it may broaden privileges or weaken \
+         a security control in IAM, RBAC, CI, deployment, TLS, sandbox, or operating-system configuration?";
+      true_criteria =
+        "The changed policy or configuration plausibly grants a broader capability or weakens a named security control.";
+      false_criteria =
+        "The change does not broaden privilege or weaken a security control, or it is clearly constrained to the same \
+         or a narrower capability.";
+    }
 
-let triage vuln_class : Decision_client.noul_question =
-  let instructions, true_criteria, false_criteria = triage_text vuln_class in
-  { instructions; true_criteria; false_criteria }
+let triage_questions vuln_classes =
+  List.map (fun vuln_class -> Security_types.vuln_class_to_string vuln_class, triage vuln_class) vuln_classes
 
 let candidate_supported : Decision_client.noul_question =
   {
@@ -180,3 +219,5 @@ let build_claim : Decision_client.noul_question =
       ^ "disprove the exact claim, the finding concerns runtime behavior, or evidence is uncertain. Uncertainty is "
       ^ "false.";
   }
+
+let candidate_validation = [ "supported", candidate_supported; "fatal_defect", candidate_fatal_defect ]

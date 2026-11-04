@@ -11,11 +11,12 @@ type t =
 
 val all : t list
 
+(** The model a config gets when it names none. *)
+val default : t
+
 (** Config spelling: ["jev"] or ["gpt-6-luna"]. *)
 val to_string : t -> string
 
-val t_to_json : t -> Yojson.Basic.t
-val t_of_json : Yojson.Basic.t -> t
 val t_jsonschema : Yojson.Basic.t
 val to_json : t -> Yojson.Basic.t
 val of_json : Yojson.Basic.t -> t
@@ -23,6 +24,9 @@ val of_json : Yojson.Basic.t -> t
 (** Pinned OpenRouter model ID. Never an alias, since an alias could move the
     probabilities a threshold was calibrated against. *)
 val openrouter_id : t -> string
+
+(** Whether a value is a probability in [\[0, 1\]]. NaN is not. *)
+val is_probability : float -> bool
 
 (** Input price used only when a response omits [usage.cost]. Output tokens
     are free on every supported model. *)

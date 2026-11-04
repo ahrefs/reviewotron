@@ -752,29 +752,21 @@ module Make (AI : Api.Agent_runner) = struct
 
   let run_decision_triage ~decision ~security_config ~diff ~artifacts ?log_context () =
     let log_prefix = log_context_prefix log_context in
-    let mode =
-      match
-        ( security_config.Config_types.decision_triage_enabled,
-          security_config.Config_types.decision_analysis_gate_enabled )
-      with
-      | true, _ -> `Triage
-      | false, true -> `Analysis_gate
-      | false, false -> `Off
+    let calibrated_threshold : (Decision_model.thresholds -> float) option =
+      match security_config.Config_types.decision_triage with
+      | Off -> None
+      | Route -> Some (fun thresholds -> thresholds.triage)
+      | Gate -> Some (fun thresholds -> thresholds.analysis_gate)
     in
-    match mode, decision with
-    | `Off, _ -> Lwt.return_none
-    | (`Triage | `Analysis_gate), None ->
+    match calibrated_threshold, decision with
+    | None, _ -> Lwt.return_none
+    | Some _, None ->
       log#warn "%sdecision triage is enabled but no OpenRouter key is configured" log_prefix;
       Lwt.return_none
-    | ((`Triage | `Analysis_gate) as mode), Some decision ->
+    | Some calibrated_threshold, Some decision ->
       let threshold =
-        match mode with
-        | `Triage ->
-          Decision_client.threshold decision security_config.decision_triage_threshold (fun thresholds ->
-            thresholds.triage)
-        | `Analysis_gate ->
-          Decision_client.threshold decision security_config.decision_analysis_gate_threshold (fun thresholds ->
-            thresholds.analysis_gate)
+        Stdlib.Option.value security_config.decision_triage_threshold
+          ~default:(calibrated_threshold (Decision_client.thresholds decision))
       in
       let vuln_classes =
         List.fold_left
@@ -809,7 +801,7 @@ module Make (AI : Api.Agent_runner) = struct
   let run_decision_source_constraint decision ~diff ~fetched_files ?log_context
     (validated : Security_types.validated_finding) =
     let log_prefix = log_context_prefix log_context in
-    let thresholds = Decision_model.thresholds (Decision_client.model decision) in
+    let thresholds = Decision_client.thresholds decision in
     let rec check costs judgments = function
       | [] -> Lwt.return (validated, List.rev costs, List.rev judgments)
       | (path, content) :: rest ->
@@ -819,14 +811,14 @@ module Make (AI : Api.Agent_runner) = struct
             [ "candidate", Security_types.candidate_finding_to_json validated.finding; "evidence", `String evidence ]
         in
         let%lwt constrained =
-          Decision_client.score_noul decision ~state ~question:Decision_questions.source_constraint
+          Decision_client.score_noul decision ~agent_name:"decision_source_constraint" ~state
+            ~question:Decision_questions.source_constraint
         in
         (match constrained with
         | Error error ->
           log#warn "%sdecision source-constraint check failed for %s: %s" log_prefix path error;
           check costs judgments rest
         | Ok constrained ->
-          let constrained_cost = { constrained.cost with agent_name = "decision_source_constraint" } in
           let judgment probability supported decision =
             let supported =
               match supported with
@@ -844,18 +836,18 @@ module Make (AI : Api.Agent_runner) = struct
           in
           (match constrained.probability >= thresholds.source_constraint_min with
           | false ->
-            check (constrained_cost :: costs) (judgment constrained.probability None "confirmed" :: judgments) rest
+            check (constrained.cost :: costs) (judgment constrained.probability None "confirmed" :: judgments) rest
           | true ->
             let%lwt support =
-              Decision_triage.score_candidate_validation decision ~candidate:validated.finding ~evidence
+              Decision_triage.score_candidate_validation decision ~agent_name:"decision_source_constraint_support"
+                ~candidate:validated.finding ~evidence
             in
             (match support with
             | Error error ->
               log#warn "%sdecision source-constraint support check failed for %s: %s" log_prefix path error;
-              check (constrained_cost :: costs) (judgment constrained.probability None "confirmed" :: judgments) rest
+              check (constrained.cost :: costs) (judgment constrained.probability None "confirmed" :: judgments) rest
             | Ok support ->
-              let support_cost = { support.cost with agent_name = "decision_source_constraint_support" } in
-              let costs = support_cost :: constrained_cost :: costs in
+              let costs = support.cost :: constrained.cost :: costs in
               (match
                  Decision_model.source_constraint_rejects thresholds ~source_constrained:constrained.probability
                    ~supported:support.supported
@@ -902,7 +894,7 @@ module Make (AI : Api.Agent_runner) = struct
       log#warn "%sdecision validator cascade is enabled but no OpenRouter key is configured" log_prefix;
       Lwt.return ([], candidates, [])
     | Some decision ->
-      let thresholds = Decision_model.thresholds (Decision_client.model decision) in
+      let thresholds = Decision_client.thresholds decision in
       let%lwt resolved, remaining, costs, judgments =
         Lwt_list.fold_left_s
           (fun (resolved, remaining, costs, judgments) (index, candidate) ->
@@ -911,7 +903,10 @@ module Make (AI : Api.Agent_runner) = struct
             match String.trim evidence with
             | "" -> Lwt.return (resolved, candidate :: remaining, costs, judgments)
             | _ ->
-              let%lwt result = Decision_triage.score_candidate_validation decision ~candidate ~evidence in
+              let%lwt result =
+                Decision_triage.score_candidate_validation decision ~agent_name:"decision_validator_cascade" ~candidate
+                  ~evidence
+              in
               (match result with
               | Error error ->
                 log#warn "%sdecision candidate validation failed: %s" log_prefix error;
@@ -923,7 +918,6 @@ module Make (AI : Api.Agent_runner) = struct
                     `Assoc [ "error", `String error; "candidate", Security_types.candidate_finding_to_json candidate ]
                     :: judgments )
               | Ok ({ supported; fatal_defect; cost } : Decision_triage.candidate_validation_output) ->
-                let cost = { cost with agent_name = "decision_validator_cascade" } in
                 let decision_name, verdict, resolved, remaining =
                   match Decision_model.cascade_decision thresholds ~supported ~fatal_defect with
                   | Confirm_candidate ->
@@ -978,11 +972,7 @@ module Make (AI : Api.Agent_runner) = struct
         ]
     in
     let score finding_a finding_b =
-      let%lwt result = Decision_client.score_noul decision ~state:(state finding_a finding_b) ~question in
-      Lwt.return
-        (Result.map
-           (fun (output : Decision_client.noul_output) -> { output with cost = { output.cost with agent_name } })
-           result)
+      Decision_client.score_noul decision ~agent_name ~state:(state finding_a finding_b) ~question
     in
     let%lwt forward, reverse = Lwt.both (score finding_a finding_b) (score finding_b finding_a) in
     let costs =
@@ -1070,8 +1060,8 @@ module Make (AI : Api.Agent_runner) = struct
       Lwt.return ([], [])
     | Some decision ->
       let grouping_threshold =
-        Decision_client.threshold decision security_config.decision_grouping_threshold (fun thresholds ->
-          thresholds.grouping)
+        Stdlib.Option.value security_config.decision_grouping_threshold
+          ~default:(Decision_client.thresholds decision).grouping
       in
       (* ponytail: confirmed finding sets are normally single digits; shortlist
          deterministically before this O(n²) experiment if latency becomes material. *)
@@ -2010,8 +2000,8 @@ module Make (AI : Api.Agent_runner) = struct
       | Some _ -> false
     in
     let%lwt triage_result, primary_triage_costs, triage_failed =
-      match security_config.decision_triage_enabled, security_config.decision_analysis_gate_enabled with
-      | true, _ ->
+      match security_config.decision_triage with
+      | Route ->
         (match decision_output with
         | Some output when output.complete -> Lwt.return (Some (decision_triage_output output), [], false)
         | Some output ->
@@ -2024,7 +2014,7 @@ module Make (AI : Api.Agent_runner) = struct
         | None ->
           let%lwt primary_result, primary_costs = run_primary_triage () in
           Lwt.return (primary_result, primary_costs, primary_failed primary_result))
-      | false, true ->
+      | Gate ->
         let%lwt primary_result, primary_costs = run_primary_triage () in
         let triage_result =
           match primary_result, decision_output with
@@ -2043,7 +2033,7 @@ module Make (AI : Api.Agent_runner) = struct
           | None, Some _ | None, None -> None
         in
         Lwt.return (triage_result, primary_costs, primary_failed primary_result)
-      | false, false ->
+      | Off ->
         let%lwt primary_result, primary_costs = run_primary_triage () in
         Lwt.return (primary_result, primary_costs, primary_failed primary_result)
     in

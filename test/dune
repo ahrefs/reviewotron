@@ -87,27 +87,6 @@
   (pps lwt_ppx)))
 
 (executable
- (name decision_noul_benchmark)
- (modules decision_noul_benchmark)
- (libraries reviewotron_lib decision_benchmark_env lwt lwt.unix yojson)
- (preprocess
-  (pps lwt_ppx)))
-
-(executable
- (name decision_candidate_validation_benchmark)
- (modules decision_candidate_validation_benchmark)
- (libraries reviewotron_lib decision_benchmark_env lwt lwt.unix yojson)
- (preprocess
-  (pps lwt_ppx)))
-
-(executable
- (name decision_score_benchmark)
- (modules decision_score_benchmark)
- (libraries reviewotron_lib decision_benchmark_env lwt lwt.unix yojson)
- (preprocess
-  (pps lwt_ppx)))
-
-(executable
  (name consolidation_benchmark)
  (modules consolidation_benchmark)
  (libraries reviewotron_lib devkit lwt lwt.unix yojson)

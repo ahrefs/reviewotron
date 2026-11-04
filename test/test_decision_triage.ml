@@ -13,15 +13,6 @@ let response =
     "usage": {"input_tokens": 500, "output_tokens": 40}
   }|}
 
-let graded_response =
-  {|{
-    "model": "typesafe/jev-1.13-20260917",
-    "answers": {
-      "decision": {"type": "score", "score": 2.4, "confidence": 0.6}
-    },
-    "usage": {"input_tokens": 300, "output_tokens": 30, "cost": 0.0000126}
-  }|}
-
 let candidate_validation_response =
   {|{
     "model": "openai/gpt-6-luna-decisions-20261006",
@@ -73,24 +64,21 @@ let test_score_context_response_contract () =
     check (float 0.0001) "xss probability" 0.91 xss.probability;
     check string "second class" "injection" (Security_types.vuln_class_to_string injection.vuln_class);
     check (float 0.0001) "injection probability" 0.20 injection.probability;
-    check string "reported model" "typesafe/jev-1.13-20260917" cost.model
+    check string "reported model" "typesafe/jev-1.13-20260917" cost.model;
+    check string "reported under the triage label" "decision_triage" cost.agent_name
   | Ok _ -> fail "expected two raw scores"
 
-let test_graded_response_contract () =
-  match Decision_client.graded_output_of_body ~model:Jev ~levels:4 graded_response with
-  | Error error -> fail error
-  | Ok output ->
-    check (float 0.0001) "score" 2.4 output.score;
-    check (float 0.0001) "confidence" 0.6 output.confidence;
-    check (float 0.0000001) "reported cost wins" 0.0000126 output.cost.estimated_cost_usd
-
 let test_candidate_validation_response_contract () =
-  match Decision_triage.candidate_validation_of_body ~model:Gpt_6_luna candidate_validation_response with
+  match
+    Decision_triage.candidate_validation_of_body ~agent_name:"decision_validator_cascade" ~model:Gpt_6_luna
+      candidate_validation_response
+  with
   | Error error -> fail error
   | Ok output ->
     check (float 0.0001) "supported" 0.66 output.supported;
     check (float 0.0001) "fatal defect" 0.24 output.fatal_defect;
-    check (float 0.0000001) "cost" 0.00009 output.cost.estimated_cost_usd
+    check (float 0.0000001) "cost" 0.00009 output.cost.estimated_cost_usd;
+    check string "caller's label" "decision_validator_cascade" output.cost.agent_name
 
 let test_unexpected_answer_type_is_an_error () =
   let body =
@@ -108,13 +96,12 @@ let test_request_body_wire_format () =
       ~state:(`Assoc [ "diff", `String "+x" ])
       ~questions:
         [
-          ( "triage",
-            Decision_client.Noul { instructions = "Is it risky?"; true_criteria = "Risky."; false_criteria = "Safe." } );
-          "level", Decision_client.Score { instructions = "How severe?"; criteria = [ "low"; "high" ] };
+          "triage", { instructions = "Is it risky?"; true_criteria = "Risky."; false_criteria = "Safe." };
+          "secret", { instructions = "Is a secret exposed?"; true_criteria = "Exposed."; false_criteria = "Hidden." };
         ]
   in
   check string "OpenRouter decisions body"
-    {|{"model":"openai/gpt-6-luna-decisions","state":{"diff":"+x"},"questions":{"triage":{"type":"noul","instructions":"Is it risky?","criteria":{"true":"Risky.","false":"Safe."}},"level":{"type":"score","instructions":"How severe?","criteria":["low","high"]}}}|}
+    {|{"model":"openai/gpt-6-luna-decisions","state":{"diff":"+x"},"questions":{"triage":{"type":"noul","instructions":"Is it risky?","criteria":{"true":"Risky.","false":"Safe."}},"secret":{"type":"noul","instructions":"Is a secret exposed?","criteria":{"true":"Exposed.","false":"Hidden."}}}}|}
     body
 
 let test_endpoint_follows_base_url () =
@@ -152,12 +139,9 @@ let test_refusal_is_not_retried () =
   check bool "refusal text on another status" false
     (Decision_client.refusal (Http_util.Status (400, "refused to answer")))
 
-let test_configured_threshold_overrides_model () =
+let test_client_thresholds_follow_model () =
   let client = Decision_client.create ~model:Gpt_6_luna ~api_key:"sk-or" () in
-  check (float 0.0001) "calibrated default" 0.30
-    (Decision_client.threshold client None (fun thresholds -> thresholds.grouping));
-  check (float 0.0001) "configured value" 0.55
-    (Decision_client.threshold client (Some 0.55) (fun thresholds -> thresholds.grouping))
+  check (float 0.0001) "Luna grouping" 0.30 (Decision_client.thresholds client).grouping
 
 let test_validator_cascade_boundary () =
   let thresholds = Decision_model.thresholds Jev in
@@ -193,10 +177,6 @@ let test_source_constraint_boundary () =
   check bool "keeps higher support" false (rejects ~source_constrained:0.60 ~supported:0.31);
   check bool "keeps weaker constraint" false (rejects ~source_constrained:0.59 ~supported:0.30)
 
-let test_semantic_duplicate_uses_symmetric_mean () =
-  check bool "at threshold" true (Decision_triage.semantic_duplicate ~threshold:0.5 ~forward:0.61 ~reverse:0.39);
-  check bool "below threshold" false (Decision_triage.semantic_duplicate ~threshold:0.5 ~forward:0.58 ~reverse:0.39)
-
 let test_relationship_proposal_requires_both_orientations () =
   check bool "both pass" true (Decision_triage.relationship_proposed ~threshold:0.7 ~forward:0.72 ~reverse:0.75);
   check bool "one fails" false (Decision_triage.relationship_proposed ~threshold:0.7 ~forward:0.91 ~reverse:0.69)
@@ -208,7 +188,6 @@ let () =
         [
           test_case "routes probable classes" `Quick test_response_routes_only_probable_classes;
           test_case "preserves raw probabilities" `Quick test_score_context_response_contract;
-          test_case "parses graded output" `Quick test_graded_response_contract;
           test_case "parses candidate validation" `Quick test_candidate_validation_response_contract;
           test_case "rejects unexpected answer types" `Quick test_unexpected_answer_type_is_an_error;
         ] );
@@ -218,14 +197,13 @@ let () =
           test_case "endpoint follows base URL" `Quick test_endpoint_follows_base_url;
           test_case "decisions key fallback" `Quick test_decisions_key_falls_back_to_openrouter_key;
           test_case "refusal is not retried" `Quick test_refusal_is_not_retried;
-          test_case "configured threshold overrides model" `Quick test_configured_threshold_overrides_model;
+          test_case "thresholds follow the model" `Quick test_client_thresholds_follow_model;
         ] );
       ( "rules",
         [
           test_case "candidate cascade boundary" `Quick test_validator_cascade_boundary;
           test_case "Luna cascade never rejects" `Quick test_luna_cascade_never_rejects;
           test_case "source constraint boundary" `Quick test_source_constraint_boundary;
-          test_case "semantic duplicate uses symmetric mean" `Quick test_semantic_duplicate_uses_symmetric_mean;
           test_case "relationship proposal requires both orientations" `Quick
             test_relationship_proposal_requires_both_orientations;
         ] );

@@ -1,7 +1,43 @@
-(* Shared setup for the decision-model benchmarks: model selection and the
-   OpenRouter client. *)
+(* Shared setup for the decision-model benchmarks: corpus JSON accessors,
+   model selection and the OpenRouter client. *)
 
 open Reviewotron_lib
+
+(* Corpus readers fail loudly: a malformed corpus is a benchmark bug. *)
+module Corpus_json = struct
+  let assoc name = function
+    | `Assoc fields ->
+      (match List.assoc_opt name fields with
+      | Some value -> value
+      | None -> failwith (Printf.sprintf "Missing %S" name))
+    | _ -> failwith "Expected a JSON object"
+
+  let typed ~kind extract name json =
+    match extract (assoc name json) with
+    | Some value -> value
+    | None -> failwith (Printf.sprintf "%S must be %s" name kind)
+
+  let string name json =
+    typed ~kind:"a string"
+      (function
+        | `String value -> Some value
+        | _ -> None)
+      name json
+
+  let bool name json =
+    typed ~kind:"a boolean"
+      (function
+        | `Bool value -> Some value
+        | _ -> None)
+      name json
+
+  let int name json =
+    typed ~kind:"an integer"
+      (function
+        | `Int value -> Some value
+        | _ -> None)
+      name json
+end
 
 let model_of_string name =
   match List.find_opt (fun model -> String.equal (Decision_model.to_string model) name) Decision_model.all with
@@ -13,10 +49,7 @@ let model_of_string name =
             (String.concat ", " (List.map Decision_model.to_string Decision_model.all))))
 
 let selected =
-  ref
-    (match Sys.getenv_opt "DECISION_MODEL" with
-    | Some name when not (String.equal (String.trim name) "") -> Some (model_of_string (String.trim name))
-    | Some _ | None -> None)
+  ref (Stdlib.Option.map model_of_string (Stdlib.Option.bind (Sys.getenv_opt "DECISION_MODEL") Llm_provider.nonempty))
 
 let model_spec =
   ( "--model",

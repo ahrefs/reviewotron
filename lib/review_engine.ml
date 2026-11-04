@@ -532,9 +532,6 @@ module Make (AI : Api.Agent_runner) = struct
         fetch_file = job.fetch_file;
       }
 
-  let decision_client ~ctx (plugins_config : Config_types.review_plugins_config) =
-    Decision_client.of_secrets ~model:plugins_config.decision_model (Context.secrets ctx)
-
   let commit_status_to_json ({ context; state; description; completed_at } : Review_job.commit_status) =
     let fields = [ "context", `String context; "state", `String (Review_job.commit_status_state_to_string state) ] in
     let fields =
@@ -581,19 +578,21 @@ module Make (AI : Api.Agent_runner) = struct
           in
           Lwt.catch
             (fun () ->
-              let%lwt result = Decision_client.score_noul decision ~state ~question:Decision_questions.build_claim in
+              let%lwt result =
+                Decision_client.score_noul decision ~agent_name:"decision_build_claim_guard" ~state
+                  ~question:Decision_questions.build_claim
+              in
               match result with
               | Error error ->
                 log#warn "%sdecision build-claim guard failed for %s:%d: %s" log_prefix finding.path finding.line error;
                 Lwt.return (Some sourced, None)
               | Ok ({ probability; cost } : Decision_client.noul_output) ->
-                let cost = { cost with agent_name = "decision_build_claim_guard" } in
-                (match Decision_model.build_claim_guard_rejects ~threshold ~probability with
-                | true ->
-                  log#info "%sdecision build-claim guard rejected false claim at %s:%d (Noul %.3f)" log_prefix
-                    finding.path finding.line probability;
-                  Lwt.return (None, Some cost)
-                | false -> Lwt.return (Some sourced, Some cost)))
+              match Decision_model.build_claim_guard_rejects ~threshold ~probability with
+              | true ->
+                log#info "%sdecision build-claim guard rejected false claim at %s:%d (Noul %.3f)" log_prefix
+                  finding.path finding.line probability;
+                Lwt.return (None, Some cost)
+              | false -> Lwt.return (Some sourced, Some cost))
             (fun exn ->
               log#warn "%sdecision build-claim guard raised for %s:%d: %s" log_prefix finding.path finding.line
                 (Exn.str exn);
@@ -613,9 +612,9 @@ module Make (AI : Api.Agent_runner) = struct
 
   let run_suggestion_guard decision ~threshold ~diff ?log_context sourced_findings =
     let log_prefix = log_context_prefix log_context in
-    let score ~state ~question =
+    let score ~agent_name ~state ~question =
       Lwt.catch
-        (fun () -> Decision_client.score_noul decision ~state ~question)
+        (fun () -> Decision_client.score_noul decision ~agent_name ~state ~question)
         (fun exn -> Lwt.return (Error (Exn.str exn)))
     in
     let check sourced =
@@ -623,33 +622,34 @@ module Make (AI : Api.Agent_runner) = struct
       match finding.suggested_fix, Diff_anchor.find_file_diff_by_path ~diff finding.path with
       | Some suggested_fix, Some file_diff ->
         let state = suggestion_guard_state ~diff:file_diff finding suggested_fix in
-        (match%lwt score ~state ~question:Decision_questions.suggestion_defect with
+        (match%lwt
+           score ~agent_name:"decision_suggestion_guard" ~state ~question:Decision_questions.suggestion_defect
+         with
         | Error error ->
           log#warn "%sdecision suggestion guard failed for %s:%d: %s" log_prefix finding.path finding.line error;
           Lwt.return (sourced, [])
         | Ok ({ probability = defect_probability; cost = defect_cost } : Decision_client.noul_output) ->
-          let defect_cost = { defect_cost with agent_name = "decision_suggestion_guard" } in
-          (match Float.compare defect_probability threshold >= 0 with
-          | false -> Lwt.return (sourced, [ defect_cost ])
-          | true ->
-          match%lwt score ~state ~question:Decision_questions.suggestion_plausibility with
-          | Error error ->
-            log#warn "%sdecision suggestion plausibility check failed for %s:%d: %s" log_prefix finding.path
-              finding.line error;
-            Lwt.return (sourced, [ defect_cost ])
-          | Ok ({ probability = plausibility_probability; cost = plausibility_cost } : Decision_client.noul_output) ->
-            let plausibility_cost = { plausibility_cost with agent_name = "decision_suggestion_plausibility" } in
-            let sourced =
-              match
-                Decision_model.suggestion_guard_removes ~threshold ~defect_probability ~plausibility_probability
-              with
-              | true ->
-                log#info "%sdecision suggestion guard removed defective fix at %s:%d (defect %.3f, plausibility %.3f)"
-                  log_prefix finding.path finding.line defect_probability plausibility_probability;
-                { sourced with finding = { finding with suggested_fix = None } }
-              | false -> sourced
-            in
-            Lwt.return (sourced, [ defect_cost; plausibility_cost ])))
+        match Float.compare defect_probability threshold >= 0 with
+        | false -> Lwt.return (sourced, [ defect_cost ])
+        | true ->
+        match%lwt
+          score ~agent_name:"decision_suggestion_plausibility" ~state
+            ~question:Decision_questions.suggestion_plausibility
+        with
+        | Error error ->
+          log#warn "%sdecision suggestion plausibility check failed for %s:%d: %s" log_prefix finding.path finding.line
+            error;
+          Lwt.return (sourced, [ defect_cost ])
+        | Ok ({ probability = plausibility_probability; cost = plausibility_cost } : Decision_client.noul_output) ->
+          let sourced =
+            match Decision_model.suggestion_guard_removes ~threshold ~defect_probability ~plausibility_probability with
+            | true ->
+              log#info "%sdecision suggestion guard removed defective fix at %s:%d (defect %.3f, plausibility %.3f)"
+                log_prefix finding.path finding.line defect_probability plausibility_probability;
+              { sourced with finding = { finding with suggested_fix = None } }
+            | false -> sourced
+          in
+          Lwt.return (sourced, [ defect_cost; plausibility_cost ]))
       | None, _ | Some _, None -> Lwt.return (sourced, [])
     in
     let%lwt checked = Lwt_list.map_p check sourced_findings in
@@ -766,7 +766,7 @@ module Make (AI : Api.Agent_runner) = struct
           @ plugin_findings
         in
         let sourced_findings = deduplicate_sourced_findings sourced in
-        let decision = decision_client ~ctx plugins_config in
+        let decision = Decision_client.of_secrets ~model:plugins_config.decision_model (Context.secrets ctx) in
         let%lwt sourced_findings, build_claim_guard_costs =
           match plugins_config.decision_build_claim_guard_enabled, decision with
           | false, _ -> Lwt.return (sourced_findings, [])
@@ -782,8 +782,8 @@ module Make (AI : Api.Agent_runner) = struct
                 Lwt.return []
             in
             let threshold =
-              Decision_client.threshold decision plugins_config.decision_build_claim_guard_threshold (fun thresholds ->
-                thresholds.build_claim_guard)
+              Stdlib.Option.value plugins_config.decision_build_claim_guard_threshold
+                ~default:(Decision_client.thresholds decision).build_claim_guard
             in
             run_build_claim_guard decision ~threshold ~diff ~file_contents:job.file_contents ~fetch_file:job.fetch_file
               ~completed_commit_checks ~log_context sourced_findings
@@ -796,8 +796,8 @@ module Make (AI : Api.Agent_runner) = struct
             Lwt.return (sourced_findings, [])
           | true, Some decision ->
             let threshold =
-              Decision_client.threshold decision plugins_config.decision_suggestion_guard_threshold (fun thresholds ->
-                thresholds.suggestion_guard)
+              Stdlib.Option.value plugins_config.decision_suggestion_guard_threshold
+                ~default:(Decision_client.thresholds decision).suggestion_guard
             in
             run_suggestion_guard decision ~threshold ~diff ~log_context sourced_findings
         in

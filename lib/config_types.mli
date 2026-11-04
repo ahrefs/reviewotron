@@ -36,6 +36,15 @@ val confidence_to_string : confidence -> string
 val confidence_to_json : confidence -> Yojson.Basic.t
 val confidence_of_json : Yojson.Basic.t -> confidence
 
+(** How the decision model takes part in security triage. *)
+type decision_triage_mode =
+  | Off
+  | Route  (** Replace primary triage, falling back to it when the decision model is unavailable or skips a file. *)
+  | Gate  (** Run primary triage, then require decision-model support before each class analysis. *)
+
+(** Config spelling: ["off"], ["route"] or ["gate"]. *)
+val decision_triage_mode_to_string : decision_triage_mode -> string
+
 (** Model performance tier for per-agent configuration in plugin settings.
     Structurally identical to {!Agent_runner.model_tier} but defined
     separately to avoid coupling config types to the agent runner. *)
@@ -87,10 +96,9 @@ type security_plugin_config = {
   analysis_effort : Effort.t option;
   validator_model_tier : model_tier;
   confidence_threshold : confidence;
-  decision_triage_enabled : bool;
-  decision_triage_threshold : float option;  (** [None] uses the decision model's calibrated value. *)
-  decision_analysis_gate_enabled : bool;
-  decision_analysis_gate_threshold : float option;
+  decision_triage : decision_triage_mode;
+  decision_triage_threshold : float option;
+    (** Applies to the active [decision_triage] mode. [None] uses the decision model's calibrated value for it. *)
   decision_validator_cascade_enabled : bool;
   decision_grouping_enabled : bool;
   decision_grouping_threshold : float option;

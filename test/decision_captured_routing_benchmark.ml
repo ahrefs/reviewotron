@@ -11,17 +11,9 @@ type review_case = {
   files : file_case list;
 }
 
-let assoc name = function
-  | `Assoc fields ->
-    (match List.assoc_opt name fields with
-    | Some value -> value
-    | None -> failwith (Printf.sprintf "Missing %S" name))
-  | _ -> failwith "Expected a JSON object"
+let assoc = Decision_benchmark_env.Corpus_json.assoc
 
-let string name json =
-  match assoc name json with
-  | `String value -> value
-  | _ -> failwith (Printf.sprintf "%S must be a string" name)
+let string = Decision_benchmark_env.Corpus_json.string
 
 let file_case_of_json json =
   { path = string "path" json; status = string "status" json; annotated_diff = string "annotated_diff" json }

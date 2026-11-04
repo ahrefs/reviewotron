@@ -83,6 +83,32 @@ let confidence_jsonschema =
     ~enum:(List.map confidence_to_string all_confidences)
     ~description:"Confidence level: high, medium, or low."
 
+(** How the decision model takes part in security triage. *)
+type decision_triage_mode =
+  | Off
+  | Route
+  | Gate
+
+let all_decision_triage_modes = [ Off; Route; Gate ]
+
+let decision_triage_mode_to_string = function
+  | Off -> "off"
+  | Route -> "route"
+  | Gate -> "gate"
+
+let decision_triage_mode_to_json mode = `String (decision_triage_mode_to_string mode)
+
+let decision_triage_mode_of_json = function
+  | `String "off" -> Off
+  | `String "route" -> Route
+  | `String "gate" -> Gate
+  | json -> Melange_json.of_json_error ~json "expected a decision_triage string: off, route, or gate"
+
+let decision_triage_mode_jsonschema =
+  string_enum_jsonschema
+    ~enum:(List.map decision_triage_mode_to_string all_decision_triage_modes)
+    ~description:"Decision-model triage mode: off, route, or gate."
+
 (** Model performance tier for per-agent configuration in plugin settings.
     Structurally identical to {!Agent_runner.model_tier} but defined
     separately to avoid coupling config types to the agent runner. *)
@@ -226,26 +252,18 @@ type security_plugin_config = {
      [@json.default Standard] [@jsonschema.description "Model tier for the adversarial validator."]
   confidence_threshold : confidence;
      [@json.default Medium] [@jsonschema.description "Minimum triage confidence to trigger analysis."]
-  decision_triage_enabled : bool;
-     [@json.default false]
+  decision_triage : decision_triage_mode;
+     [@json.default Off]
      [@jsonschema.description
-       "Use review_plugins.decision_model for security triage, falling back to the primary triage agent if the \
-        decision model is unavailable."]
+       "How review_plugins.decision_model takes part in security triage. off: not at all. route: replace the primary \
+        triage agent, falling back to it when the decision model is unavailable or skips a file. gate: run primary \
+        triage, then require independent decision-model support before each vulnerability-class analysis; decision \
+        errors fail open."]
   decision_triage_threshold : float option;
      [@json.option]
      [@jsonschema.description
-       "Minimum Noul probability, from 0 to 1, that triggers deeper security analysis. Null uses the decision model's \
-        calibrated value."]
-  decision_analysis_gate_enabled : bool;
-     [@json.default false]
-     [@jsonschema.description
-       "After primary triage, require independent decision-model support before running each vulnerability-class \
-        analysis. Decision errors fail open."]
-  decision_analysis_gate_threshold : float option;
-     [@json.option]
-     [@jsonschema.description
-       "Minimum Noul probability, from 0 to 1, required by the post-triage analysis gate. Null uses the decision \
-        model's calibrated value."]
+       "Minimum Noul probability, from 0 to 1, for the active decision_triage mode. Null uses the decision model's \
+        calibrated value for that mode."]
   decision_validator_cascade_enabled : bool;
      [@json.default false]
      [@jsonschema.description
@@ -296,10 +314,8 @@ let default_security_plugin_config =
     analysis_effort = Some Effort.Medium;
     validator_model_tier = Standard;
     confidence_threshold = Medium;
-    decision_triage_enabled = false;
+    decision_triage = Off;
     decision_triage_threshold = None;
-    decision_analysis_gate_enabled = false;
-    decision_analysis_gate_threshold = None;
     decision_validator_cascade_enabled = false;
     decision_grouping_enabled = false;
     decision_grouping_threshold = None;
@@ -311,7 +327,7 @@ let default_security_plugin_config =
 (** Aggregated review plugin configuration. *)
 type review_plugins_config = {
   decision_model : Decision_model.t;
-     [@json.default Decision_model.Gpt_6_luna]
+     [@json.default Decision_model.default]
      [@jsonschema.description
        "Decision model for every decision_* feature, called through OpenRouter's Decisions API: gpt-6-luna (default) \
         or jev. Requires openrouter_decisions_api_key or openrouter_api_key."]
@@ -344,7 +360,7 @@ type review_plugins_config = {
 
 let default_review_plugins_config =
   {
-    decision_model = Decision_model.Gpt_6_luna;
+    decision_model = Decision_model.default;
     decision_build_claim_guard_enabled = false;
     decision_build_claim_guard_threshold = None;
     decision_suggestion_guard_enabled = false;
@@ -439,10 +455,9 @@ let ignored_file_regex_probe_paths = [ "a"; "a/b"; "src/main.ml"; "src/security.
 let regex_matches_all_probe_paths regex = List.for_all (Re2.matches regex) ignored_file_regex_probe_paths
 
 let validate_probability_threshold ~json ~name threshold =
-  match threshold with
-  | threshold when Float.is_nan threshold || threshold < 0.0 || threshold > 1.0 ->
-    Melange_json.of_json_error ~json (Printf.sprintf "%s must be between 0 and 1 (got %.4f)" name threshold)
-  | _ -> ()
+  match Decision_model.is_probability threshold with
+  | true -> ()
+  | false -> Melange_json.of_json_error ~json (Printf.sprintf "%s must be between 0 and 1 (got %.4f)" name threshold)
 
 let validate_ignored_file_regex ~json pattern =
   match Re2.create pattern with
@@ -456,34 +471,7 @@ let validate_ignored_file_regex ~json pattern =
          pattern)
   | Ok _ -> ()
 
-let object_field name = function
-  | `Assoc fields -> List.assoc_opt name fields
-  | _ -> None
-
-(* The jev_* fields were renamed when decisions moved to OpenRouter. Extra
-   fields are otherwise ignored, so a stale name would silently disable the
-   feature it configures. *)
-let reject_legacy_decision_fields ~json ~path section =
-  match section with
-  | Some (`Assoc fields) ->
-    List.iter
-      (fun (name, _) ->
-        match CCString.chop_prefix ~pre:"jev_" name with
-        | None -> ()
-        | Some suffix ->
-          Melange_json.of_json_error ~json
-            (Printf.sprintf
-               "%s.%s was renamed to %s.decision_%s; decision features now call OpenRouter with \
-                review_plugins.decision_model (default gpt-6-luna)"
-               path name path suffix))
-      fields
-  | Some _ | None -> ()
-
 let config_of_json (json : Yojson.Basic.t) : config =
-  let plugins_json = object_field "review_plugins" json in
-  reject_legacy_decision_fields ~json ~path:"review_plugins" plugins_json;
-  reject_legacy_decision_fields ~json ~path:"review_plugins.security"
-    (Stdlib.Option.bind plugins_json (object_field "security"));
   let config = Config_codec.of_json json in
   let plugins = config.review_plugins in
   List.iter (validate_ignored_file_regex ~json) config.ignored_file_regexes;
@@ -491,15 +479,10 @@ let config_of_json (json : Yojson.Basic.t) : config =
     (fun (name, threshold) -> Stdlib.Option.iter (validate_probability_threshold ~json ~name) threshold)
     [
       "decision_triage_threshold", plugins.security.decision_triage_threshold;
-      "decision_analysis_gate_threshold", plugins.security.decision_analysis_gate_threshold;
       "decision_grouping_threshold", plugins.security.decision_grouping_threshold;
       "decision_suggestion_guard_threshold", plugins.decision_suggestion_guard_threshold;
       "decision_build_claim_guard_threshold", plugins.decision_build_claim_guard_threshold;
     ];
-  (match plugins.security.decision_triage_enabled, plugins.security.decision_analysis_gate_enabled with
-  | true, true ->
-    Melange_json.of_json_error ~json "decision_triage_enabled and decision_analysis_gate_enabled cannot both be true"
-  | true, false | false, true | false, false -> ());
   config
 
 let config_help_json () = Yojson.Basic.pretty_to_string config_jsonschema

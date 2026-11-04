@@ -1,15 +1,18 @@
 # Jev analysis-retry experiment
 
-Reviewotron already retries structurally invalid analysis output. This benchmark
+Reviewotron already retries structurally invalid analysis output. This experiment
 tests a different decision: whether a well-formed analysis failed to resolve its
 routed security concern and deserves one corrective retry.
 
 Run it with:
 
 ```sh
-OPENROUTER_API_KEY=... dune exec ./test/decision_noul_benchmark.exe -- --model jev \
-  --corpus test/jev_retry_cases.json --repeats 5 > results.jsonl
+OPENROUTER_API_KEY=... dune exec ./test/decision_calibration_benchmark.exe -- --model jev \
+  --feature corpus --corpus test/jev_retry_cases.json --repeats 5 > results.jsonl
 ```
+
+The retry question is not in production, so the corpus carries it in its
+`question` field and `--feature corpus` asks it.
 
 The balanced corpus contains 18 cases. Retry cases include empty misses,
 incorrect safe conclusions, an unrelated but structurally valid candidate, one

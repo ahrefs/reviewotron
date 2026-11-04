@@ -7,6 +7,10 @@
 (** Whether a changed file warrants dedicated analysis for one class. *)
 val triage : Config_types.vuln_class -> Decision_client.noul_question
 
+(** One triage question per class, named by {!Security_types.vuln_class_to_string},
+    as production triage sends them in one request. *)
+val triage_questions : Config_types.vuln_class list -> (string * Decision_client.noul_question) list
+
 (** Whether diff evidence directly establishes a security candidate. *)
 val candidate_supported : Decision_client.noul_question
 
@@ -31,3 +35,7 @@ val suggestion_plausibility : Decision_client.noul_question
 
 (** Whether source or exact-commit checks disprove a claimed build failure. *)
 val build_claim : Decision_client.noul_question
+
+(** {!candidate_supported} and {!candidate_fatal_defect}, named as candidate
+    validation sends them in one request. *)
+val candidate_validation : (string * Decision_client.noul_question) list

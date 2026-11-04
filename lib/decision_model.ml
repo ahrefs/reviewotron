@@ -3,20 +3,18 @@ type t =
   | Gpt_6_luna
 
 let all = [ Jev; Gpt_6_luna ]
+let default = Gpt_6_luna
 
 let to_string = function
   | Jev -> "jev"
   | Gpt_6_luna -> "gpt-6-luna"
 
-let t_to_json model = `String (to_string model)
+let to_json model = `String (to_string model)
 
-let t_of_json = function
+let of_json = function
   | `String "jev" -> Jev
   | `String "gpt-6-luna" -> Gpt_6_luna
   | json -> Melange_json.of_json_error ~json "expected a decision_model string: jev or gpt-6-luna"
-
-let to_json = t_to_json
-let of_json = t_of_json
 
 let t_jsonschema : Yojson.Basic.t =
   `Assoc
@@ -29,6 +27,9 @@ let t_jsonschema : Yojson.Basic.t =
 let openrouter_id = function
   | Jev -> "typesafe/jev-1.13"
   | Gpt_6_luna -> "openai/gpt-6-luna-decisions"
+
+(* NaN fails both comparisons. *)
+let is_probability value = value >= 0.0 && value <= 1.0
 
 let fallback_input_price_per_million = function
   | Jev -> 0.042

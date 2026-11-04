@@ -7,27 +7,13 @@ type pair_case = {
   finding_b : Yojson.Basic.t;
 }
 
-let assoc name = function
-  | `Assoc fields ->
-    (match List.assoc_opt name fields with
-    | Some value -> value
-    | None -> failwith (Printf.sprintf "Missing %S" name))
-  | _ -> failwith "Expected a JSON object"
+let assoc = Decision_benchmark_env.Corpus_json.assoc
 
-let string name json =
-  match assoc name json with
-  | `String value -> value
-  | _ -> failwith (Printf.sprintf "%S must be a string" name)
+let string = Decision_benchmark_env.Corpus_json.string
 
-let bool name json =
-  match assoc name json with
-  | `Bool value -> value
-  | _ -> failwith (Printf.sprintf "%S must be a boolean" name)
+let bool = Decision_benchmark_env.Corpus_json.bool
 
-let int name json =
-  match assoc name json with
-  | `Int value -> value
-  | _ -> failwith (Printf.sprintf "%S must be an integer" name)
+let int = Decision_benchmark_env.Corpus_json.int
 
 let pair_case_of_json json =
   {
@@ -90,21 +76,6 @@ let consolidation_question : Decision_client.noul_question =
        remediation step. A broad patch that could happen to address both is insufficient.";
   }
 
-let grouping_proposal_question : Decision_client.noul_question =
-  {
-    instructions =
-      "Should `finding_a` and `finding_b` be sent together to a consolidation verifier because they plausibly arise \
-       from the same causal defect or missing control and may share one repair? This judgment only retrieves possible \
-       groups; it does not merge or suppress either confirmed finding.";
-    true_criteria =
-      "The findings plausibly share one causal source, source-of-truth policy, generated artifact, unsafe input, or \
-       missing control such that one repair may resolve both. Include cases needing repository evidence to confirm the \
-       relationship.";
-    false_criteria =
-      "The findings are independent defects or merely repeat a vulnerability pattern, principal, file, feature, or \
-       review context without a plausible shared causal source or control.";
-  }
-
 let emit ~case ~order ~repetition ~elapsed result =
   let common =
     [
@@ -133,7 +104,7 @@ let emit ~case ~order ~repetition ~elapsed result =
 let run_order ~client ~question ~case ~repetition (order, finding_a, finding_b) =
   let state = `Assoc [ "finding_a", finding_a; "finding_b", finding_b ] in
   let started = Unix.gettimeofday () in
-  let%lwt result = Decision_client.score_noul client ~state ~question in
+  let%lwt result = Decision_client.score_noul client ~agent_name:"decision_dedup_benchmark" ~state ~question in
   emit ~case ~order ~repetition ~elapsed:(Unix.gettimeofday () -. started) result;
   Lwt.return_unit
 
@@ -181,7 +152,7 @@ let () =
     let question =
       match !consolidation, !grouping_proposal with
       | true, false -> consolidation_question
-      | false, true -> grouping_proposal_question
+      | false, true -> Decision_questions.grouping_proposal
       | false, false -> dedup_question
       | true, true -> raise (Arg.Bad "choose only one benchmark question")
     in

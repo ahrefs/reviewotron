@@ -399,11 +399,13 @@ Output is free for both. Reported costs come from OpenRouter's `usage.cost`.
 - **Thresholds.** Probabilities do not transfer between models, so each model
   carries its own calibrated defaults. A `decision_*_threshold` left `null`
   uses them; a number overrides them for that feature.
+  `decision_triage_threshold` applies to whichever `decision_triage` mode is
+  active.
 
 | Threshold | `jev` | `gpt-6-luna` |
 |---|---:|---:|
-| Triage | 0.80 | 0.70 |
-| Analysis gate | 0.60 | 0.60 |
+| Triage (`"route"`) | 0.80 | 0.70 |
+| Analysis gate (`"gate"`) | 0.60 | 0.60 |
 | Grouping | 0.70 | 0.30 |
 | Build-claim guard | 0.60 | 0.70 |
 | Suggestion guard | 0.50 | 0.50 |
@@ -503,10 +505,8 @@ version control. Webhook/server commands do not read the user-global files.
       "analysis_effort": "medium",
       "validator_model_tier": "standard",
       "confidence_threshold": "medium",
-      "decision_triage_enabled": false,
+      "decision_triage": "off",
       "decision_triage_threshold": null,
-      "decision_analysis_gate_enabled": false,
-      "decision_analysis_gate_threshold": null,
       "decision_validator_cascade_enabled": false,
       "decision_grouping_enabled": false,
       "decision_grouping_threshold": null,
@@ -578,10 +578,8 @@ generated-file header markers. Broad folders such as `generated/`, `dist/`,
 | `analysis_effort` | `"medium"` | Analysis effort: `"low"`, `"medium"`, `"high"`, or `"xhigh"`. OpenRouter sends it as reasoning effort; direct Anthropic sends native effort with adaptive thinking where the model supports that level. Set to `null` for the provider default. |
 | `validator_model_tier` | `"standard"` | Model tier for the adversarial validator. |
 | `confidence_threshold` | `"medium"` | Minimum triage confidence to trigger analysis for enabled classes. `"high"` = only high-confidence signals. `"medium"` = high + medium. `"low"` = all signals. |
-| `decision_triage_enabled` | `false` | Replace the generative triage call with the decision model. If the key is absent, the service fails, or any file is not evaluated, Reviewotron falls back to the primary triage agent. |
-| `decision_triage_threshold` | `null` | Minimum Noul probability that routes a file to per-class analysis, from 0 to 1. `null` uses the model's calibrated value. |
-| `decision_analysis_gate_enabled` | `false` | Run normal triage, then require independent decision-model support before launching each per-class analysis agent. Errors and incomplete evaluations fail open. This cannot be enabled with `decision_triage_enabled`. |
-| `decision_analysis_gate_threshold` | `null` | Minimum Noul probability required by the post-triage analysis gate, from 0 to 1. `null` uses the model's calibrated value. |
+| `decision_triage` | `"off"` | How the decision model takes part in security triage. `"route"` replaces the generative triage call; if the key is absent, the service fails, or any file is not evaluated, Reviewotron falls back to the primary triage agent. `"gate"` runs normal triage, then requires independent decision-model support before launching each per-class analysis agent; errors and incomplete evaluations fail open. |
+| `decision_triage_threshold` | `null` | Minimum Noul probability for the active `decision_triage` mode, from 0 to 1. `null` uses the model's calibrated value for that mode. |
 | `decision_validator_cascade_enabled` | `false` | Ask the decision model two independent questions over each analysis candidate and its exact changed-file evidence. Directly supported candidates with a concrete deterministic proof, and (Jev only) demonstrated fatal defects, bypass the reasoning validator; uncertain judgments and errors still run it. |
 | `decision_grouping_enabled` | `false` | After validation, ask the decision model which confirmed-finding pairs warrant shared verification. Verified consolidations and coherent remediation pairs are published as one notification group that retains every member location, impact, scenario, and proposed fix. |
 | `decision_grouping_threshold` | `null` | Minimum probability required in both candidate orderings for a consolidation proposal or notification group, from 0 to 1. `null` uses the model's calibrated value. |
@@ -650,9 +648,9 @@ Before triage, Reviewotron runs a deterministic scan over changed paths and adde
 
 By default, the triage agent scans the diff for security-relevant patterns and classifies them by vulnerability type. This is intentionally biased toward **over-flagging** — it's cheap to run an analysis agent that finds nothing, costly to miss a real issue.
 
-When `decision_triage_enabled` is true, the decision model instead answers one independent Noul question per enabled vulnerability class for every changed file. Scores at or above the triage threshold route that file and class to analysis. Model versions are pinned so a calibrated threshold cannot change silently. Reviewotron falls back to the default triager if the model is unavailable, refuses a file, or fails to evaluate every file.
+When `decision_triage` is `"route"`, the decision model instead answers one independent Noul question per enabled vulnerability class for every changed file. Scores at or above the triage threshold route that file and class to analysis. Model versions are pinned so a calibrated threshold cannot change silently. Reviewotron falls back to the default triager if the model is unavailable, refuses a file, or fails to evaluate every file.
 
-When `decision_analysis_gate_enabled` is true, the default triager still runs. The decision model then acts as a conservative class-level gate: an analysis agent runs only when both systems route that vulnerability class. `always_analyze_vuln_classes` bypasses this gate. A missing key, service failure, refusal, or incomplete file evaluation keeps every primary route, so decision-model availability cannot suppress analysis.
+When `decision_triage` is `"gate"`, the default triager still runs. The decision model then acts as a conservative class-level gate: an analysis agent runs only when both systems route that vulnerability class. `always_analyze_vuln_classes` bypasses this gate. A missing key, service failure, refusal, or incomplete file evaluation keeps every primary route, so decision-model availability cannot suppress analysis.
 
 When `decision_validator_cascade_enabled` is true, the decision model scores whether each candidate is directly supported and whether the evidence demonstrates a fatal validation defect. Reviewotron confirms only candidates inside the model's confirm boundary (support at or above 0.62 and fatal defect at or below 0.30 for Jev; 0.40 and 0.30 for GPT-6 Luna), and only when its existing deterministic proof enforcement accepts the candidate. With Jev it also rejects candidates with fatal defect at or above 0.70 and support at or below 0.30. GPT-6 Luna has no reject boundary, because it scored several validator-confirmed candidates as fatally defective. Every other candidate follows the normal reasoning-validator path. After that validator confirms a candidate, the decision model also checks the candidate diff against files the validator fetched. It rejects the confirmation only when those files directly constrain the claimed attacker-controlled source (probability at least 0.60 for Jev, 0.30 for GPT-6 Luna) and direct support falls to at most 0.30. Missing credentials, missing evidence, and service failures preserve the normal validator result.
 

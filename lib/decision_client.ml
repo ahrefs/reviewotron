@@ -15,41 +15,20 @@ type t = {
 
 let create ?(endpoint = default_endpoint) ~model ~api_key () = { model; api_key; endpoint }
 
-let nonblank key =
-  Stdlib.Option.bind key (fun key ->
-    match String.trim key with
-    | "" -> None
-    | key -> Some key)
-
 let of_secrets ~model (secrets : Config_types.secrets) =
-  let key =
-    match nonblank secrets.openrouter_decisions_api_key with
-    | Some key -> Some key
-    | None -> nonblank secrets.openrouter_api_key
-  in
-  Stdlib.Option.map
-    (fun api_key -> create ~endpoint:(endpoint_of_base_url (Llm_provider.openrouter_base_url ())) ~model ~api_key ())
-    key
+  [ secrets.openrouter_decisions_api_key; secrets.openrouter_api_key ]
+  |> List.find_map (fun key -> Stdlib.Option.bind key Llm_provider.nonempty)
+  |> Stdlib.Option.map (fun api_key ->
+    create ~endpoint:(endpoint_of_base_url (Llm_provider.openrouter_base_url ())) ~model ~api_key ())
 
 let model client = client.model
-
-let threshold client configured select =
-  Stdlib.Option.value configured ~default:(select (Decision_model.thresholds client.model))
+let thresholds client = Decision_model.thresholds client.model
 
 type noul_question = {
   instructions : string;
   true_criteria : string;
   false_criteria : string;
 }
-
-type graded_question = {
-  instructions : string;
-  criteria : string list;
-}
-
-type question =
-  | Noul of noul_question
-  | Score of graded_question
 
 type response = {
   answers : Yojson.Basic.t;
@@ -58,21 +37,13 @@ type response = {
 
 let cost response = response.cost
 
-let question_json = function
-  | Noul { instructions; true_criteria; false_criteria } ->
-    `Assoc
-      [
-        "type", `String "noul";
-        "instructions", `String instructions;
-        "criteria", `Assoc [ "true", `String true_criteria; "false", `String false_criteria ];
-      ]
-  | Score { instructions; criteria } ->
-    `Assoc
-      [
-        "type", `String "score";
-        "instructions", `String instructions;
-        "criteria", `List (List.map (fun criterion -> `String criterion) criteria);
-      ]
+let question_json { instructions; true_criteria; false_criteria } =
+  `Assoc
+    [
+      "type", `String "noul";
+      "instructions", `String instructions;
+      "criteria", `Assoc [ "true", `String true_criteria; "false", `String false_criteria ];
+    ]
 
 let request_body ~model ~state ~questions =
   `Assoc
@@ -90,32 +61,40 @@ let assoc name = function
     | None -> Error (Printf.sprintf "decision response is missing %S" name))
   | _ -> Error "decision response must be a JSON object"
 
+let typed ~kind extract name value =
+  match extract value with
+  | Some value -> Ok value
+  | None -> Error (Printf.sprintf "decision response field %S must be %s" name kind)
+
+let number = function
+  | `Float value -> Some value
+  | `Int value -> Some (Float.of_int value)
+  | _ -> None
+
+let field ~kind extract name json = Result.bind (assoc name json) (typed ~kind extract name)
+
 let string_value name json =
-  let* value = assoc name json in
-  match value with
-  | `String value -> Ok value
-  | _ -> Error (Printf.sprintf "decision response field %S must be a string" name)
+  field ~kind:"a string"
+    (function
+      | `String value -> Some value
+      | _ -> None)
+    name json
 
 let int_value name json =
-  let* value = assoc name json in
-  match value with
-  | `Int value -> Ok value
-  | _ -> Error (Printf.sprintf "decision response field %S must be an integer" name)
+  field ~kind:"an integer"
+    (function
+      | `Int value -> Some value
+      | _ -> None)
+    name json
 
-let float_value name json =
-  let* value = assoc name json in
-  match value with
-  | `Float value -> Ok value
-  | `Int value -> Ok (Float.of_int value)
-  | _ -> Error (Printf.sprintf "decision response field %S must be a number" name)
+let float_value name json = field ~kind:"a number" number name json
 
 let optional_float_value name json =
   match assoc name json with
-  | Error _ -> Ok None
-  | Ok `Null -> Ok None
-  | Ok _ -> Result.map Stdlib.Option.some (float_value name json)
+  | Error _ | Ok `Null -> Ok None
+  | Ok value -> Result.map Stdlib.Option.some (typed ~kind:"a number" number name value)
 
-let response_of_body ~model body =
+let response_of_body ~agent_name ~model body =
   let* json =
     match Yojson.Basic.from_string body with
     | json -> Ok json
@@ -134,7 +113,7 @@ let response_of_body ~model body =
   in
   let cost : Cost_tracking.agent_cost =
     {
-      agent_name = "decision";
+      agent_name;
       model = response_model;
       input_tokens;
       output_tokens;
@@ -157,21 +136,9 @@ let typed_answer ~expected response name =
 let noul_answer response name =
   let* answer = typed_answer ~expected:"noul" response name in
   let* probability = float_value "noul" answer in
-  match Float.is_nan probability || probability < 0.0 || probability > 1.0 with
-  | true -> Error (Printf.sprintf "decision model returned out-of-range Noul probability %.4f" probability)
-  | false -> Ok probability
-
-let score_answer ~levels response name =
-  let* answer = typed_answer ~expected:"score" response name in
-  let* score = float_value "score" answer in
-  let* confidence = float_value "confidence" answer in
-  let max_score = Float.of_int (levels - 1) in
-  match () with
-  | () when Float.is_nan score || score < 0.0 || score > max_score ->
-    Error (Printf.sprintf "decision model returned out-of-range Score %.4f" score)
-  | () when Float.is_nan confidence || confidence < 0.0 || confidence > 1.0 ->
-    Error (Printf.sprintf "decision model returned out-of-range Score confidence %.4f" confidence)
-  | () -> Ok (score, confidence)
+  match Decision_model.is_probability probability with
+  | true -> Ok probability
+  | false -> Error (Printf.sprintf "decision model returned out-of-range Noul probability %.4f" probability)
 
 let retryable_status = function
   | 429 | 502 | 503 | 529 -> true
@@ -181,7 +148,7 @@ let retryable_status = function
    to answer question ..."). The same input is refused again, so retrying only
    adds latency. *)
 let refusal = function
-  | Http_util.Status (502, body) -> CCString.mem ~sub:"refused to answer" body
+  | Http_util.Status (502, body) -> String_ext.contains_sub ~sub:"refused to answer" body
   | Http_util.Status _ | Transport _ | Local _ -> false
 
 let rec request client ~body attempt =
@@ -196,41 +163,19 @@ let rec request client ~body attempt =
   | Ok response -> Lwt.return (Ok response)
   | Error error -> Lwt.return (Error (Http_util.error_to_string error))
 
-let decide client ~state ~questions =
+let decide client ~agent_name ~state ~questions =
   let body = request_body ~model:client.model ~state ~questions in
   let%lwt response = request client ~body 0 in
-  Lwt.return (Result.bind response (response_of_body ~model:client.model))
+  Lwt.return (Result.bind response (response_of_body ~agent_name ~model:client.model))
 
 type noul_output = {
   probability : float;
   cost : Cost_tracking.agent_cost;
 }
 
-type graded_output = {
-  score : float;
-  confidence : float;
-  cost : Cost_tracking.agent_cost;
-}
-
-let score_noul client ~state ~question =
-  let%lwt response = decide client ~state ~questions:[ "decision", Noul question ] in
+let score_noul client ~agent_name ~state ~question =
+  let%lwt response = decide client ~agent_name ~state ~questions:[ "decision", question ] in
   Lwt.return
     (let* response = response in
      let* probability = noul_answer response "decision" in
      Ok { probability; cost = response.cost })
-
-let graded_output_of_response ~levels response =
-  let* score, confidence = score_answer ~levels response "decision" in
-  Ok { score; confidence; cost = response.cost }
-
-let graded_output_of_body ~model ~levels body =
-  let* response = response_of_body ~model body in
-  graded_output_of_response ~levels response
-
-let score_dimension client ~state ~question =
-  let levels = List.length question.criteria in
-  match levels < 2 || levels > 10 with
-  | true -> Lwt.return (Error "decision Score criteria must contain between 2 and 10 levels")
-  | false ->
-    let%lwt response = decide client ~state ~questions:[ "decision", Score question ] in
-    Lwt.return (Result.bind response (graded_output_of_response ~levels))
