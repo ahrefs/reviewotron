@@ -189,8 +189,6 @@ let format_footer (costs : review_cost list) =
         | _ :: _ -> Some (Printf.sprintf "%s: %d %s" c.plugin n (pluralize ~n "agent")))
       costs
   in
-  (* With no agent recorded there are no per-plugin parts; omit the
-     parenthesised breakdown rather than print an empty "()". *)
   let details =
     match plugin_parts with
     | [] -> ""

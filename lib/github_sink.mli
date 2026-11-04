@@ -27,9 +27,7 @@ module Make (_ : Api.Github_review_sink) : sig
     (unit, string) result Lwt.t
 
   (** Post the visible acknowledgement used when a PR review completes
-      successfully with nothing to report. [cost_footer] is appended to the
-      LGTM text as is; pass {!Review_engine.cost_footer} so the comment follows
-      [show_review_cost] the same way a full review does. *)
+      successfully with nothing to report. *)
   val publish_success_comment :
     log_context:string option ->
     head_sha:string option ->
