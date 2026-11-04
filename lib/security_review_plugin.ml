@@ -897,65 +897,73 @@ module Make (AI : Api.Agent_runner) = struct
       Lwt.return ([], candidates, [])
     | Some decision ->
       let thresholds = Decision_client.thresholds decision in
-      let%lwt resolved, remaining, costs, judgments =
-        Lwt_list.fold_left_s
-          (fun (resolved, remaining, costs, judgments) (index, candidate) ->
-            let attempt = Printf.sprintf "candidate_%d" (index + 1) in
+      (* Candidates are scored concurrently, then folded in order so recorded
+         calls and judgments keep the candidate order. *)
+      let%lwt scored =
+        Lwt_list.map_p
+          (fun candidate ->
             let evidence = candidate_diff_evidence ~diff candidate in
             match String.trim evidence with
-            | "" -> Lwt.return (resolved, candidate :: remaining, costs, judgments)
+            | "" -> Lwt.return (candidate, None)
             | _ ->
               let%lwt result =
                 Decision_triage.score_candidate_validation decision ~agent_name:"decision_validator_cascade" ~candidate
                   ~evidence
               in
-              (match result with
-              | Error error ->
-                log#warn "%sdecision candidate validation failed: %s" log_prefix error;
-                record_call ~attempt ~costs:[] ~verdict:Prevalidation.Forwarded candidate;
-                Lwt.return
-                  ( resolved,
-                    candidate :: remaining,
-                    costs,
-                    `Assoc [ "error", `String error; "candidate", Security_types.candidate_finding_to_json candidate ]
-                    :: judgments )
-              | Ok ({ supported; fatal_defect; cost } : Decision_triage.candidate_validation_output) ->
-                let decision_name, verdict, resolved, remaining =
-                  match Decision_model.cascade_decision thresholds ~supported ~fatal_defect with
-                  | Confirm_candidate ->
-                    (match decision_confirmed_finding candidate with
-                    | Some validated -> "confirmed", Prevalidation.Confirmed, validated :: resolved, remaining
-                    | None -> "validator", Prevalidation.Forwarded, resolved, candidate :: remaining)
-                  | Reject_candidate ->
-                    let validated : Security_types.validated_finding =
-                      {
-                        candidate_id = 0;
-                        finding = candidate;
-                        verdict = Rejected;
-                        evidence_notes =
-                          Printf.sprintf
-                            "The decision model found a demonstrated fatal validation defect (support %.3f, fatal \
-                             defect %.3f)."
-                            supported fatal_defect;
-                        proof_by_construction = None;
-                      }
-                    in
-                    "rejected", Prevalidation.Rejected, validated :: resolved, remaining
-                  | Run_validator -> "validator", Prevalidation.Forwarded, resolved, candidate :: remaining
-                in
-                record_call ~attempt ~costs:[ cost ] ~verdict candidate;
-                let judgment =
-                  `Assoc
-                    [
-                      "decision", `String decision_name;
-                      "supported_probability", `Float supported;
-                      "fatal_defect_probability", `Float fatal_defect;
-                      "candidate", Security_types.candidate_finding_to_json candidate;
-                    ]
-                in
-                Lwt.return (resolved, remaining, cost :: costs, judgment :: judgments)))
+              Lwt.return (candidate, Some result))
+          candidates
+      in
+      let resolved, remaining, costs, judgments =
+        List.fold_left
+          (fun (resolved, remaining, costs, judgments) (index, (candidate, result)) ->
+            let attempt = Printf.sprintf "candidate_%d" (index + 1) in
+            match result with
+            | None -> resolved, candidate :: remaining, costs, judgments
+            | Some (Error error) ->
+              log#warn "%sdecision candidate validation failed: %s" log_prefix error;
+              record_call ~attempt ~costs:[] ~verdict:Prevalidation.Forwarded candidate;
+              ( resolved,
+                candidate :: remaining,
+                costs,
+                `Assoc [ "error", `String error; "candidate", Security_types.candidate_finding_to_json candidate ]
+                :: judgments )
+            | Some (Ok ({ supported; fatal_defect; cost } : Decision_triage.candidate_validation_output)) ->
+              let decision_name, verdict, resolved, remaining =
+                match Decision_model.cascade_decision thresholds ~supported ~fatal_defect with
+                | Confirm_candidate ->
+                  (match decision_confirmed_finding candidate with
+                  | Some validated -> "confirmed", Prevalidation.Confirmed, validated :: resolved, remaining
+                  | None -> "validator", Prevalidation.Forwarded, resolved, candidate :: remaining)
+                | Reject_candidate ->
+                  let validated : Security_types.validated_finding =
+                    {
+                      candidate_id = 0;
+                      finding = candidate;
+                      verdict = Rejected;
+                      evidence_notes =
+                        Printf.sprintf
+                          "The decision model found a demonstrated fatal validation defect (support %.3f, fatal defect \
+                           %.3f)."
+                          supported fatal_defect;
+                      proof_by_construction = None;
+                    }
+                  in
+                  "rejected", Prevalidation.Rejected, validated :: resolved, remaining
+                | Run_validator -> "validator", Prevalidation.Forwarded, resolved, candidate :: remaining
+              in
+              record_call ~attempt ~costs:[ cost ] ~verdict candidate;
+              let judgment =
+                `Assoc
+                  [
+                    "decision", `String decision_name;
+                    "supported_probability", `Float supported;
+                    "fatal_defect_probability", `Float fatal_defect;
+                    "candidate", Security_types.candidate_finding_to_json candidate;
+                  ]
+              in
+              resolved, remaining, cost :: costs, judgment :: judgments)
           ([], [], [], [])
-          (List.mapi (fun index candidate -> index, candidate) candidates)
+          (List.mapi (fun index scored -> index, scored) scored)
       in
       let resolved = List.rev resolved in
       let remaining = List.rev remaining in
@@ -1086,13 +1094,22 @@ module Make (AI : Api.Agent_runner) = struct
           let new_pairs = List.map (fun (right_id, right) -> left_id, left, right_id, right) rest in
           pairs (List.rev_append new_pairs acc) rest
       in
-      let%lwt judgments, proposed_count, grouped_count, grouping_edges, costs =
-        Lwt_list.fold_left_s
-          (fun (judgments, proposed_count, grouped_count, grouping_edges, costs) (left_id, left, right_id, right) ->
-            let%lwt probabilities, pair_costs =
+      (* Every pair's proposal judgment is independent, so they run concurrently.
+         Verification of proposed pairs stays sequential below. *)
+      let%lwt proposals =
+        Lwt_list.map_p
+          (fun ((_, left, _, right) as pair) ->
+            let%lwt scored =
               score_pair decision ~question:Decision_questions.grouping_proposal ~agent_name:"decision_grouping"
                 ?log_context left right
             in
+            Lwt.return (pair, scored))
+          (pairs [] indexed)
+      in
+      let%lwt judgments, proposed_count, grouped_count, grouping_edges, costs =
+        Lwt_list.fold_left_s
+          (fun (judgments, proposed_count, grouped_count, grouping_edges, costs)
+               ((left_id, left, right_id, right), (probabilities, pair_costs)) ->
             let common = [ "left_id", `Int left_id; "right_id", `Int right_id ] in
             let%lwt judgment, proposed, grouped, decision_costs =
               match probabilities with
@@ -1173,7 +1190,7 @@ module Make (AI : Api.Agent_runner) = struct
             let grouping_edges = if grouped then (left_id, right_id) :: grouping_edges else grouping_edges in
             let costs = List.rev_append decision_costs (List.rev_append pair_costs costs) in
             Lwt.return (judgment :: judgments, proposed_count, grouped_count, grouping_edges, costs))
-          ([], 0, 0, [], []) (pairs [] indexed)
+          ([], 0, 0, [], []) proposals
       in
       let judgments = List.rev judgments in
       Security_artifacts.write_debug_json artifacts ~filename:"decision_grouping_proposals.json" (`List judgments);
@@ -1628,14 +1645,15 @@ module Make (AI : Api.Agent_runner) = struct
            match source_constraint_decision, fetched_files with
            | None, _ | Some _, [] -> Lwt.return (join.matched, [], [])
            | Some decision, _ :: _ ->
-             Lwt_list.fold_left_s
-               (fun (matched, costs, judgments) validated ->
-                 let%lwt validated, next_costs, next_judgments =
-                   run_decision_source_constraint decision ~diff ~fetched_files ?log_context validated
-                 in
-                 Lwt.return (validated :: matched, costs @ next_costs, judgments @ next_judgments))
-               ([], [], []) join.matched
-             |> Lwt.map (fun (matched, costs, judgments) -> List.rev matched, costs, judgments)
+             (* Findings are checked concurrently; each finding's files stay
+                sequential so the first rejecting file ends its checks. *)
+             let%lwt checked =
+               Lwt_list.map_p (run_decision_source_constraint decision ~diff ~fetched_files ?log_context) join.matched
+             in
+             Lwt.return
+               ( List.map (fun (validated, _, _) -> validated) checked,
+                 List.concat_map (fun (_, costs, _) -> costs) checked,
+                 List.concat_map (fun (_, _, judgments) -> judgments) checked )
          in
          (match decision_judgments with
          | [] -> ()
@@ -1988,7 +2006,7 @@ module Make (AI : Api.Agent_runner) = struct
         run_triage ~ctx ~repo_url ~security_config ~diff_text ~file_paths ~deterministic_signals ~artifacts
           ?security_memory ?debug_dir:agent_debug_dir ?log_context ())
     in
-    let decision = Decision_client.of_secrets ~model:config.review_plugins.decision_model (Context.secrets ctx) in
+    let decision = metadata.decision in
     let decision_triage_output (output : Decision_triage.output) =
       {
         Security_types.signals = output.signals;
@@ -1997,30 +2015,36 @@ module Make (AI : Api.Agent_runner) = struct
       }
     in
     let triage_mode = Decision_client.triage_mode decision security_config.decision_triage in
-    let%lwt decision_output =
+    let run_decision_triage () =
       run_decision_triage ~decision ~mode:triage_mode ~security_config ~diff ~artifacts ?log_context ()
     in
     let primary_failed = function
       | None -> true
       | Some _ -> false
     in
-    let%lwt triage_result, primary_triage_costs, triage_failed =
+    let%lwt decision_output, (triage_result, primary_triage_costs, triage_failed) =
       match triage_mode with
       | Route ->
+        (* Primary triage runs only as a fallback, so it waits for the decision model. *)
+        let%lwt decision_output = run_decision_triage () in
         (match decision_output with
-        | Some output when output.complete -> Lwt.return (Some (decision_triage_output output), [], false)
+        | Some output when output.complete ->
+          Lwt.return (decision_output, (Some (decision_triage_output output), [], false))
         | Some output ->
           log#warn "%sdecision triage did not evaluate every file; falling back to primary triage" log_prefix;
           let%lwt primary_result, primary_costs = run_primary_triage () in
           let triage_result, triage_failed =
             partial_triage_fallback ~partial:(decision_triage_output output) ~primary:primary_result
           in
-          Lwt.return (triage_result, primary_costs, triage_failed)
+          Lwt.return (decision_output, (triage_result, primary_costs, triage_failed))
         | None ->
           let%lwt primary_result, primary_costs = run_primary_triage () in
-          Lwt.return (primary_result, primary_costs, primary_failed primary_result))
+          Lwt.return (decision_output, (primary_result, primary_costs, primary_failed primary_result)))
       | Gate ->
-        let%lwt primary_result, primary_costs = run_primary_triage () in
+        (* The gate only filters primary routes, so both triages run at once. *)
+        let%lwt decision_output, (primary_result, primary_costs) =
+          Lwt.both (run_decision_triage ()) (run_primary_triage ())
+        in
         let triage_result =
           match primary_result, decision_output with
           | Some primary, Some output when output.complete ->
@@ -2037,10 +2061,10 @@ module Make (AI : Api.Agent_runner) = struct
           | Some primary, None -> Some primary
           | None, Some _ | None, None -> None
         in
-        Lwt.return (triage_result, primary_costs, primary_failed primary_result)
+        Lwt.return (decision_output, (triage_result, primary_costs, primary_failed primary_result))
       | Off ->
         let%lwt primary_result, primary_costs = run_primary_triage () in
-        Lwt.return (primary_result, primary_costs, primary_failed primary_result)
+        Lwt.return (None, (primary_result, primary_costs, primary_failed primary_result))
     in
     let decision_costs =
       match decision_output with

@@ -165,6 +165,83 @@ let test_refusal_is_not_retried () =
   check bool "refusal text on another status" false
     (Decision_client.refusal (Http_util.Status (400, "refused to answer")))
 
+(* A loopback server that answers every request with [status] and counts the
+   requests it receives. *)
+let with_status_server ~status f =
+  let requests = ref 0 in
+  let socket = Lwt_unix.socket Unix.PF_INET Unix.SOCK_STREAM 0 in
+  Lwt_unix.setsockopt socket Unix.SO_REUSEADDR true;
+  let%lwt () = Lwt_unix.bind socket (Unix.ADDR_INET (Unix.inet_addr_loopback, 0)) in
+  Lwt_unix.listen socket 16;
+  let port =
+    match Lwt_unix.getsockname socket with
+    | Unix.ADDR_INET (_, port) -> port
+    | Unix.ADDR_UNIX _ -> failwith "expected an inet socket"
+  in
+  let respond (connection, _) =
+    let input = Lwt_io.of_fd ~mode:Lwt_io.input connection in
+    let output = Lwt_io.of_fd ~mode:Lwt_io.output connection in
+    let rec headers content_length =
+      match%lwt Lwt_io.read_line input with
+      | "" | "\r" -> Lwt.return content_length
+      | line ->
+        let content_length =
+          match String.split_on_char ':' (String.lowercase_ascii line) with
+          | [ "content-length"; value ] -> int_of_string (String.trim value)
+          | _ -> content_length
+        in
+        headers content_length
+    in
+    let%lwt content_length = headers 0 in
+    let%lwt (_ : string) = Lwt_io.read ~count:content_length input in
+    incr requests;
+    let body = {|{"error":{"message":"Decision inference is unavailable.","code":503}}|} in
+    let%lwt () =
+      Lwt_io.write output
+        (Printf.sprintf
+           "HTTP/1.1 %d Unavailable\r\n\
+            Content-Type: application/json\r\n\
+            Content-Length: %d\r\n\
+            Connection: close\r\n\
+            \r\n\
+            %s"
+           status (String.length body) body)
+    in
+    let%lwt () = Lwt_io.flush output in
+    Lwt_unix.close connection
+  in
+  let rec serve () =
+    let%lwt connection = Lwt_unix.accept socket in
+    Lwt.dont_wait (fun () -> respond connection) (fun (_ : exn) -> ());
+    serve ()
+  in
+  let server = serve () in
+  Lwt.finalize
+    (fun () -> f ~endpoint:(Printf.sprintf "http://127.0.0.1:%d/api/alpha/decisions" port) ~requests)
+    (fun () ->
+      Lwt.cancel server;
+      Lwt_unix.close socket)
+
+(* Once the service stays unavailable through every retry, the client stops
+   calling it for the rest of the review. *)
+let test_outage_stops_later_calls () =
+  Lwt_main.run
+    (with_status_server ~status:503 (fun ~endpoint ~requests ->
+       let client = Decision_client.create ~endpoint ~retry_delay:0.001 ~model:Gpt_6_luna ~api_key:"sk-or" () in
+       let question = { Decision_client.instructions = "Q?"; true_criteria = "Yes."; false_criteria = "No." } in
+       let ask () = Decision_client.score_noul client ~agent_name:"test" ~state:(`Assoc []) ~question in
+       let%lwt first = ask () in
+       check bool "first call fails" true (Result.is_error first);
+       check int "first call retried three times" 4 !requests;
+       let%lwt later = ask () in
+       (match later with
+       | Ok _ -> fail "expected the later call to fail"
+       | Error error ->
+         check bool "later call names the earlier outage" true
+           (String_ext.contains_sub ~sub:"unavailable earlier in this review" error));
+       check int "later call sends nothing" 4 !requests;
+       Lwt.return_unit))
+
 let test_client_thresholds_follow_model () =
   let client = Decision_client.create ~model:Gpt_6_luna ~api_key:"sk-or" () in
   check (float 0.0001) "Luna grouping" 0.30 (Decision_client.thresholds client).grouping
@@ -224,6 +301,7 @@ let () =
           test_case "decisions key fallback" `Quick test_decisions_key_falls_back_to_openrouter_key;
           test_case "features follow the review provider" `Quick test_features_follow_the_review_provider;
           test_case "refusal is not retried" `Quick test_refusal_is_not_retried;
+          test_case "outage stops later calls" `Quick test_outage_stops_later_calls;
           test_case "thresholds follow the model" `Quick test_client_thresholds_follow_model;
         ] );
       ( "rules",

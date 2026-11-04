@@ -3,6 +3,7 @@ type review_metadata = {
   change_description : string;
   file_contents : (string * string) list;
   fetch_file : Review_job.fetch_file;
+  decision : Decision_client.t option;
 }
 
 module type S = sig

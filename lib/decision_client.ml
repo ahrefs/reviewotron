@@ -1,3 +1,4 @@
+let log = Devkit.Log.from "decision_client"
 let ( let* ) = Result.bind
 let default_endpoint = "https://openrouter.ai/api/alpha/decisions"
 
@@ -7,15 +8,32 @@ let endpoint_of_base_url = function
     let api_root = CCOption.get_or ~default:base_url (CCString.chop_suffix ~suf:"/v1" base_url) in
     api_root ^ "/alpha/decisions"
 
+(* Requests one client may have in flight. The calibration benchmark ran
+   about 6,000 requests at this concurrency without hitting rate limits. *)
+let max_concurrent_requests = 4
+
 type t = {
   model : Decision_model.t;
   api_key : string;
   endpoint : string;
   on_by_default : bool;
+  retry_delay : float;
+  slots : unit Lwt_pool.t;
+  mutable outage : string option;
+    (* Set when the service stays unavailable through every retry. A client
+         lives for one review, so later calls in that review fail fast. *)
 }
 
-let create ?(endpoint = default_endpoint) ?(on_by_default = false) ~model ~api_key () =
-  { model; api_key; endpoint; on_by_default }
+let create ?(endpoint = default_endpoint) ?(on_by_default = false) ?(retry_delay = 0.5) ~model ~api_key () =
+  {
+    model;
+    api_key;
+    endpoint;
+    on_by_default;
+    retry_delay;
+    slots = Lwt_pool.create max_concurrent_requests (fun () -> Lwt.return_unit);
+    outage = None;
+  }
 
 let of_secrets ~model (secrets : Config_types.secrets) =
   [ secrets.openrouter_decisions_api_key; secrets.openrouter_api_key ]
@@ -171,21 +189,38 @@ let refusal = function
   | Http_util.Status (502, body) -> String_ext.contains_sub ~sub:"refused to answer" body
   | Http_util.Status _ | Transport _ | Local _ -> false
 
+let max_retries = 3
+
 let rec request client ~body attempt =
   let headers = [ Printf.sprintf "Authorization: Bearer %s" client.api_key ] in
   let%lwt result = Http_util.http_request ~headers ~body:(`Raw ("application/json", body)) `POST client.endpoint in
   match result with
   | Error error when refusal error ->
     Lwt.return (Error (Printf.sprintf "decision model refused: %s" (Http_util.error_to_string error)))
-  | Error (Http_util.Status (code, _)) when retryable_status code && attempt < 3 ->
-    let%lwt () = Lwt_unix.sleep (0.5 *. (2. ** Float.of_int attempt)) in
+  | Error (Http_util.Status (code, _)) when retryable_status code && attempt < max_retries ->
+    let%lwt () = Lwt_unix.sleep (client.retry_delay *. (2. ** Float.of_int attempt)) in
     request client ~body (attempt + 1)
+  | Error (Http_util.Status (code, _) as error) when retryable_status code ->
+    let message = Http_util.error_to_string error in
+    (match client.outage with
+    | Some _ -> ()
+    | None ->
+      log#warn "decision model unavailable after %d retries; skipping decision calls for the rest of this review: %s"
+        max_retries message;
+      client.outage <- Some message);
+    Lwt.return (Error message)
   | Ok response -> Lwt.return (Ok response)
   | Error error -> Lwt.return (Error (Http_util.error_to_string error))
 
 let decide client ~agent_name ~state ~questions =
   let body = request_body ~model:client.model ~state ~questions in
-  let%lwt response = request client ~body 0 in
+  let%lwt response =
+    Lwt_pool.use client.slots (fun () ->
+      match client.outage with
+      | Some message ->
+        Lwt.return (Error (Printf.sprintf "decision model unavailable earlier in this review: %s" message))
+      | None -> request client ~body 0)
+  in
   Lwt.return (Result.bind response (response_of_body ~agent_name ~model:client.model))
 
 type noul_output = {

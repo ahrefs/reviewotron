@@ -12,8 +12,10 @@ type t
 val endpoint_of_base_url : string option -> string
 
 (** [on_by_default] (default [false]) is what {!enabled} and {!triage_mode}
-    use for unset settings. *)
-val create : ?endpoint:string -> ?on_by_default:bool -> model:Decision_model.t -> api_key:string -> unit -> t
+    use for unset settings. [retry_delay] (default 0.5 seconds) is the first
+    retry's backoff, doubling on each later retry. *)
+val create :
+  ?endpoint:string -> ?on_by_default:bool -> ?retry_delay:float -> model:Decision_model.t -> api_key:string -> unit -> t
 
 (** Build a client from the decisions-only OpenRouter key, falling back to the
     general OpenRouter key. The endpoint follows [OPENROUTER_BASE_URL]. [None]
@@ -61,7 +63,10 @@ val response_of_body : agent_name:string -> model:Decision_model.t -> string -> 
 val noul_answer : response -> string -> (float, string) result
 
 (** Send one request, retrying rate limits and transient upstream failures.
-    The call's cost is reported under [agent_name]. *)
+    The call's cost is reported under [agent_name]. A client sends at most four
+    requests at once, so callers may issue calls concurrently. Once the service
+    stays unavailable through every retry, later calls on the same client fail
+    immediately; build one client per review. *)
 val decide :
   t ->
   agent_name:string ->

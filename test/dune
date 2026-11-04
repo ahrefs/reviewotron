@@ -52,7 +52,9 @@
 (test
  (name test_decision_triage)
  (modules test_decision_triage)
- (libraries reviewotron_lib alcotest))
+ (libraries reviewotron_lib alcotest lwt lwt.unix)
+ (preprocess
+  (pps lwt_ppx)))
 
 (library
  (name decision_benchmark_env)

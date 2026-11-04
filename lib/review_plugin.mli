@@ -15,6 +15,10 @@ type review_metadata = {
   fetch_file : Review_job.fetch_file;
     (** Fetch repository file content for demand-driven context expansion.
           Source adapters close over the correct revision. *)
+  decision : Decision_client.t option;
+    (** The review's decision-model client, shared by every stage so that an
+          outage seen by one stage stops the others' calls. [None] without an
+          OpenRouter key. *)
 }
 
 (** Signature that every review plugin must implement. *)

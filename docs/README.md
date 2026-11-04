@@ -400,6 +400,11 @@ both. Reported costs come from OpenRouter's `usage.cost`.
   Anthropic-direct deployment use decisions without moving its review to
   OpenRouter. An OpenRouter account guardrail can block a provider; Jev needs
   the TypeSafe provider allowed.
+- **Concurrency and outages.** A review sends at most four decision requests
+  at once, so files, candidates and finding pairs are scored in parallel. In
+  gate mode, decision triage runs alongside the primary triage agent. If the
+  service stays unavailable through every retry, the review makes no further
+  decision calls and each feature fails open.
 - **Proxy.** With `OPENROUTER_BASE_URL` set, the trailing `/v1` is replaced
   with `/alpha/decisions`, so `http://127.0.0.1:18080/api/v1` becomes
   `http://127.0.0.1:18080/api/alpha/decisions`.

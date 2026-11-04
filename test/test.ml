@@ -9371,6 +9371,7 @@ let general_plugin_metadata : Review_plugin.review_metadata =
     change_description = "";
     file_contents = [];
     fetch_file = (fun ~path:_ -> Lwt.return (Ok None));
+    decision = None;
   }
 
 let process_finding_message =
@@ -9560,6 +9561,7 @@ let pipeline_metadata : Review_plugin.review_metadata =
         "lib/retry.ml", "let retry () = ()";
       ];
     fetch_file = (fun ~path:_ -> Lwt.return (Ok None));
+    decision = None;
   }
 
 let scout_enabled_config =

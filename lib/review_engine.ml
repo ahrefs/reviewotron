@@ -523,13 +523,14 @@ module Make (AI : Api.Agent_runner) = struct
     let sha_prefix = String.sub job.head_sha 0 (min 8 (String.length job.head_sha)) in
     Filename.concat (Filename.concat (debug_root ~ctx) slug) sha_prefix
 
-  let metadata_of_job (job : Review_job.t) =
+  let metadata_of_job ~decision (job : Review_job.t) =
     Review_plugin.
       {
         change_title = job.title;
         change_description = job.description;
         file_contents = job.file_contents;
         fetch_file = job.fetch_file;
+        decision;
       }
 
   let commit_status_to_json ({ context; state; description; completed_at } : Review_job.commit_status) =
@@ -666,8 +667,9 @@ module Make (AI : Api.Agent_runner) = struct
         let config = job.config in
         let diff = job.filtered_diff in
         let memory_dir = memory_dir_for_context ~ctx in
-        let metadata = metadata_of_job job in
         let plugins_config = config.Config_types.review_plugins in
+        let decision = Decision_client.of_secrets ~model:plugins_config.decision_model (Context.secrets ctx) in
+        let metadata = metadata_of_job ~decision job in
         let prevalidation = ref Prevalidation.empty in
         let record_prevalidation evidence = prevalidation := Prevalidation.merge !prevalidation evidence in
         log#info "%splugins starting: general=%b security=%b files=%d diff_bytes=%d debug_dir=%s memory_dir=%s"
@@ -766,7 +768,6 @@ module Make (AI : Api.Agent_runner) = struct
           @ plugin_findings
         in
         let sourced_findings = deduplicate_sourced_findings sourced in
-        let decision = Decision_client.of_secrets ~model:plugins_config.decision_model (Context.secrets ctx) in
         let%lwt sourced_findings, build_claim_guard_costs =
           match Decision_client.enabled decision plugins_config.decision_build_claim_guard_enabled, decision with
           | false, _ -> Lwt.return (sourced_findings, [])

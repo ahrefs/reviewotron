@@ -141,7 +141,8 @@ let run ?log_context client ~threshold ~vuln_classes ~diff () =
     Lwt.return (Error (Printf.sprintf "decision triage threshold must be between 0 and 1 (got %.4f)" threshold))
   | true, [], _ | true, _, [] -> Lwt.return (Ok { signals = []; costs = []; complete = true })
   | true, _ :: _, _ :: _ ->
-    let%lwt results = Lwt_list.map_s (evaluate_and_log ?log_context client ~threshold ~vuln_classes) diff in
+    (* The client bounds how many files are scored at once. *)
+    let%lwt results = Lwt_list.map_p (evaluate_and_log ?log_context client ~threshold ~vuln_classes) diff in
     let evaluated, errors =
       List.partition_map
         (function
