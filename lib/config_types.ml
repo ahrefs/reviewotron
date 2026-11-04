@@ -404,6 +404,11 @@ module Config_codec = struct
           review generated artifacts."]
     ignored_authors : string list;
        [@json.default []] [@jsonschema.description "Authors whose changes are skipped (webhook mode)."]
+    allowed_bots : string list;
+       [@json.default []]
+       [@jsonschema.description
+         "Bot logins (e.g. \"renovate[bot]\") exempt from the default skip of senders ending in [bot] (webhook mode). \
+          ignored_authors still applies."]
     auto_review_pr_open : bool;
        [@json.default false] [@jsonschema.description "Review PRs on open/reopen (webhook mode)."]
     auto_review_pr_sync : bool;
@@ -439,6 +444,7 @@ type config = Config_codec.t = {
   ignored_file_regexes : string list;
   ignore_generated_files : bool;
   ignored_authors : string list;
+  allowed_bots : string list;
   auto_review_pr_open : bool;
   auto_review_pr_sync : bool;
   review_pushes_to_develop : bool;

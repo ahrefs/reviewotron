@@ -491,7 +491,8 @@ version control. Webhook/server commands do not read the user-global files.
   "ignored_paths": ["*.test.js", "vendor/**"],
   "ignored_file_regexes": ["^snapshots/.*\\.golden$"],
   "ignore_generated_files": true,
-  "ignored_authors": ["dependabot[bot]"],
+  "ignored_authors": ["ci-service-account"],
+  "allowed_bots": ["renovate[bot]"],
   "auto_review_pr_open": false,
   "auto_review_pr_sync": false,
   "review_pushes_to_develop": false,
@@ -545,6 +546,7 @@ version control. Webhook/server commands do not read the user-global files.
 | `ignored_file_regexes` | `[]` | Regular expressions matched against repository-relative file paths to exclude from review. Catch-all patterns are rejected; use explicit `ignored_paths` entries when you intentionally want to exclude a complete set of files. |
 | `ignore_generated_files` | `true` | Exclude conservatively detected generated files before `max_files` and `max_diff_lines` are enforced. Set to `false` to review generated artifacts. |
 | `ignored_authors` | `[]` | GitHub usernames whose PRs/pushes should be skipped. |
+| `allowed_bots` | `[]` | Bot logins to review anyway, such as `"renovate[bot]"`. Senders whose login ends in `[bot]` are skipped unless listed here. Matching is exact and case-sensitive. `ignored_authors` still wins. |
 | `auto_review_pr_open` | `false` | Review PRs when they are opened, reopened, or marked ready. |
 | `auto_review_pr_sync` | `false` | Review PRs when new commits are pushed to them. |
 | `review_pushes_to_develop` | `false` | Review pushes to the `develop` branch. |
@@ -642,7 +644,7 @@ before any output.
 
 Reviewotron skips events in these cases:
 
-- **Bot senders** — any login ending in `[bot]`
+- **Bot senders** — any login ending in `[bot]`, unless it is listed in `allowed_bots`
 - **Ignored authors** — usernames in the `ignored_authors` list
 - **Non-reviewable actions** — PR closed, edited, or other non-code-change actions
 - **Draft PRs** — skipped until marked ready
@@ -1363,7 +1365,7 @@ Multiple reviews can run concurrently (events are processed via `Lwt.async`). Th
 1. Check the webhook delivery log in GitHub (Settings > Webhooks > Recent Deliveries)
 2. Verify the server is running: `curl http://your-server:1338/ping`
 3. Check the server logs for skip reasons:
-   - `"bot sender"` — the event was from a bot account
+   - `"bot sender"` — the event was from a bot account; add its login to `allowed_bots` to review it
    - `"ignored author"` — the author is in `ignored_authors`
    - `"action ... not reviewable"` — the PR action doesn't trigger reviews
    - `"draft PR"` — mark the PR as ready for review

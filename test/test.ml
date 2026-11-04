@@ -4300,6 +4300,57 @@ let test_ignored_author_push_skipped () =
   let write_log = Api_local.get_write_log () in
   (check string) "ignored author push skipped" "" write_log
 
+(** {2 Allowed bot tests} *)
+
+let allowed_bots_config ?(ignored_authors = "[]") () =
+  Config_types.config_of_json
+    (Melange_json.of_string
+       (Printf.sprintf
+          {|{"auto_review_pr_open": true, "auto_review_on_comment": true, "allowed_bots": ["renovate[bot]"], "ignored_authors": %s}|}
+          ignored_authors))
+
+let pr_opened_by login = CCString.replace ~sub:"developer1" ~by:login (read_file "mock_payloads/pr_opened.json")
+
+let set_general_review_mocks () =
+  Api_local.set_agent_response_map
+    [
+      "general_scout", "mock_api_responses/scout/leads_two.json";
+      "general_deep_review", "mock_api_responses/claude/review_response.json";
+    ]
+
+let run_pr_opened_by ~config login =
+  let ctx = Test_helpers.make_test_context ~config () in
+  let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:(pr_opened_by login) in
+  Lwt_main.run (R_test.process_event ctx ~event);
+  Api_local.get_write_log ()
+
+let test_allowed_bot_pr_reviewed () =
+  Test_helpers.reset_test_state ();
+  set_general_review_mocks ();
+  let write_log = run_pr_opened_by ~config:(allowed_bots_config ()) "renovate[bot]" in
+  (check bool) "allowed bot PR reviewed" true (contains_sub ~sub:"[create_pr_review]" write_log)
+
+let test_unlisted_bot_pr_skipped () =
+  Test_helpers.reset_test_state ();
+  let write_log = run_pr_opened_by ~config:(allowed_bots_config ()) "dependabot[bot]" in
+  (check string) "unlisted bot PR skipped" "" write_log
+
+let test_ignored_author_overrides_allowed_bot () =
+  Test_helpers.reset_test_state ();
+  let config = allowed_bots_config ~ignored_authors:{|["renovate[bot]"]|} () in
+  let write_log = run_pr_opened_by ~config "renovate[bot]" in
+  (check string) "ignored allowed bot skipped" "" write_log
+
+let test_allowed_bot_comment_triggers_review () =
+  Test_helpers.reset_test_state ();
+  set_general_review_mocks ();
+  let ctx = Test_helpers.make_test_context ~config:(allowed_bots_config ()) () in
+  let payload = Test_helpers.make_issue_comment_payload ~sender_login:"renovate[bot]" () in
+  let event = Test_helpers.parse_event_exn ~event_type:"issue_comment" ~body:payload in
+  Lwt_main.run (R_test.process_event ctx ~event);
+  let write_log = Api_local.get_write_log () in
+  (check bool) "allowed bot REVIEW comment triggers review" true (contains_sub ~sub:"[create_pr_review]" write_log)
+
 (** {2 Local diff review tests} *)
 
 module Capturing_agent_runner = struct
@@ -10162,6 +10213,13 @@ let () =
         [
           test_case "ignored author PR skipped" `Quick test_ignored_author_pr_skipped;
           test_case "ignored author push skipped" `Quick test_ignored_author_push_skipped;
+        ] );
+      ( "allowed_bots",
+        [
+          test_case "allowed bot PR reviewed" `Quick test_allowed_bot_pr_reviewed;
+          test_case "unlisted bot PR skipped" `Quick test_unlisted_bot_pr_skipped;
+          test_case "ignored author overrides allowed bot" `Quick test_ignored_author_overrides_allowed_bot;
+          test_case "allowed bot comment triggers review" `Quick test_allowed_bot_comment_triggers_review;
         ] );
       ( "local_review",
         [
