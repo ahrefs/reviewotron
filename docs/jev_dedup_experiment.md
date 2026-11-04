@@ -2,7 +2,8 @@
 
 > These experiments ran against TypeSafe's API. The `jev_*` settings named
 > below are now `decision_*` settings with `"decision_model": "jev"`, served
-> through OpenRouter; see [Decision models](README.md#decision-models).
+> through OpenRouter. The integrations described as opt-in now run by default
+> on OpenRouter reviews; see [Decision models](README.md#decision-models).
 
 This benchmark asks whether two analysis candidates describe the same underlying
 security defect and would be resolved by one concrete repair. It runs before any

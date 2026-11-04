@@ -3,7 +3,8 @@
 > These experiments ran against TypeSafe's API. Per-file routing is now
 > `"decision_triage": "route"` and the captured-review cost gate is
 > `"decision_triage": "gate"`, both with `"decision_model": "jev"` served
-> through OpenRouter; see [Decision models](README.md#decision-models).
+> through OpenRouter. Gate is the default on OpenRouter reviews; see
+> [Decision models](README.md#decision-models).
 
 This benchmark isolates security-class routing from Reviewotron's analysis and
 validator stages. It does not run or post a review.

@@ -112,8 +112,8 @@ publishing, then re-running after each change.
   that order). An OpenRouter key is preferred when both are available. A
   `secrets.json` is *not* read unless you pass `--secrets` explicitly. Decision
   features read `OPENROUTER_DECISIONS_API_KEY`, then `openrouter_decisions_api_key`
-  from that secrets file, then the OpenRouter key above (see
-  [Decision models](#decision-models)).
+  from that secrets file, then the OpenRouter key above. With an OpenRouter
+  key, decision features run by default (see [Decision models](#decision-models)).
 - **Redirectable endpoint.** On an OpenRouter key, `OPENROUTER_BASE_URL` points
   the provider at an OpenAI-compatible proxy instead of `openrouter.ai` — see
   [OpenRouter Base URL Override](#openrouter-base-url-override).
@@ -391,12 +391,15 @@ OpenRouter cannot move a calibrated model to a new version. Output is free for
 both. Reported costs come from OpenRouter's `usage.cost`.
 
 - **Defaults.** When reviews run through OpenRouter, every decision feature is
-  on and security triage uses `"gate"`. A `decision_*` setting left `null`
-  follows that default; set a feature to `false`, or `decision_triage` to
-  `"off"`, to opt out. When reviews run on Anthropic directly, the features stay
-  off until set to `true` or a triage mode, and they need a decisions key.
-- **Key.** `OPENROUTER_DECISIONS_API_KEY` or `openrouter_decisions_api_key`,
-  falling back to the OpenRouter LLM key. A dedicated key lets an
+  on and security triage uses `"gate"`. The triage, cascade and grouping
+  features belong to the security plugin, so they run only when it is enabled.
+  A `decision_*` setting left `null` follows that default; set a feature to
+  `false`, or `decision_triage` to `"off"`, to opt out. When reviews run on
+  Anthropic directly, the features stay off until set to `true` or a triage
+  mode, and they need a decisions key.
+- **Key.** `openrouter_decisions_api_key` in the secrets file, or
+  `OPENROUTER_DECISIONS_API_KEY` for local commands, falling back to the
+  OpenRouter LLM key. A dedicated key lets an
   Anthropic-direct deployment use decisions without moving its review to
   OpenRouter. An OpenRouter account guardrail can block a provider; Jev needs
   the TypeSafe provider allowed.
