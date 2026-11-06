@@ -997,11 +997,11 @@ let test_context_load_config_file () =
   Fun.protect
     ~finally:(fun () -> Sys.remove tmp_path)
     (fun () ->
-      write_file tmp_path {|{"max_diff_lines": 5000, "show_review_cost": true}|};
+      write_file tmp_path {|{"max_diff_lines": 8000, "show_review_cost": true}|};
       match Context.load_config_file ~filepath:tmp_path with
       | Error msg -> fail msg
       | Ok config ->
-        (check int) "max diff lines" 5000 config.max_diff_lines;
+        (check int) "max diff lines" 8000 config.max_diff_lines;
         (check bool) "show review cost" true config.show_review_cost)
 
 let test_context_load_local_config_uses_defaults_when_missing () =
