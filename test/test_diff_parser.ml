@@ -518,7 +518,7 @@ let test_prepare_diff_filters_generated_before_line_limits () =
   match Review_engine.prepare_diff ~config source_and_generated_diff with
   | Error _ -> fail "expected generated lines to be filtered before the line limit"
   | Ok prepared ->
-    (check int) "one source line remains" 1 (Diff_parser.total_lines prepared.Review_engine.filtered_diff)
+    (check int) "one source line remains" 1 (Diff_parser.changed_lines prepared.Review_engine.filtered_diff)
 
 let test_prepare_diff_empty_when_only_generated () =
   let config = Config_types.config_of_json (Melange_json.of_string {|{}|}) in
@@ -607,15 +607,15 @@ let test_estimate_tokens () =
   (check bool) "tokens > 0" true (tokens > 0);
   (check bool) "tokens reasonable" true (tokens < 1000)
 
-(** {2 Total lines tests} *)
+(** {2 Changed lines tests} *)
 
-let test_total_lines () =
+let test_changed_lines () =
   let diffs = Diff_parser.parse single_hunk_diff in
-  (check int) "total lines" 3 (Diff_parser.total_lines diffs)
+  (check int) "changed lines" 3 (Diff_parser.changed_lines diffs)
 
-let test_total_lines_multi_hunk () =
+let test_changed_lines_multi_hunk () =
   let diffs = Diff_parser.parse multi_hunk_diff in
-  (check int) "total lines" 4 (Diff_parser.total_lines diffs)
+  (check int) "changed lines" 4 (Diff_parser.changed_lines diffs)
 
 (** {2 to_string roundtrip tests} *)
 
@@ -628,7 +628,7 @@ let test_to_string_roundtrip () =
   let round = hd_exn "round" re_parsed in
   (check string) "same path" orig.path round.path;
   (check int) "same hunk count" (List.length orig.hunks) (List.length round.hunks);
-  (check int) "same total lines" (Diff_parser.total_lines diffs) (Diff_parser.total_lines re_parsed)
+  (check int) "same changed lines" (Diff_parser.changed_lines diffs) (Diff_parser.changed_lines re_parsed)
 
 let test_to_string_multi_file_roundtrip () =
   let diff_text = read_file "mock_api_responses/github/pr_1.diff" in
@@ -642,7 +642,7 @@ let test_to_string_multi_file_roundtrip () =
       check file_status_testable "same status" orig.status round.status;
       (check int) "same hunk count" (List.length orig.hunks) (List.length round.hunks))
     diffs re_parsed;
-  (check int) "same total lines" (Diff_parser.total_lines diffs) (Diff_parser.total_lines re_parsed)
+  (check int) "same changed lines" (Diff_parser.changed_lines diffs) (Diff_parser.changed_lines re_parsed)
 
 let test_to_string_preserves_filter () =
   let diff_text = read_file "mock_api_responses/github/pr_1.diff" in
@@ -834,8 +834,8 @@ let () =
       ( "metrics",
         [
           test_case "estimate tokens" `Quick test_estimate_tokens;
-          test_case "total lines single" `Quick test_total_lines;
-          test_case "total lines multi hunk" `Quick test_total_lines_multi_hunk;
+          test_case "changed lines single" `Quick test_changed_lines;
+          test_case "changed lines multi hunk" `Quick test_changed_lines_multi_hunk;
         ] );
       ( "to_string",
         [

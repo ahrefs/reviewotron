@@ -209,7 +209,7 @@ let prepare_diff ?log_context ~config diff_text =
   | _ ->
     (* Counting lines folds over the whole diff; defer it past the cheaper
        file-count check so an over-[max_files] diff isn't fully traversed. *)
-    let total_lines = Diff_parser.total_lines filtered_diff in
+    let total_lines = Diff_parser.changed_lines filtered_diff in
     if total_lines > config.max_diff_lines then Error (`Too_large total_lines)
     else Ok { filtered_diff; filtered_text = Diff_parser.to_string_annotated filtered_diff }
 

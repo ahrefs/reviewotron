@@ -185,9 +185,9 @@ let is_change = function
   | Addition _ | Deletion _ -> true
   | Context _ -> false
 
-let total_lines diffs =
+let changed_lines diffs =
   List.fold_left
-    (fun acc fd -> List.fold_left (fun acc2 hunk -> acc2 + List.length (List.filter is_change hunk.lines)) acc fd.hunks)
+    (fun acc fd -> List.fold_left (fun acc hunk -> acc + CCList.count is_change hunk.lines) acc fd.hunks)
     0 diffs
 
 (** Glob [*] matches within one path component; [**] can cross path separators. *)
