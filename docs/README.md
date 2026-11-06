@@ -200,7 +200,7 @@ reviewotron review-path ./my-app --no-security --output json
   `target`, `vendor`, `venv`, `__pycache__`, `coverage`), symlinks, and
   binary/oversized files.
 - Whole-folder reviews easily exceed the default `max_files` (50) and
-  `max_diff_lines` (2000); raise them via `--config` (e.g.
+  `max_diff_lines` (5000); raise them via `--config` (e.g.
   `'{"max_files": 500, "max_diff_lines": 50000}'`), otherwise the run returns an
   error explaining which limit was hit.
 - Each invocation runs independently. Omit `--state` (the default) so repeated
@@ -485,7 +485,7 @@ version control. Webhook/server commands do not read the user-global files.
 
 ```json
 {
-  "max_diff_lines": 2000,
+  "max_diff_lines": 5000,
   "max_files": 50,
   "max_tokens_per_review": 100000,
   "ignored_paths": ["*.test.js", "vendor/**"],
@@ -538,7 +538,7 @@ version control. Webhook/server commands do not read the user-global files.
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `max_diff_lines` | `2000` | Maximum total diff lines to review. PRs exceeding this are skipped. |
+| `max_diff_lines` | `5000` | Maximum added plus removed lines to review. Context lines are not counted. PRs exceeding this are skipped. |
 | `max_files` | `50` | Maximum files to review after ignored, custom-regex, and generated files are removed. |
 | `max_tokens_per_review` | `100000` | Token budget hint for the review agent. |
 | `model` | (absent) | Model ID override for the general deep reviewer, and for the single-pass review agent when `scout_enabled` is `false`. When absent, `deep_reviewer_model_tier` decides (`claude-opus-5-5` by default, `~anthropic/claude-opus-latest` on OpenRouter). |
@@ -1308,7 +1308,7 @@ The pricing table is a single record in the codebase (`lib/cost_tracking.ml`) �
 
 ### Diff Size
 
-PRs with more than `max_diff_lines` (default 2000) total diff lines after ignored/generated files are removed are **skipped entirely**. There is no partial review — it's all or nothing. For large PRs, consider breaking them into smaller ones.
+PRs with more than `max_diff_lines` (default 5000) added plus removed lines, not counting context, after ignored/generated files are removed are **skipped entirely**. There is no partial review — it's all or nothing. For large PRs, consider breaking them into smaller ones.
 
 ### Push Reviews
 
