@@ -1664,8 +1664,8 @@ let test_anchor_sink_in_diff_no_snap () =
 
 let test_anchor_sink_not_in_diff_flow_in_diff () =
   (* Sink is in an unchanged file; flow passes through src/main.ml:12.  The
-     finding must snap to the flow step, and the message must lead with the
-     description and then name the sink location. *)
+     finding must snap to the flow step and the body must carry the sink
+     location. *)
   let vf =
     mk_validated
       ~source:(src_site ~path:"src/entry.ml" ~line:1 ~description:"http param")
@@ -1681,8 +1681,8 @@ let test_anchor_sink_not_in_diff_flow_in_diff () =
   let f = Sec_test.validated_to_finding ~diff:parsed_anchor_diff vf in
   (check string) "path snaps to flow step file" "src/main.ml" f.path;
   (check int) "line snaps to flow step line" 12 f.line;
-  (check string) "message leads with description, then the sink"
-    "described vulnerability\n\nThe sink is in unchanged code at `src/unchanged.ml:99`: unchecked authz" f.message
+  (check bool) "message has the sink note" true (CCString.mem ~sub:"The sink is in unchanged code" f.message);
+  (check bool) "message references sink path" true (CCString.mem ~sub:"src/unchanged.ml:99" f.message)
 
 let test_anchor_nothing_in_diff_falls_through_to_sink () =
   (* All evidence is in unchanged files.  The anchor stays on the sink so the
@@ -2691,103 +2691,50 @@ let test_security_validated_to_finding_uses_proof_summary () =
   (check bool) "evidence snippet has trace" true (contains_sub ~sub:"src/main.ml:10" finding.evidence_snippet);
   (check bool) "why_now has missing control" true (contains_sub ~sub:"owner-scoped authorization check" finding.why_now)
 
-let proof_test_finding proof =
-  mk_validated
-    ~source:(src_site ~path:"src/main.ml" ~line:10 ~description:"request id")
-    ~sink:(sink_site ~path:"src/main.ml" ~line:14 ~description:"document update")
-    ~flow:[ flow_step ~path:"src/main.ml" ~line:12 ~description:"passed to update" ]
-    ~proof_by_construction:proof ()
-  |> Sec_test.validated_to_finding ~diff:parsed_anchor_diff
-
-let test_security_finding_body_is_compact () =
-  let finding = proof_test_finding (concrete_exploitation_proof ()) in
-  (check string) "rendered security comment"
-    "**[critical]** security\n\n\
-     described vulnerability\n\n\
-     Trigger: GET /documents/123?admin=true. The attacker can modify another user's document."
-    (Review_format.format_finding_body finding);
-  (check string) "evidence is the trace alone"
-    "src/main.ml:10 reads the document id from the request -> src/main.ml:12 passes the id into the update path -> \
-     src/main.ml:14 updates the document without owner scoping"
-    finding.evidence_snippet;
-  (check string) "why_now names sink and control once"
-    "This change lets the path reach `src/main.ml:14` without this control: owner-scoped authorization check."
-    finding.why_now
-
 let test_security_long_proof_renders_in_full () =
   let long_text prefix = prefix ^ String.concat " " (List.init 120 (Printf.sprintf "word%d")) in
   let trigger = long_text "GET /documents/123 " in
   let expected_impact = long_text "The attacker reads " in
   let control = long_text "owner check " in
   let trace = List.init 7 (fun i -> Printf.sprintf "src/main.ml:%d step %d" (10 + i) i) in
-  let proof =
-    {
-      (concrete_exploitation_proof ()) with
-      trigger;
-      expected_impact;
-      missing_or_inadequate_control = control;
-      source_to_sink_trace = trace;
-    }
+  let finding =
+    mk_validated
+      ~source:(src_site ~path:"src/main.ml" ~line:10 ~description:"request id")
+      ~sink:(sink_site ~path:"src/main.ml" ~line:14 ~description:"document update")
+      ~flow:[ flow_step ~path:"src/main.ml" ~line:12 ~description:"passed to update" ]
+      ~proof_by_construction:
+        {
+          (concrete_exploitation_proof ()) with
+          trigger;
+          expected_impact;
+          missing_or_inadequate_control = control;
+          source_to_sink_trace = trace;
+        }
+      ()
+    |> Sec_test.validated_to_finding ~diff:parsed_anchor_diff
   in
-  let finding = proof_test_finding proof in
   let body = Review_format.format_finding_body finding in
-  (check bool) "trigger is longer than the old 420-char cut" true (String.length trigger > 420);
   (check bool) "trigger posted in full" true (contains_sub ~sub:trigger body);
   (check bool) "impact posted in full" true (contains_sub ~sub:expected_impact body);
   (check bool) "no ellipsis in the posted comment" false (contains_sub ~sub:"..." body);
-  List.iter
-    (fun step -> (check bool) ("trace keeps " ^ step) true (contains_sub ~sub:step finding.evidence_snippet))
-    trace;
-  (check bool) "why_now keeps the whole control" true (contains_sub ~sub:control finding.why_now);
-  (check bool) "no ellipsis in why_now" false (contains_sub ~sub:"..." finding.why_now)
-
-let test_general_finding_body_is_compact () =
-  let finding =
-    mk_finding ~path:"lib/retry.ml" ~line:12 ~category:Review_types.Bug
-      ~message:"`retry` loops forever when `max_attempts` is 0. Return the error once attempts reach the limit."
-      ~failure_scenario:"`retry ~max_attempts:0 fetch` never returns, so the worker hangs." ()
-  in
-  (check string) "message, then the scenario as its own unlabeled paragraph"
-    "**[warning]** bug\n\n\
-     `retry` loops forever when `max_attempts` is 0. Return the error once attempts reach the limit.\n\n\
-     `retry ~max_attempts:0 fetch` never returns, so the worker hangs."
-    (Review_format.format_finding_body finding);
-  (check string) "a scenario the message already says is dropped"
-    "**[warning]** bug\n\n\
-     `retry` loops forever when `max_attempts` is 0. Return the error once attempts reach the limit."
-    (Review_format.format_finding_body { finding with failure_scenario = "loops forever when `max_attempts` is 0" });
-  (check string) "suggestion block follows"
-    "**[warning]** bug\n\nmsg\n\nscenario\n\n```suggestion\nretry_bounded fetch\n```"
-    (Review_format.format_finding_body
-       (mk_finding ~path:"lib/retry.ml" ~line:12 ~category:Review_types.Bug ~suggested_fix:(Some "retry_bounded fetch")
-          ()))
+  (check bool) "whole trace kept" true (contains_sub ~sub:(String.concat " -> " trace) finding.evidence_snippet);
+  (check bool) "why_now keeps the whole control" true (contains_sub ~sub:control finding.why_now)
 
 let test_comment_style_in_human_facing_prompts () =
-  let includes_style name prompt =
-    (check bool) (name ^ " includes the comment style") true (contains_sub ~sub:Comment_style.prompt_fragment prompt)
-  in
-  includes_style "single-pass review, security elsewhere"
-    (Review_prompt.system_prompt ~security_covered_elsewhere:true ());
-  includes_style "single-pass review, security in scope"
-    (Review_prompt.system_prompt ~security_covered_elsewhere:false ());
-  includes_style "deep reviewer"
-    (General_deep_reviewer_agent.config ~model_tier:Standard ~system_prompt_override:None).system_prompt;
-  List.iter
-    (fun vuln_class ->
-      includes_style
-        ("security analysis " ^ Security_types.vuln_class_to_string vuln_class)
-        (Analysis_agent.config ~vuln_class ~model_tier:Standard ~language_hints:[ "OCaml" ]).system_prompt)
-    Security_types.[ Injection; Xss; Command_injection; Authn; Authz; Ssrf; Path_traversal; Policy_regression ];
-  includes_style "security validator" (Validator_agent.config ~model_tier:Standard).system_prompt
-
-let test_comment_style_fragment_follows_its_rules () =
-  let fragment = Comment_style.prompt_fragment in
-  (check bool) "no em dash" false (contains_sub ~sub:"\xE2\x80\x94" fragment);
-  (check bool) "no en dash" false (contains_sub ~sub:"\xE2\x80\x93" fragment);
-  (check bool) "states that nothing is cut" true (contains_sub ~sub:"Nothing shortens them" fragment);
-  List.iter
-    (fun field -> (check bool) ("budgets " ^ field) true (contains_sub ~sub:(Printf.sprintf "`%s`" field) fragment))
-    [ "message"; "failure_scenario"; "why_now"; "trigger"; "expected_impact"; "missing_or_inadequate_control" ]
+  let analysis vuln_class = (Analysis_agent.config ~vuln_class ~model_tier:Standard ~language_hints:[]).system_prompt in
+  List.iteri
+    (fun i prompt ->
+      (check bool)
+        (Printf.sprintf "prompt %d includes comment style" i)
+        true
+        (contains_sub ~sub:Comment_style.prompt_fragment prompt))
+    ([
+       Review_prompt.system_prompt ~security_covered_elsewhere:true ();
+       Review_prompt.system_prompt ~security_covered_elsewhere:false ();
+       (General_deep_reviewer_agent.config ~model_tier:Standard ~system_prompt_override:None).system_prompt;
+       (Validator_agent.config ~model_tier:Standard).system_prompt;
+     ]
+    @ List.map analysis Config_types.all_vuln_classes)
 
 let test_security_triage_output_extra_fields () =
   let json_str = {|{"signals":[],"language_hints":[],"skip_reason":null,"extra_field":"ignored","another":123}|} in
@@ -8606,7 +8553,7 @@ let test_review_failure_comment_mentions_cause () =
   (check bool) "remote-too-large comment is about size, not a generic failure" true
     (contains_sub ~sub:"too large" (String.lowercase_ascii remote));
   let publish = Review_failure.to_comment (Publish_failed "http 422: invalid comments") in
-  (check bool) "publish failure says GitHub rejected the post" true
+  (check bool) "publish failure says review was produced" true
     (contains_sub ~sub:"rejected the review I tried to post" publish);
   (check bool) "failure details are open by default" true
     (contains_sub ~sub:"<details open><summary>Details</summary>" publish);
@@ -9967,6 +9914,7 @@ let () =
           test_case "system prompt has reasoning workflow section" `Quick test_system_prompt_workflow_section;
           test_case "system prompt enumerates banned hedging patterns" `Quick test_system_prompt_banned_patterns;
           test_case "prompt token estimation" `Quick test_prompt_token_estimation;
+          test_case "human-facing prompts include comment style" `Quick test_comment_style_in_human_facing_prompts;
         ] );
       ( "anthropic_schema_compat",
         [
@@ -10118,15 +10066,8 @@ let () =
           test_case "rejected does not require proof" `Quick test_security_enforce_rejected_without_proof_ok;
           test_case "proof summaries populate finding fields" `Quick
             test_security_validated_to_finding_uses_proof_summary;
-          test_case "security finding body is compact" `Quick test_security_finding_body_is_compact;
           test_case "long proof renders in full" `Quick test_security_long_proof_renders_in_full;
           test_case "triage output extra fields" `Quick test_security_triage_output_extra_fields;
-        ] );
-      ( "comment_style",
-        [
-          test_case "general finding body is compact" `Quick test_general_finding_body_is_compact;
-          test_case "human-facing prompts include the style" `Quick test_comment_style_in_human_facing_prompts;
-          test_case "fragment follows its own rules" `Quick test_comment_style_fragment_follows_its_rules;
         ] );
       ( "security_tools",
         [

@@ -7,9 +7,8 @@ val review_schema : Yojson.Safe.t
 (** System prompt instructing Claude how to review code.
 
     If [override] is provided, it is returned verbatim (the caller takes
-    full control).  Otherwise the prompt is assembled from static parts,
-    {!Comment_style.prompt_fragment}, and a security clause selected by
-    [security_covered_elsewhere]:
+    full control).  Otherwise the prompt is assembled from static parts
+    plus a security clause selected by [security_covered_elsewhere]:
 
     - [true]: the general review is told NOT to emit security findings
       because a specialized security review pipeline is running.

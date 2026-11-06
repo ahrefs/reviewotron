@@ -1,5 +1,3 @@
-(** Writing rules shared by every agent whose text reaches a developer. *)
-
 let prompt_fragment =
   {|## Writing Posted Text
 

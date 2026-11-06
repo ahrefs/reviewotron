@@ -7,16 +7,13 @@ let category_label cat = Review_types.finding_category_to_string cat
 let feedback_prompt = "Helpful? React with :+1: or :-1:."
 let with_feedback_prompt body = Printf.sprintf "%s\n\n%s" body feedback_prompt
 
-(* The message names the defect; the failure scenario follows as its own
-   paragraph without a label.  A scenario the message already contains is
-   dropped so the comment never says the same thing twice. *)
 let format_finding_body (finding : Review_types.finding) =
   let header = Printf.sprintf "%s %s" (severity_badge finding.severity) (category_label finding.category) in
   let message = String.trim finding.message in
   let body =
     match String.trim finding.failure_scenario with
-    | "" -> Printf.sprintf "%s\n\n%s" header message
-    | scenario when CCString.mem ~sub:scenario message -> Printf.sprintf "%s\n\n%s" header message
+    | scenario when String.equal scenario "" || CCString.mem ~sub:scenario message ->
+      Printf.sprintf "%s\n\n%s" header message
     | scenario -> Printf.sprintf "%s\n\n%s\n\n%s" header message scenario
   in
   match finding.suggested_fix with
@@ -24,10 +21,7 @@ let format_finding_body (finding : Review_types.finding) =
   | Some fix -> Printf.sprintf "%s\n\n```suggestion\n%s\n```" body fix
 
 let push_title ~pusher_name ~num_commits =
-  Printf.sprintf "%s pushed %d %s" pusher_name num_commits
-    (match Int.equal num_commits 1 with
-    | true -> "commit"
-    | false -> "commits")
+  Printf.sprintf "%s pushed %d %s" pusher_name num_commits (Cost_tracking.pluralize ~n:num_commits "commit")
 
 let count_by_severity findings =
   List.fold_left

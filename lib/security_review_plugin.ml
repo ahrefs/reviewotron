@@ -1470,12 +1470,9 @@ module Make (AI : Api.Agent_runner) = struct
         | false -> None))
 
   (** If the inline anchor differs from the sink (we snapped onto a flow or
-      source step), append the sink location so the reader can find the
-      enforcement point too.  The description leads because it names the
-      defect.  When the anchor IS the sink, return the description unchanged.
-
-      Snapping only happens when the sink's file is absent from the diff, so
-      the sink always lives in unchanged code here. *)
+      source step), append the sink location so the reader sees the
+      enforcement/sink location too.  When the anchor IS the sink, return the
+      description unchanged. *)
   let enrich_message_with_sink ~anchor_kind ~(f : Security_types.candidate_finding) =
     match anchor_kind with
     | `Sink -> f.description
@@ -1483,25 +1480,15 @@ module Make (AI : Api.Agent_runner) = struct
       Printf.sprintf "%s\n\nThe sink is in unchanged code at `%s:%d`: %s" f.description f.sink.path f.sink.line
         f.sink.description
 
-  (** Trim [s] and end it with a period unless it already ends a sentence. *)
   let as_sentence s =
-    let s = String.trim s in
-    match String.length s with
-    | 0 -> s
-    | len ->
-    match s.[len - 1] with
-    | '.' | '!' | '?' -> s
-    | _ -> s ^ "."
+    match String.trim s with
+    | "" -> ""
+    | s when String.contains ".!?" s.[String.length s - 1] -> s
+    | s -> s ^ "."
 
   let fallback_trace (f : Security_types.candidate_finding) =
     Printf.sprintf "%s:%d source -> %s:%d sink" f.source.path f.source.line f.sink.path f.sink.line
 
-  (** Compose the proof fields of a validated finding into the review
-      finding's [failure_scenario], [evidence_snippet] and [why_now].
-
-      Nothing is cut: the validator prompt asks for short proof fields, and the
-      full text is what the developer needs.  Each output carries one piece of
-      information so the fields do not repeat each other. *)
   let proof_summaries (vf : Security_types.validated_finding) =
     let f = vf.finding in
     match vf.proof_by_construction with
@@ -1511,9 +1498,10 @@ module Make (AI : Api.Agent_runner) = struct
         [
           (match String.trim proof.trigger with
           | "" -> ""
-          | trigger -> as_sentence ("Trigger: " ^ trigger));
-          as_sentence proof.expected_impact;
+          | trigger -> "Trigger: " ^ trigger);
+          proof.expected_impact;
         ]
+        |> List.map as_sentence
         |> List.filter (fun part -> not (String.equal part ""))
         |> String.concat " "
       in
