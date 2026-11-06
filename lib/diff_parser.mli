@@ -38,7 +38,7 @@ type t = file_diff list
     and classifies each line as {!Context}, {!Addition}, or {!Deletion}. *)
 val parse : string -> t
 
-(** Total number of diff lines across all files (hunk headers not counted). *)
+(** Total number of added and removed lines across all files. Context lines and hunk headers are not counted. *)
 val total_lines : t -> int
 
 (** Remove file diffs whose path matches any of the ignored glob patterns. *)

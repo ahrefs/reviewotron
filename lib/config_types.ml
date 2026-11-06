@@ -379,9 +379,10 @@ let default_review_plugins_config =
 module Config_codec = struct
   type t = {
     max_diff_lines : int;
-       [@json.default 2000]
+       [@json.default 5000]
        [@jsonschema.description
-         "Maximum total diff lines to review; larger changes are skipped (raise for whole folders)."]
+         "Maximum added plus removed lines to review, excluding context; larger changes are skipped (raise for whole \
+          folders)."]
     max_files : int;
        [@json.default 50]
        [@jsonschema.description "Maximum number of files to review (raise for whole-folder reviews)."]

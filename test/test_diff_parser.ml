@@ -611,11 +611,11 @@ let test_estimate_tokens () =
 
 let test_total_lines () =
   let diffs = Diff_parser.parse single_hunk_diff in
-  (check int) "total lines" 5 (Diff_parser.total_lines diffs)
+  (check int) "total lines" 3 (Diff_parser.total_lines diffs)
 
 let test_total_lines_multi_hunk () =
   let diffs = Diff_parser.parse multi_hunk_diff in
-  (check int) "total lines" 9 (Diff_parser.total_lines diffs)
+  (check int) "total lines" 4 (Diff_parser.total_lines diffs)
 
 (** {2 to_string roundtrip tests} *)
 

@@ -1011,7 +1011,7 @@ let test_context_load_local_config_uses_defaults_when_missing () =
     (fun () ->
       match Context.load_local_config ~root:tmp_dir ~config_filename:Context.default_config_filename with
       | Error msg -> fail msg
-      | Ok config -> (check int) "default max diff lines" 2000 config.max_diff_lines)
+      | Ok config -> (check int) "default max diff lines" 5000 config.max_diff_lines)
 
 let test_vuln_class_roundtrip () =
   List.iter
