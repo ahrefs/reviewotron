@@ -18,7 +18,6 @@ val with_feedback_prompt : string -> string
     and optional code suggestion block. *)
 val format_finding_body : Review_types.finding -> string
 
-(** Slack attachment title for a push. *)
 val push_title : pusher_name:string -> num_commits:int -> string
 
 (** Count findings by severity. Returns [(critical, warnings, suggestions)]. *)

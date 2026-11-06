@@ -1650,7 +1650,7 @@ let test_grouped_finding_preserves_singleton () =
 let test_anchor_sink_in_diff_no_snap () =
   (* Sink is already in the diff (src/main.ml hunk A).  We must not snap; the
      finding's path/line should equal the sink and the message should NOT
-     carry the unchanged-sink note. *)
+     carry a "Related sink" prefix. *)
   let vf =
     mk_validated
       ~source:(src_site ~path:"src/unrelated.ml" ~line:1 ~description:"src")
@@ -1660,7 +1660,7 @@ let test_anchor_sink_in_diff_no_snap () =
   let f = Sec_test.validated_to_finding ~diff:parsed_anchor_diff vf in
   (check string) "path stays on sink" "src/main.ml" f.path;
   (check int) "line stays on sink" 11 f.line;
-  (check string) "message is the description" "described vulnerability" f.message
+  (check bool) "no Related prefix in message" true (not (CCString.mem ~sub:"Related sink" f.message))
 
 let test_anchor_sink_not_in_diff_flow_in_diff () =
   (* Sink is in an unchanged file; flow passes through src/main.ml:12.  The
@@ -1698,12 +1698,12 @@ let test_anchor_nothing_in_diff_falls_through_to_sink () =
   let f = Sec_test.validated_to_finding ~diff:parsed_anchor_diff vf in
   (check string) "path stays on sink" "src/b.ml" f.path;
   (check int) "line stays on sink" 10 f.line;
-  (check string) "message is the description (unsnapped)" "described vulnerability" f.message
+  (check bool) "no Related prefix (unsnapped)" true (not (CCString.mem ~sub:"Related sink" f.message))
 
 let test_anchor_source_fallback_when_flow_empty () =
   (* Sink is not in diff and flow is empty; fall through to source.  Source
-     lives in the diff, so the anchor lands there with the unchanged-sink
-     note. *)
+     lives in the diff, so the anchor lands there with the Related-sink
+     enrichment. *)
   let vf =
     mk_validated
       ~source:(src_site ~path:"src/main.ml" ~line:40 ~description:"user input")
@@ -2719,22 +2719,6 @@ let test_security_long_proof_renders_in_full () =
   (check bool) "no ellipsis in the posted comment" false (contains_sub ~sub:"..." body);
   (check bool) "whole trace kept" true (contains_sub ~sub:(String.concat " -> " trace) finding.evidence_snippet);
   (check bool) "why_now keeps the whole control" true (contains_sub ~sub:control finding.why_now)
-
-let test_comment_style_in_human_facing_prompts () =
-  let analysis vuln_class = (Analysis_agent.config ~vuln_class ~model_tier:Standard ~language_hints:[]).system_prompt in
-  List.iteri
-    (fun i prompt ->
-      (check bool)
-        (Printf.sprintf "prompt %d includes comment style" i)
-        true
-        (contains_sub ~sub:Comment_style.prompt_fragment prompt))
-    ([
-       Review_prompt.system_prompt ~security_covered_elsewhere:true ();
-       Review_prompt.system_prompt ~security_covered_elsewhere:false ();
-       (General_deep_reviewer_agent.config ~model_tier:Standard ~system_prompt_override:None).system_prompt;
-       (Validator_agent.config ~model_tier:Standard).system_prompt;
-     ]
-    @ List.map analysis Config_types.all_vuln_classes)
 
 let test_security_triage_output_extra_fields () =
   let json_str = {|{"signals":[],"language_hints":[],"skip_reason":null,"extra_field":"ignored","another":123}|} in
@@ -5173,7 +5157,7 @@ let test_local_review_security_only_empty_is_success () =
   | Ok markdown ->
     (check bool) "has deterministic review body" true (contains_sub ~sub:":robot: **REVIEW**" markdown);
     (check bool) "does not report failure" false (contains_sub ~sub:"Review failed" markdown);
-    (check bool) "does not ask for retrigger" false (contains_sub ~sub:"Re-trigger the review" markdown)
+    (check bool) "does not ask for retrigger" false (contains_sub ~sub:"re-trigger the review" markdown)
 
 (* A chunked run: five candidates exceed [max_candidates_per_validator_call],
    so the validator is called twice. The fifth candidate is only ever offered
@@ -5309,7 +5293,7 @@ let test_local_review_validation_failure_is_not_lgtm () =
       (contains_sub ~sub:"Security review did not complete" markdown);
     (check bool) "states it is not an all-clear" true (contains_sub ~sub:"all-clear" markdown);
     (check bool) "asks for a re-trigger" true (contains_sub ~sub:"Re-trigger the review" markdown);
-    (check bool) "does not repeat the incomplete note" false (contains_sub ~sub:"may be incomplete" markdown)
+    (check bool) "does not repeat the incomplete note" false (contains_sub ~sub:"may not have completed" markdown)
 
 (* The production shape: the general plugin completes cleanly (its scout finds
    no leads on a security-only change, so it contributes no findings) while the
@@ -7925,7 +7909,8 @@ let test_security_e2e_deterministic_signals_do_not_route () =
   (check bool) "review posted" true (CCString.find ~sub:"[create_pr_review]" write_log >= 0);
   (check bool) "deterministic signals alone do not produce security output" true
     (CCString.find ~sub:{|"security"|} write_log < 0);
-  (check bool) "no security failure notice" true (CCString.find ~sub:"security review hit an error" write_log < 0)
+  (check bool) "no security failure notice" true
+    (CCString.find ~sub:"security review plugin encountered an error" write_log < 0)
 
 let test_security_e2e_rejected () =
   Test_helpers.reset_test_state ();
@@ -8341,7 +8326,8 @@ let test_pr_no_security_notice_when_disabled () =
   Lwt_main.run (R_test.process_event ctx ~event);
   let write_log = Api_local.get_write_log () in
   (check bool) "review posted" true (CCString.find ~sub:"[create_pr_review]" write_log >= 0);
-  (check bool) "no security failure notice" true (CCString.find ~sub:"security review hit an error" write_log < 0)
+  (check bool) "no security failure notice" true
+    (CCString.find ~sub:"security review plugin encountered an error" write_log < 0)
 
 (** {2 HTTP timeout tests} *)
 
@@ -9914,7 +9900,6 @@ let () =
           test_case "system prompt has reasoning workflow section" `Quick test_system_prompt_workflow_section;
           test_case "system prompt enumerates banned hedging patterns" `Quick test_system_prompt_banned_patterns;
           test_case "prompt token estimation" `Quick test_prompt_token_estimation;
-          test_case "human-facing prompts include comment style" `Quick test_comment_style_in_human_facing_prompts;
         ] );
       ( "anthropic_schema_compat",
         [

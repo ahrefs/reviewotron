@@ -107,7 +107,7 @@ let output_section =
 
 Produce a JSON object matching the provided output schema. The `results` array must contain exactly one entry per candidate finding — no more, no fewer. Each entry includes:
 - `candidate_id`: the integer `candidate_id` shown in the candidate's block, echoed back exactly as given. This is how results are matched to candidates, so it must be copied verbatim — never renumbered, reordered, or invented.
-- `finding`: the original candidate finding object, reproduced exactly as provided. The writing rules above do not apply to this copy.
+- `finding`: the original candidate finding object, reproduced exactly as provided
 - `verdict`: one of the strings `"confirmed"` or `"rejected"`
 - `evidence_notes`: your reasoning — what you checked, what you found, and why you reached your verdict. When the verdict is `"rejected"`, include the concrete reason for rejection here.
 - `proof_by_construction`: required key for every result. For `"confirmed"`, it must be a concrete object with `trigger`, `preconditions`, `source_to_sink_trace`, `missing_or_inadequate_control`, `expected_impact`, and `assumptions`. For `"rejected"`, it must be `null`.

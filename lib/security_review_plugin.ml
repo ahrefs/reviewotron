@@ -1511,9 +1511,12 @@ module Make (AI : Api.Agent_runner) = struct
         | _ :: _ -> String.concat " -> " proof.source_to_sink_trace
       in
       let why_now =
-        Printf.sprintf "This change lets the path reach `%s:%d` without this control: %s" f.sink.path f.sink.line
-          (String.trim proof.missing_or_inadequate_control)
-        |> as_sentence
+        match String.trim proof.missing_or_inadequate_control with
+        | "" -> ""
+        | control ->
+          Printf.sprintf "This change lets the path reach `%s:%d` without this control: %s" f.sink.path f.sink.line
+            control
+          |> as_sentence
       in
       failure_scenario, evidence_snippet, why_now
 
