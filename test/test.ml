@@ -1650,7 +1650,7 @@ let test_grouped_finding_preserves_singleton () =
 let test_anchor_sink_in_diff_no_snap () =
   (* Sink is already in the diff (src/main.ml hunk A).  We must not snap; the
      finding's path/line should equal the sink and the message should NOT
-     carry a "Related sink" prefix. *)
+     carry the unchanged-sink note. *)
   let vf =
     mk_validated
       ~source:(src_site ~path:"src/unrelated.ml" ~line:1 ~description:"src")
@@ -1660,7 +1660,7 @@ let test_anchor_sink_in_diff_no_snap () =
   let f = Sec_test.validated_to_finding ~diff:parsed_anchor_diff vf in
   (check string) "path stays on sink" "src/main.ml" f.path;
   (check int) "line stays on sink" 11 f.line;
-  (check bool) "no Related prefix in message" true (not (CCString.mem ~sub:"Related sink" f.message))
+  (check string) "message is the description" "described vulnerability" f.message
 
 let test_anchor_sink_not_in_diff_flow_in_diff () =
   (* Sink is in an unchanged file; flow passes through src/main.ml:12.  The
@@ -1698,12 +1698,12 @@ let test_anchor_nothing_in_diff_falls_through_to_sink () =
   let f = Sec_test.validated_to_finding ~diff:parsed_anchor_diff vf in
   (check string) "path stays on sink" "src/b.ml" f.path;
   (check int) "line stays on sink" 10 f.line;
-  (check bool) "no Related prefix (unsnapped)" true (not (CCString.mem ~sub:"Related sink" f.message))
+  (check string) "message is the description (unsnapped)" "described vulnerability" f.message
 
 let test_anchor_source_fallback_when_flow_empty () =
   (* Sink is not in diff and flow is empty; fall through to source.  Source
-     lives in the diff, so the anchor lands there with the Related-sink
-     enrichment. *)
+     lives in the diff, so the anchor lands there with the unchanged-sink
+     note. *)
   let vf =
     mk_validated
       ~source:(src_site ~path:"src/main.ml" ~line:40 ~description:"user input")
@@ -5157,7 +5157,7 @@ let test_local_review_security_only_empty_is_success () =
   | Ok markdown ->
     (check bool) "has deterministic review body" true (contains_sub ~sub:":robot: **REVIEW**" markdown);
     (check bool) "does not report failure" false (contains_sub ~sub:"Review failed" markdown);
-    (check bool) "does not ask for retrigger" false (contains_sub ~sub:"re-trigger the review" markdown)
+    (check bool) "does not ask for retrigger" false (contains_sub ~sub:"Re-trigger the review" markdown)
 
 (* A chunked run: five candidates exceed [max_candidates_per_validator_call],
    so the validator is called twice. The fifth candidate is only ever offered
@@ -5293,7 +5293,7 @@ let test_local_review_validation_failure_is_not_lgtm () =
       (contains_sub ~sub:"Security review did not complete" markdown);
     (check bool) "states it is not an all-clear" true (contains_sub ~sub:"all-clear" markdown);
     (check bool) "asks for a re-trigger" true (contains_sub ~sub:"Re-trigger the review" markdown);
-    (check bool) "does not repeat the incomplete note" false (contains_sub ~sub:"may not have completed" markdown)
+    (check bool) "does not repeat the incomplete note" false (contains_sub ~sub:"may be incomplete" markdown)
 
 (* The production shape: the general plugin completes cleanly (its scout finds
    no leads on a security-only change, so it contributes no findings) while the
@@ -7909,8 +7909,7 @@ let test_security_e2e_deterministic_signals_do_not_route () =
   (check bool) "review posted" true (CCString.find ~sub:"[create_pr_review]" write_log >= 0);
   (check bool) "deterministic signals alone do not produce security output" true
     (CCString.find ~sub:{|"security"|} write_log < 0);
-  (check bool) "no security failure notice" true
-    (CCString.find ~sub:"security review plugin encountered an error" write_log < 0)
+  (check bool) "no security failure notice" true (CCString.find ~sub:"security review hit an error" write_log < 0)
 
 let test_security_e2e_rejected () =
   Test_helpers.reset_test_state ();
@@ -8326,8 +8325,7 @@ let test_pr_no_security_notice_when_disabled () =
   Lwt_main.run (R_test.process_event ctx ~event);
   let write_log = Api_local.get_write_log () in
   (check bool) "review posted" true (CCString.find ~sub:"[create_pr_review]" write_log >= 0);
-  (check bool) "no security failure notice" true
-    (CCString.find ~sub:"security review plugin encountered an error" write_log < 0)
+  (check bool) "no security failure notice" true (CCString.find ~sub:"security review hit an error" write_log < 0)
 
 (** {2 HTTP timeout tests} *)
 
