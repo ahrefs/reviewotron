@@ -18,6 +18,8 @@ val with_feedback_prompt : string -> string
     and optional code suggestion block. *)
 val format_finding_body : Review_types.finding -> string
 
+val push_title : pusher_name:string -> num_commits:int -> string
+
 (** Count findings by severity. Returns [(critical, warnings, suggestions)]. *)
 val count_by_severity : Review_types.finding list -> int * int * int
 

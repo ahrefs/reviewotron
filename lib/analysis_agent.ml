@@ -817,7 +817,13 @@ let vuln_class_section vuln_class ~language_hints =
 
 let build_system_prompt ~vuln_class ~language_hints =
   String.concat "\n\n"
-    [ preamble; shared_methodology; vuln_class_section vuln_class ~language_hints; tools_and_output_section ]
+    [
+      preamble;
+      shared_methodology;
+      vuln_class_section vuln_class ~language_hints;
+      Comment_style.prompt_fragment;
+      tools_and_output_section;
+    ]
 
 let config ~vuln_class ~model_tier ~language_hints : Agent_runner.agent_config =
   let name = Printf.sprintf "security_analysis_%s" (Security_types.vuln_class_to_string vuln_class) in

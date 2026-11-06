@@ -32,30 +32,29 @@ let to_comment = function
   | Diff_too_large_remote detail ->
     with_details detail
       ~explanation:
-        "The diff is too large for the GitHub API to serve, so I couldn't fetch the changes to review. Consider \
-         splitting this into smaller PRs."
+        "The diff is too large for the GitHub API to serve, so I couldn't fetch it. Split this into smaller PRs to get \
+         a review."
   | Fetch_failed detail -> with_details detail ~explanation:"I couldn't fetch the diff from GitHub."
   | Invalid_target detail ->
     Printf.sprintf "%s\n\nI couldn't select the requested commit for this PR.\n\n%s" prefix detail
   | No_reviewable_files ->
     Printf.sprintf
       ":robot: **reviewotron** skipped this review.\n\n\
-       All changed files were excluded by the configured path, file-regex, or generated-file filters, so no code was \
-       analyzed or approved."
+       The path, file-regex, and generated-file filters excluded every changed file, so nothing was reviewed or \
+       approved."
   | Too_many_lines { actual; limit } ->
     Printf.sprintf
       "%s\n\n\
-       The diff is %d lines, which is over reviewotron's limit of %d. Consider splitting this into smaller PRs, or \
-       raise `max_diff_lines` in the repo config."
+       The diff has %d lines, over the limit of %d. Split this into smaller PRs, or raise `max_diff_lines` in the repo \
+       config."
       prefix actual limit
   | Too_many_files { actual; limit } ->
     Printf.sprintf
       "%s\n\n\
-       The diff touches %d files, which is over reviewotron's limit of %d. Consider splitting this into smaller PRs, \
-       or raise `max_files` in the repo config."
+       The diff touches %d files, over the limit of %d. Split this into smaller PRs, or raise `max_files` in the repo \
+       config."
       prefix actual limit
   | Publish_failed detail ->
     with_details detail
       ~explanation:
-        "I produced a review, but GitHub rejected the attempt to post it. Please re-trigger the review; if this \
-         persists, check the service logs."
+        "GitHub rejected the review I tried to post. Re-trigger the review. If it fails again, check the service logs."

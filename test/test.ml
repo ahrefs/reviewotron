@@ -1650,7 +1650,7 @@ let test_grouped_finding_preserves_singleton () =
 let test_anchor_sink_in_diff_no_snap () =
   (* Sink is already in the diff (src/main.ml hunk A).  We must not snap; the
      finding's path/line should equal the sink and the message should NOT
-     carry a "Related sink" prefix. *)
+     carry the unchanged-sink note. *)
   let vf =
     mk_validated
       ~source:(src_site ~path:"src/unrelated.ml" ~line:1 ~description:"src")
@@ -1660,12 +1660,12 @@ let test_anchor_sink_in_diff_no_snap () =
   let f = Sec_test.validated_to_finding ~diff:parsed_anchor_diff vf in
   (check string) "path stays on sink" "src/main.ml" f.path;
   (check int) "line stays on sink" 11 f.line;
-  (check bool) "no Related prefix in message" true (not (CCString.mem ~sub:"Related sink" f.message))
+  (check string) "message is the description" "described vulnerability" f.message
 
 let test_anchor_sink_not_in_diff_flow_in_diff () =
   (* Sink is in an unchanged file; flow passes through src/main.ml:12.  The
      finding must snap to the flow step and the body must carry the sink
-     location as "Related sink: ...". *)
+     location. *)
   let vf =
     mk_validated
       ~source:(src_site ~path:"src/entry.ml" ~line:1 ~description:"http param")
@@ -1681,7 +1681,7 @@ let test_anchor_sink_not_in_diff_flow_in_diff () =
   let f = Sec_test.validated_to_finding ~diff:parsed_anchor_diff vf in
   (check string) "path snaps to flow step file" "src/main.ml" f.path;
   (check int) "line snaps to flow step line" 12 f.line;
-  (check bool) "message has Related sink prefix" true (CCString.mem ~sub:"Related sink" f.message);
+  (check bool) "message has the sink note" true (CCString.mem ~sub:"The sink is in unchanged code" f.message);
   (check bool) "message references sink path" true (CCString.mem ~sub:"src/unchanged.ml:99" f.message)
 
 let test_anchor_nothing_in_diff_falls_through_to_sink () =
@@ -1698,12 +1698,12 @@ let test_anchor_nothing_in_diff_falls_through_to_sink () =
   let f = Sec_test.validated_to_finding ~diff:parsed_anchor_diff vf in
   (check string) "path stays on sink" "src/b.ml" f.path;
   (check int) "line stays on sink" 10 f.line;
-  (check bool) "no Related prefix (unsnapped)" true (not (CCString.mem ~sub:"Related sink" f.message))
+  (check string) "message is the description (unsnapped)" "described vulnerability" f.message
 
 let test_anchor_source_fallback_when_flow_empty () =
   (* Sink is not in diff and flow is empty; fall through to source.  Source
-     lives in the diff, so the anchor lands there with the Related-sink
-     enrichment. *)
+     lives in the diff, so the anchor lands there with the unchanged-sink
+     note. *)
   let vf =
     mk_validated
       ~source:(src_site ~path:"src/main.ml" ~line:40 ~description:"user input")
@@ -2690,6 +2690,35 @@ let test_security_validated_to_finding_uses_proof_summary () =
   (check bool) "failure scenario has trigger" true (contains_sub ~sub:"GET /documents/123" finding.failure_scenario);
   (check bool) "evidence snippet has trace" true (contains_sub ~sub:"src/main.ml:10" finding.evidence_snippet);
   (check bool) "why_now has missing control" true (contains_sub ~sub:"owner-scoped authorization check" finding.why_now)
+
+let test_security_long_proof_renders_in_full () =
+  let long_text prefix = prefix ^ String.concat " " (List.init 120 (Printf.sprintf "word%d")) in
+  let trigger = long_text "GET /documents/123 " in
+  let expected_impact = long_text "The attacker reads " in
+  let control = long_text "owner check " in
+  let trace = List.init 7 (fun i -> Printf.sprintf "src/main.ml:%d step %d" (10 + i) i) in
+  let finding =
+    mk_validated
+      ~source:(src_site ~path:"src/main.ml" ~line:10 ~description:"request id")
+      ~sink:(sink_site ~path:"src/main.ml" ~line:14 ~description:"document update")
+      ~flow:[ flow_step ~path:"src/main.ml" ~line:12 ~description:"passed to update" ]
+      ~proof_by_construction:
+        {
+          (concrete_exploitation_proof ()) with
+          trigger;
+          expected_impact;
+          missing_or_inadequate_control = control;
+          source_to_sink_trace = trace;
+        }
+      ()
+    |> Sec_test.validated_to_finding ~diff:parsed_anchor_diff
+  in
+  let body = Review_format.format_finding_body finding in
+  (check bool) "trigger posted in full" true (contains_sub ~sub:trigger body);
+  (check bool) "impact posted in full" true (contains_sub ~sub:expected_impact body);
+  (check bool) "no ellipsis in the posted comment" false (contains_sub ~sub:"..." body);
+  (check bool) "whole trace kept" true (contains_sub ~sub:(String.concat " -> " trace) finding.evidence_snippet);
+  (check bool) "why_now keeps the whole control" true (contains_sub ~sub:control finding.why_now)
 
 let test_security_triage_output_extra_fields () =
   let json_str = {|{"signals":[],"language_hints":[],"skip_reason":null,"extra_field":"ignored","another":123}|} in
@@ -3827,11 +3856,10 @@ let test_comment_trigger_rejects_unrelated_target () =
   let write_log = Api_local.get_write_log () in
   (check bool) "invalid target comment posted" true (contains_sub ~sub:"[create_issue_comment]" write_log);
   (check bool) "invalid target explains that GitHub did not return the commit" true
-    (contains_sub ~sub:"was not found in the list of commits returned by GitHub's API" write_log);
-  (check bool) "invalid target asks to verify the SHA" true
-    (contains_sub ~sub:"check that the commit SHA is correct" write_log);
+    (contains_sub ~sub:"is not in this PR's commit list from the GitHub API" write_log);
+  (check bool) "invalid target asks to verify the SHA" true (contains_sub ~sub:"Check the SHA" write_log);
   (check bool) "invalid target explains GitHub's 250-commit limit" true
-    (contains_sub ~sub:"only returns the last 250" write_log);
+    (contains_sub ~sub:"lists only the last 250 commits" write_log);
   (check bool) "invalid target does not start a PR review" false (contains_sub ~sub:"[create_pr_review]" write_log);
   (check (option string)) "invalid target does not run an agent" None (Api_local.recorded_agent_input "general_scout");
   (check bool) "invalid target is not recorded" false
@@ -4067,7 +4095,7 @@ let test_pr_all_ignored_paths_posts_skip_comment () =
   (check bool) "skip comment posted" true
     (contains_sub ~sub:"[create_issue_comment] repo=https://github.com/org/monorepo number=99" write_log);
   (check bool) "skip comment explains no code was reviewed" true
-    (contains_sub ~sub:"no code was analyzed or approved" write_log);
+    (contains_sub ~sub:"nothing was reviewed or approved" write_log);
   (check bool) "skip comment does not say LGTM" false (contains_sub ~sub:"LGTM :+1:" write_log);
   (check bool) "skip comment shows reviewed commit" true
     (contains_sub ~sub:(reviewed_commit_sub "abc123def456789012345678901234567890abcd") write_log);
@@ -5129,7 +5157,7 @@ let test_local_review_security_only_empty_is_success () =
   | Ok markdown ->
     (check bool) "has deterministic review body" true (contains_sub ~sub:":robot: **REVIEW**" markdown);
     (check bool) "does not report failure" false (contains_sub ~sub:"Review failed" markdown);
-    (check bool) "does not ask for retrigger" false (contains_sub ~sub:"re-trigger the review" markdown)
+    (check bool) "does not ask for retrigger" false (contains_sub ~sub:"Re-trigger the review" markdown)
 
 (* A chunked run: five candidates exceed [max_candidates_per_validator_call],
    so the validator is called twice. The fifth candidate is only ever offered
@@ -5264,8 +5292,8 @@ let test_local_review_validation_failure_is_not_lgtm () =
     (check bool) "says security review did not complete" true
       (contains_sub ~sub:"Security review did not complete" markdown);
     (check bool) "states it is not an all-clear" true (contains_sub ~sub:"all-clear" markdown);
-    (check bool) "asks for a re-trigger" true (contains_sub ~sub:"re-trigger the review" markdown);
-    (check bool) "does not repeat the incomplete note" false (contains_sub ~sub:"may not have completed" markdown)
+    (check bool) "asks for a re-trigger" true (contains_sub ~sub:"Re-trigger the review" markdown);
+    (check bool) "does not repeat the incomplete note" false (contains_sub ~sub:"may be incomplete" markdown)
 
 (* The production shape: the general plugin completes cleanly (its scout finds
    no leads on a security-only change, so it contributes no findings) while the
@@ -7881,8 +7909,7 @@ let test_security_e2e_deterministic_signals_do_not_route () =
   (check bool) "review posted" true (CCString.find ~sub:"[create_pr_review]" write_log >= 0);
   (check bool) "deterministic signals alone do not produce security output" true
     (CCString.find ~sub:{|"security"|} write_log < 0);
-  (check bool) "no security failure notice" true
-    (CCString.find ~sub:"security review plugin encountered an error" write_log < 0)
+  (check bool) "no security failure notice" true (CCString.find ~sub:"security review hit an error" write_log < 0)
 
 let test_security_e2e_rejected () =
   Test_helpers.reset_test_state ();
@@ -7971,8 +7998,8 @@ let test_pr_general_failure_no_findings () =
   (check bool) "review posted despite failure" true (CCString.find ~sub:"[create_pr_review]" write_log >= 0);
   (check bool) "has general failure notice" true (CCString.find ~sub:"General review failed" write_log >= 0);
   (check bool) "notes security completion" true
-    (CCString.find ~sub:"security review completed and found no confirmed security findings" write_log >= 0);
-  (check bool) "has re-trigger message" true (CCString.find ~sub:"re-trigger the review" write_log >= 0);
+    (CCString.find ~sub:"security review finished with no confirmed findings" write_log >= 0);
+  (check bool) "has re-trigger message" true (CCString.find ~sub:"Re-trigger the review" write_log >= 0);
   (check bool) "surfaces failure cause in details" true
     (CCString.find ~sub:"<details open><summary>Details</summary>" write_log >= 0)
 
@@ -8008,11 +8035,11 @@ let test_pr_and_push_general_validator_failures_are_actionable () =
   (check bool) "review posted despite validation failure" true (contains_sub ~sub:"[create_pr_review]" write_log);
   (check bool) "names validator stage" true (contains_sub ~sub:"`general-validator`" write_log);
   (check bool) "says one finding was withheld, in the singular" true
-    (contains_sub ~sub:"1 potential finding, which was withheld" write_log);
+    (contains_sub ~sub:"1 potential finding, so reviewotron withheld it" write_log);
   (check bool) "shows inferred provider classification" true
     (contains_sub ~sub:"likely_type=content_policy_violation" write_log);
   check bool "directs persistent 403s to service operators" true
-    (contains_sub ~sub:"If it persists, ask a Reviewotron service operator" write_log);
+    (contains_sub ~sub:"If it fails again, ask a Reviewotron operator" write_log);
   Test_helpers.reset_test_state ();
   Api_local.set_agent_response_map
     [
@@ -8028,9 +8055,9 @@ let test_pr_and_push_general_validator_failures_are_actionable () =
     (check bool) "push notice names validator stage" true
       (contains_sub ~sub:"general-validator failed" attachment.Slack_types.text);
     (check bool) "push notice says retry once" true
-      (contains_sub ~sub:"re-trigger the review once" attachment.Slack_types.text);
+      (contains_sub ~sub:"Re-trigger the review once" attachment.Slack_types.text);
     check bool "push notice directs persistent 403s to service operators" true
-      (contains_sub ~sub:"If it persists, ask a Reviewotron service operator" attachment.Slack_types.text)
+      (contains_sub ~sub:"If it fails again, ask a Reviewotron operator" attachment.Slack_types.text)
   | [] -> fail "expected a Slack message"
   | [ (_channel, _text, None) ] -> fail "expected Slack attachments"
   | [ (_channel, _text, Some []) ] -> fail "expected a Slack attachment"
@@ -8062,9 +8089,9 @@ let test_pr_and_push_general_scout_403_failures_are_actionable () =
   (check bool) "review posted despite scout failure" true (contains_sub ~sub:"[create_pr_review]" write_log);
   (check bool) "names scout stage" true (contains_sub ~sub:"agent general_scout" write_log);
   (check bool) "names the rejected review request" true
-    (contains_sub ~sub:"The provider rejected the review request (HTTP 403)." write_log);
+    (contains_sub ~sub:"The provider rejected the request with HTTP 403." write_log);
   (check bool) "directs persistent 403s to service operators" true
-    (contains_sub ~sub:"If it persists, ask a Reviewotron service operator" write_log);
+    (contains_sub ~sub:"If it fails again, ask a Reviewotron operator" write_log);
   Test_helpers.reset_test_state ();
   Api_local.set_agent_response_map [ "security_triage", "mock_api_responses/security/triage_safe.json" ];
   let ctx = Test_helpers.make_test_context ~config:security_enabled_slack_config () in
@@ -8074,7 +8101,7 @@ let test_pr_and_push_general_scout_403_failures_are_actionable () =
   match Api_local.get_slack_messages () with
   | [ (_channel, _text, Some [ attachment ]) ] ->
     check bool "push notice directs persistent 403s to service operators" true
-      (contains_sub ~sub:"If it persists, ask a Reviewotron service operator" attachment.Slack_types.text)
+      (contains_sub ~sub:"If it fails again, ask a Reviewotron operator" attachment.Slack_types.text)
   | [] -> fail "expected a Slack message"
   | [ (_channel, _text, None) ] -> fail "expected Slack attachments"
   | [ (_channel, _text, Some []) ] -> fail "expected a Slack attachment"
@@ -8097,7 +8124,7 @@ let test_pr_general_failure_with_security_findings () =
   let write_log = Api_local.get_write_log () in
   (check bool) "review posted despite general failure" true (CCString.find ~sub:"[create_pr_review]" write_log >= 0);
   (check bool) "has partial failure notice" true (CCString.find ~sub:"Review partially failed" write_log >= 0);
-  (check bool) "has re-trigger suggestion" true (CCString.find ~sub:"re-trigger the review" write_log >= 0);
+  (check bool) "has re-trigger suggestion" true (CCString.find ~sub:"Re-trigger the review" write_log >= 0);
   (check bool) "has security finding" true (CCString.find ~sub:"**[critical]** security" write_log >= 0);
   (check bool) "finding on correct path" true (CCString.find ~sub:"src/main.ml" write_log >= 0)
 
@@ -8225,7 +8252,7 @@ let test_push_empty_prepare_posts_skip_slack () =
     | Some [] -> fail "expected a Slack skip attachment"
     | Some (attachment :: _) ->
       (check bool) "Slack attachment explains skip" true
-        (contains_sub ~sub:"no code was analyzed or approved" attachment.Slack_types.text)));
+        (contains_sub ~sub:"nothing was reviewed or approved" attachment.Slack_types.text)));
   match event with
   | Github.Push push ->
     (check bool) "empty push diff recorded in state" true
@@ -8255,10 +8282,8 @@ let test_pr_security_failure_notice () =
   let write_log = Api_local.get_write_log () in
   (check bool) "review posted" true (CCString.find ~sub:"[create_pr_review]" write_log >= 0);
   (check bool) "has deterministic review body" true (contains_sub ~sub:":robot: **REVIEW**" write_log);
-  (check bool) "has security failure notice" true
-    (CCString.find ~sub:"security review plugin encountered an error" write_log >= 0);
-  (check bool) "has incompleteness warning" true
-    (CCString.find ~sub:"Security analysis may be incomplete" write_log >= 0)
+  (check bool) "has security failure notice" true (CCString.find ~sub:"security review hit an error" write_log >= 0);
+  (check bool) "has incompleteness warning" true (CCString.find ~sub:"results may be incomplete" write_log >= 0)
 
 let test_push_security_failure_notice () =
   Test_helpers.reset_test_state ();
@@ -8285,7 +8310,7 @@ let test_push_security_failure_notice () =
   | Some [] -> fail "expected at least one attachment"
   | Some (att :: _) ->
     (check bool) "attachment has security failure notice" true
-      (CCString.find ~sub:"security review plugin encountered an error" att.Slack_types.text >= 0)
+      (CCString.find ~sub:"security review hit an error" att.Slack_types.text >= 0)
 
 let test_pr_no_security_notice_when_disabled () =
   Test_helpers.reset_test_state ();
@@ -8300,8 +8325,7 @@ let test_pr_no_security_notice_when_disabled () =
   Lwt_main.run (R_test.process_event ctx ~event);
   let write_log = Api_local.get_write_log () in
   (check bool) "review posted" true (CCString.find ~sub:"[create_pr_review]" write_log >= 0);
-  (check bool) "no security failure notice" true
-    (CCString.find ~sub:"security review plugin encountered an error" write_log < 0)
+  (check bool) "no security failure notice" true (CCString.find ~sub:"security review hit an error" write_log < 0)
 
 (** {2 HTTP timeout tests} *)
 
@@ -8513,13 +8537,14 @@ let test_review_failure_comment_mentions_cause () =
   (check bool) "remote-too-large comment is about size, not a generic failure" true
     (contains_sub ~sub:"too large" (String.lowercase_ascii remote));
   let publish = Review_failure.to_comment (Publish_failed "http 422: invalid comments") in
-  (check bool) "publish failure says review was produced" true (contains_sub ~sub:"produced a review" publish);
+  (check bool) "publish failure says review was produced" true
+    (contains_sub ~sub:"rejected the review I tried to post" publish);
   (check bool) "failure details are open by default" true
     (contains_sub ~sub:"<details open><summary>Details</summary>" publish);
   (check bool) "publish failure includes raw error" true (contains_sub ~sub:"http 422" publish);
   let skipped = Review_failure.to_comment No_reviewable_files in
   (check bool) "skip comment identifies skipped review" true (contains_sub ~sub:"skipped this review" skipped);
-  (check bool) "skip comment denies approval" true (contains_sub ~sub:"no code was analyzed or approved" skipped)
+  (check bool) "skip comment denies approval" true (contains_sub ~sub:"nothing was reviewed or approved" skipped)
 
 (* Integration tests: drive process_event and assert on the write log. *)
 let check_same_pr_webhook_deduped ~ctx ~event =
@@ -8691,7 +8716,8 @@ let test_pr_review_post_failure_posts_fallback_comment () =
   let write_log = Api_local.get_write_log () in
   (check bool) "fallback issue comment posted" true
     (contains_sub ~sub:"[create_issue_comment] repo=https://github.com/org/monorepo number=42" write_log);
-  (check bool) "fallback explains publish failure" true (contains_sub ~sub:"produced a review" write_log);
+  (check bool) "fallback explains publish failure" true
+    (contains_sub ~sub:"rejected the review I tried to post" write_log);
   (check bool) "fallback includes raw publish error" true
     (contains_sub ~sub:"missing Pull requests write permission" write_log);
   check_pr_reviewed_state ~ctx ~event true;
@@ -8749,7 +8775,7 @@ let test_pr_empty_diff_posts_skip_comment () =
   (check bool) "skip comment posted on empty diff" true
     (contains_sub ~sub:"[create_issue_comment] repo=https://github.com/org/monorepo number=42" write_log);
   (check bool) "skip comment explains no code was reviewed" true
-    (contains_sub ~sub:"no code was analyzed or approved" write_log);
+    (contains_sub ~sub:"nothing was reviewed or approved" write_log);
   (check bool) "skip comment does not say LGTM" false (contains_sub ~sub:"LGTM :+1:" write_log);
   (check bool) "skip comment shows reviewed commit" true
     (contains_sub ~sub:(reviewed_commit_sub "abc123def456789012345678901234567890abcd") write_log);
@@ -10023,6 +10049,7 @@ let () =
           test_case "rejected does not require proof" `Quick test_security_enforce_rejected_without_proof_ok;
           test_case "proof summaries populate finding fields" `Quick
             test_security_validated_to_finding_uses_proof_summary;
+          test_case "long proof renders in full" `Quick test_security_long_proof_renders_in_full;
           test_case "triage output extra fields" `Quick test_security_triage_output_extra_fields;
         ] );
       ( "security_tools",

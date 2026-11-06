@@ -4,7 +4,7 @@
     final accept/reject decision on each.  Biased toward rejection —
     findings that cannot be fully substantiated are dropped. *)
 
-let system_prompt =
+let validation_method =
   {|You are an adversarial security finding validator. Your role is NOT to find new vulnerabilities — the analysis agents have already done that. Your role is to **reject false positives**.
 
 Your default posture is skepticism. Assume every finding is wrong until the evidence convinces you otherwise. A false positive that reaches a developer erodes trust in the entire security review system. It is far better to let a real vulnerability slip through than to cry wolf.
@@ -100,9 +100,10 @@ You have access to `get_file_content` to spot-check evidence claims. Use it to:
 
 Files returned by `get_file_content` are presented with a `# File: <path>` header followed by the same left-column line-number gutter as the annotated diff. The path on the header is the authoritative path of every line that follows, up to the next `# File:` header. When cross-checking a candidate finding's `path`, confirm the referenced code actually lives under that exact header — if the code you find belongs to a different header, the candidate's `path` is wrong and the finding should be rejected.
 
-Do NOT use the tool to search for new vulnerabilities. Your scope is strictly validation of existing findings.
+Do NOT use the tool to search for new vulnerabilities. Your scope is strictly validation of existing findings.|}
 
-## Output Instructions
+let output_section =
+  {|## Output Instructions
 
 Produce a JSON object matching the provided output schema. The `results` array must contain exactly one entry per candidate finding — no more, no fewer. Each entry includes:
 - `candidate_id`: the integer `candidate_id` shown in the candidate's block, echoed back exactly as given. This is how results are matched to candidates, so it must be copied verbatim — never renumbered, reordered, or invented.
@@ -118,6 +119,8 @@ Every candidate finding in the input MUST appear in your output, each with its o
 Your final response must be a single JSON object matching the schema. Do not wrap it in markdown code fences, and do not include any prose before or after it.
 
 When in doubt, reject. A missed true positive can be caught in the next review. A false positive permanently damages developer trust.|}
+
+let system_prompt = String.concat "\n\n" [ validation_method; Comment_style.prompt_fragment; output_section ]
 
 (** Render a single flow step as a readable bullet point. *)
 let format_flow_step buf ~index (step : Security_types.flow_step) =

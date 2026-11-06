@@ -114,10 +114,8 @@ let pr_prepare_error_attrs ~config (error : Github_source.pr_prepare_error) = pr
 
 let target_commit_not_found_message requested =
   Printf.sprintf
-    "The commit `%s` was not found in the list of commits returned by GitHub's API for this PR. Please check that the \
-     commit SHA is correct and that the commit belongs to this PR. If the PR contains more than 250 commits, GitHub \
-     only returns the last 250 through this endpoint, so the requested commit must be among those 250; older commits \
-     cannot be fetched here."
+    "Commit `%s` is not in this PR's commit list from the GitHub API. Check the SHA and that the commit belongs to \
+     this PR. GitHub lists only the last 250 commits of a PR, so older commits cannot be selected."
     requested
 
 module Make
@@ -442,12 +440,12 @@ struct
     | Ambiguous_target_commit requested ->
       Printf.sprintf "The abbreviated commit `%s` matches multiple commits in this PR; use a longer SHA." requested
     | Empty ->
-      "All changed files were excluded by the configured path, file-regex, or generated-file filters; no code was \
-       analyzed or approved."
+      "The path, file-regex, and generated-file filters excluded every changed file, so nothing was reviewed or \
+       approved."
     | Too_large total_lines ->
-      Printf.sprintf "The diff is %d lines, which is over reviewotron's limit of %d." total_lines config.max_diff_lines
+      Printf.sprintf "The diff has %d lines, over the limit of %d." total_lines config.max_diff_lines
     | Too_many_files file_count ->
-      Printf.sprintf "The diff touches %d files, which is over reviewotron's limit of %d." file_count config.max_files
+      Printf.sprintf "The diff touches %d files, over the limit of %d." file_count config.max_files
     | Fetch_failed fetch_error ->
     match Review_failure.classify_fetch_error fetch_error with
     | Diff_too_large_remote detail -> Printf.sprintf "The diff is too large for the GitHub API to serve.\n\n%s" detail
@@ -461,11 +459,11 @@ struct
     let failure_text =
       match findings with
       | _ :: _ ->
-        "\xE2\x9A\xA0\xEF\xB8\x8F Review partially failed \xE2\x80\x94 the general code review agent encountered an \
-         error. Security findings were posted as commit comments."
+        "\xE2\x9A\xA0\xEF\xB8\x8F Review partially failed. The general review agent hit an error. Security findings \
+         went out as commit comments."
       | [] ->
-        "\xE2\x9A\xA0\xEF\xB8\x8F Review failed \xE2\x80\x94 the code review encountered an error and could not \
-         produce results. Check the service logs."
+        "\xE2\x9A\xA0\xEF\xB8\x8F Review failed. The review hit an error and produced no results. Check the service \
+         logs."
     in
     let failure_text =
       match reason with
@@ -484,7 +482,7 @@ struct
       Slack_types.
         {
           color = "#dc3545";
-          title = Printf.sprintf "Push by %s \xE2\x80\x94 %d commits" push.pusher.name (List.length push.commits);
+          title = Review_format.push_title ~pusher_name:push.pusher.name ~num_commits:(List.length push.commits);
           title_link = push.compare;
           text = failure_text;
           fields = [];
@@ -508,7 +506,7 @@ struct
       Slack_types.
         {
           color = "#6c757d";
-          title = Printf.sprintf "Push by %s — %d commits" push.pusher.name (List.length push.commits);
+          title = Review_format.push_title ~pusher_name:push.pusher.name ~num_commits:(List.length push.commits);
           title_link = push.compare;
           text = reason;
           fields = [];

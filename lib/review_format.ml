@@ -4,22 +4,24 @@
 
 let severity_badge sev = Printf.sprintf {|**[%s]**|} (Review_types.severity_to_string sev)
 let category_label cat = Review_types.finding_category_to_string cat
-let feedback_prompt = "Was this review helpful? React with :+1: or :-1:."
+let feedback_prompt = "Helpful? React with :+1: or :-1:."
 let with_feedback_prompt body = Printf.sprintf "%s\n\n%s" body feedback_prompt
 
 let format_finding_body (finding : Review_types.finding) =
   let header = Printf.sprintf "%s %s" (severity_badge finding.severity) (category_label finding.category) in
-  let failure_scenario = String.trim finding.failure_scenario in
+  let message = String.trim finding.message in
   let body =
-    match failure_scenario with
-    | "" -> Printf.sprintf "%s\n\n%s" header finding.message
-    | scenario when String.equal scenario (String.trim finding.message) ->
-      Printf.sprintf "%s\n\n%s" header finding.message
-    | scenario -> Printf.sprintf "%s\n\n%s\n\nFailure scenario: %s" header finding.message scenario
+    match String.trim finding.failure_scenario with
+    | scenario when String.equal scenario "" || CCString.mem ~sub:scenario message ->
+      Printf.sprintf "%s\n\n%s" header message
+    | scenario -> Printf.sprintf "%s\n\n%s\n\n%s" header message scenario
   in
   match finding.suggested_fix with
   | None -> body
   | Some fix -> Printf.sprintf "%s\n\n```suggestion\n%s\n```" body fix
+
+let push_title ~pusher_name ~num_commits =
+  Printf.sprintf "%s pushed %d %s" pusher_name num_commits (Cost_tracking.pluralize ~n:num_commits "commit")
 
 let count_by_severity findings =
   List.fold_left
@@ -38,7 +40,7 @@ let format_slack_attachment ~compare_url ~pusher_name ~num_commits ~(review : Re
   Slack_types.
     {
       color;
-      title = Printf.sprintf "Push by %s \u{2014} %d commits" pusher_name num_commits;
+      title = push_title ~pusher_name ~num_commits;
       title_link = compare_url;
       (* [review.summary] is an internal audit trace and must never be shown to
          consumers. Use the findings-derived count string instead. *)
