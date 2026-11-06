@@ -91,6 +91,9 @@ val retry_guidance : string -> string
 (** Actionable retry guidance for an HTTP 403 provider rejection. *)
 val retry_guidance_for_403 : string -> string option
 
+(** The review cost footer, or [""] when [show_review_cost] is off. *)
+val cost_footer : config:Config_types.config -> Cost_tracking.review_cost list -> string
+
 (** A bounded, line-numbered window around a finding in its post-change file. *)
 val reviewed_file_context : line:int -> string -> string
 

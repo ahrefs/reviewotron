@@ -31,6 +31,7 @@ module Make (_ : Api.Github_review_sink) : sig
   val publish_success_comment :
     log_context:string option ->
     head_sha:string option ->
+    cost_footer:string ->
     ctx:Context.t ->
     repo_url:string ->
     number:int ->

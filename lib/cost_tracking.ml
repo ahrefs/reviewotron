@@ -189,8 +189,12 @@ let format_footer (costs : review_cost list) =
         | _ :: _ -> Some (Printf.sprintf "%s: %d %s" c.plugin n (pluralize ~n "agent")))
       costs
   in
-  let details = String.concat ", " plugin_parts in
-  Printf.sprintf "\n\n---\n*Review cost: %d %s (%s), ~$%.2f*" total_agents (pluralize ~n:total_agents "agent") details
+  let details =
+    match plugin_parts with
+    | [] -> ""
+    | _ :: _ -> Printf.sprintf " (%s)" (String.concat ", " plugin_parts)
+  in
+  Printf.sprintf "\n\n---\n*Review cost: %d %s%s, ~$%.2f*" total_agents (pluralize ~n:total_agents "agent") details
     total_cost
 
 let log_review_costs ?log_context (costs : review_cost list) =

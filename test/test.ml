@@ -4107,6 +4107,18 @@ let test_pr_empty_findings_review () =
   | Github.Unknown _ ->
     fail "expected pull_request event"
 
+let test_pr_quiet_success_shows_review_cost () =
+  Test_helpers.reset_test_state ();
+  Api_local.set_agent_response_path "mock_api_responses/claude/empty_findings_response.json";
+  Api_local.set_agent_response_map [ "general_scout", "mock_api_responses/scout/leads_empty.json" ];
+  let config = { Test_helpers.auto_review_enabled_config with show_review_cost = true } in
+  let ctx = Test_helpers.make_test_context ~config () in
+  let payload = read_file "mock_payloads/pr_opened.json" in
+  let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
+  Lwt_main.run (R_test.process_event ctx ~event);
+  (check bool) "LGTM comment shows review cost" true
+    (contains_sub ~sub:{|LGTM :+1:\n\n---\n*Review cost: |} (Api_local.get_write_log ()))
+
 let test_pr_large_diff_posts_comment () =
   Test_helpers.reset_test_state ();
   (* Set max_diff_lines very low so the normal PR 42 diff exceeds it *)
@@ -10167,6 +10179,7 @@ let () =
           test_case "PR synchronize triggers review" `Quick test_pr_synchronize_review;
           test_case "PR with all ignored paths posts skip comment" `Quick test_pr_all_ignored_paths_posts_skip_comment;
           test_case "PR with empty findings posts LGTM comment" `Quick test_pr_empty_findings_review;
+          test_case "PR quiet LGTM shows review cost" `Quick test_pr_quiet_success_shows_review_cost;
           test_case "large PR over max_diff_lines posts comment" `Quick test_pr_large_diff_posts_comment;
           test_case "generated files filtered before PR file limit" `Quick
             test_pr_generated_files_filtered_before_file_limit;

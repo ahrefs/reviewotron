@@ -193,8 +193,8 @@ struct
         log#warn "%sfailed to remove review progress reaction %d: %s" log_prefix reaction_id msg;
         Lwt.return_unit)
 
-  let publish_success_comment ~log_context ~head_sha ~ctx ~repo_url ~number =
-    Sink.publish_success_comment ~log_context ~head_sha ~ctx ~repo_url ~number
+  let publish_success_comment ~log_context ~head_sha ~cost_footer ~ctx ~repo_url ~number =
+    Sink.publish_success_comment ~log_context ~head_sha ~cost_footer ~ctx ~repo_url ~number
 
   (** A report is worth posting as a PR review when it surfaces any inline
       comment, any out-of-diff finding section, a security-plugin error, or a
@@ -303,8 +303,9 @@ struct
               let%lwt () = remove_progress_reaction ~log_context ~ctx ~repo_url:job.repo_key progress in
               let%lwt post_result =
                 publish_span ~kind:"no_findings_comment" (fun () ->
-                  publish_success_comment ~log_context:(Some log_context) ~head_sha:(Some job.head_sha) ~ctx
-                    ~repo_url:job.repo_key ~number)
+                  publish_success_comment ~log_context:(Some log_context) ~head_sha:(Some job.head_sha)
+                    ~cost_footer:(Review_engine.cost_footer ~config:job.config report.review_costs)
+                    ~ctx ~repo_url:job.repo_key ~number)
               in
               (match post_result with
               | Ok () ->

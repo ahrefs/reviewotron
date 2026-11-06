@@ -214,12 +214,13 @@ module Make (SNK : Api.Github_review_sink) = struct
       log#error "%sfailed to post review notice on PR #%d: %s" log_prefix number msg;
       Lwt.return (Error msg)
 
-  let publish_success_comment ~log_context ~head_sha ~ctx ~repo_url ~number =
+  let publish_success_comment ~log_context ~head_sha ~cost_footer ~ctx ~repo_url ~number =
     let log_prefix = log_context_prefix log_context in
+    let lgtm = "LGTM :+1:" ^ cost_footer in
     let body =
       match head_sha with
-      | None -> "LGTM :+1:"
-      | Some head_sha -> with_reviewed_commit ~head_sha "LGTM :+1:"
+      | None -> lgtm
+      | Some head_sha -> with_reviewed_commit ~head_sha lgtm
     in
     let%lwt result = SNK.create_issue_comment ~ctx ~repo_url ~number ?log_context { body } in
     match result with
