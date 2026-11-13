@@ -29,7 +29,7 @@
   containers
   curl
   (devkit
-   (>= 1.20261006))
+   (>= 1.20260908))
   digestif
   extlib
   fmt

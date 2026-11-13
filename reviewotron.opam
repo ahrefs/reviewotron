@@ -16,7 +16,7 @@ depends: [
   "cmdliner"
   "containers"
   "curl"
-  "devkit" {>= "1.20261006"}
+  "devkit" {>= "1.20260908"}
   "digestif"
   "extlib"
   "fmt"
