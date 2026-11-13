@@ -4,7 +4,7 @@
 
 (name reviewotron)
 
-(version 0.20.0)
+(version 0.20.1)
 
 (source
  (github ahrefs/reviewotron))
@@ -29,7 +29,7 @@
   containers
   curl
   (devkit
-   (= dev))
+   (>= 1.20261006))
   digestif
   extlib
   fmt
@@ -37,16 +37,15 @@
    (< 6.0))
   (lwt_ppx
    (< 6.0))
-  melange-json-native
+  (jsonkit
+   (>= 1.1.0))
   mirage-crypto-pk
   (ocaml-ai-sdk
-   (>= 0.8))
+   (>= 0.9))
   opentelemetry
   opentelemetry-lwt
   opentelemetry-client-ocurl-lwt
   mirage-crypto-rng
-  (ppx_deriving_jsonschema
-   (>= 0.0.8))
   ptime
   (ocamlformat
    (= 0.29.0))

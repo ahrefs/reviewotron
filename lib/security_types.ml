@@ -14,8 +14,8 @@
     why a finding was rejected) belongs in the existing prose fields
     ([description], [evidence_notes]). *)
 
-open Melange_json.Primitives
-open Ppx_deriving_jsonschema_runtime.Primitives.Melange_json
+open Jsonkit.Primitives
+open Jsonkit.Jsonschema.Primitives
 
 (** {2 Re-exported enumerations} *)
 
@@ -87,7 +87,7 @@ let signal_category_of_json = function
   | `String "sensitive_file" -> Sensitive_file
   | `String "changed_security_control" -> Changed_security_control
   | `String "stateful_operation" -> Stateful_operation
-  | json -> Melange_json.of_json_error ~json "expected signal_category string"
+  | json -> Jsonkit.of_json_error ~json "expected signal_category string"
 
 let signal_category_jsonschema =
   `Assoc
@@ -100,7 +100,7 @@ let signal_category_jsonschema =
 type candidate_signal = {
   category : signal_category; [@jsonschema.description "Deterministic advisory signal category; this is not a finding"]
   vuln_class_hint : vuln_class option;
-     [@json.option] [@jsonschema.description "Optional vulnerability class hint for triage routing attention"]
+     [@option] [@jsonschema.description "Optional vulnerability class hint for triage routing attention"]
   path : string; [@jsonschema.description "Changed file path"]
   start_line : int; [@jsonschema.description "First changed line associated with the signal"]
   end_line : int; [@jsonschema.description "Last changed line associated with the signal"]
@@ -133,9 +133,9 @@ type triage_output = {
   language_hints : string list;
      [@jsonschema.description "Programming languages detected in changed files, e.g. OCaml, Python, JavaScript"]
   skip_reason : string option;
-     [@json.option] [@jsonschema.description "Why triage emitted no signals; null when signals are present"]
+     [@option] [@jsonschema.description "Why triage emitted no signals; null when signals are present"]
 }
-[@@deriving json, jsonschema] [@@json.allow_extra_fields]
+[@@deriving json, jsonschema]
 
 (** {2 Analysis types} *)
 
@@ -185,7 +185,7 @@ let sanitization_status_of_json = function
   | `String "inadequate" -> Inadequate
   | `String "missing" -> Missing
   | `String "unknown" -> Unknown
-  | json -> Melange_json.of_json_error ~json "expected sanitization_status string"
+  | json -> Jsonkit.of_json_error ~json "expected sanitization_status string"
 
 let sanitization_status_jsonschema =
   `Assoc
@@ -209,12 +209,12 @@ type candidate_finding = {
   description : string;
      [@jsonschema.description "Concise vulnerability explanation tied to the provided source/sink/flow evidence"]
   suggested_fix : string option;
-     [@json.option]
+     [@option]
      [@jsonschema.description
        "Optional fix snippet that replaces the vulnerable lines. Return raw code with correct indentation and no \
         markdown fences."]
 }
-[@@deriving json, jsonschema] [@@json.allow_extra_fields]
+[@@deriving json, jsonschema]
 
 type analysis_output = {
   findings : candidate_finding list;
@@ -223,7 +223,7 @@ type analysis_output = {
      [@jsonschema.description "Files inspected from the diff and via get_file_content tool calls"]
   notes : string; [@jsonschema.description "Additional observations for this vulnerability class"]
 }
-[@@deriving json, jsonschema] [@@json.allow_extra_fields]
+[@@deriving json, jsonschema]
 
 (** {2 Validator types} *)
 
@@ -242,7 +242,7 @@ let validation_verdict_to_json verdict = `String (validation_verdict_to_string v
 let validation_verdict_of_json = function
   | `String "confirmed" -> Confirmed
   | `String "rejected" -> Rejected
-  | json -> Melange_json.of_json_error ~json "expected validation_verdict string"
+  | json -> Jsonkit.of_json_error ~json "expected validation_verdict string"
 
 let validation_verdict_jsonschema =
   `Assoc
@@ -256,22 +256,22 @@ let validation_verdict_jsonschema =
 
 type exploitation_proof = {
   trigger : string;
-     [@json.default ""]
+     [@default ""]
      [@jsonschema.description
        "Copy-pasteable or directly reproducible request, function call, user action, or payload that triggers the bug"]
   preconditions : string list;
-     [@json.default []] [@jsonschema.description "Concrete preconditions required before the trigger is exploitable"]
+     [@default []] [@jsonschema.description "Concrete preconditions required before the trigger is exploitable"]
   source_to_sink_trace : string list;
-     [@json.default []] [@jsonschema.description "Concrete source-to-sink trace steps tied to file and line evidence"]
+     [@default []] [@jsonschema.description "Concrete source-to-sink trace steps tied to file and line evidence"]
   missing_or_inadequate_control : string;
-     [@json.default ""] [@jsonschema.description "Specific missing or inadequate security control on the exploit path"]
+     [@default ""] [@jsonschema.description "Specific missing or inadequate security control on the exploit path"]
   expected_impact : string;
-     [@json.default ""] [@jsonschema.description "Concrete expected impact if the trigger is exercised"]
+     [@default ""] [@jsonschema.description "Concrete expected impact if the trigger is exercised"]
   assumptions : string list;
-     [@json.default []]
+     [@default []]
      [@jsonschema.description "Explicit unresolved assumptions; essential unchecked assumptions should cause rejection"]
 }
-[@@deriving json, jsonschema] [@@json.allow_extra_fields]
+[@@deriving json, jsonschema]
 
 type validated_finding = {
   candidate_id : int;
@@ -281,17 +281,17 @@ type validated_finding = {
   verdict : validation_verdict; [@jsonschema.description "Validation outcome: confirmed, or rejected with reason"]
   evidence_notes : string; [@jsonschema.description "Validator rationale and evidence supporting the verdict"]
   proof_by_construction : exploitation_proof option;
-     [@json.option]
+     [@option]
      [@jsonschema.description
        "Concrete proof required for confirmed results; may be omitted or null for rejected results"]
 }
-[@@deriving json, jsonschema] [@@json.allow_extra_fields]
+[@@deriving json, jsonschema]
 
 type validator_output = {
   results : validated_finding list;
      [@jsonschema.description "Validated findings to surface to developers after false-positive filtering"]
 }
-[@@deriving json, jsonschema] [@@json.allow_extra_fields]
+[@@deriving json, jsonschema]
 
 type curator_output = {
   updated_memory : string;
@@ -299,7 +299,14 @@ type curator_output = {
        "Full updated architectural brief for the repository. Contains only Architecture and Known Safe Patterns \
         sections; no file:line references."]
 }
-[@@deriving json, jsonschema] [@@json.allow_extra_fields]
+[@@deriving json, jsonschema]
+
+(** {2 Strict schemas} *)
+
+let triage_output_jsonschema = Strict_schema.make triage_output_jsonschema
+let analysis_output_jsonschema = Strict_schema.make analysis_output_jsonschema
+let validator_output_jsonschema = Strict_schema.make validator_output_jsonschema
+let curator_output_jsonschema = Strict_schema.make curator_output_jsonschema
 
 (** Architectural observations passed to the memory curator.
 

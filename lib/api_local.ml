@@ -208,7 +208,7 @@ module Github : Api.Github = struct
     match read_mock_file path with
     | Error msg -> Lwt.return (Error msg)
     | Ok body ->
-    try Lwt.return (Ok (Github_types.pull_request_of_json (Melange_json.of_string body)))
+    try Lwt.return (Ok (Github_types.pull_request_of_json (Jsonkit.of_string body)))
     with exn -> Lwt.return (Error (Printf.sprintf "failed to parse mock pull_request: %s" (Exn.str exn)))
 
   let get_compare_diff ~ctx:_ ~repo_url:_ ~base ~head ?log_context:_ () =
@@ -228,7 +228,7 @@ module Github : Api.Github = struct
       next_pr_review_result := None;
       Lwt.return result
     | None ->
-      let json = Melange_json.to_string (Github_types.create_review_req_to_json review) in
+      let json = Jsonkit.to_string (Github_types.create_review_req_to_json review) in
       let entry = Printf.sprintf "[create_pr_review] repo=%s number=%d\n%s\n" repo_url number json in
       Buffer.add_string write_log entry;
       log#info "%s" entry;
@@ -243,7 +243,7 @@ module Github : Api.Github = struct
            })
 
   let create_commit_comment ~ctx:_ ~repo_url ~sha ?log_context:_ comment =
-    let json = Melange_json.to_string (Github_types.commit_comment_req_to_json comment) in
+    let json = Jsonkit.to_string (Github_types.commit_comment_req_to_json comment) in
     let entry = Printf.sprintf "[create_commit_comment] repo=%s sha=%s\n%s\n" repo_url sha json in
     Buffer.add_string write_log entry;
     log#info "%s" entry;
@@ -255,7 +255,7 @@ module Github : Api.Github = struct
       next_issue_comment_result := None;
       Lwt.return result
     | None ->
-      let json = Melange_json.to_string (Github_types.issue_comment_req_to_json comment) in
+      let json = Jsonkit.to_string (Github_types.issue_comment_req_to_json comment) in
       let entry = Printf.sprintf "[create_issue_comment] repo=%s number=%d\n%s\n" repo_url number json in
       Buffer.add_string write_log entry;
       log#info "%s" entry;
@@ -391,7 +391,7 @@ module Agent_runner : Api.Agent_runner = struct
     match next_sequenced_response config.Agent_runner.name with
     | Some path ->
       (match read_mock_file path with
-      | Ok json_str -> Lwt.return (result (Melange_json.of_string json_str))
+      | Ok json_str -> Lwt.return (result (Jsonkit.of_string json_str))
       | Error msg -> Lwt.return (Error msg))
     | None ->
     match List.assoc_opt config.Agent_runner.name !agent_response_map, config.Agent_runner.name with
@@ -399,7 +399,7 @@ module Agent_runner : Api.Agent_runner = struct
     | path_opt, _ ->
       let path = Option.default !agent_response_path path_opt in
       (match read_mock_file path with
-      | Ok json_str -> Lwt.return (result (Melange_json.of_string json_str))
+      | Ok json_str -> Lwt.return (result (Jsonkit.of_string json_str))
       | Error msg -> Lwt.return (Error msg))
 end
 

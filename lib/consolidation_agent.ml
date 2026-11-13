@@ -1,5 +1,5 @@
-open Melange_json.Primitives
-open Ppx_deriving_jsonschema_runtime.Primitives.Melange_json
+open Jsonkit.Primitives
+open Jsonkit.Jsonschema.Primitives
 
 type verdict =
   | Keep_separate
@@ -12,7 +12,7 @@ let verdict_to_json = function
 let verdict_of_json = function
   | `String "keep_separate" -> Keep_separate
   | `String "consolidate" -> Consolidate
-  | json -> Melange_json.of_json_error ~json "expected consolidation verdict string"
+  | json -> Jsonkit.of_json_error ~json "expected consolidation verdict string"
 
 let verdict_jsonschema =
   `Assoc
@@ -76,7 +76,7 @@ let config : Agent_runner.agent_config =
     name = "security_consolidation_verifier";
     system_prompt;
     model_tier = Standard;
-    output_schema = output_jsonschema;
+    output_schema = Strict_schema.make output_jsonschema;
     max_steps = 4;
     thinking_budget = None;
     effort = None;

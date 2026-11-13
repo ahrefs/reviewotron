@@ -1,5 +1,5 @@
 open Devkit
-open Melange_json.Primitives
+open Jsonkit.Primitives
 
 let log = Log.from "cost_tracking"
 

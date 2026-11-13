@@ -2,11 +2,11 @@
 
     Provides typed wrappers around {!Ai_core.Core_tool.t} for use
     with {!Agent_runner.run_agent}. Tool parameters and results are
-    derived from OCaml types via [melange-json-native] and
-    [ppx_deriving_jsonschema] — no manual JSON. *)
+    derived from OCaml types via jsonkit's [json] and
+    [jsonschema] derivers — no manual JSON. *)
 
-open Melange_json.Primitives
-open Ppx_deriving_jsonschema_runtime.Primitives.Melange_json
+open Jsonkit.Primitives
+open Jsonkit.Jsonschema.Primitives
 
 (** {2 get_file_content tool} *)
 
@@ -14,16 +14,18 @@ type get_file_content_params = { path : string [@jsonschema.description "File pa
 [@@deriving json, jsonschema]
 
 type get_file_content_result = {
-  content : string option; [@json.option] [@jsonschema.description "File content if found"]
-  error : string option; [@json.option] [@jsonschema.description "Error message if fetch failed"]
+  content : string option; [@option] [@jsonschema.description "File content if found"]
+  error : string option; [@option] [@jsonschema.description "Error message if fetch failed"]
 }
 [@@deriving json, jsonschema]
+
+let get_file_content_params_jsonschema = Strict_schema.make get_file_content_params_jsonschema
 
 let make_get_file_content ~fetch_file =
   let execute args (_ : Ai_core.Core_tool.execute_options) =
     let params =
       try Ok (get_file_content_params_of_json args)
-      with Melange_json.Of_json_error (Json_error msg | Unexpected_variant msg) ->
+      with Jsonkit.Of_json_error (Json_error msg | Unexpected_variant msg) ->
         Error (Printf.sprintf "Invalid parameters: %s" msg)
     in
     match params with

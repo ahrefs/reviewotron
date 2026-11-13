@@ -2,15 +2,15 @@
 
     {2 JSON encoding}
 
-    Most types use [[@@deriving json]] from melange-json-native.
+    Most types use [[@@deriving json]] from jsonkit.
 
     [diff_side] and [review_event] are string enums in GitHub's API
     (e.g. ["LEFT"], ["APPROVE"]).  This bare-string encoding is incompatible
-    with melange-json-native's derived variant format, so these two types have
+    with jsonkit's derived variant format, so these two types have
     manual [to_json]/[of_json] (justified under PRD rule "no manual JSON
     unless impossible"). *)
 
-open Melange_json.Primitives
+open Jsonkit.Primitives
 
 (** {2 Scalar aliases} *)
 
@@ -267,7 +267,7 @@ let diff_side_to_json side = `String (diff_side_to_string side)
 
 let diff_side_of_json = function
   | `String s -> diff_side_of_string s
-  | json -> Melange_json.of_json_error ~json "expected a string for diff_side"
+  | json -> Jsonkit.of_json_error ~json "expected a string for diff_side"
 
 (** {2 Review event — bare string enum} *)
 
@@ -291,7 +291,7 @@ let review_event_to_json ev = `String (review_event_to_string ev)
 
 let review_event_of_json = function
   | `String s -> review_event_of_string s
-  | json -> Melange_json.of_json_error ~json "expected a string for review_event"
+  | json -> Jsonkit.of_json_error ~json "expected a string for review_event"
 
 (** {2 Review request types} *)
 

@@ -73,7 +73,7 @@ let load_local ~root ?(project_filename = ".reviewotron.json") ?inline_json () =
     | exception exn -> Error (Printf.sprintf "failed to parse inline config JSON: %s" (Printexc.to_string exn))
   in
   Result.bind merged_result (fun merged ->
-    try Ok (Config_types.config_of_json (Melange_json.of_string (Yojson.Basic.to_string merged)))
+    try Ok (Config_types.config_of_json (Jsonkit.of_string (Yojson.Basic.to_string merged)))
     with exn -> Error (Printf.sprintf "failed to decode local config: %s" (Printexc.to_string exn)))
 
 let apply_local_plugin_defaults ~no_security (config : Config_types.config) =

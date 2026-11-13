@@ -153,52 +153,12 @@ let format_finding buf ~index (f : Security_types.candidate_finding) =
     f.source.path f.source.line f.sink.path f.sink.line;
   Buffer.add_char buf '\n'
 
-let field_is_required ~field required =
-  List.exists
-    (function
-      | `String value -> String.equal value field
-      | `Assoc _ | `Bool _ | `Float _ | `Int _ | `List _ | `Null -> false)
-    required
-
-let require_schema_field ~field fields =
-  let rec aux acc = function
-    | [] -> List.rev (("required", `List [ `String field ]) :: acc)
-    | ("required", `List required) :: rest ->
-      let required =
-        match field_is_required ~field required with
-        | true -> required
-        | false -> List.rev (`String field :: List.rev required)
-      in
-      List.rev_append acc (("required", `List required) :: rest)
-    | item :: rest -> aux (item :: acc) rest
-  in
-  aux [] fields
-
-let object_has_property ~property fields =
-  match List.assoc_opt "properties" fields with
-  | Some (`Assoc properties) -> List.exists (fun (key, _) -> String.equal key property) properties
-  | Some (`Bool _ | `Float _ | `Int _ | `List _ | `Null | `String _) | None -> false
-
-let rec require_proof_field = function
-  | `Assoc fields ->
-    let fields = List.map (fun (key, value) -> key, require_proof_field value) fields in
-    let fields =
-      match object_has_property ~property:"proof_by_construction" fields with
-      | true -> require_schema_field ~field:"proof_by_construction" fields
-      | false -> fields
-    in
-    `Assoc fields
-  | `List values -> `List (List.map require_proof_field values)
-  | (`Bool _ | `Float _ | `Int _ | `Null | `String _) as scalar -> scalar
-
-let output_schema = require_proof_field Security_types.validator_output_jsonschema
-
 let config ~model_tier : Agent_runner.agent_config =
   {
     name = "security_validator";
     system_prompt;
     model_tier;
-    output_schema;
+    output_schema = Security_types.validator_output_jsonschema;
     max_steps = 12;
     thinking_budget = None;
     effort = None;

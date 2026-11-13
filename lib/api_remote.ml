@@ -26,12 +26,12 @@ let parse_repo repo_url =
     Tries strict parsing first; falls back to per-item parsing so one bad entry
     doesn't crash the whole list. *)
 let parse_pr_files_json body =
-  match Melange_json.of_string body with
+  match Jsonkit.of_string body with
   | exception _exn ->
     log#warn "failed to parse PR files JSON: %s" body;
     []
   | json ->
-  try Melange_json.Primitives.list_of_json Github_types.pull_request_file_of_json json
+  try Jsonkit.Primitives.list_of_json Github_types.pull_request_file_of_json json
   with _exn ->
     log#warn "strict PR files parse failed, trying per-item fallback";
     (match json with
@@ -100,15 +100,15 @@ let flatten_result f result = result |> Result.map_error Http_util.error_to_stri
 let ignore_body_result result = flatten_result (fun (_body : string) -> ()) result
 
 let parse_created_pr_review body =
-  try Ok (Github_types.created_pr_review_of_json (Melange_json.of_string body))
+  try Ok (Github_types.created_pr_review_of_json (Jsonkit.of_string body))
   with exn -> Error (Printf.sprintf "failed to parse created PR review response: %s" (Exn.str exn))
 
 let parse_pr_review_comments body =
-  try Ok (Melange_json.Primitives.list_of_json Github_types.pr_review_comment_of_json (Melange_json.of_string body))
+  try Ok (Jsonkit.Primitives.list_of_json Github_types.pr_review_comment_of_json (Jsonkit.of_string body))
   with exn -> Error (Printf.sprintf "failed to parse PR review comments response: %s" (Exn.str exn))
 
 let parse_reactions body =
-  try Ok (Melange_json.Primitives.list_of_json Github_types.reaction_of_json (Melange_json.of_string body))
+  try Ok (Jsonkit.Primitives.list_of_json Github_types.reaction_of_json (Jsonkit.of_string body))
   with exn -> Error (Printf.sprintf "failed to parse reactions response: %s" (Exn.str exn))
 
 let required_field fields name =
@@ -119,19 +119,19 @@ let required_field fields name =
 let required_string fields name =
   match required_field fields name with
   | `String value -> value
-  | json -> Melange_json.of_json_error ~json (Printf.sprintf "expected string field %s" name)
+  | json -> Jsonkit.of_json_error ~json (Printf.sprintf "expected string field %s" name)
 
 let parse_pr_commit_shas_json body =
   try
-    match Melange_json.of_string body with
+    match Jsonkit.of_string body with
     | `List commits ->
       Ok
         (List.map
            (function
              | `Assoc fields -> required_string fields "sha"
-             | json -> Melange_json.of_json_error ~json "expected commit object")
+             | json -> Jsonkit.of_json_error ~json "expected commit object")
            commits)
-    | json -> Melange_json.of_json_error ~json "expected commit array"
+    | json -> Jsonkit.of_json_error ~json "expected commit array"
   with exn -> Error (Printf.sprintf "failed to parse PR commits response: %s" (Exn.str exn))
 
 let parse_commit_statuses_json body =
@@ -152,7 +152,7 @@ let parse_commit_statuses_json body =
           match List.assoc_opt name fields with
           | None | Some `Null -> None
           | Some (`String value) -> Some value
-          | Some json -> Melange_json.of_json_error ~json (Printf.sprintf "expected string or null field %s" name)
+          | Some json -> Jsonkit.of_json_error ~json (Printf.sprintf "expected string or null field %s" name)
         in
         Some
           Review_job.
@@ -162,21 +162,21 @@ let parse_commit_statuses_json body =
               description = optional_string "description";
               completed_at = optional_string "updated_at";
             })
-    | json -> Melange_json.of_json_error ~json "expected commit status object"
+    | json -> Jsonkit.of_json_error ~json "expected commit status object"
   in
   try
-    match Melange_json.of_string body with
+    match Jsonkit.of_string body with
     | `Assoc fields ->
       (match required_field fields "statuses" with
       | `List statuses -> Ok (List.filter_map parse_status statuses)
-      | json -> Melange_json.of_json_error ~json "expected statuses array")
-    | json -> Melange_json.of_json_error ~json "expected combined commit status object"
+      | json -> Jsonkit.of_json_error ~json "expected statuses array")
+    | json -> Jsonkit.of_json_error ~json "expected combined commit status object"
   with exn -> Error (Printf.sprintf "failed to parse commit statuses response: %s" (Exn.str exn))
 
 let required_int fields name =
   match required_field fields name with
   | `Int value -> value
-  | json -> Melange_json.of_json_error ~json (Printf.sprintf "expected integer field %s" name)
+  | json -> Jsonkit.of_json_error ~json (Printf.sprintf "expected integer field %s" name)
 
 let graphql_errors_message fields =
   match List.assoc_opt "errors" fields with
@@ -195,18 +195,18 @@ let reaction_group_counts = function
     let total_count =
       match required_field fields "reactors" with
       | `Assoc reactors -> required_int reactors "totalCount"
-      | json -> Melange_json.of_json_error ~json "expected reactors object"
+      | json -> Jsonkit.of_json_error ~json "expected reactors object"
     in
     (match content with
     | "THUMBS_UP" -> { zero_github_counts with plus_one = total_count }
     | "THUMBS_DOWN" -> { zero_github_counts with minus_one = total_count }
     | "CONFUSED" | "EYES" | "HEART" | "HOORAY" | "LAUGH" | "ROCKET" -> zero_github_counts
     | _value -> zero_github_counts)
-  | json -> Melange_json.of_json_error ~json "expected reaction group object"
+  | json -> Jsonkit.of_json_error ~json "expected reaction group object"
 
 let parse_pr_review_reaction_counts body =
   try
-    match Melange_json.of_string body with
+    match Jsonkit.of_string body with
     | `Assoc fields ->
       (match graphql_errors_message fields with
       | Some errors -> Error (Printf.sprintf "GitHub GraphQL errors: %s" errors)
@@ -219,12 +219,12 @@ let parse_pr_review_reaction_counts body =
           (match required_field node_fields "reactionGroups" with
           | `List groups ->
             Ok (Some (List.fold_left add_github_counts zero_github_counts (List.map reaction_group_counts groups)))
-          | json -> Melange_json.of_json_error ~json "expected reactionGroups array")
+          | json -> Jsonkit.of_json_error ~json "expected reactionGroups array")
         | Some ((`Bool _ | `Float _ | `Int _ | `List _ | `String _) as json) ->
-          Melange_json.of_json_error ~json "expected GraphQL node object")
-      | Some json -> Melange_json.of_json_error ~json "expected GraphQL data object"
+          Jsonkit.of_json_error ~json "expected GraphQL node object")
+      | Some json -> Jsonkit.of_json_error ~json "expected GraphQL data object"
       | None -> invalid_arg "missing field data")
-    | json -> Melange_json.of_json_error ~json "expected GraphQL response object"
+    | json -> Jsonkit.of_json_error ~json "expected GraphQL response object"
   with exn -> Error (Printf.sprintf "failed to parse PR review reaction counts response: %s" (Exn.str exn))
 
 let github_page_size = 100
@@ -269,7 +269,7 @@ module Github : Api.Github = struct
     | Error e ->
       Lwt.return (Error (Printf.sprintf "failed to fetch config from %s: %s" repo_url (Http_util.error_to_string e)))
     | Ok body ->
-    match Github_types.content_api_response_of_json (Melange_json.of_string body) with
+    match Github_types.content_api_response_of_json (Jsonkit.of_string body) with
     | exception exn -> Lwt.return (Error (Printf.sprintf "failed to parse content API response: %s" (Exn.str exn)))
     | response ->
     match response.encoding with
@@ -277,7 +277,7 @@ module Github : Api.Github = struct
       let cleaned = Stre.replace_all ~str:response.content ~sub:"\n" ~by:"" in
       (match Base64.decode cleaned with
       | Ok decoded ->
-        (match Config_types.config_of_json (Melange_json.of_string decoded) with
+        (match Config_types.config_of_json (Jsonkit.of_string decoded) with
         | config -> Lwt.return (Ok config)
         | exception exn -> Lwt.return (Error (Printf.sprintf "failed to parse config JSON: %s" (Exn.str exn))))
       | Error (`Msg msg) -> Lwt.return (Error (Printf.sprintf "failed to decode base64 config: %s" msg)))
@@ -312,7 +312,7 @@ module Github : Api.Github = struct
     match result with
     | Error e -> Lwt.return (Error (Http_util.error_to_string e))
     | Ok body ->
-    try Lwt.return (Ok (Github_types.pull_request_of_json (Melange_json.of_string body)))
+    try Lwt.return (Ok (Github_types.pull_request_of_json (Jsonkit.of_string body)))
     with exn -> Lwt.return (Error (Printf.sprintf "failed to parse pull_request response: %s" (Exn.str exn)))
 
   let get_compare_diff ~ctx ~repo_url ~base ~head ?log_context () =
@@ -331,7 +331,7 @@ module Github : Api.Github = struct
 
   let create_pr_review ~ctx ~repo_url ~number ?log_context review =
     let path = Printf.sprintf "/pulls/%d/reviews" number in
-    let body = Melange_json.to_string (Github_types.create_review_req_to_json review) in
+    let body = Jsonkit.to_string (Github_types.create_review_req_to_json review) in
     let%lwt result = github_post ~ctx ~repo_url ~path ~accept:"application/vnd.github+json" ?log_context ~body () in
     Lwt.return
       (match result with
@@ -340,13 +340,13 @@ module Github : Api.Github = struct
 
   let create_commit_comment ~ctx ~repo_url ~sha ?log_context comment =
     let path = Printf.sprintf "/commits/%s/comments" sha in
-    let body = Melange_json.to_string (Github_types.commit_comment_req_to_json comment) in
+    let body = Jsonkit.to_string (Github_types.commit_comment_req_to_json comment) in
     let%lwt result = github_post ~ctx ~repo_url ~path ?log_context ~body () in
     Lwt.return (ignore_body_result result)
 
   let create_issue_comment ~ctx ~repo_url ~number ?log_context comment =
     let path = Printf.sprintf "/issues/%d/comments" number in
-    let body = Melange_json.to_string (Github_types.issue_comment_req_to_json comment) in
+    let body = Jsonkit.to_string (Github_types.issue_comment_req_to_json comment) in
     let%lwt result = github_post ~ctx ~repo_url ~path ?log_context ~body () in
     Lwt.return (ignore_body_result result)
 
@@ -382,7 +382,7 @@ query($id: ID!) {
 |}
     in
     let body =
-      Melange_json.to_string (`Assoc [ "query", `String query; "variables", `Assoc [ "id", `String review_node_id ] ])
+      Jsonkit.to_string (`Assoc [ "query", `String query; "variables", `Assoc [ "id", `String review_node_id ] ])
     in
     let%lwt auth = resolve_auth ~ctx ~repo_url in
     let result =
@@ -403,12 +403,12 @@ query($id: ID!) {
       | Ok body -> parse_pr_review_reaction_counts body)
 
   let create_reaction ~ctx ~repo_url ~path ~content ?log_context () =
-    let body = Melange_json.to_string (Github_types.reaction_req_to_json { content }) in
+    let body = Jsonkit.to_string (Github_types.reaction_req_to_json { content }) in
     let%lwt result = github_post ~ctx ~repo_url ~path ?log_context ~body () in
     match result with
     | Error e -> Lwt.return (Error (Http_util.error_to_string e))
     | Ok body ->
-    match Github_types.reaction_of_json (Melange_json.of_string body) with
+    match Github_types.reaction_of_json (Jsonkit.of_string body) with
     | reaction -> Lwt.return (Ok reaction.id)
     | exception exn -> Lwt.return (Error (Printf.sprintf "failed to parse reaction response: %s" (Exn.str exn)))
 
@@ -466,7 +466,7 @@ module Slack : Api.Slack = struct
       Lwt.return_unit
     | Some access_token ->
       let msg : Slack_types.slack_message = { channel; text; attachments } in
-      let body_str = Melange_json.to_string (Slack_types.slack_message_to_json msg) in
+      let body_str = Jsonkit.to_string (Slack_types.slack_message_to_json msg) in
       let headers = [ Printf.sprintf "Authorization: Bearer %s" access_token ] in
       let%lwt result =
         http_request ~headers ~body:(`Raw ("application/json", body_str)) `POST "https://slack.com/api/chat.postMessage"
@@ -474,7 +474,7 @@ module Slack : Api.Slack = struct
       (match result with
       | Ok response_str ->
         (try
-           let resp = Slack_types.slack_api_response_of_json (Melange_json.of_string response_str) in
+           let resp = Slack_types.slack_api_response_of_json (Jsonkit.of_string response_str) in
            match resp.ok with
            | true -> log#info "Slack message sent to %s" channel
            | false ->

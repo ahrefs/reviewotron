@@ -1,7 +1,7 @@
 (** Configuration types for Reviewotron: per-repo settings, auth, and secrets. *)
 
-open Melange_json.Primitives
-open Ppx_deriving_jsonschema_runtime.Primitives.Melange_json
+open Jsonkit.Primitives
+open Jsonkit.Jsonschema.Primitives
 
 (** Vulnerability class for security analysis routing. *)
 type vuln_class =
@@ -35,7 +35,7 @@ let vuln_class_of_json = function
   | `String "ssrf" -> Ssrf
   | `String "path_traversal" -> Path_traversal
   | `String "policy_regression" -> Policy_regression
-  | json -> Melange_json.of_json_error ~json "expected a vuln_class string"
+  | json -> Jsonkit.of_json_error ~json "expected a vuln_class string"
 
 (** All supported vulnerability classes. *)
 let all_vuln_classes = [ Injection; Xss; Command_injection; Authn; Authz; Ssrf; Path_traversal; Policy_regression ]
@@ -76,7 +76,7 @@ let confidence_of_json = function
   | `String "high" -> High
   | `String "medium" -> Medium
   | `String "low" -> Low
-  | json -> Melange_json.of_json_error ~json "expected a confidence string"
+  | json -> Jsonkit.of_json_error ~json "expected a confidence string"
 
 let confidence_jsonschema =
   string_enum_jsonschema
@@ -102,7 +102,7 @@ let decision_triage_mode_of_json = function
   | `String "off" -> Off
   | `String "route" -> Route
   | `String "gate" -> Gate
-  | json -> Melange_json.of_json_error ~json "expected a decision_triage string: off, route, or gate"
+  | json -> Jsonkit.of_json_error ~json "expected a decision_triage string: off, route, or gate"
 
 let decision_triage_mode_jsonschema =
   string_enum_jsonschema
@@ -128,7 +128,7 @@ let model_tier_of_json = function
   | `String "fast" -> Fast
   | `String "standard" -> Standard
   | `String "strong" -> Strong
-  | json -> Melange_json.of_json_error ~json "expected a model_tier string"
+  | json -> Jsonkit.of_json_error ~json "expected a model_tier string"
 
 let all_model_tiers = [ Fast; Standard; Strong ]
 
@@ -161,7 +161,7 @@ module Effort = struct
     | `String "medium" -> Medium
     | `String "high" -> High
     | `String "xhigh" -> Xhigh
-    | json -> Melange_json.of_json_error ~json "expected an effort string"
+    | json -> Jsonkit.of_json_error ~json "expected an effort string"
 
   let of_json = t_of_json
 
@@ -182,23 +182,22 @@ end
     [general_plugin_config_of_json]) goes through the validation. *)
 module General_plugin_config_codec = struct
   type t = {
-    enabled : bool; [@json.default true] [@jsonschema.description "Run the general LLM code review (default true)."]
+    enabled : bool; [@default true] [@jsonschema.description "Run the general LLM code review (default true)."]
     system_prompt_override : string option;
-       [@json.option] [@jsonschema.description "Replace the general review system prompt entirely."]
+       [@option] [@jsonschema.description "Replace the general review system prompt entirely."]
     scout_enabled : bool;
-       [@json.default true]
+       [@default true]
        [@jsonschema.description
          "Run the scout → deep-reviewer pipeline (default true). When false, fall back to the legacy single-pass \
           general review."]
     scout_model_tier : model_tier;
-       [@json.default Standard] [@jsonschema.description "Model tier for the general scout agent."]
+       [@default Standard] [@jsonschema.description "Model tier for the general scout agent."]
     deep_reviewer_model_tier : model_tier;
-       [@json.default Strong] [@jsonschema.description "Model tier for the general deep-reviewer agent."]
+       [@default Strong] [@jsonschema.description "Model tier for the general deep-reviewer agent."]
     max_leads : int;
-       [@json.default 10]
-       [@jsonschema.description "Maximum investigation leads passed from the scout to the deep reviewer."]
+       [@default 10] [@jsonschema.description "Maximum investigation leads passed from the scout to the deep reviewer."]
   }
-  [@@deriving json, jsonschema] [@@json.allow_extra_fields]
+  [@@deriving json, jsonschema]
 end
 
 type general_plugin_config = General_plugin_config_codec.t = {
@@ -218,42 +217,41 @@ let general_plugin_config_jsonschema = General_plugin_config_codec.t_jsonschema
     reviewer; a value below 1 is nonsensical: [0] silently disables the entire
     deep pass (the pipeline reads an empty lead list as "scout found nothing"),
     and a negative value silently defeats the cap. We fail fast at parse time
-    rather than clamp, using the same [Melange_json.of_json_error] idiom the
+    rather than clamp, using the same [Jsonkit.of_json_error] idiom the
     derived decoders use so the failure propagates on the normal config-load
     error channel. *)
 let general_plugin_config_of_json (json : Yojson.Basic.t) : general_plugin_config =
   let cfg = General_plugin_config_codec.of_json json in
   match cfg.max_leads with
   | n when n < 1 ->
-    Melange_json.of_json_error ~json
+    Jsonkit.of_json_error ~json
       (Printf.sprintf "max_leads must be >= 1 (got %d): 0 disables the deep review pass and negatives defeat the cap" n)
   | _ -> cfg
 
 (** Configuration for the security review plugin. *)
 type security_plugin_config = {
   enabled : bool;
-     [@json.default false]
+     [@default false]
      [@jsonschema.description
        "Run the multi-agent security pipeline. Off by default for webhooks; on by default in local review-diff / \
         review-path mode (disable with --no-security)."]
   vuln_classes : vuln_class list;
-     [@json.default all_vuln_classes] [@jsonschema.description "Vulnerability classes to scan for."]
+     [@default all_vuln_classes] [@jsonschema.description "Vulnerability classes to scan for."]
   always_analyze_vuln_classes : vuln_class list;
-     [@json.default []]
-     [@jsonschema.description "Classes that bypass confidence_threshold (and are implicitly enabled)."]
-  triage_model_tier : model_tier; [@json.default Fast] [@jsonschema.description "Model tier for the triage agent."]
+     [@default []] [@jsonschema.description "Classes that bypass confidence_threshold (and are implicitly enabled)."]
+  triage_model_tier : model_tier; [@default Fast] [@jsonschema.description "Model tier for the triage agent."]
   analysis_model_tier : model_tier;
-     [@json.default Standard] [@jsonschema.description "Model tier for per-class analysis agents."]
+     [@default Standard] [@jsonschema.description "Model tier for per-class analysis agents."]
   analysis_effort : Effort.t option;
-     [@json.option]
+     [@option]
      [@jsonschema.description
        "Reasoning effort for per-class analysis agents. Defaults to medium; set null to keep the provider default."]
   validator_model_tier : model_tier;
-     [@json.default Standard] [@jsonschema.description "Model tier for the adversarial validator."]
+     [@default Standard] [@jsonschema.description "Model tier for the adversarial validator."]
   confidence_threshold : confidence;
-     [@json.default Medium] [@jsonschema.description "Minimum triage confidence to trigger analysis."]
+     [@default Medium] [@jsonschema.description "Minimum triage confidence to trigger analysis."]
   decision_triage : decision_triage_mode option;
-     [@json.option]
+     [@option]
      [@jsonschema.description
        "How review_plugins.decision_model takes part in security triage. off: not at all. route: replace the primary \
         triage agent, falling back to it when the decision model is unavailable or skips a file. gate: run primary \
@@ -261,42 +259,41 @@ type security_plugin_config = {
         errors fail open. Null (the default) means gate when reviews run through OpenRouter and off for other \
         providers."]
   decision_triage_threshold : float option;
-     [@json.option]
+     [@option]
      [@jsonschema.description
        "Minimum Noul probability, from 0 to 1, for the active decision_triage mode. Null uses the decision model's \
         calibrated value for that mode."]
   decision_validator_cascade_enabled : bool option;
-     [@json.option]
+     [@option]
      [@jsonschema.description
        "Allow high-certainty decision-model judgments over candidate findings and their exact diff evidence to bypass \
         the adversarial validator, and check validator confirmations against fetched source. Inconclusive judgments \
         and errors still run the validator. Null (the default) turns it on when reviews run through OpenRouter and \
         leaves it off for other providers."]
   decision_grouping_enabled : bool option;
-     [@json.option]
+     [@option]
      [@jsonschema.description
        "Use the decision model and a consolidation verifier to publish related confirmed security findings as \
         complete-link notification groups. Null (the default) turns it on when reviews run through OpenRouter and \
         leaves it off for other providers."]
   decision_grouping_threshold : float option;
-     [@json.option]
+     [@option]
      [@jsonschema.description
        "Minimum probability required in both orientations for consolidation proposals and notification grouping. Null \
         uses the decision model's calibrated value."]
-  memory_max_tokens : int;
-     [@json.default 5000] [@jsonschema.description "Target size limit for the repo security memory."]
+  memory_max_tokens : int; [@default 5000] [@jsonschema.description "Target size limit for the repo security memory."]
   metrics_artifacts : bool;
-     [@json.default false]
+     [@default false]
      [@jsonschema.description
        "Write compact security metrics artifacts (manifest.json, metrics.json, fetch_stats.json) under the per-review \
         debug directory. Off by default."]
   debug_artifacts : bool;
-     [@json.default false]
+     [@default false]
      [@jsonschema.description
        "Write full redacted security debug artifacts, including stage inputs and outputs, under the per-review debug \
         directory. Sensitive and off by default."]
 }
-[@@deriving json, jsonschema] [@@json.allow_extra_fields]
+[@@deriving json, jsonschema]
 
 let default_general_plugin_config =
   {
@@ -331,39 +328,39 @@ let default_security_plugin_config =
 (** Aggregated review plugin configuration. *)
 type review_plugins_config = {
   decision_model : Decision_model.t;
-     [@json.default Decision_model.default]
+     [@default Decision_model.default]
      [@jsonschema.description
        "Decision model for every decision_* feature, called through OpenRouter's Decisions API: gpt-6-luna (default) \
         or jev. Requires openrouter_decisions_api_key or openrouter_api_key."]
   decision_build_claim_guard_enabled : bool option;
-     [@json.option]
+     [@option]
      [@jsonschema.description
        "Use the decision model with post-change file context and exact-commit statuses to reject general findings \
         whose claimed deterministic build failure is directly contradicted. Null (the default) turns it on when \
         reviews run through OpenRouter and leaves it off for other providers."]
   decision_build_claim_guard_threshold : float option;
-     [@json.option]
+     [@option]
      [@jsonschema.description
        "Minimum probability, from 0 to 1, required to reject a false build claim. Null uses the decision model's \
         calibrated value."]
   decision_suggestion_guard_enabled : bool option;
-     [@json.option]
+     [@option]
      [@jsonschema.description
        "Use the decision model to remove mechanically defective suggested-fix payloads while preserving their \
         findings. Null (the default) turns it on when reviews run through OpenRouter and leaves it off for other \
         providers."]
   decision_suggestion_guard_threshold : float option;
-     [@json.option]
+     [@option]
      [@jsonschema.description
        "Minimum defect probability, from 0 to 1, required to challenge a suggested fix. The opposing mechanical \
         plausibility score must be at most one minus this value before the fix is removed. Null uses the decision \
         model's calibrated value."]
   general : general_plugin_config;
-     [@json.default default_general_plugin_config] [@jsonschema.description "General code-review plugin settings."]
+     [@default default_general_plugin_config] [@jsonschema.description "General code-review plugin settings."]
   security : security_plugin_config;
-     [@json.default default_security_plugin_config] [@jsonschema.description "Security-analysis plugin settings."]
+     [@default default_security_plugin_config] [@jsonschema.description "Security-analysis plugin settings."]
 }
-[@@deriving json, jsonschema] [@@json.allow_extra_fields]
+[@@deriving json, jsonschema]
 
 let default_review_plugins_config =
   {
@@ -379,61 +376,56 @@ let default_review_plugins_config =
 module Config_codec = struct
   type t = {
     max_diff_lines : int;
-       [@json.default 5000]
+       [@default 5000]
        [@jsonschema.description
          "Maximum added plus removed lines to review, excluding context; larger changes are skipped (raise for whole \
           folders)."]
     max_files : int;
-       [@json.default 50]
-       [@jsonschema.description "Maximum number of files to review (raise for whole-folder reviews)."]
-    max_tokens_per_review : int;
-       [@json.default 100000] [@jsonschema.description "Token budget hint for the review agent."]
+       [@default 50] [@jsonschema.description "Maximum number of files to review (raise for whole-folder reviews)."]
+    max_tokens_per_review : int; [@default 100000] [@jsonschema.description "Token budget hint for the review agent."]
     model : string option;
-       [@json.option]
+       [@option]
        [@jsonschema.description
          "Explicit model ID override for the general deep reviewer. When absent, deep_reviewer_model_tier decides."]
     ignored_paths : string list;
-       [@json.default []] [@jsonschema.description "Glob patterns (\\* wildcard) for files to exclude from review."]
+       [@default []] [@jsonschema.description "Glob patterns (\\* wildcard) for files to exclude from review."]
     ignored_file_regexes : string list;
-       [@json.default []]
+       [@default []]
        [@jsonschema.description
          "Regular expressions matched against repository-relative file paths to exclude from review."]
     ignore_generated_files : bool;
-       [@json.default true]
+       [@default true]
        [@jsonschema.description
          "Exclude conservatively detected generated files before file and line limits are enforced. Set false to \
           review generated artifacts."]
     ignored_authors : string list;
-       [@json.default []] [@jsonschema.description "Authors whose changes are skipped (webhook mode)."]
+       [@default []] [@jsonschema.description "Authors whose changes are skipped (webhook mode)."]
     allowed_bots : string list;
-       [@json.default []]
+       [@default []]
        [@jsonschema.description
          "Bot logins (e.g. \"renovate[bot]\") exempt from the default skip of senders ending in [bot] (webhook mode). \
           ignored_authors still applies."]
-    auto_review_pr_open : bool;
-       [@json.default false] [@jsonschema.description "Review PRs on open/reopen (webhook mode)."]
-    auto_review_pr_sync : bool;
-       [@json.default false] [@jsonschema.description "Review PRs on new commits (webhook mode)."]
+    auto_review_pr_open : bool; [@default false] [@jsonschema.description "Review PRs on open/reopen (webhook mode)."]
+    auto_review_pr_sync : bool; [@default false] [@jsonschema.description "Review PRs on new commits (webhook mode)."]
     review_pushes_to_develop : bool;
-       [@json.default false] [@jsonschema.description "Review pushes to develop (webhook mode)."]
+       [@default false] [@jsonschema.description "Review pushes to develop (webhook mode)."]
     auto_review_on_comment : bool;
-       [@json.default false] [@jsonschema.description "Review on a REVIEW comment (webhook mode)."]
+       [@default false] [@jsonschema.description "Review on a REVIEW comment (webhook mode)."]
     review_draft_prs : bool;
-       [@json.default false] [@jsonschema.description "Include draft PRs in auto-review (webhook mode)."]
+       [@default false] [@jsonschema.description "Include draft PRs in auto-review (webhook mode)."]
     system_prompt_override : string option;
-       [@json.option] [@jsonschema.description "Replace the default general review system prompt entirely."]
+       [@option] [@jsonschema.description "Replace the default general review system prompt entirely."]
     slack_channel : string option;
-       [@json.option] [@jsonschema.description "Slack channel for push review notifications (webhook mode)."]
-    show_review_cost : bool;
-       [@json.default false] [@jsonschema.description "Append a cost summary footer to the review."]
+       [@option] [@jsonschema.description "Slack channel for push review notifications (webhook mode)."]
+    show_review_cost : bool; [@default false] [@jsonschema.description "Append a cost summary footer to the review."]
     debug_artifacts : bool;
-       [@json.default false]
+       [@default false]
        [@jsonschema.description
          "Write raw agent output dumps when structured output cannot be parsed. Sensitive and off by default."]
     review_plugins : review_plugins_config;
-       [@json.default default_review_plugins_config] [@jsonschema.description "Per-plugin configuration."]
+       [@default default_review_plugins_config] [@jsonschema.description "Per-plugin configuration."]
   }
-  [@@deriving json, jsonschema] [@@json.allow_extra_fields]
+  [@@deriving json, jsonschema]
 end
 
 type config = Config_codec.t = {
@@ -459,7 +451,7 @@ type config = Config_codec.t = {
 }
 
 let config_to_json = Config_codec.to_json
-let config_jsonschema = Config_codec.t_jsonschema
+let config_jsonschema = Strict_schema.make Config_codec.t_jsonschema
 
 (* ponytail: this deliberately uses a small set of representative paths rather
    than attempting regex-language equivalence; expand the probes if a bypass
@@ -471,14 +463,13 @@ let regex_matches_all_probe_paths regex = List.for_all (Re2.matches regex) ignor
 let validate_probability_threshold ~json ~name threshold =
   match Decision_model.is_probability threshold with
   | true -> ()
-  | false -> Melange_json.of_json_error ~json (Printf.sprintf "%s must be between 0 and 1 (got %.4f)" name threshold)
+  | false -> Jsonkit.of_json_error ~json (Printf.sprintf "%s must be between 0 and 1 (got %.4f)" name threshold)
 
 let validate_ignored_file_regex ~json pattern =
   match Re2.create pattern with
-  | Error _ ->
-    Melange_json.of_json_error ~json (Printf.sprintf "invalid ignored_file_regexes regular expression %S" pattern)
+  | Error _ -> Jsonkit.of_json_error ~json (Printf.sprintf "invalid ignored_file_regexes regular expression %S" pattern)
   | Ok regex when regex_matches_all_probe_paths regex ->
-    Melange_json.of_json_error ~json
+    Jsonkit.of_json_error ~json
       (Printf.sprintf
          "ignored_file_regexes regular expression %S matches every path probe; narrow it or use ignored_paths for \
           explicit exclusions"
@@ -560,12 +551,12 @@ let repo_config_of_json (json : Yojson.Basic.t) : repo_config =
     let url =
       match List.assoc_opt "url" fields with
       | Some (`String s) -> s
-      | _ -> Melange_json.of_json_error ~json "expected field \"url\""
+      | _ -> Jsonkit.of_json_error ~json "expected field \"url\""
     in
     let auth = nullable_field "auth" repo_auth_of_json fields in
     let gh_hook_secret = nullable_field "gh_hook_secret" string_of_json fields in
     { url; auth; gh_hook_secret }
-  | _ -> Melange_json.of_json_error ~json "expected a JSON object"
+  | _ -> Jsonkit.of_json_error ~json "expected a JSON object"
 
 type secrets = {
   repos : repo_config list;
