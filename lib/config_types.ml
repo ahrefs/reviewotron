@@ -1,7 +1,6 @@
 (** Configuration types for Reviewotron: per-repo settings, auth, and secrets. *)
 
 open Jsonkit.Primitives
-open Jsonkit.Jsonschema.Primitives
 
 (** Vulnerability class for security analysis routing. *)
 type vuln_class =
@@ -228,6 +227,14 @@ let general_plugin_config_of_json (json : Yojson.Basic.t) : general_plugin_confi
       (Printf.sprintf "max_leads must be >= 1 (got %d): 0 disables the deep review pass and negatives defeat the cap" n)
   | _ -> cfg
 
+module Effort_setting = struct
+  type t = Effort.t option
+
+  let to_json = option_to_json Effort.to_json
+  let of_json = option_of_json Effort.of_json
+  let t_jsonschema = option_jsonschema Effort.t_jsonschema
+end
+
 (** Configuration for the security review plugin. *)
 type security_plugin_config = {
   enabled : bool;
@@ -242,8 +249,8 @@ type security_plugin_config = {
   triage_model_tier : model_tier; [@default Fast] [@jsonschema.description "Model tier for the triage agent."]
   analysis_model_tier : model_tier;
      [@default Standard] [@jsonschema.description "Model tier for per-class analysis agents."]
-  analysis_effort : Effort.t option;
-     [@option]
+  analysis_effort : Effort_setting.t;
+     [@default Some Effort.Medium]
      [@jsonschema.description
        "Reasoning effort for per-class analysis agents. Defaults to medium; set null to keep the provider default."]
   validator_model_tier : model_tier;
@@ -565,4 +572,4 @@ type secrets = {
   openrouter_decisions_api_key : string option; [@json.option]
   slack_access_token : string option; [@json.option]
 }
-[@@deriving json] [@@json.allow_extra_fields]
+[@@deriving json]

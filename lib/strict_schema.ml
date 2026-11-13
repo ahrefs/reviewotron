@@ -1,17 +1,16 @@
 let is_object_schema fields =
   List.mem_assoc "properties" fields
-  && List.exists
-       (function
-         | "type", `String "object" -> true
-         | _ -> false)
-       fields
+  &&
+  match List.assoc_opt "type" fields with
+  | Some (`String "object") -> true
+  | Some (`String _ | `Assoc _ | `Bool _ | `Float _ | `Int _ | `List _ | `Null) | None -> false
 
 let property_names fields =
   match List.assoc_opt "properties" fields with
   | Some (`Assoc props) -> List.map (fun (name, _) -> `String name) props
-  | Some _ | None -> []
+  | Some (`Bool _ | `Float _ | `Int _ | `List _ | `Null | `String _) | None -> []
 
-let set_field key value fields =
+let set_field ~key ~value fields =
   match List.mem_assoc key fields with
   | true -> List.map (fun (k, v) -> if String.equal k key then k, value else k, v) fields
   | false -> fields @ [ key, value ]
@@ -19,7 +18,9 @@ let set_field key value fields =
 let strict_object fields =
   match is_object_schema fields with
   | true ->
-    fields |> set_field "required" (`List (property_names fields)) |> set_field "additionalProperties" (`Bool false)
+    fields
+    |> set_field ~key:"required" ~value:(`List (property_names fields))
+    |> set_field ~key:"additionalProperties" ~value:(`Bool false)
   | false -> fields
 
 let rec make (schema : Jsonkit.Jsonschema.t) : Yojson.Basic.t =

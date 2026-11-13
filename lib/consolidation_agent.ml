@@ -1,5 +1,4 @@
 open Jsonkit.Primitives
-open Jsonkit.Jsonschema.Primitives
 
 type verdict =
   | Keep_separate

@@ -15,7 +15,6 @@
     ([description], [evidence_notes]). *)
 
 open Jsonkit.Primitives
-open Jsonkit.Jsonschema.Primitives
 
 (** {2 Re-exported enumerations} *)
 

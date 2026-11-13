@@ -12,7 +12,6 @@
     Records ([finding], [review_output]) use [[@@deriving json, jsonschema]]. *)
 
 open Jsonkit.Primitives
-open Jsonkit.Jsonschema.Primitives
 
 (** {2 Severity} *)
 

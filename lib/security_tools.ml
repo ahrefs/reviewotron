@@ -1,12 +1,10 @@
 (** Tools for security analysis agents.
 
     Provides typed wrappers around {!Ai_core.Core_tool.t} for use
-    with {!Agent_runner.run_agent}. Tool parameters and results are
-    derived from OCaml types via jsonkit's [json] and
-    [jsonschema] derivers — no manual JSON. *)
+    with {!Agent_runner.run_agent}. Tool parameters derive jsonkit's
+    [json] and [jsonschema]; results derive [json] only. *)
 
 open Jsonkit.Primitives
-open Jsonkit.Jsonschema.Primitives
 
 (** {2 get_file_content tool} *)
 
@@ -14,10 +12,10 @@ type get_file_content_params = { path : string [@jsonschema.description "File pa
 [@@deriving json, jsonschema]
 
 type get_file_content_result = {
-  content : string option; [@option] [@jsonschema.description "File content if found"]
-  error : string option; [@option] [@jsonschema.description "Error message if fetch failed"]
+  content : string option; [@option]
+  error : string option; [@option]
 }
-[@@deriving json, jsonschema]
+[@@deriving json]
 
 let get_file_content_params_jsonschema = Strict_schema.make get_file_content_params_jsonschema
 

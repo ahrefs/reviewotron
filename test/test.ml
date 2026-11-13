@@ -1020,6 +1020,16 @@ let test_vuln_class_roundtrip () =
       (check string) "roundtrip" (Config_types.vuln_class_to_string vc) (Config_types.vuln_class_to_string parsed))
     Config_types.all_vuln_classes
 
+let test_security_analysis_effort_missing_vs_null () =
+  let effort json =
+    (Config_types.config_of_json (Jsonkit.of_string json)).review_plugins.security.analysis_effort
+    |> Option.map Config_types.Effort.to_string
+  in
+  (check (option string)) "missing key" (Some "medium") (effort {|{"review_plugins":{"security":{"enabled":true}}}|});
+  (check (option string))
+    "explicit null" None
+    (effort {|{"review_plugins":{"security":{"enabled":true,"analysis_effort":null}}}|})
+
 let test_security_plugin_config_roundtrip () =
   let cfg : Config_types.security_plugin_config =
     {
@@ -9902,6 +9912,7 @@ let () =
             test_context_load_local_config_uses_defaults_when_missing;
           test_case "vuln_class roundtrip" `Quick test_vuln_class_roundtrip;
           test_case "security_plugin_config roundtrip" `Quick test_security_plugin_config_roundtrip;
+          test_case "security analysis_effort missing vs null" `Quick test_security_analysis_effort_missing_vs_null;
         ] );
       ( "review_prompt",
         [

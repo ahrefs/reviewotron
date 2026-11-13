@@ -5,8 +5,7 @@ OCaml-based automated PR code reviewer for GitHub. Uses Claude AI to review pull
 
 ## Tech Stack
 - OCaml with Lwt for async, Dream/Routes for web, Yojson for JSON
-- melange-json-native for type-safe JSON serialization (`[@@deriving json]`)
-- ppx_deriving_jsonschema for JSON Schema generation (`[@@deriving jsonschema]`)
+- jsonkit for type-safe JSON serialization and JSON Schema generation (`[@@deriving json, jsonschema]`)
 - ocaml-ai-sdk for AI agent execution
 - OUnit2 for testing
 
