@@ -66,7 +66,6 @@ type finding = {
 
 val finding_to_json : finding -> Yojson.Basic.t
 val finding_of_json : Yojson.Basic.t -> finding
-val finding_jsonschema : Yojson.Basic.t
 
 (** {2 General finding validation} *)
 
@@ -88,7 +87,6 @@ type validated_finding = {
 
 val validated_finding_to_json : validated_finding -> Yojson.Basic.t
 val validated_finding_of_json : Yojson.Basic.t -> validated_finding
-val validated_finding_jsonschema : Yojson.Basic.t
 
 type validator_output = { results : validated_finding list }
 
@@ -124,7 +122,6 @@ type scout_lead = {
 
 val scout_lead_to_json : scout_lead -> Yojson.Basic.t
 val scout_lead_of_json : Yojson.Basic.t -> scout_lead
-val scout_lead_jsonschema : Yojson.Basic.t
 
 (** {2 Scout output} *)
 

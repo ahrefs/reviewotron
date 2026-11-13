@@ -2,7 +2,7 @@
 
     Types for triage routing, per-class vulnerability analysis, and adversarial
     validation.  Used as structured output schemas for Claude agents via
-    [ppx_deriving_jsonschema].
+    jsonkit's [jsonschema] deriver.
 
     {b vuln_class} and {b confidence} are re-exported from {!Config_types} with
     lowercase-string JSON encoding (e.g. ["injection"], ["high"]).  All record
@@ -68,7 +68,6 @@ type candidate_signal = {
 
 val candidate_signal_to_json : candidate_signal -> Yojson.Basic.t
 val candidate_signal_of_json : Yojson.Basic.t -> candidate_signal
-val candidate_signal_jsonschema : Yojson.Basic.t
 
 (** {2 Triage types} *)
 
@@ -81,7 +80,6 @@ type region = {
 
 val region_to_json : region -> Yojson.Basic.t
 val region_of_json : Yojson.Basic.t -> region
-val region_jsonschema : Yojson.Basic.t
 
 (** A triage signal indicating a potentially security-relevant region. *)
 type triage_signal = {
@@ -93,7 +91,6 @@ type triage_signal = {
 
 val triage_signal_to_json : triage_signal -> Yojson.Basic.t
 val triage_signal_of_json : Yojson.Basic.t -> triage_signal
-val triage_signal_jsonschema : Yojson.Basic.t
 
 (** Output from the triage agent. *)
 type triage_output = {
@@ -118,7 +115,6 @@ type source_evidence = {
 
 val source_evidence_to_json : source_evidence -> Yojson.Basic.t
 val source_evidence_of_json : Yojson.Basic.t -> source_evidence
-val source_evidence_jsonschema : Yojson.Basic.t
 
 (** Evidence of a dangerous operation or effective privileged capability
     (sink). *)
@@ -130,7 +126,6 @@ type sink_evidence = {
 
 val sink_evidence_to_json : sink_evidence -> Yojson.Basic.t
 val sink_evidence_of_json : Yojson.Basic.t -> sink_evidence
-val sink_evidence_jsonschema : Yojson.Basic.t
 
 (** A single step in the data flow from source to sink. *)
 type flow_step = {
@@ -141,7 +136,6 @@ type flow_step = {
 
 val flow_step_to_json : flow_step -> Yojson.Basic.t
 val flow_step_of_json : Yojson.Basic.t -> flow_step
-val flow_step_jsonschema : Yojson.Basic.t
 
 (** Assessment of sanitization on the source-to-sink path.
 
@@ -174,7 +168,6 @@ type candidate_finding = {
 
 val candidate_finding_to_json : candidate_finding -> Yojson.Basic.t
 val candidate_finding_of_json : Yojson.Basic.t -> candidate_finding
-val candidate_finding_jsonschema : Yojson.Basic.t
 
 (** Output from a per-class analysis agent. *)
 type analysis_output = {
@@ -216,7 +209,6 @@ type exploitation_proof = {
 
 val exploitation_proof_to_json : exploitation_proof -> Yojson.Basic.t
 val exploitation_proof_of_json : Yojson.Basic.t -> exploitation_proof
-val exploitation_proof_jsonschema : Yojson.Basic.t
 
 (** A candidate finding after adversarial validation. *)
 type validated_finding = {
@@ -232,7 +224,6 @@ type validated_finding = {
 
 val validated_finding_to_json : validated_finding -> Yojson.Basic.t
 val validated_finding_of_json : Yojson.Basic.t -> validated_finding
-val validated_finding_jsonschema : Yojson.Basic.t
 
 (** Output from the validator agent. *)
 type validator_output = { results : validated_finding list }

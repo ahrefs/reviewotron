@@ -49,35 +49,35 @@ let parse_event ~event_type ~body =
   match event_type with
   | "pull_request" ->
     (try
-       let n = Github_types.pr_notification_of_json (Melange_json.of_string body) in
+       let n = Github_types.pr_notification_of_json (Jsonkit.of_string body) in
        log#info "[%s] PR #%d: action=%s, title=%s, user=%s" n.repository.full_name n.pull_request.number n.action
          n.pull_request.title n.pull_request.user.login;
        Ok (Pull_request n)
      with exn -> Error (Printf.sprintf "failed to parse pull_request payload: %s" (Exn.str exn)))
   | "push" ->
     (try
-       let n = Github_types.commit_pushed_notification_of_json (Melange_json.of_string body) in
+       let n = Github_types.commit_pushed_notification_of_json (Jsonkit.of_string body) in
        let num_commits = List.length n.commits in
        log#info "[%s] push: ref=%s, commits=%d, pusher=%s" n.repository.full_name n.ref_ num_commits n.pusher.name;
        Ok (Push n)
      with exn -> Error (Printf.sprintf "failed to parse push payload: %s" (Exn.str exn)))
   | "issue_comment" ->
     (try
-       let n = Github_types.issue_comment_notification_of_json (Melange_json.of_string body) in
+       let n = Github_types.issue_comment_notification_of_json (Jsonkit.of_string body) in
        log#info "[%s] issue_comment: action=%s, issue=#%d, sender=%s" n.repository.full_name n.action n.issue.number
          n.sender.login;
        Ok (Issue_comment n)
      with exn -> Error (Printf.sprintf "failed to parse issue_comment payload: %s" (Exn.str exn)))
   | "pull_request_review" ->
     (try
-       let n = Github_types.pull_request_review_notification_of_json (Melange_json.of_string body) in
+       let n = Github_types.pull_request_review_notification_of_json (Jsonkit.of_string body) in
        log#info "[%s] pull_request_review: action=%s, pr=#%d, sender=%s" n.repository.full_name n.action
          n.pull_request.number n.sender.login;
        Ok (Pull_request_review n)
      with exn -> Error (Printf.sprintf "failed to parse pull_request_review payload: %s" (Exn.str exn)))
   | "pull_request_review_comment" ->
     (try
-       let n = Github_types.pull_request_review_comment_notification_of_json (Melange_json.of_string body) in
+       let n = Github_types.pull_request_review_comment_notification_of_json (Jsonkit.of_string body) in
        log#info "[%s] pull_request_review_comment: action=%s, pr=#%d, sender=%s" n.repository.full_name n.action
          n.pull_request.number n.sender.login;
        Ok (Pull_request_review_comment n)

@@ -13,12 +13,10 @@ val get_file_content_params_jsonschema : Yojson.Basic.t
 
 (** Result returned by the [get_file_content] tool. *)
 type get_file_content_result = {
-  content : string option; [@json.option]
-  error : string option; [@json.option]
+  content : string option; [@option]
+  error : string option; [@option]
 }
 [@@deriving json]
-
-val get_file_content_result_jsonschema : Yojson.Basic.t
 
 (** Create a [get_file_content] tool for security agents.
 

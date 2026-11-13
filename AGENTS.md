@@ -19,7 +19,7 @@ drift.
 
 **Web & API:**
 - **Routes** - Type-safe HTTP routing for web endpoints.
-- **Yojson** - JSON parsing and generation (prefer `ppx_deriving_yojson` or `melange-json` for type-safe serialization).
+- **Yojson** - JSON parsing and generation (prefer `ppx_deriving_yojson` or `jsonkit` for type-safe serialization).
 
 **Text Processing:**
 - **Re2** - Thread-safe regular expressions (use instead of `Str`).

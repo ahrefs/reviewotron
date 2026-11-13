@@ -2,15 +2,15 @@
 
     {2 JSON encoding}
 
-    Most types use [[@@deriving json]] from melange-json-native.
+    Most types use [[@@deriving json]] from jsonkit.
 
     [diff_side] and [review_event] are string enums in GitHub's API
     (e.g. ["LEFT"], ["APPROVE"]).  This bare-string encoding is incompatible
-    with melange-json-native's derived variant format, so these two types have
+    with jsonkit's derived variant format, so these two types have
     manual [to_json]/[of_json] (justified under PRD rule "no manual JSON
     unless impossible"). *)
 
-open Melange_json.Primitives
+open Jsonkit.Primitives
 
 (** {2 Scalar aliases} *)
 
@@ -25,7 +25,7 @@ type git_user = {
   email : string;
   username : string option; [@json.option]
 }
-[@@deriving json] [@@json.allow_extra_fields]
+[@@deriving json]
 
 type github_user = {
   login : string;
@@ -35,11 +35,11 @@ type github_user = {
   avatar_url : string;
   type_ : string option; [@json.key "type"] [@json.option]
 }
-[@@deriving json] [@@json.allow_extra_fields]
+[@@deriving json]
 
-type github_app = { id : int } [@@deriving json] [@@json.allow_extra_fields]
+type github_app = { id : int } [@@deriving json]
 
-type label = { name : string } [@@deriving json] [@@json.allow_extra_fields]
+type label = { name : string } [@@deriving json]
 
 (** {2 Repository} *)
 
@@ -53,7 +53,7 @@ type repository = {
   issues_url : string;
   compare_url : string;
 }
-[@@deriving json] [@@json.allow_extra_fields]
+[@@deriving json]
 
 (** {2 Commit types} *)
 
@@ -69,7 +69,7 @@ type commit = {
   removed : string list;
   modified : string list;
 }
-[@@deriving json] [@@json.allow_extra_fields]
+[@@deriving json]
 
 type commit_pushed_notification = {
   ref_ : string; [@json.key "ref"]
@@ -86,7 +86,7 @@ type commit_pushed_notification = {
   pusher : git_user;
   sender : github_user;
 }
-[@@deriving json] [@@json.allow_extra_fields]
+[@@deriving json]
 
 (** {2 Pull request types} *)
 
@@ -97,7 +97,7 @@ type pr_branch = {
   repo : repository option; [@json.option]
   user : github_user option; [@json.option]
 }
-[@@deriving json] [@@json.allow_extra_fields]
+[@@deriving json]
 
 type pull_request = {
   number : int;
@@ -118,15 +118,15 @@ type pull_request = {
   changed_files : int;
   performed_via_github_app : github_app option; [@json.option]
 }
-[@@deriving json] [@@json.allow_extra_fields]
+[@@deriving json]
 
 type webhook_pull_request_ref = {
   number : int;
   title : string;
 }
-[@@deriving json] [@@json.allow_extra_fields]
+[@@deriving json]
 
-type installation = { id : int } [@@deriving json] [@@json.allow_extra_fields]
+type installation = { id : int } [@@deriving json]
 
 type pr_notification = {
   action : pr_action;
@@ -137,7 +137,7 @@ type pr_notification = {
   installation : installation option; [@json.option]
   performed_via_github_app : github_app option; [@json.option]
 }
-[@@deriving json] [@@json.allow_extra_fields]
+[@@deriving json]
 
 (** {2 Issue comment types}
 
@@ -150,13 +150,13 @@ type pr_notification = {
     The inner [issue_pull_request_ref] carries [url], [html_url], [diff_url],
     [patch_url], and [merged_at] in the wire format — none of which we read.
     The single [url] field below is a placeholder so the record decodes
-    cleanly; everything else is dropped via [allow_extra_fields].
+    cleanly; jsonkit ignores everything else.
 
     [user] fields are nullable in GitHub's schema (e.g. when an account has
     been deleted), so we model them as [github_user option] even though
     freshly-created comments and issues normally carry a populated user. *)
 
-type issue_pull_request_ref = { url : string } [@@deriving json] [@@json.allow_extra_fields]
+type issue_pull_request_ref = { url : string } [@@deriving json]
 
 type issue = {
   number : int;
@@ -166,7 +166,7 @@ type issue = {
   html_url : string;
   pull_request : issue_pull_request_ref option; [@json.option]
 }
-[@@deriving json] [@@json.allow_extra_fields]
+[@@deriving json]
 
 type issue_comment = {
   id : int;
@@ -175,7 +175,7 @@ type issue_comment = {
   html_url : string;
   performed_via_github_app : github_app option; [@json.option]
 }
-[@@deriving json] [@@json.allow_extra_fields]
+[@@deriving json]
 
 type issue_comment_notification = {
   action : string;
@@ -186,7 +186,7 @@ type issue_comment_notification = {
   installation : installation option; [@json.option]
   performed_via_github_app : github_app option; [@json.option]
 }
-[@@deriving json] [@@json.allow_extra_fields]
+[@@deriving json]
 
 (** {2 Pull request review webhook types} *)
 
@@ -197,7 +197,7 @@ type pull_request_review = {
   user : github_user option; [@json.option]
   performed_via_github_app : github_app option; [@json.option]
 }
-[@@deriving json] [@@json.allow_extra_fields]
+[@@deriving json]
 
 type pull_request_review_notification = {
   action : string;
@@ -208,7 +208,7 @@ type pull_request_review_notification = {
   installation : installation option; [@json.option]
   performed_via_github_app : github_app option; [@json.option]
 }
-[@@deriving json] [@@json.allow_extra_fields]
+[@@deriving json]
 
 type pull_request_review_comment = {
   id : int;
@@ -218,7 +218,7 @@ type pull_request_review_comment = {
   user : github_user option; [@json.option]
   performed_via_github_app : github_app option; [@json.option]
 }
-[@@deriving json] [@@json.allow_extra_fields]
+[@@deriving json]
 
 type pull_request_review_comment_notification = {
   action : string;
@@ -229,7 +229,7 @@ type pull_request_review_comment_notification = {
   installation : installation option; [@json.option]
   performed_via_github_app : github_app option; [@json.option]
 }
-[@@deriving json] [@@json.allow_extra_fields]
+[@@deriving json]
 
 (** {2 GitHub API response types} *)
 
@@ -246,7 +246,7 @@ type pull_request_file = {
   patch : string option; [@json.option]
   previous_filename : string option; [@json.option]
 }
-[@@deriving json] [@@json.allow_extra_fields]
+[@@deriving json]
 
 (** {2 Diff side — bare string enum} *)
 
@@ -267,7 +267,7 @@ let diff_side_to_json side = `String (diff_side_to_string side)
 
 let diff_side_of_json = function
   | `String s -> diff_side_of_string s
-  | json -> Melange_json.of_json_error ~json "expected a string for diff_side"
+  | json -> Jsonkit.of_json_error ~json "expected a string for diff_side"
 
 (** {2 Review event — bare string enum} *)
 
@@ -291,7 +291,7 @@ let review_event_to_json ev = `String (review_event_to_string ev)
 
 let review_event_of_json = function
   | `String s -> review_event_of_string s
-  | json -> Melange_json.of_json_error ~json "expected a string for review_event"
+  | json -> Jsonkit.of_json_error ~json "expected a string for review_event"
 
 (** {2 Review request types} *)
 
@@ -319,7 +319,7 @@ type created_pr_review = {
   node_id : string option; [@json.option]
   html_url : string option; [@json.option]
 }
-[@@deriving json] [@@json.allow_extra_fields]
+[@@deriving json]
 
 (** Manual [to_json]: omits [comments] when empty (matching ATD's behavior
     of dropping default-valued fields). *)
@@ -356,7 +356,7 @@ type reaction = {
   id : int;
   content : string;
 }
-[@@deriving json] [@@json.allow_extra_fields]
+[@@deriving json]
 
 type reaction_counts = {
   plus_one : int;
@@ -368,11 +368,11 @@ type pr_review_comment = {
   id : int;
   body : string;
 }
-[@@deriving json] [@@json.allow_extra_fields]
+[@@deriving json]
 
 (** {2 Webhook envelope} *)
 
-type webhook_envelope = { repository : repository } [@@deriving json] [@@json.allow_extra_fields]
+type webhook_envelope = { repository : repository } [@@deriving json]
 
 (** {2 GitHub Contents API response} *)
 
@@ -382,7 +382,7 @@ type content_api_response = {
   name : string;
   path : string;
 }
-[@@deriving json] [@@json.allow_extra_fields]
+[@@deriving json]
 
 (** {2 GitHub App installation token} *)
 
@@ -390,4 +390,4 @@ type installation_token_response = {
   token : string;
   expires_at : string;
 }
-[@@deriving json] [@@json.allow_extra_fields]
+[@@deriving json]

@@ -187,7 +187,7 @@ let target_status_of_string = function
 let target_status_to_json status = `String (target_status_to_string status)
 let target_status_of_json = function
   | `String value -> target_status_of_string value
-  | json -> Melange_json.of_json_error ~json "expected feedback target status string"
+  | json -> Jsonkit.of_json_error ~json "expected feedback target status string"
 
 let stop_reason_to_string = function
   | Pr_closed -> "pr_closed"
@@ -205,7 +205,7 @@ let stop_reason_of_string = function
 let stop_reason_to_json reason = `String (stop_reason_to_string reason)
 let stop_reason_of_json = function
   | `String value -> stop_reason_of_string value
-  | json -> Melange_json.of_json_error ~json "expected feedback stop reason string"
+  | json -> Jsonkit.of_json_error ~json "expected feedback stop reason string"
 
 let target_kind_to_string = function
   | Pr_review_comment -> "pr_review_comment"
@@ -219,7 +219,7 @@ let target_kind_of_string = function
 let target_kind_to_json kind = `String (target_kind_to_string kind)
 let target_kind_of_json = function
   | `String value -> target_kind_of_string value
-  | json -> Melange_json.of_json_error ~json "expected feedback target kind string"
+  | json -> Jsonkit.of_json_error ~json "expected feedback target kind string"
 
 let sha256_hex value = Digestif.SHA256.(digest_string value |> to_hex)
 
@@ -279,11 +279,11 @@ let reaction_counts_of_json = function
     let int_field name =
       match List.assoc_opt name fields with
       | Some (`Int value) -> value
-      | Some json -> Melange_json.of_json_error ~json (Printf.sprintf "expected integer field %s" name)
+      | Some json -> Jsonkit.of_json_error ~json (Printf.sprintf "expected integer field %s" name)
       | None -> invalid_arg (Printf.sprintf "missing field %s" name)
     in
     { plus_one = int_field "plus_one"; minus_one = int_field "minus_one" }
-  | json -> Melange_json.of_json_error ~json "expected reaction counts object"
+  | json -> Jsonkit.of_json_error ~json "expected reaction counts object"
 
 let required_option field = function
   | Some value -> value
@@ -349,24 +349,24 @@ let required_field fields name =
 let required_string fields name =
   match required_field fields name with
   | `String value -> value
-  | json -> Melange_json.of_json_error ~json (Printf.sprintf "expected string field %s" name)
+  | json -> Jsonkit.of_json_error ~json (Printf.sprintf "expected string field %s" name)
 
 let required_int fields name =
   match required_field fields name with
   | `Int value -> value
-  | json -> Melange_json.of_json_error ~json (Printf.sprintf "expected integer field %s" name)
+  | json -> Jsonkit.of_json_error ~json (Printf.sprintf "expected integer field %s" name)
 
 let optional_string fields name =
   match List.assoc_opt name fields with
   | None | Some `Null -> None
   | Some (`String value) -> Some value
-  | Some json -> Melange_json.of_json_error ~json (Printf.sprintf "expected optional string field %s" name)
+  | Some json -> Jsonkit.of_json_error ~json (Printf.sprintf "expected optional string field %s" name)
 
 let optional_int fields name =
   match List.assoc_opt name fields with
   | None | Some `Null -> None
   | Some (`Int value) -> Some value
-  | Some json -> Melange_json.of_json_error ~json (Printf.sprintf "expected optional integer field %s" name)
+  | Some json -> Jsonkit.of_json_error ~json (Printf.sprintf "expected optional integer field %s" name)
 
 let target_of_json = function
   | `Assoc fields ->
@@ -443,7 +443,7 @@ let target_of_json = function
         review_node_id = Some (required_string fields "review_node_id");
         review_body_sha256 = Some (required_string fields "review_body_sha256");
       })
-  | json -> Melange_json.of_json_error ~json "expected feedback target object"
+  | json -> Jsonkit.of_json_error ~json "expected feedback target object"
 
 let file_to_json file = `Assoc [ "schema", `Int file.schema; "targets", `List (List.map target_to_json file.targets) ]
 
@@ -452,17 +452,17 @@ let file_of_json = function
     let schema =
       match List.assoc_opt "schema" fields with
       | Some (`Int value) -> value
-      | Some json -> Melange_json.of_json_error ~json "expected integer field schema"
+      | Some json -> Jsonkit.of_json_error ~json "expected integer field schema"
       | None -> schema_version
     in
     let targets =
       match List.assoc_opt "targets" fields with
       | Some (`List values) -> List.map target_of_json values
-      | Some json -> Melange_json.of_json_error ~json "expected targets array"
+      | Some json -> Jsonkit.of_json_error ~json "expected targets array"
       | None -> []
     in
     { schema; targets }
-  | json -> Melange_json.of_json_error ~json "expected feedback file object"
+  | json -> Jsonkit.of_json_error ~json "expected feedback file object"
 
 let empty_file = { schema = schema_version; targets = [] }
 
@@ -470,7 +470,7 @@ let load_file path =
   match Sys.file_exists path with
   | false -> empty_file
   | true ->
-  try Std.input_file ~bin:true path |> Melange_json.of_string |> file_of_json
+  try Std.input_file ~bin:true path |> Jsonkit.of_string |> file_of_json
   with exn ->
     log#warn "failed to load feedback targets from %s: %s, starting fresh" path (Exn.str exn);
     empty_file

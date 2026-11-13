@@ -11,15 +11,15 @@ type t = {
 let default_secrets_filepath = "secrets.json"
 let default_config_filename = ".reviewotron.json"
 
-let default_config () : Config_types.config = Config_types.config_of_json (Melange_json.of_string "{}")
+let default_config () : Config_types.config = Config_types.config_of_json (Jsonkit.of_string "{}")
 
 let parse_config json_str =
-  match Config_types.config_of_json (Melange_json.of_string json_str) with
+  match Config_types.config_of_json (Jsonkit.of_string json_str) with
   | config -> Ok config
   | exception exn -> Error (Printf.sprintf "failed to parse config JSON: %s" (Exn.str exn))
 
 let load_config_file ~filepath =
-  match Config_types.config_of_json (Melange_json.of_string (Std.input_file ~bin:true filepath)) with
+  match Config_types.config_of_json (Jsonkit.of_string (Std.input_file ~bin:true filepath)) with
   | exception exn ->
     let msg = Printf.sprintf "failed to read config from %s: %s" filepath (Exn.str exn) in
     Error msg
@@ -37,7 +37,7 @@ let load_local_config ~root ~config_filename =
   | true -> load_config_file ~filepath
 
 let load_secrets ~require_repos ~secrets_filepath =
-  match Config_types.secrets_of_json (Melange_json.of_string (Std.input_file ~bin:true secrets_filepath)) with
+  match Config_types.secrets_of_json (Jsonkit.of_string (Std.input_file ~bin:true secrets_filepath)) with
   | exception exn ->
     let msg = Printf.sprintf "failed to read secrets from %s: %s" secrets_filepath (Exn.str exn) in
     Error msg

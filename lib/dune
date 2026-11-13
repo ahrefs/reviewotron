@@ -14,17 +14,16 @@
   digestif
   lwt
   lwt.unix
-  melange-json-native
+  jsonkit
   opentelemetry
   opentelemetry-lwt
   opentelemetry-client-ocurl-lwt
   unix
   mirage-crypto-pk
-  ppx_deriving_jsonschema.runtime
   ptime
   ptime.clock.os
   re2
   x509
   yojson)
  (preprocess
-  (pps lwt_ppx melange-json-native.ppx ppx_deriving_jsonschema)))
+  (pps lwt_ppx jsonkit.ppx)))

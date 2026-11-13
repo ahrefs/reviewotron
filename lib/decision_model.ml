@@ -14,7 +14,7 @@ let to_json model = `String (to_string model)
 let of_json = function
   | `String "jev" -> Jev
   | `String "gpt-6-luna" -> Gpt_6_luna
-  | json -> Melange_json.of_json_error ~json "expected a decision_model string: jev or gpt-6-luna"
+  | json -> Jsonkit.of_json_error ~json "expected a decision_model string: jev or gpt-6-luna"
 
 let t_jsonschema : Yojson.Basic.t =
   `Assoc

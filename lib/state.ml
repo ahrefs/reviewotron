@@ -18,7 +18,7 @@ let load ~filepath =
   let data =
     try
       let content = Std.input_file ~bin:true filepath in
-      State_types.state_of_json (Melange_json.of_string content)
+      State_types.state_of_json (Jsonkit.of_string content)
     with exn ->
       log#warn "failed to load state from %s: %s, starting fresh" filepath (Exn.str exn);
       empty_state ()

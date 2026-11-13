@@ -1,6 +1,6 @@
 (** State persistence types: tracks which PRs and pushes have been reviewed. *)
 
-open Melange_json.Primitives
+open Jsonkit.Primitives
 
 type review_record = {
   pr_number : int;
@@ -50,8 +50,8 @@ let state_of_json (json : Yojson.Basic.t) : state =
     let repos =
       match List.assoc_opt "repos" fields with
       | Some (`Assoc pairs) -> List.map (fun (url, v) -> url, repo_state_of_json v) pairs
-      | Some json -> Melange_json.of_json_error ~json "expected object for \"repos\""
+      | Some json -> Jsonkit.of_json_error ~json "expected object for \"repos\""
       | None -> []
     in
     { repos }
-  | json -> Melange_json.of_json_error ~json "expected a JSON object"
+  | json -> Jsonkit.of_json_error ~json "expected a JSON object"

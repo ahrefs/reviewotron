@@ -3,7 +3,7 @@ open Reviewotron_lib
 open Alcotest
 
 let read_file path = Std.input_file ~bin:true path
-let read_json path = Melange_json.of_string (read_file path)
+let read_json path = Jsonkit.of_string (read_file path)
 
 let contains_sub ~sub s = CCString.find ~sub s >= 0
 
@@ -120,12 +120,12 @@ let test_with_env_vars_restores_unset_vars_to_unset () =
 
 let security_enabled_config =
   Config_types.config_of_json
-    (Melange_json.of_string
+    (Jsonkit.of_string
        {|{"auto_review_pr_open": true, "auto_review_pr_sync": true, "review_plugins": {"security": {"enabled": true}}}|})
 
 let security_enabled_slack_config =
   Config_types.config_of_json
-    (Melange_json.of_string
+    (Jsonkit.of_string
        {|{"auto_review_pr_open": true, "auto_review_pr_sync": true, "review_pushes_to_develop": true, "slack_channel": "dev-reviews", "review_plugins": {"security": {"enabled": true}}}|})
 
 let test_parse_pr_opened () =
@@ -281,7 +281,7 @@ let test_config_defaults () =
     "anthropic_api_key": "sk-test"
   }|}
   in
-  let secrets = Config_types.secrets_of_json (Melange_json.of_string json) in
+  let secrets = Config_types.secrets_of_json (Jsonkit.of_string json) in
   (check (option string)) "api key" (Some "sk-test") secrets.anthropic_api_key;
   (check int) "repo count" 1 (List.length secrets.repos)
 
@@ -293,13 +293,13 @@ let test_config_ignores_removed_fields () =
     "anthropic_version": "2023-06-01"
   }|}
   in
-  let secrets = Config_types.secrets_of_json (Melange_json.of_string json) in
+  let secrets = Config_types.secrets_of_json (Jsonkit.of_string json) in
   (check (option string)) "api key" (Some "sk-test") secrets.anthropic_api_key;
   (check int) "repo count" 1 (List.length secrets.repos)
 
 let test_parse_secrets_openrouter_only () =
   let json = {|{"repos": [], "openrouter_api_key": "sk-or-test"}|} in
-  let secrets = Config_types.secrets_of_json (Melange_json.of_string json) in
+  let secrets = Config_types.secrets_of_json (Jsonkit.of_string json) in
   (check (option string)) "anthropic key absent" None secrets.anthropic_api_key;
   (check (option string)) "openrouter key present" (Some "sk-or-test") secrets.openrouter_api_key
 
@@ -678,7 +678,7 @@ let test_generic_openrouter_403_retries_one_provider_request () =
   check int "exactly one retry" 2 !calls
 
 let test_config_review_plugins_defaults () =
-  let config = Config_types.config_of_json (Melange_json.of_string {|{}|}) in
+  let config = Config_types.config_of_json (Jsonkit.of_string {|{}|}) in
   (check bool) "gpt-6-luna is the default decision model" true
     (match config.review_plugins.decision_model with
     | Decision_model.Gpt_6_luna -> true
@@ -760,7 +760,7 @@ let test_config_review_plugins_explicit () =
     }
   }|}
   in
-  let config = Config_types.config_of_json (Melange_json.of_string json) in
+  let config = Config_types.config_of_json (Jsonkit.of_string json) in
   (check bool) "show_review_cost" true config.show_review_cost;
   (check bool) "agent debug_artifacts" true config.debug_artifacts;
   (check (list string)) "ignored_file_regexes explicit" [ "^snapshots/.*\\.golden$" ] config.ignored_file_regexes;
@@ -803,26 +803,26 @@ let test_config_review_plugins_explicit () =
   (check bool) "debug_artifacts" true config.review_plugins.security.debug_artifacts
 
 let test_config_rejects_invalid_ignored_file_regex () =
-  match Config_types.config_of_json (Melange_json.of_string {|{"ignored_file_regexes":["["]}|}) with
+  match Config_types.config_of_json (Jsonkit.of_string {|{"ignored_file_regexes":["["]}|}) with
   | (_ : Config_types.config) -> fail "expected invalid ignored_file_regexes to be rejected"
-  | exception Melange_json.Of_json_error (Melange_json.Json_error msg) ->
+  | exception Jsonkit.Of_json_error (Jsonkit.Json_error msg) ->
     (check bool) "error names ignored_file_regexes" true (contains_sub ~sub:"ignored_file_regexes" msg)
 
 let test_config_rejects_broad_ignored_file_regex () =
   List.iter
     (fun pattern ->
       match
-        Config_types.config_of_json (Melange_json.of_string (Printf.sprintf {|{"ignored_file_regexes":[%S]}|} pattern))
+        Config_types.config_of_json (Jsonkit.of_string (Printf.sprintf {|{"ignored_file_regexes":[%S]}|} pattern))
       with
       | (_ : Config_types.config) -> fail (Printf.sprintf "expected broad ignored_file_regex %S to be rejected" pattern)
-      | exception Melange_json.Of_json_error (Melange_json.Json_error msg) ->
+      | exception Jsonkit.Of_json_error (Jsonkit.Json_error msg) ->
         (check bool) "error names ignored_file_regexes" true (contains_sub ~sub:"ignored_file_regexes" msg))
     [ ".*"; ".+"; "^.*$"; "^.+$"; "^" ]
 
 let expect_config_error ~json ~sub =
-  match Config_types.config_of_json (Melange_json.of_string json) with
+  match Config_types.config_of_json (Jsonkit.of_string json) with
   | (_ : Config_types.config) -> fail (Printf.sprintf "expected config to be rejected: %s" json)
-  | exception Melange_json.Of_json_error (Melange_json.Json_error msg) ->
+  | exception Jsonkit.Of_json_error (Jsonkit.Json_error msg) ->
     (check bool) (Printf.sprintf "error mentions %S: %s" sub msg) true (contains_sub ~sub msg)
 
 let test_config_rejects_invalid_decision_thresholds () =
@@ -840,8 +840,7 @@ let test_config_rejects_unknown_decision_triage_mode () =
 
 let test_config_decision_feature_defaults_to_luna () =
   let config =
-    Config_types.config_of_json
-      (Melange_json.of_string {|{"review_plugins":{"decision_suggestion_guard_enabled":true}}|})
+    Config_types.config_of_json (Jsonkit.of_string {|{"review_plugins":{"decision_suggestion_guard_enabled":true}}|})
   in
   (check bool) "enabled feature without a model uses gpt-6-luna" true
     (match config.review_plugins.decision_model with
@@ -853,7 +852,7 @@ let test_config_decision_feature_defaults_to_luna () =
 let test_config_ignores_removed_jev_fields () =
   let config =
     Config_types.config_of_json
-      (Melange_json.of_string
+      (Jsonkit.of_string
          {|{"review_plugins":{"jev_suggestion_guard_enabled":true,"security":{"jev_triage_enabled":true,"jev_triage_threshold":0.8}}}|})
   in
   (check (option bool)) "suggestion guard stays unset" None config.review_plugins.decision_suggestion_guard_enabled;
@@ -886,7 +885,7 @@ let test_decision_build_claim_guard () =
   | [] -> fail "expected context lines"
 
 let test_config_general_scout_defaults () =
-  let config = Config_types.config_of_json (Melange_json.of_string {|{}|}) in
+  let config = Config_types.config_of_json (Jsonkit.of_string {|{}|}) in
   (check bool) "scout_enabled default on" true config.review_plugins.general.scout_enabled;
   (check string) "scout_model_tier default standard" "standard"
     (Config_types.model_tier_to_string config.review_plugins.general.scout_model_tier);
@@ -909,7 +908,7 @@ let test_config_general_scout_explicit () =
     }
   }|}
   in
-  let config = Config_types.config_of_json (Melange_json.of_string json) in
+  let config = Config_types.config_of_json (Jsonkit.of_string json) in
   (check bool) "scout_enabled explicit off" false config.review_plugins.general.scout_enabled;
   (check string) "scout_model_tier explicit fast" "fast"
     (Config_types.model_tier_to_string config.review_plugins.general.scout_model_tier);
@@ -925,13 +924,13 @@ let test_config_general_scout_explicit () =
    fires on the nested path the pipeline actually uses. *)
 
 (* Assert that parsing [json] through the top-level config decoder raises
-   [Melange_json.Of_json_error] with a message naming [max_leads]. Matches the
-   exact exception the derived decoders raise via [Melange_json.of_json_error];
+   [Jsonkit.Of_json_error] with a message naming [max_leads]. Matches the
+   exact exception the derived decoders raise via [Jsonkit.of_json_error];
    no broad catch-all. *)
 let expect_max_leads_rejected ~label json =
-  match Config_types.config_of_json (Melange_json.of_string json) with
+  match Config_types.config_of_json (Jsonkit.of_string json) with
   | (_ : Config_types.config) -> Alcotest.failf "%s: expected max_leads to be rejected" label
-  | exception Melange_json.Of_json_error (Json_error msg) ->
+  | exception Jsonkit.Of_json_error (Json_error msg) ->
     (check bool) (label ^ ": message names max_leads") true (CCString.find ~sub:"max_leads" msg >= 0)
 
 let test_config_max_leads_zero_rejected () =
@@ -942,10 +941,10 @@ let test_config_max_leads_negative_rejected () =
 
 let test_config_max_leads_valid_and_default_ok () =
   let one =
-    Config_types.config_of_json (Melange_json.of_string {|{ "review_plugins": { "general": { "max_leads": 1 } } }|})
+    Config_types.config_of_json (Jsonkit.of_string {|{ "review_plugins": { "general": { "max_leads": 1 } } }|})
   in
   (check int) "max_leads = 1 accepted" 1 one.review_plugins.general.max_leads;
-  let omitted = Config_types.config_of_json (Melange_json.of_string {|{ "review_plugins": { "general": {} } }|}) in
+  let omitted = Config_types.config_of_json (Jsonkit.of_string {|{ "review_plugins": { "general": {} } }|}) in
   (check int) "omitted max_leads defaults to 10" 10 omitted.review_plugins.general.max_leads
 
 let test_context_create_requires_repos_by_default () =
@@ -1020,6 +1019,16 @@ let test_vuln_class_roundtrip () =
       let parsed = Config_types.vuln_class_of_json json in
       (check string) "roundtrip" (Config_types.vuln_class_to_string vc) (Config_types.vuln_class_to_string parsed))
     Config_types.all_vuln_classes
+
+let test_security_analysis_effort_missing_vs_null () =
+  let effort json =
+    (Config_types.config_of_json (Jsonkit.of_string json)).review_plugins.security.analysis_effort
+    |> Option.map Config_types.Effort.to_string
+  in
+  (check (option string)) "missing key" (Some "medium") (effort {|{"review_plugins":{"security":{"enabled":true}}}|});
+  (check (option string))
+    "explicit null" None
+    (effort {|{"review_plugins":{"security":{"enabled":true,"analysis_effort":null}}}|})
 
 let test_security_plugin_config_roundtrip () =
   let cfg : Config_types.security_plugin_config =
@@ -1232,6 +1241,33 @@ let test_security_validator_schema_requires_proof_key () =
   let cfg = Validator_agent.config ~model_tier:Standard in
   (check bool) "validator schema requires proof key" true
     (schema_requires_property ~property:"proof_by_construction" cfg.output_schema)
+
+let test_strict_schema_requires_all_and_drops_default_keyword () =
+  let derived =
+    `Assoc
+      [
+        "type", `String "object";
+        ( "properties",
+          `Assoc
+            [
+              "default", `Assoc [ "type", `String "string"; "default", `String "x" ];
+              "n", `Assoc [ "type", `String "integer" ];
+            ] );
+        "required", `List [ `String "n" ];
+        "additionalProperties", `Bool true;
+      ]
+  in
+  let expected =
+    `Assoc
+      [
+        "type", `String "object";
+        ( "properties",
+          `Assoc [ "default", `Assoc [ "type", `String "string" ]; "n", `Assoc [ "type", `String "integer" ] ] );
+        "required", `List [ `String "default"; `String "n" ];
+        "additionalProperties", `Bool false;
+      ]
+  in
+  (check string) "strict schema" (Yojson.Basic.to_string expected) (Yojson.Basic.to_string (Strict_schema.make derived))
 
 let test_prompt_token_estimation () =
   let system = Review_prompt.system_prompt ~security_covered_elsewhere:false () in
@@ -1892,8 +1928,8 @@ let test_review_output_roundtrip () =
       overall_assessment = "Solid code";
     }
   in
-  let json_str = Melange_json.to_string (Review_types.review_output_to_json review) in
-  let parsed = Review_types.review_output_of_json (Melange_json.of_string json_str) in
+  let json_str = Jsonkit.to_string (Review_types.review_output_to_json review) in
+  let parsed = Review_types.review_output_of_json (Jsonkit.of_string json_str) in
   (check string) "summary" review.summary parsed.summary;
   (check int) "findings count" 1 (List.length parsed.findings);
   let f = List.hd parsed.findings in
@@ -1903,7 +1939,7 @@ let test_review_output_roundtrip () =
 
 let test_mock_claude_response () =
   let json_str = read_file "mock_api_responses/claude/review_response.json" in
-  let review = Review_types.review_output_of_json (Melange_json.of_string json_str) in
+  let review = Review_types.review_output_of_json (Jsonkit.of_string json_str) in
   (check int) "findings count" 3 (List.length review.findings);
   (check bool) "has summary" true (String.length review.summary > 0);
   (check bool) "has assessment" true (String.length review.overall_assessment > 0)
@@ -1956,8 +1992,8 @@ let test_scout_output_roundtrip () =
       skip_note = "nothing skipped";
     }
   in
-  let json_str = Melange_json.to_string (Review_types.scout_output_to_json scout) in
-  let parsed = Review_types.scout_output_of_json (Melange_json.of_string json_str) in
+  let json_str = Jsonkit.to_string (Review_types.scout_output_to_json scout) in
+  let parsed = Review_types.scout_output_of_json (Jsonkit.of_string json_str) in
   (check int) "roundtrip leads count" 1 (List.length parsed.leads);
   (check string) "roundtrip skip_note" "nothing skipped" parsed.skip_note;
   let lead = List.hd parsed.leads in
@@ -2211,8 +2247,8 @@ let test_general_deep_reviewer_config_override () =
 (** {2 Security types tests} *)
 
 let roundtrip to_json of_json v =
-  let json_str = Melange_json.to_string (to_json v) in
-  of_json (Melange_json.of_string json_str)
+  let json_str = Jsonkit.to_string (to_json v) in
+  of_json (Jsonkit.of_string json_str)
 
 let test_security_triage_output_roundtrip () =
   let open Security_types in
@@ -2288,10 +2324,10 @@ let test_security_sanitization_status_roundtrip () =
   in
   List.iter
     (fun (status, expected_json) ->
-      let json_str = Melange_json.to_string (sanitization_status_to_json status) in
+      let json_str = Jsonkit.to_string (sanitization_status_to_json status) in
       (check string) ("sanitization_status json " ^ expected_json) expected_json json_str;
-      let parsed = sanitization_status_of_json (Melange_json.of_string json_str) in
-      let re_json = Melange_json.to_string (sanitization_status_to_json parsed) in
+      let parsed = sanitization_status_of_json (Jsonkit.of_string json_str) in
+      let re_json = Jsonkit.to_string (sanitization_status_to_json parsed) in
       (check string) ("sanitization_status roundtrip " ^ expected_json) json_str re_json)
     cases
 
@@ -2300,10 +2336,10 @@ let test_security_validation_verdict_roundtrip () =
   let cases = [ Confirmed, {|"confirmed"|}; Rejected, {|"rejected"|} ] in
   List.iter
     (fun (verdict, expected_json) ->
-      let json_str = Melange_json.to_string (validation_verdict_to_json verdict) in
+      let json_str = Jsonkit.to_string (validation_verdict_to_json verdict) in
       (check string) ("verdict json " ^ expected_json) expected_json json_str;
-      let parsed = validation_verdict_of_json (Melange_json.of_string json_str) in
-      let re_json = Melange_json.to_string (validation_verdict_to_json parsed) in
+      let parsed = validation_verdict_of_json (Jsonkit.of_string json_str) in
+      let re_json = Jsonkit.to_string (validation_verdict_to_json parsed) in
       (check string) ("verdict roundtrip " ^ expected_json) json_str re_json)
     cases
 
@@ -2722,7 +2758,7 @@ let test_security_long_proof_renders_in_full () =
 
 let test_security_triage_output_extra_fields () =
   let json_str = {|{"signals":[],"language_hints":[],"skip_reason":null,"extra_field":"ignored","another":123}|} in
-  let parsed = Security_types.triage_output_of_json (Melange_json.of_string json_str) in
+  let parsed = Security_types.triage_output_of_json (Jsonkit.of_string json_str) in
   (check int) "signals empty" 0 (List.length parsed.signals)
 
 (** {2 Security tools tests} *)
@@ -2756,7 +2792,7 @@ let test_security_tools_result_empty () =
 
 let test_security_tools_result_missing_fields () =
   let json_str = "{}" in
-  let parsed = Security_tools.get_file_content_result_of_json (Melange_json.of_string json_str) in
+  let parsed = Security_tools.get_file_content_result_of_json (Jsonkit.of_string json_str) in
   (check (option string)) "content" None parsed.content;
   (check (option string)) "error" None parsed.error
 
@@ -3407,7 +3443,7 @@ let parse_single_diff ~fixture ~expected_path =
     diff_text
   | _ -> fail (Printf.sprintf "expected 1 file diff, got %d" (List.length diffs))
 
-let parse_triage_file path = read_file path |> Melange_json.of_string |> Security_types.triage_output_of_json
+let parse_triage_file path = read_file path |> Jsonkit.of_string |> Security_types.triage_output_of_json
 
 let test_triage_corpus_injection_diff_valid () =
   ignore
@@ -3761,7 +3797,7 @@ let test_pr_reviewed_when_draft_and_flag_enabled () =
   Test_helpers.reset_test_state ();
   let config =
     Config_types.config_of_json
-      (Melange_json.of_string {|{"auto_review_pr_open": true, "auto_review_pr_sync": true, "review_draft_prs": true}|})
+      (Jsonkit.of_string {|{"auto_review_pr_open": true, "auto_review_pr_sync": true, "review_draft_prs": true}|})
   in
   let ctx = Test_helpers.make_test_context ~config () in
   let payload = Test_helpers.make_pr_payload ~draft:true () in
@@ -3792,7 +3828,7 @@ let test_pr_skipped_when_closed () =
     because the helper is internal to the [Make] functor and not exposed in
     the [.mli] — same pattern as [pr_skip_reason] / [push_skip_reason]. *)
 
-let comment_trigger_config = Config_types.config_of_json (Melange_json.of_string {|{"auto_review_on_comment": true}|})
+let comment_trigger_config = Config_types.config_of_json (Jsonkit.of_string {|{"auto_review_on_comment": true}|})
 
 let targeted_commit_sha = "1234567890abcdef1234567890abcdef12345678"
 let current_pr_head_sha = "abc123def456789012345678901234567890abcd"
@@ -4028,8 +4064,7 @@ let test_comment_trigger_skips_bot_sender () =
 let test_comment_trigger_skips_ignored_author () =
   Test_helpers.reset_test_state ();
   let config =
-    Config_types.config_of_json
-      (Melange_json.of_string {|{"auto_review_on_comment": true, "ignored_authors": ["spammer"]}|})
+    Config_types.config_of_json (Jsonkit.of_string {|{"auto_review_on_comment": true, "ignored_authors": ["spammer"]}|})
   in
   let ctx = Test_helpers.make_test_context ~config () in
   let payload = Test_helpers.make_issue_comment_payload ~sender_login:"spammer" () in
@@ -4048,7 +4083,7 @@ let test_comment_trigger_re_reviews_same_sha () =
     Test_helpers.make_test_context ~state
       ~config:
         (Config_types.config_of_json
-           (Melange_json.of_string {|{"auto_review_pr_open": true, "auto_review_on_comment": true}|}))
+           (Jsonkit.of_string {|{"auto_review_pr_open": true, "auto_review_on_comment": true}|}))
       ()
   in
   (* First, trigger a normal PR-open review to populate state. *)
@@ -4083,7 +4118,7 @@ let test_pr_all_ignored_paths_posts_skip_comment () =
   Test_helpers.reset_test_state ();
   let config =
     Config_types.config_of_json
-      (Melange_json.of_string {|{"auto_review_pr_open": true, "ignored_paths": ["*.lock", "*.json"]}|})
+      (Jsonkit.of_string {|{"auto_review_pr_open": true, "ignored_paths": ["*.lock", "*.json"]}|})
   in
   let ctx = Test_helpers.make_test_context ~config () in
   (* Use PR 99 which only has .lock and .json files *)
@@ -4150,9 +4185,7 @@ let test_pr_quiet_success_shows_review_cost () =
 let test_pr_large_diff_posts_comment () =
   Test_helpers.reset_test_state ();
   (* Set max_diff_lines very low so the normal PR 42 diff exceeds it *)
-  let config =
-    Config_types.config_of_json (Melange_json.of_string {|{"auto_review_pr_open": true, "max_diff_lines": 1}|})
-  in
+  let config = Config_types.config_of_json (Jsonkit.of_string {|{"auto_review_pr_open": true, "max_diff_lines": 1}|}) in
   let ctx = Test_helpers.make_test_context ~config () in
   let payload = read_file "mock_payloads/pr_opened.json" in
   let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
@@ -4198,7 +4231,7 @@ let generated_filter_diff_text =
 let test_pr_generated_files_filtered_before_file_limit () =
   Test_helpers.reset_test_state ();
   Api_local.set_next_pr_diff generated_filter_diff_text;
-  let config = Config_types.config_of_json (Melange_json.of_string {|{"auto_review_pr_open": true, "max_files": 1}|}) in
+  let config = Config_types.config_of_json (Jsonkit.of_string {|{"auto_review_pr_open": true, "max_files": 1}|}) in
   let ctx = Test_helpers.make_test_context ~config () in
   let payload = Test_helpers.make_pr_payload () in
   let event = Test_helpers.parse_event_exn ~event_type:"pull_request" ~body:payload in
@@ -4222,7 +4255,7 @@ let test_push_review_e2e () =
     ];
   let config =
     Config_types.config_of_json
-      (Melange_json.of_string {|{"review_pushes_to_develop": true, "slack_channel": "dev-reviews"}|})
+      (Jsonkit.of_string {|{"review_pushes_to_develop": true, "slack_channel": "dev-reviews"}|})
   in
   let ctx = Test_helpers.make_test_context ~config () in
   let payload = read_file "mock_payloads/push_develop.json" in
@@ -4296,7 +4329,7 @@ let test_duplicate_push_prevention () =
   let state = State.create () in
   let config =
     Config_types.config_of_json
-      (Melange_json.of_string {|{"review_pushes_to_develop": true, "slack_channel": "dev-reviews"}|})
+      (Jsonkit.of_string {|{"review_pushes_to_develop": true, "slack_channel": "dev-reviews"}|})
   in
   let ctx = Test_helpers.make_test_context ~state ~config () in
   let payload = read_file "mock_payloads/push_develop.json" in
@@ -4317,8 +4350,7 @@ let test_duplicate_push_prevention () =
 let test_ignored_author_pr_skipped () =
   Test_helpers.reset_test_state ();
   let config =
-    Config_types.config_of_json
-      (Melange_json.of_string {|{"auto_review_pr_open": true, "ignored_authors": ["developer1"]}|})
+    Config_types.config_of_json (Jsonkit.of_string {|{"auto_review_pr_open": true, "ignored_authors": ["developer1"]}|})
   in
   let ctx = Test_helpers.make_test_context ~config () in
   let payload = read_file "mock_payloads/pr_opened.json" in
@@ -4331,7 +4363,7 @@ let test_ignored_author_push_skipped () =
   Test_helpers.reset_test_state ();
   let config =
     Config_types.config_of_json
-      (Melange_json.of_string {|{"review_pushes_to_develop": true, "ignored_authors": ["developer2"]}|})
+      (Jsonkit.of_string {|{"review_pushes_to_develop": true, "ignored_authors": ["developer2"]}|})
   in
   let ctx = Test_helpers.make_test_context ~config () in
   let payload = read_file "mock_payloads/push_develop.json" in
@@ -4343,8 +4375,7 @@ let test_ignored_author_push_skipped () =
 (** {2 Allowed bot tests} *)
 
 let allowed_bots_config =
-  Config_types.config_of_json
-    (Melange_json.of_string {|{"auto_review_pr_open": true, "allowed_bots": ["renovate[bot]"]}|})
+  Config_types.config_of_json (Jsonkit.of_string {|{"auto_review_pr_open": true, "allowed_bots": ["renovate[bot]"]}|})
 
 let run_pr_opened_by login =
   let ctx = Test_helpers.make_test_context ~config:allowed_bots_config () in
@@ -4383,7 +4414,7 @@ module Capturing_agent_runner = struct
   let validator_output_for_review_fixture () =
     let review =
       Review_types.review_output_of_json
-        (Melange_json.of_string (read_file "mock_api_responses/claude/review_response.json"))
+        (Jsonkit.of_string (read_file "mock_api_responses/claude/review_response.json"))
     in
     let security_covered_elsewhere = false in
     let candidates =
@@ -4424,8 +4455,8 @@ module Capturing_agent_runner = struct
     let output =
       match config.Agent_runner.name with
       | "general_validator" -> validator_output_for_review_fixture ()
-      | "general_scout" -> Melange_json.of_string (read_file "mock_api_responses/scout/leads_two.json")
-      | _ -> Melange_json.of_string (read_file "mock_api_responses/claude/review_response.json")
+      | "general_scout" -> Jsonkit.of_string (read_file "mock_api_responses/scout/leads_two.json")
+      | _ -> Jsonkit.of_string (read_file "mock_api_responses/claude/review_response.json")
     in
     let usage : Ai_provider.Usage.t = { input_tokens = 0; output_tokens = 0; total_tokens = None } in
     Lwt.return
@@ -4797,8 +4828,8 @@ index 3333333..4444444 100644
 |}
 
 let test_local_source_default_change_key_uses_filtered_diff () =
-  let config_without_b = Config_types.config_of_json (Melange_json.of_string {|{"ignored_paths": ["src/b.ml"]}|}) in
-  let config_without_a = Config_types.config_of_json (Melange_json.of_string {|{"ignored_paths": ["src/a.ml"]}|}) in
+  let config_without_b = Config_types.config_of_json (Jsonkit.of_string {|{"ignored_paths": ["src/b.ml"]}|}) in
+  let config_without_a = Config_types.config_of_json (Jsonkit.of_string {|{"ignored_paths": ["src/a.ml"]}|}) in
   let prepare config =
     Lwt_main.run
       (Local_source.prepare_review_from_text ~root:"." ~repo_key:"local/repo" ~title:"Local change" ~description:""
@@ -4823,7 +4854,7 @@ let test_local_review_path_filters_generated_before_limits () =
     | Error msg -> fail msg
     | Ok ingest ->
       (check int) "ingest sees source plus generated files" 3 ingest.Local_path.file_count;
-      let config = Config_types.config_of_json (Melange_json.of_string {|{"max_files": 1}|}) in
+      let config = Config_types.config_of_json (Jsonkit.of_string {|{"max_files": 1}|}) in
       let result =
         Lwt_main.run
           (Local_source.prepare_review_from_text ~root ~repo_key:"local/repo" ~title:ingest.title ~description:""
@@ -4892,8 +4923,7 @@ let recorded_change_review_count state ~repo_key =
   | Some (repo_state : State_types.repo_state) -> List.length repo_state.change_reviews
 
 let run_local_failure_report
-  ?(config =
-    Config_types.config_of_json (Melange_json.of_string {|{"review_plugins": {"security": {"enabled": true}}}|}))
+  ?(config = Config_types.config_of_json (Jsonkit.of_string {|{"review_plugins": {"security": {"enabled": true}}}|}))
   ?diff_text ~state ~change_key () =
   let ctx = Test_helpers.make_test_context ~state () in
   let diff_text =
@@ -4916,7 +4946,7 @@ let test_local_review_dedup_is_config_aware () =
   in
   Api_local.set_agent_response_map mocks;
   let state = State.create () in
-  let config_of s = Config_types.config_of_json (Melange_json.of_string s) in
+  let config_of s = Config_types.config_of_json (Jsonkit.of_string s) in
   (* Vary a review-irrelevant field so only the config digest changes. *)
   let other_config = config_of {|{"review_plugins": {"security": {"enabled": false}}, "slack_channel": "#reviews"}|} in
   let security_off = config_of {|{"review_plugins": {"security": {"enabled": false}}}|} in
@@ -5017,7 +5047,7 @@ let test_local_review_security_cancellation_propagates () =
   Cancellable_security_agent.set_block_triage true;
   let config =
     Config_types.config_of_json
-      (Melange_json.of_string {|{"review_plugins":{"general":{"enabled":false},"security":{"enabled":true}}}|})
+      (Jsonkit.of_string {|{"review_plugins":{"general":{"enabled":false},"security":{"enabled":true}}}|})
   in
   let state = State.create () in
   let ctx = Test_helpers.make_test_context ~state ~config () in
@@ -5049,7 +5079,7 @@ let test_local_review_security_analysis_cancellation_propagates () =
   Api_local.set_agent_response_map [ "security_triage", "mock_api_responses/security/triage_injection.json" ];
   let config =
     Config_types.config_of_json
-      (Melange_json.of_string {|{"review_plugins":{"general":{"enabled":false},"security":{"enabled":true}}}|})
+      (Jsonkit.of_string {|{"review_plugins":{"general":{"enabled":false},"security":{"enabled":true}}}|})
   in
   let state = State.create () in
   let ctx = Test_helpers.make_test_context ~state ~config () in
@@ -5081,7 +5111,7 @@ let test_local_review_security_analysis_cancellation_propagates () =
 let test_local_review_security_stage_failures_are_retryable () =
   let config =
     Config_types.config_of_json
-      (Melange_json.of_string {|{"review_plugins": {"general": {"enabled": false}, "security": {"enabled": true}}}|})
+      (Jsonkit.of_string {|{"review_plugins": {"general": {"enabled": false}, "security": {"enabled": true}}}|})
   in
   let cases =
     [
@@ -5144,7 +5174,7 @@ let test_local_review_security_only_empty_is_success () =
   let ctx = Test_helpers.make_test_context () in
   let config =
     Config_types.config_of_json
-      (Melange_json.of_string {|{"review_plugins": {"general": {"enabled": false}, "security": {"enabled": true}}}|})
+      (Jsonkit.of_string {|{"review_plugins": {"general": {"enabled": false}, "security": {"enabled": true}}}|})
   in
   let diff_text = read_file "mock_api_responses/github/pr_42.diff" in
   let result =
@@ -5182,7 +5212,7 @@ let test_local_review_security_validator_chunks_and_aggregates () =
   let ctx = Test_helpers.make_test_context () in
   let config =
     Config_types.config_of_json
-      (Melange_json.of_string {|{"review_plugins": {"general": {"enabled": false}, "security": {"enabled": true}}}|})
+      (Jsonkit.of_string {|{"review_plugins": {"general": {"enabled": false}, "security": {"enabled": true}}}|})
   in
   let diff_text = read_file "mock_api_responses/github/pr_42.diff" in
   let result =
@@ -5240,7 +5270,7 @@ let test_local_review_security_validator_partial_success () =
   let ctx = Test_helpers.make_test_context () in
   let config =
     Config_types.config_of_json
-      (Melange_json.of_string {|{"review_plugins": {"general": {"enabled": false}, "security": {"enabled": true}}}|})
+      (Jsonkit.of_string {|{"review_plugins": {"general": {"enabled": false}, "security": {"enabled": true}}}|})
   in
   let diff_text = read_file "mock_api_responses/github/pr_42.diff" in
   let result =
@@ -5277,7 +5307,7 @@ let test_local_review_validation_failure_is_not_lgtm () =
   let ctx = Test_helpers.make_test_context () in
   let config =
     Config_types.config_of_json
-      (Melange_json.of_string {|{"review_plugins": {"general": {"enabled": false}, "security": {"enabled": true}}}|})
+      (Jsonkit.of_string {|{"review_plugins": {"general": {"enabled": false}, "security": {"enabled": true}}}|})
   in
   let diff_text = read_file "mock_api_responses/github/pr_42.diff" in
   let result =
@@ -5311,7 +5341,7 @@ let test_local_review_validation_failure_with_clean_general_is_not_lgtm () =
   let ctx = Test_helpers.make_test_context () in
   let config =
     Config_types.config_of_json
-      (Melange_json.of_string {|{"review_plugins": {"general": {"enabled": true}, "security": {"enabled": true}}}|})
+      (Jsonkit.of_string {|{"review_plugins": {"general": {"enabled": true}, "security": {"enabled": true}}}|})
   in
   let diff_text = read_file "mock_api_responses/github/pr_42.diff" in
   let result =
@@ -5340,7 +5370,7 @@ let test_local_review_validation_failure_reports_failure_outcome () =
     ];
   let config =
     Config_types.config_of_json
-      (Melange_json.of_string {|{"review_plugins": {"general": {"enabled": false}, "security": {"enabled": true}}}|})
+      (Jsonkit.of_string {|{"review_plugins": {"general": {"enabled": false}, "security": {"enabled": true}}}|})
   in
   let state = State.create () in
   match run_local_failure_report ~config ~state ~change_key:"validation-count-mismatch-json" () with
@@ -5355,7 +5385,7 @@ let test_local_review_validation_failure_reports_failure_outcome () =
 
 let security_only_local_config () =
   Config_types.config_of_json
-    (Melange_json.of_string {|{"review_plugins": {"general": {"enabled": false}, "security": {"enabled": true}}}|})
+    (Jsonkit.of_string {|{"review_plugins": {"general": {"enabled": false}, "security": {"enabled": true}}}|})
 
 let run_security_analysis_contract_case ~change_key ~analysis_responses () =
   Test_helpers.reset_test_state ();
@@ -5585,8 +5615,8 @@ let test_local_review_uses_supplied_config_for_plugins () =
   Capturing_agent_runner.reset ();
   let repo_key = "local/repo" in
   let ctx = Test_helpers.make_test_context () in
-  let context_config = Config_types.config_of_json (Melange_json.of_string {|{"model": "context-model"}|}) in
-  let supplied_config = Config_types.config_of_json (Melange_json.of_string {|{"model": "supplied-model"}|}) in
+  let context_config = Config_types.config_of_json (Jsonkit.of_string {|{"model": "context-model"}|}) in
+  let supplied_config = Config_types.config_of_json (Jsonkit.of_string {|{"model": "supplied-model"}|}) in
   Context.set_config ctx ~repo_key context_config;
   let diff_text = read_file "mock_api_responses/github/pr_42.diff" in
   let result =
@@ -5635,12 +5665,11 @@ let test_github_review_uses_captured_config_for_plugins () =
   Config_mutating_source.clear_replacement_config ();
   let captured_config =
     Config_types.config_of_json
-      (Melange_json.of_string {|{"auto_review_pr_open": true, "auto_review_pr_sync": true, "model": "captured-model"}|})
+      (Jsonkit.of_string {|{"auto_review_pr_open": true, "auto_review_pr_sync": true, "model": "captured-model"}|})
   in
   let replacement_config =
     Config_types.config_of_json
-      (Melange_json.of_string
-         {|{"auto_review_pr_open": true, "auto_review_pr_sync": true, "model": "replacement-model"}|})
+      (Jsonkit.of_string {|{"auto_review_pr_open": true, "auto_review_pr_sync": true, "model": "replacement-model"}|})
   in
   let ctx = Test_helpers.make_test_context ~config:captured_config () in
   let payload = read_file "mock_payloads/pr_opened.json" in
@@ -5764,7 +5793,7 @@ let test_local_review_security_finding_reports_vuln_class () =
   let ctx = Test_helpers.make_test_context () in
   let config =
     Config_types.config_of_json
-      (Melange_json.of_string {|{"review_plugins": {"general": {"enabled": false}, "security": {"enabled": true}}}|})
+      (Jsonkit.of_string {|{"review_plugins": {"general": {"enabled": false}, "security": {"enabled": true}}}|})
   in
   let diff_text = read_file "mock_api_responses/github/pr_42.diff" in
   let result =
@@ -5918,7 +5947,7 @@ let debug_dir_test_job ?(repo_key = Test_helpers.test_repo_url) ?(head_sha = "fb
     head_sha;
     diff_text = "";
     filtered_diff = [];
-    config = Config_types.config_of_json (Melange_json.of_string "{}");
+    config = Config_types.config_of_json (Jsonkit.of_string "{}");
     file_contents = [];
     fetch_file = (fun ~path:_ -> Lwt.return (Ok None));
     fetch_commit_statuses = (fun () -> Lwt.return (Ok []));
@@ -5972,12 +6001,12 @@ let rec find_file_named root filename =
 
 let security_metrics_config () =
   Config_types.config_of_json
-    (Melange_json.of_string
+    (Jsonkit.of_string
        {|{"review_plugins": {"general": {"enabled": false}, "security": {"enabled": true, "metrics_artifacts": true}}}|})
 
 let security_debug_metrics_config () =
   Config_types.config_of_json
-    (Melange_json.of_string
+    (Jsonkit.of_string
        {|{"review_plugins": {"general": {"enabled": false}, "security": {"enabled": true, "metrics_artifacts": true, "debug_artifacts": true}}}|})
 
 let with_security_metrics_case ?(config = security_metrics_config ()) ?debug_assertions ~analysis_responses f =
@@ -6305,7 +6334,7 @@ let test_feedback_target_roundtrip_and_privacy () =
          ~counts:{ Feedback_store.plus_one = 1; minus_one = 0 });
     let event_json =
       match feedback_event_lines paths.events with
-      | [ line ] -> Melange_json.of_string line
+      | [ line ] -> Jsonkit.of_string line
       | lines -> fail (Printf.sprintf "expected one event line, got %d" (List.length lines))
     in
     assert_no_forbidden_privacy_keys event_json)
@@ -6976,7 +7005,7 @@ let test_feedback_publish_records_targets_and_markers () =
   with_temp_feedback_store (fun state_path paths feedback_store ->
     let config =
       Config_types.config_of_json
-        (Melange_json.of_string
+        (Jsonkit.of_string
            {|{
               "auto_review_pr_open": true,
               "auto_review_pr_sync": true,
@@ -7217,7 +7246,7 @@ let test_feedback_webhook_issue_comment_shortens_deadline () =
     (check string) "issue_comment shortens deadline" expected target.poll_until)
 
 let pull_request_json_from_payload () =
-  match Melange_json.of_string (Test_helpers.make_pr_payload ()) with
+  match Jsonkit.of_string (Test_helpers.make_pr_payload ()) with
   | `Assoc fields ->
     (match List.assoc_opt "pull_request" fields with
     | Some json -> Yojson.Basic.to_string json
@@ -7968,7 +7997,7 @@ let test_security_e2e_disabled () =
     ];
   let config =
     Config_types.config_of_json
-      (Melange_json.of_string {|{"auto_review_pr_open": true, "review_plugins": {"security": {"enabled": false}}}|})
+      (Jsonkit.of_string {|{"auto_review_pr_open": true, "review_plugins": {"security": {"enabled": false}}}|})
   in
   let ctx = Test_helpers.make_test_context ~config () in
   let payload = read_file "mock_payloads/pr_opened.json" in
@@ -8175,7 +8204,7 @@ let test_push_prepare_failure_posts_slack () =
   Test_helpers.reset_test_state ();
   let config =
     Config_types.config_of_json
-      (Melange_json.of_string {|{"review_pushes_to_develop": true, "slack_channel": "dev-reviews", "max_files": 1}|})
+      (Jsonkit.of_string {|{"review_pushes_to_develop": true, "slack_channel": "dev-reviews", "max_files": 1}|})
   in
   let ctx = Test_helpers.make_test_context ~config () in
   let payload = read_file "mock_payloads/push_develop.json" in
@@ -8216,7 +8245,7 @@ let test_push_generated_files_do_not_trigger_prepare_failure_slack () =
     ];
   let config =
     Config_types.config_of_json
-      (Melange_json.of_string {|{"review_pushes_to_develop": true, "slack_channel": "dev-reviews", "max_files": 1}|})
+      (Jsonkit.of_string {|{"review_pushes_to_develop": true, "slack_channel": "dev-reviews", "max_files": 1}|})
   in
   let ctx = Test_helpers.make_test_context ~config () in
   let payload = Test_helpers.make_push_payload ~before:"genbase" ~after:"genhead" () in
@@ -8232,7 +8261,7 @@ let test_push_empty_prepare_posts_skip_slack () =
   Test_helpers.reset_test_state ();
   let config =
     Config_types.config_of_json
-      (Melange_json.of_string
+      (Jsonkit.of_string
          {|{"review_pushes_to_develop": true, "slack_channel": "dev-reviews", "ignored_paths": ["backend/api/src/request_handler.ml", "backend/lib/string_utils.ml", "backend/lib/string_utils.mli", "backend/lib/dune"]}|})
   in
   let ctx = Test_helpers.make_test_context ~config () in
@@ -8317,7 +8346,7 @@ let test_pr_no_security_notice_when_disabled () =
   (* Disable the security plugin. No security failure notice should appear. *)
   let config =
     Config_types.config_of_json
-      (Melange_json.of_string {|{"auto_review_pr_open": true, "review_plugins": {"security": {"enabled": false}}}|})
+      (Jsonkit.of_string {|{"auto_review_pr_open": true, "review_plugins": {"security": {"enabled": false}}}|})
   in
   let ctx = Test_helpers.make_test_context ~config () in
   let payload = read_file "mock_payloads/pr_opened.json" in
@@ -8615,7 +8644,7 @@ let test_pr_too_many_lines_posts_comment () =
   Test_helpers.reset_test_state ();
   let config =
     Config_types.config_of_json
-      (Melange_json.of_string {|{"auto_review_pr_open": true, "auto_review_pr_sync": true, "max_diff_lines": 1}|})
+      (Jsonkit.of_string {|{"auto_review_pr_open": true, "auto_review_pr_sync": true, "max_diff_lines": 1}|})
   in
   let ctx = Test_helpers.make_test_context ~config () in
   let payload = Test_helpers.make_pr_payload () in
@@ -8631,7 +8660,7 @@ let test_pr_too_many_lines_comment_failure_retries () =
   Test_helpers.reset_test_state ();
   let config =
     Config_types.config_of_json
-      (Melange_json.of_string {|{"auto_review_pr_open": true, "auto_review_pr_sync": true, "max_diff_lines": 1}|})
+      (Jsonkit.of_string {|{"auto_review_pr_open": true, "auto_review_pr_sync": true, "max_diff_lines": 1}|})
   in
   Api_local.set_next_issue_comment_error "missing Issues write permission";
   let ctx = Test_helpers.make_test_context ~config () in
@@ -8651,7 +8680,7 @@ let test_pr_too_many_files_posts_comment () =
   Test_helpers.reset_test_state ();
   let config =
     Config_types.config_of_json
-      (Melange_json.of_string {|{"auto_review_pr_open": true, "auto_review_pr_sync": true, "max_files": 1}|})
+      (Jsonkit.of_string {|{"auto_review_pr_open": true, "auto_review_pr_sync": true, "max_files": 1}|})
   in
   let ctx = Test_helpers.make_test_context ~config () in
   let payload = Test_helpers.make_pr_payload () in
@@ -8665,9 +8694,7 @@ let test_pr_too_many_files_posts_comment () =
 
 let test_comment_trigger_too_many_files_posts_comment () =
   Test_helpers.reset_test_state ();
-  let config =
-    Config_types.config_of_json (Melange_json.of_string {|{"auto_review_on_comment": true, "max_files": 1}|})
-  in
+  let config = Config_types.config_of_json (Jsonkit.of_string {|{"auto_review_on_comment": true, "max_files": 1}|}) in
   let ctx = Test_helpers.make_test_context ~config () in
   let payload = Test_helpers.make_issue_comment_payload () in
   let event = Test_helpers.parse_event_exn ~event_type:"issue_comment" ~body:payload in
@@ -9471,7 +9498,7 @@ let validator_output_with_results results = Review_types.validator_output_to_jso
    path has its own dedicated integration tests ([test_general_pipeline_*]). *)
 let general_plugin_legacy_config =
   Config_types.config_of_json
-    (Melange_json.of_string
+    (Jsonkit.of_string
        {|{"auto_review_pr_open": true, "auto_review_pr_sync": true, "review_pushes_to_develop": true, "review_plugins": {"general": {"scout_enabled": false}}}|})
 
 let run_general_plugin_with_outputs outputs =
@@ -9632,10 +9659,10 @@ let pipeline_metadata : Review_plugin.review_metadata =
 
 let scout_enabled_config =
   Config_types.config_of_json
-    (Melange_json.of_string {|{"review_plugins": {"general": {"scout_enabled": true, "max_leads": 10}}}|})
+    (Jsonkit.of_string {|{"review_plugins": {"general": {"scout_enabled": true, "max_leads": 10}}}|})
 
 let scout_disabled_config =
-  Config_types.config_of_json (Melange_json.of_string {|{"review_plugins": {"general": {"scout_enabled": false}}}|})
+  Config_types.config_of_json (Jsonkit.of_string {|{"review_plugins": {"general": {"scout_enabled": false}}}|})
 
 let test_general_review_propagates_cancellation () =
   let ctx = Test_helpers.make_test_context ~config:scout_enabled_config () in
@@ -9664,7 +9691,7 @@ let test_local_review_general_cancellation_propagates () =
   Test_helpers.reset_test_state ();
   let config =
     Config_types.config_of_json
-      (Melange_json.of_string
+      (Jsonkit.of_string
          {|{"review_plugins":{"general":{"enabled":true,"scout_enabled":true},"security":{"enabled":false}}}|})
   in
   let ctx = Test_helpers.make_test_context ~config () in
@@ -9885,6 +9912,7 @@ let () =
             test_context_load_local_config_uses_defaults_when_missing;
           test_case "vuln_class roundtrip" `Quick test_vuln_class_roundtrip;
           test_case "security_plugin_config roundtrip" `Quick test_security_plugin_config_roundtrip;
+          test_case "security analysis_effort missing vs null" `Quick test_security_analysis_effort_missing_vs_null;
         ] );
       ( "review_prompt",
         [
@@ -9904,6 +9932,8 @@ let () =
           test_case "structured output schemas compatible" `Quick test_anthropic_structured_output_schemas_compatible;
           test_case "security validator schema requires proof key" `Quick
             test_security_validator_schema_requires_proof_key;
+          test_case "strict schema requires all properties and drops default keyword" `Quick
+            test_strict_schema_requires_all_and_drops_default_keyword;
         ] );
       ( "dedup",
         [

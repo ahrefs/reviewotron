@@ -1,6 +1,6 @@
 (** Slack Web API payload types. *)
 
-open Melange_json.Primitives
+open Jsonkit.Primitives
 
 type slack_field = {
   title : string;

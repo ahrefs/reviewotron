@@ -12,12 +12,11 @@ let test_repo_url = "https://github.com/org/monorepo"
     skip they care about is the one actually under test. *)
 let auto_review_enabled_config =
   Config_types.config_of_json
-    (Melange_json.of_string
-       {|{"auto_review_pr_open": true, "auto_review_pr_sync": true, "review_pushes_to_develop": true}|})
+    (Jsonkit.of_string {|{"auto_review_pr_open": true, "auto_review_pr_sync": true, "review_pushes_to_develop": true}|})
 
 (** Create a test context with default config and mock secrets.
     Pre-populates the repo config cache so tests don't need to fetch from GitHub. *)
-let make_test_context ?state ?feedback_store ?(config = Config_types.config_of_json (Melange_json.of_string "{}")) () =
+let make_test_context ?state ?feedback_store ?(config = Config_types.config_of_json (Jsonkit.of_string "{}")) () =
   let secrets : Config_types.secrets =
     {
       repos = [ { url = test_repo_url; auth = Some (GH_token "test-token"); gh_hook_secret = None } ];

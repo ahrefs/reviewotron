@@ -5,14 +5,13 @@
     Severity and category are open string enums: known values map to specific
     constructors, unknown values land in [Other of string].  JSON representation
     is a bare string (e.g. ["critical"], ["error-handling"]).  This encoding is
-    incompatible with melange-json-native's derived variant format, so these two
+    incompatible with jsonkit's derived variant format, so these two
     types have manual [to_json]/[of_json] (justified under PRD rule "no manual
     JSON unless impossible").
 
     Records ([finding], [review_output]) use [[@@deriving json, jsonschema]]. *)
 
-open Melange_json.Primitives
-open Ppx_deriving_jsonschema_runtime.Primitives.Melange_json
+open Jsonkit.Primitives
 
 (** {2 Severity} *)
 
@@ -41,7 +40,7 @@ let severity_of_json = function
   | `String "nitpick" -> Nitpick
   | `String "praise" -> Praise
   | `String s -> Other s
-  | json -> Melange_json.of_json_error ~json "expected a string for severity"
+  | json -> Jsonkit.of_json_error ~json "expected a string for severity"
 
 let severity_jsonschema =
   `Assoc
@@ -87,7 +86,7 @@ let finding_category_of_json = function
   | `String "naming" -> Naming
   | `String "documentation" -> Documentation
   | `String s -> Other s
-  | json -> Melange_json.of_json_error ~json "expected a string for finding_category"
+  | json -> Jsonkit.of_json_error ~json "expected a string for finding_category"
 
 let finding_category_jsonschema =
   `Assoc
@@ -130,7 +129,7 @@ type finding = {
        "Line number (1-based) in the new version of the file. Must be a line that actually appears in the diff; \
         findings without a specific changed line should not be emitted."]
   end_line : int option;
-     [@json.option]
+     [@option]
      [@jsonschema.description
        "Last line of a multi-line anchor for the finding. Prefer single-line anchors: only set end_line when the \
         finding is genuinely unintelligible without the range — e.g. a specific control-flow branch, a try/catch body, \
@@ -145,28 +144,28 @@ type finding = {
      [@jsonschema.description
        "Concise, human-facing description of the defect and (when useful) the fix. Must read as a finished comment."]
   failure_scenario : string;
-     [@json.default ""]
+     [@default ""]
      [@jsonschema.description
        "Concrete user/input/state path that makes the defect observable, including the resulting breakage or risk. \
         Leave empty only for legacy data; new model output must populate it."]
   evidence_snippet : string;
-     [@json.default ""]
+     [@default ""]
      [@jsonschema.description
        "Exact changed code or smallest relevant snippet that grounds the finding. This is validator input and should \
         be copied from the diff, not paraphrased."]
   why_now : string;
-     [@json.default ""]
+     [@default ""]
      [@jsonschema.description
        "Why this must be addressed in this change rather than treated as ambient tech debt. Tie it to the changed line."]
   confidence : confidence;
-     [@json.default Medium] [@jsonschema.description "Calibrated confidence for this finding: high, medium, or low."]
+     [@default Medium] [@jsonschema.description "Calibrated confidence for this finding: high, medium, or low."]
   suggested_fix : string option;
-     [@json.option]
+     [@option]
      [@jsonschema.description
        "Code suggestion that replaces only the flagged lines. Return raw code with correct indentation and no markdown \
         fences."]
 }
-[@@deriving json, jsonschema] [@@json.allow_extra_fields]
+[@@deriving json, jsonschema]
 
 (** {2 General finding validation} *)
 
@@ -184,7 +183,7 @@ let validation_verdict_to_json verdict = `String (validation_verdict_to_string v
 let validation_verdict_of_json = function
   | `String "confirmed" -> Confirmed
   | `String "rejected" -> Rejected
-  | json -> Melange_json.of_json_error ~json "expected validation_verdict string"
+  | json -> Jsonkit.of_json_error ~json "expected validation_verdict string"
 
 let validation_verdict_jsonschema =
   `Assoc
@@ -200,12 +199,12 @@ type validated_finding = {
   verdict : validation_verdict; [@jsonschema.description "Validator decision: confirmed or rejected"]
   evidence_notes : string; [@jsonschema.description "Validator rationale for the decision"]
 }
-[@@deriving json, jsonschema] [@@json.allow_extra_fields]
+[@@deriving json, jsonschema]
 
 type validator_output = {
   results : validated_finding list; [@jsonschema.description "One validation result per candidate finding"]
 }
-[@@deriving json, jsonschema] [@@json.allow_extra_fields]
+[@@deriving json, jsonschema]
 
 (** {2 Review output} *)
 
@@ -216,9 +215,9 @@ type review_output = {
         string if there are none. Do not mention inline findings at all — not their count, not a preview, not a \
         pointer. Do not include a headline, lead-in, or framing sentence."]
   findings : finding list; [@jsonschema.description "List of inline findings to post on changed files and lines"]
-  overall_assessment : string; [@json.default ""] [@jsonschema.description "Brief overall quality assessment"]
+  overall_assessment : string; [@default ""] [@jsonschema.description "Brief overall quality assessment"]
 }
-[@@deriving json, jsonschema] [@@json.allow_extra_fields]
+[@@deriving json, jsonschema]
 
 (** {2 Scout lead} *)
 
@@ -229,7 +228,7 @@ type scout_lead = {
        "Line number (1-based) in the new version of the file, copied verbatim from the annotated diff's left-column \
         line numbers — never estimated."]
   end_line : int option;
-     [@json.option]
+     [@option]
      [@jsonschema.description "Last line of a multi-line anchor for the lead. Leave null for single-line leads."]
   hypothesis : string;
      [@jsonschema.description
@@ -241,15 +240,21 @@ type scout_lead = {
      [@jsonschema.description
        "Confidence the lead deserves deep review, not that it's a confirmed defect: high, medium, or low."]
 }
-[@@deriving json, jsonschema] [@@json.allow_extra_fields]
+[@@deriving json, jsonschema]
 
 (** {2 Scout output} *)
 
 type scout_output = {
   leads : scout_lead list; [@jsonschema.description "Investigation leads for the deep reviewer, ordered by confidence"]
   skip_note : string;
-     [@json.default ""]
+     [@default ""]
      [@jsonschema.description
        "One line on what the scout deliberately skipped and why. Empty string if nothing was skipped."]
 }
-[@@deriving json, jsonschema] [@@json.allow_extra_fields]
+[@@deriving json, jsonschema]
+
+(** {2 Strict schemas} *)
+
+let validator_output_jsonschema = Strict_schema.make validator_output_jsonschema
+let review_output_jsonschema = Strict_schema.make review_output_jsonschema
+let scout_output_jsonschema = Strict_schema.make scout_output_jsonschema
