@@ -34,9 +34,9 @@
   extlib
   fmt
   (lwt
-   (< 6.0))
+   (>= 6.0))
   (lwt_ppx
-   (< 6.0))
+   (>= 6.0))
   (jsonkit
    (>= 1.1.0))
   mirage-crypto-pk
