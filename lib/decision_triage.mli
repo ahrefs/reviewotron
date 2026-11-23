@@ -3,7 +3,7 @@
 type output = {
   signals : Security_types.triage_signal list;
   costs : Cost_tracking.agent_cost list;
-  complete : bool;  (** Whether every changed file was evaluated. *)
+  complete : bool;  (** Whether every changed file and the whole diff were evaluated. *)
 }
 
 type score = {
@@ -67,8 +67,16 @@ val signals_of_body :
   string ->
   (Security_types.triage_signal list * Cost_tracking.agent_cost, string) result
 
-(** Score every enabled vulnerability class independently for each changed
-    file. [complete] is false when a file failed after retries. *)
+(** Keep [file_signals] and add the whole-diff signals for classes that no
+    single file reached. *)
+val add_whole_diff_signals :
+  file_signals:Security_types.triage_signal list ->
+  Security_types.triage_signal list ->
+  Security_types.triage_signal list
+
+(** Score every enabled vulnerability class for each changed file and, when
+    there is more than one file, for the whole diff. [complete] is false when
+    any of those calls failed after retries. *)
 val run :
   ?log_context:string ->
   Decision_client.t ->

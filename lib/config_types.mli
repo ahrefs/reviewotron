@@ -13,6 +13,9 @@ type vuln_class =
   | Path_traversal
   | Policy_regression
 
+(** Exhaustive, so adding a variant forces an update. *)
+val vuln_class_equal : vuln_class -> vuln_class -> bool
+
 val vuln_class_to_string : vuln_class -> string
 val vuln_class_to_json : vuln_class -> Yojson.Basic.t
 val vuln_class_of_json : Yojson.Basic.t -> vuln_class

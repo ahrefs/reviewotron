@@ -164,7 +164,7 @@ let config ~model_tier : Agent_runner.agent_config =
     effort = None;
   }
 
-let build_input ~diff_text ~candidate_findings () =
+let build_input ~diff_text ~candidate_findings ~max_steps () =
   let buf = Buffer.create (String.length diff_text + 1024) in
   Buffer.add_string buf "## Candidate Findings to Validate\n\n";
   Printf.bprintf buf "The analysis agents produced %d candidate finding(s). Validate each one.\n\n"
@@ -174,6 +174,22 @@ let build_input ~diff_text ~candidate_findings () =
   Buffer.add_string buf Review_prompt.annotated_diff_format_explainer;
   Buffer.add_string buf "\n## Diff\n\n";
   Buffer.add_string buf diff_text;
+  Printf.bprintf buf
+    "\n\n\
+     ## Before You Answer\n\n\
+     You have up to %d turns, and each turn can fetch several files.\n\n\
+     1. For each candidate, name the facts its verdict depends on that the diff does not show: where the source value \
+     comes from, what the called helpers do, and whether a sanitizer, permission check, or other control applies on \
+     the path. Fetch the files that hold them with `get_file_content` before giving a verdict. Decide without fetching \
+     only when the diff itself shows the complete source, sink, and control.\n\
+     2. Before you reject a candidate because an assumption is unresolved, fetch the repository code closest to that \
+     assumption: the definition of a helper the candidate names, the caller or script that produces the input, or the \
+     configuration that would settle it. Reject on an unresolved assumption only after that fetch, and name the file \
+     you fetched. A verdict reached on the first turn with no fetch is acceptable only when the diff itself shows the \
+     complete source, sink, and control.\n\
+     3. In `evidence_notes`, cite the file and line your verdict rests on. For a rejection, name the code you read or \
+     the specific fact that no file in the repository could settle.\n"
+    max_steps;
   Buffer.contents buf
 
 let tools ~fetch_file = [ Security_tools.make_get_file_content ~fetch_file ]

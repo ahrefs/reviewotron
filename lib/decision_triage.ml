@@ -52,7 +52,7 @@ let confidence ~model probability =
   | true -> Security_types.High
   | false -> Medium
 
-let signal ~model ~threshold ~file_diff { vuln_class; probability } =
+let signal ~model ~threshold ~regions ~scope { vuln_class; probability } =
   match probability < threshold with
   | true -> None
   | false ->
@@ -61,9 +61,9 @@ let signal ~model ~threshold ~file_diff { vuln_class; probability } =
       {
         Security_types.vuln_class;
         confidence = confidence ~model probability;
-        regions = regions file_diff;
+        regions;
         rationale =
-          Printf.sprintf "%s routed this file to %s analysis (Noul %.3f)." (Decision_model.openrouter_id model) id
+          Printf.sprintf "%s routed %s to %s analysis (Noul %.3f)." (Decision_model.openrouter_id model) scope id
             probability;
       }
 
@@ -93,7 +93,18 @@ let candidate_validation_of_response response =
 let candidate_validation_of_body ~agent_name ~model body =
   Result.bind (Decision_client.response_of_body ~agent_name ~model body) candidate_validation_of_response
 
-let signals_of_scores ~model ~threshold ~file_diff scores = List.filter_map (signal ~model ~threshold ~file_diff) scores
+let signals_of_scores ~model ~threshold ~file_diff scores =
+  List.filter_map (signal ~model ~threshold ~regions:(regions file_diff) ~scope:"this file") scores
+
+let add_whole_diff_signals ~file_signals whole_diff_signals =
+  let uncovered (signal : Security_types.triage_signal) =
+    not
+      (List.exists
+         (fun (file_signal : Security_types.triage_signal) ->
+           Config_types.vuln_class_equal file_signal.vuln_class signal.vuln_class)
+         file_signals)
+  in
+  file_signals @ List.filter uncovered whole_diff_signals
 
 let signals_of_body ~model ~threshold ~vuln_classes ~file_diff body =
   let* { scores; cost } = scores_of_body ~model ~vuln_classes body in
@@ -135,14 +146,40 @@ let evaluate_and_log ?log_context client ~threshold ~vuln_classes file_diff =
     result;
   Lwt.return result
 
+let evaluate_whole_diff ?log_context client ~threshold ~vuln_classes diff =
+  let%lwt result =
+    score_context client ~vuln_classes ~path:"(whole diff)" ~status:"modified"
+      ~annotated_diff:(Diff_parser.to_string_annotated diff)
+  in
+  Result.iter_error
+    (fun error -> log#warn "%swhole-diff decision triage failed: %s" (log_context_prefix log_context) error)
+    result;
+  let regions = List.concat_map regions diff in
+  Lwt.return
+    (Result.map
+       (fun { scores; cost } ->
+         ( List.filter_map
+             (signal ~model:(Decision_client.model client) ~threshold ~regions ~scope:"the whole diff")
+             scores,
+           cost ))
+       result)
+
 let run ?log_context client ~threshold ~vuln_classes ~diff () =
   match Decision_model.is_probability threshold, vuln_classes, diff with
   | false, _, _ ->
     Lwt.return (Error (Printf.sprintf "decision triage threshold must be between 0 and 1 (got %.4f)" threshold))
   | true, [], _ | true, _, [] -> Lwt.return (Ok { signals = []; costs = []; complete = true })
-  | true, _ :: _, _ :: _ ->
+  | true, _ :: _, (_ :: rest as files) ->
     (* The client bounds how many files are scored at once. *)
-    let%lwt results = Lwt_list.map_p (evaluate_and_log ?log_context client ~threshold ~vuln_classes) diff in
+    let%lwt results = Lwt_list.map_p (evaluate_and_log ?log_context client ~threshold ~vuln_classes) files
+    and whole_diff =
+      match rest with
+      | [] -> Lwt.return (Ok ([], []))
+      | _ :: _ ->
+        Lwt.map
+          (Result.map (fun (signals, cost) -> signals, [ cost ]))
+          (evaluate_whole_diff ?log_context client ~threshold ~vuln_classes files)
+    in
     let evaluated, errors =
       List.partition_map
         (function
@@ -153,10 +190,12 @@ let run ?log_context client ~threshold ~vuln_classes ~diff () =
     (match evaluated, errors with
     | [], error :: _ -> Lwt.return (Error error)
     | _ :: _, _ | [], [] ->
-      Lwt.return
-        (Ok
-           {
-             signals = List.concat_map fst evaluated;
-             costs = List.map snd evaluated;
-             complete = CCList.is_empty errors;
-           }))
+      let file_signals = List.concat_map fst evaluated in
+      let costs = List.map snd evaluated in
+      let signals, costs, whole_diff_complete =
+        match whole_diff with
+        | Ok (whole_diff_signals, whole_diff_costs) ->
+          add_whole_diff_signals ~file_signals whole_diff_signals, costs @ whole_diff_costs, true
+        | Error _ -> file_signals, costs, false
+      in
+      Lwt.return (Ok { signals; costs; complete = CCList.is_empty errors && whole_diff_complete }))

@@ -3559,11 +3559,11 @@ let test_analysis_agent_prompt_contains_methodology () =
   (check bool) "get_file_content tool" true (Devkit.Stre.exists cfg.system_prompt "get_file_content");
   (check bool) "policy proof model" true (Devkit.Stre.exists cfg.system_prompt "policy/control state")
 
-let test_analysis_agent_prompt_fetch_economy () =
+let test_analysis_agent_prompt_investigation () =
   let cfg = Analysis_agent.config ~vuln_class:Injection ~model_tier:Standard ~language_hints:[] in
-  (check bool) "requires concrete hypothesis" true (Devkit.Stre.exists cfg.system_prompt "concrete hypothesis");
-  (check bool) "forbids speculative fetches" true (Devkit.Stre.exists cfg.system_prompt "speculatively.");
-  (check bool) "prefers conclusion" true (Devkit.Stre.exists cfg.system_prompt "supported conclusion")
+  let input = Analysis_agent.build_input ~diff_text:"diff content" ~triage_signals:[] ~file_paths:[] ~max_steps:7 () in
+  (check bool) "no finding needs evidence" true (Devkit.Stre.exists cfg.system_prompt "same evidence as a finding");
+  (check bool) "states the turn budget" true (Devkit.Stre.exists input "up to 7 turns")
 
 let test_analysis_agent_prompt_contains_class_section () =
   let injection = Analysis_agent.config ~vuln_class:Injection ~model_tier:Standard ~language_hints:[] in
@@ -3612,7 +3612,8 @@ let test_analysis_agent_build_input_minimal () =
     }
   in
   let input =
-    Analysis_agent.build_input ~diff_text:"diff content" ~triage_signals:[ signal ] ~file_paths:[ "app.py" ] ()
+    Analysis_agent.build_input ~diff_text:"diff content" ~triage_signals:[ signal ] ~file_paths:[ "app.py" ]
+      ~max_steps:10 ()
   in
   (check bool) "contains diff" true (Devkit.Stre.exists input "diff content");
   (check bool) "contains file path" true (Devkit.Stre.exists input "app.py");
@@ -3634,12 +3635,13 @@ let test_analysis_agent_build_input_corrective_retry () =
     }
   in
   let original_input =
-    Analysis_agent.build_input ~diff_text:"diff content" ~triage_signals:[ signal ] ~file_paths:[ "app.py" ] ()
+    Analysis_agent.build_input ~diff_text:"diff content" ~triage_signals:[ signal ] ~file_paths:[ "app.py" ]
+      ~max_steps:10 ()
   in
   let correction = "The previous response violated invariant checks; fetch off-diff evidence or return cleanly." in
   let input =
-    Analysis_agent.build_input ~diff_text:"diff content" ~triage_signals:[ signal ] ~file_paths:[ "app.py" ] ~correction
-      ()
+    Analysis_agent.build_input ~diff_text:"diff content" ~triage_signals:[ signal ] ~file_paths:[ "app.py" ]
+      ~max_steps:10 ~correction ()
   in
   (check bool) "retry input differs from original" true (not (String.equal original_input input));
   (check bool) "original input has no corrective invariant" false
@@ -10168,7 +10170,7 @@ let () =
           test_case "config per class" `Quick test_analysis_agent_config_per_class;
           test_case "config model tier" `Quick test_analysis_agent_config_model_tier;
           test_case "prompt methodology" `Quick test_analysis_agent_prompt_contains_methodology;
-          test_case "prompt fetch economy" `Quick test_analysis_agent_prompt_fetch_economy;
+          test_case "prompt requires investigation" `Quick test_analysis_agent_prompt_investigation;
           test_case "prompt class section" `Quick test_analysis_agent_prompt_contains_class_section;
           test_case "path traversal runtime semantics" `Quick test_path_traversal_prompt_runtime_semantics;
           test_case "language hints" `Quick test_analysis_agent_language_hints;
