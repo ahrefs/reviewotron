@@ -35,11 +35,13 @@ val config :
 
     @param diff_text Raw unified diff text.
     @param triage_signals Triage signals relevant to this agent's vuln class.
-    @param file_paths List of changed file paths in the reviewed change. *)
+    @param file_paths List of changed file paths in the reviewed change.
+    @param max_steps The agent's turn budget, stated to the model. *)
 val build_input :
   diff_text:string ->
   triage_signals:Security_types.triage_signal list ->
   file_paths:string list ->
+  max_steps:int ->
   ?correction:string ->
   unit ->
   string

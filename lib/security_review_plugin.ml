@@ -14,21 +14,7 @@ let record_prevalidation recorder evidence =
 (** Numeric rank for confidence levels — higher means more confident. *)
 let confidence_rank = Config_types.confidence_rank
 
-(** Compare two vuln_class values for equality.
-
-    Exhaustive match ensures the compiler warns when a new variant is added. *)
-let vuln_class_equal a b =
-  match a, b with
-  | Config_types.Injection, Config_types.Injection
-  | Xss, Xss
-  | Command_injection, Command_injection
-  | Authn, Authn
-  | Authz, Authz
-  | Ssrf, Ssrf
-  | Path_traversal, Path_traversal
-  | Policy_regression, Policy_regression ->
-    true
-  | (Injection | Xss | Command_injection | Authn | Authz | Ssrf | Path_traversal | Policy_regression), _ -> false
+let vuln_class_equal = Config_types.vuln_class_equal
 
 (** Convert a config model tier to the agent runner's model tier type.
 
@@ -1336,7 +1322,10 @@ module Make (AI : Api.Agent_runner) = struct
       (List.length triage_signals);
     let tools = Analysis_agent.tools ~fetch_file:(fun path -> fetch_file ~path) in
     let run_attempt ~attempt_label ?correction () =
-      let input = Analysis_agent.build_input ~diff_text ~triage_signals ~file_paths ?correction () in
+      let input =
+        Analysis_agent.build_input ~diff_text ~triage_signals ~file_paths ~max_steps:agent_config.max_steps ?correction
+          ()
+      in
       Security_artifacts.write_debug_text artifacts
         ~filename:(Printf.sprintf "analysis_%s_input_%s.md" vc_name attempt_label)
         input;
@@ -1590,7 +1579,10 @@ module Make (AI : Api.Agent_runner) = struct
         (Prevalidation.call ~plugin:name ~validator:"security_validator" ~attempt:attempt_label
            ~candidates:candidate_json ~verdicts ~costs)
     in
-    let input = Validator_agent.build_input ~diff_text ~candidate_findings:candidates () in
+    let input =
+      Validator_agent.build_input ~diff_text ~candidate_findings:candidates
+        ~max_steps:agent_config.Agent_runner.max_steps ()
+    in
     Security_artifacts.write_debug_text artifacts ~filename:(Printf.sprintf "validator_input_%s.md" attempt_label) input;
     let fetched_files = ref [] in
     let fetch_file path =

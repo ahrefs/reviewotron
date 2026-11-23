@@ -52,7 +52,7 @@ let confidence ~model probability =
   | true -> Security_types.High
   | false -> Medium
 
-let signal ~model ~threshold ~file_diff { vuln_class; probability } =
+let signal ~model ~threshold ~regions ~scope { vuln_class; probability } =
   match probability < threshold with
   | true -> None
   | false ->
@@ -61,9 +61,9 @@ let signal ~model ~threshold ~file_diff { vuln_class; probability } =
       {
         Security_types.vuln_class;
         confidence = confidence ~model probability;
-        regions = regions file_diff;
+        regions;
         rationale =
-          Printf.sprintf "%s routed this file to %s analysis (Noul %.3f)." (Decision_model.openrouter_id model) id
+          Printf.sprintf "%s routed %s to %s analysis (Noul %.3f)." (Decision_model.openrouter_id model) scope id
             probability;
       }
 
@@ -93,11 +93,22 @@ let candidate_validation_of_response response =
 let candidate_validation_of_body ~agent_name ~model body =
   Result.bind (Decision_client.response_of_body ~agent_name ~model body) candidate_validation_of_response
 
-let signals_of_scores ~model ~threshold ~file_diff scores = List.filter_map (signal ~model ~threshold ~file_diff) scores
+let signals_of_scores ~model ~threshold ~scope diff scores =
+  List.filter_map (signal ~model ~threshold ~regions:(List.concat_map regions diff) ~scope) scores
+
+let add_whole_diff_signals ~file_signals whole_diff_signals =
+  let uncovered (signal : Security_types.triage_signal) =
+    not
+      (List.exists
+         (fun (file_signal : Security_types.triage_signal) ->
+           Config_types.vuln_class_equal file_signal.vuln_class signal.vuln_class)
+         file_signals)
+  in
+  file_signals @ List.filter uncovered whole_diff_signals
 
 let signals_of_body ~model ~threshold ~vuln_classes ~file_diff body =
   let* { scores; cost } = scores_of_body ~model ~vuln_classes body in
-  Ok (signals_of_scores ~model ~threshold ~file_diff scores, cost)
+  Ok (signals_of_scores ~model ~threshold ~scope:"this file" [ file_diff ] scores, cost)
 
 let score_context client ~vuln_classes ~path ~status ~annotated_diff =
   let state = `Assoc [ "path", `String path; "status", `String status; "annotated_diff", `String annotated_diff ] in
@@ -116,47 +127,61 @@ let score_candidate_validation client ~agent_name ~candidate ~evidence =
   in
   Lwt.return (Result.bind response candidate_validation_of_response)
 
-let evaluate_file client ~threshold ~vuln_classes file_diff =
+let evaluate ?log_context client ~threshold ~vuln_classes ~path ~status ~scope diff =
   let%lwt result =
-    score_context client ~vuln_classes ~path:file_diff.Diff_parser.path ~status:(status_string file_diff.status)
-      ~annotated_diff:(Diff_parser.to_string_annotated [ file_diff ])
+    score_context client ~vuln_classes ~path ~status ~annotated_diff:(Diff_parser.to_string_annotated diff)
   in
+  Result.iter_error
+    (fun error -> log#warn "%sdecision triage failed for %s: %s" (log_context_prefix log_context) path error)
+    result;
   Lwt.return
     (Result.map
        (fun { scores; cost } ->
-         signals_of_scores ~model:(Decision_client.model client) ~threshold ~file_diff scores, cost)
+         signals_of_scores ~model:(Decision_client.model client) ~threshold ~scope diff scores, cost)
        result)
 
-let evaluate_and_log ?log_context client ~threshold ~vuln_classes file_diff =
-  let%lwt result = evaluate_file client ~threshold ~vuln_classes file_diff in
-  Result.iter_error
-    (fun error ->
-      log#warn "%sdecision triage failed for %s: %s" (log_context_prefix log_context) file_diff.Diff_parser.path error)
-    result;
-  Lwt.return result
+let partition_results results =
+  List.partition_map
+    (function
+      | Ok evaluated -> Either.Left evaluated
+      | Error error -> Either.Right error)
+    results
 
 let run ?log_context client ~threshold ~vuln_classes ~diff () =
   match Decision_model.is_probability threshold, vuln_classes, diff with
   | false, _, _ ->
     Lwt.return (Error (Printf.sprintf "decision triage threshold must be between 0 and 1 (got %.4f)" threshold))
   | true, [], _ | true, _, [] -> Lwt.return (Ok { signals = []; costs = []; complete = true })
-  | true, _ :: _, _ :: _ ->
-    (* The client bounds how many files are scored at once. *)
-    let%lwt results = Lwt_list.map_p (evaluate_and_log ?log_context client ~threshold ~vuln_classes) diff in
-    let evaluated, errors =
-      List.partition_map
-        (function
-          | Ok evaluated -> Either.Left evaluated
-          | Error error -> Either.Right error)
-        results
+  | true, _ :: _, (_ :: rest as files) ->
+    let evaluate = evaluate ?log_context client ~threshold ~vuln_classes in
+    (* Queued first so the largest request does not wait behind every file on the client's pool. *)
+    let whole_diff =
+      match rest with
+      | [] -> Lwt.return []
+      | _ :: _ ->
+        Lwt.map
+          (fun result -> [ result ])
+          (evaluate ~path:"(whole diff)" ~status:"modified" ~scope:"the whole diff" files)
     in
+    (* The client bounds how many files are scored at once. *)
+    let%lwt results =
+      Lwt_list.map_p
+        (fun (file_diff : Diff_parser.file_diff) ->
+          evaluate ~path:file_diff.path ~status:(status_string file_diff.status) ~scope:"this file" [ file_diff ])
+        files
+    in
+    let%lwt whole_diff = whole_diff in
+    let evaluated, errors = partition_results results in
+    let whole_evaluated, whole_errors = partition_results whole_diff in
     (match evaluated, errors with
     | [], error :: _ -> Lwt.return (Error error)
     | _ :: _, _ | [], [] ->
       Lwt.return
         (Ok
            {
-             signals = List.concat_map fst evaluated;
-             costs = List.map snd evaluated;
-             complete = CCList.is_empty errors;
+             signals =
+               add_whole_diff_signals ~file_signals:(List.concat_map fst evaluated)
+                 (List.concat_map fst whole_evaluated);
+             costs = List.map snd (evaluated @ whole_evaluated);
+             complete = CCList.is_empty errors && CCList.is_empty whole_errors;
            }))

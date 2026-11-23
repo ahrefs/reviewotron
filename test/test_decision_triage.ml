@@ -56,6 +56,16 @@ let test_response_routes_only_probable_classes () =
     check (float 0.0000001) "price fallback when usage.cost is absent" 0.000021 cost.estimated_cost_usd
   | Ok _ -> fail "expected exactly one XSS signal"
 
+let test_whole_diff_adds_only_uncovered_classes () =
+  let signal vuln_class = { Security_types.vuln_class; confidence = Medium; regions = []; rationale = "" } in
+  let classes =
+    Decision_triage.add_whole_diff_signals
+      ~file_signals:[ signal Config_types.Xss ]
+      [ signal Config_types.Xss; signal Injection ]
+    |> List.map (fun (s : Security_types.triage_signal) -> Security_types.vuln_class_to_string s.vuln_class)
+  in
+  check (list string) "file signal kept, cross-file class added once" [ "xss"; "injection" ] classes
+
 let test_score_context_response_contract () =
   match Decision_triage.scores_of_body ~model:Jev ~vuln_classes:[ Config_types.Xss; Injection ] response with
   | Error error -> fail error
@@ -290,6 +300,7 @@ let () =
       ( "response",
         [
           test_case "routes probable classes" `Quick test_response_routes_only_probable_classes;
+          test_case "whole diff adds only uncovered classes" `Quick test_whole_diff_adds_only_uncovered_classes;
           test_case "preserves raw probabilities" `Quick test_score_context_response_contract;
           test_case "parses candidate validation" `Quick test_candidate_validation_response_contract;
           test_case "rejects unexpected answer types" `Quick test_unexpected_answer_type_is_an_error;

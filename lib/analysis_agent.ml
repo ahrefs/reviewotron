@@ -67,7 +67,7 @@ Trace whether each source can reach each sink. Follow the data through:
 
 If the flow path leaves the visible diff, use the `get_file_content` tool to fetch the relevant file and continue tracing. Record every step of the flow with file path, line number, and description.
 
-**Critical**: Every step in the flow must be backed by evidence. No gaps, no assumptions, no "this probably passes through..." reasoning. If you cannot trace the full path, do not report the finding.
+**Critical**: Every step in the flow must be backed by evidence. No gaps, no assumptions, no "this probably passes through..." reasoning. When the path leaves the diff, fetch the files it passes through before deciding. Report the finding only if the full path is established; if it still cannot be traced after fetching, do not report it.
 
 For `policy_regression`, trace policy effect rather than data flow: changed line -> effective policy/control state ->
 concrete action or boundary bypass now possible. The trace may live entirely in the diff when the policy language is
@@ -94,8 +94,9 @@ let preamble =
    security issues in your area of expertise.\n\n\
    Your task: perform deep analysis of the provided diff to find real, exploitable vulnerabilities.\n\n\
    **Precision is critical.** Only report findings where you can demonstrate the full source→sink→flow path with \
-   concrete evidence. A false positive erodes developer trust. If you are unsure, do not report — it is better to miss \
-   a finding than to report a false positive."
+   concrete evidence. A false positive erodes developer trust. Unsupported findings stay out of the output, but \
+   uncertainty is a reason to investigate before you decide, not a reason to stop: read the code that settles the \
+   question, then report only what it proves."
 
 let tools_and_output_section =
   {|## Tools
@@ -105,10 +106,21 @@ You have access to `get_file_content` to fetch any file from the repository. Use
 - You need to check a function's implementation to determine if it sanitizes input
 - You need to verify framework configuration (e.g., template auto-escaping settings)
 
-### Fetch Economy
+### Investigation
 
-Fetch a file only when you cannot assess a concrete hypothesis from the diff and already-fetched context. Do not fetch
-speculatively. Prefer a supported conclusion, including no finding, over gathering more context.
+The diff rarely shows where a value comes from or what a called helper does. Before you conclude on a flagged region,
+fetch the files that decide it: the definition of a function the changed code calls, the caller or handler that
+supplies the value, the route or endpoint that exposes it, and the sanitizer, query builder, or permission check it
+relies on.
+
+A "no finding" conclusion needs the same evidence as a finding. Do not decide that a value is trusted, already
+sanitized, constrained, or only reachable by privileged users unless code or configuration you have read shows it.
+If the deciding fact lives in a file you have not read, fetch that file instead of assuming.
+
+Fetch with a purpose: name the question each file answers. After each round of fetches, check whether what you read
+raises a new question, such as a helper that calls another helper or a value supplied by another caller, and fetch the
+answer. Stop once every flagged region has a conclusion backed by code you have read. Do not fetch files unrelated to
+the flagged regions.
 
 ### Fetched File Format
 
@@ -887,20 +899,32 @@ let add_analysis_scope buf triage_signals =
       (Security_types.confidence_to_string confidence)
       (List.length triage_signals);
     Buffer.add_string buf
-      "Start from the flagged regions and direct callees/config references. Do not perform broad repository \
-       archaeology. If those bounded checks do not establish a concrete source/effect, sink/capability, and missing or \
-       inadequate control, return an empty `findings` array with a short note.\n\n";
+      "Start from the flagged regions. Follow each flagged value back to its origin and forward to its sink through \
+       the callers, callees, and config references that decide it, fetching those files. Stay on paths connected to \
+       the flagged regions. If those checks do not establish a concrete source/effect, sink/capability, and missing or \
+       inadequate control, return an empty `findings` array with a short note on what you checked.\n\n";
     (match confidence with
     | High ->
       Buffer.add_string buf
-        "Because the routing confidence is high, fetch additional files only when they directly close a specific \
-         evidence gap in an otherwise concrete chain.\n\n"
+        "Because the routing confidence is high, expect the deciding code to sit outside the diff: fetch the callers, \
+         callees, and controls the flagged regions depend on before concluding.\n\n"
     | Medium | Low ->
       Buffer.add_string buf
-        "Because the routing confidence is not high, treat this as a bounded verification pass: inspect changed \
-         regions and immediate dependencies first, and stop early if the concrete chain is not emerging.\n\n")
+        "Because the routing confidence is not high, treat this as a focused verification pass: check the flagged \
+         regions and fetch their immediate dependencies, then stop once each region has a conclusion backed by code \
+         you have read.\n\n")
 
-let build_input ~diff_text ~triage_signals ~file_paths ?correction () =
+let class_checklist = function
+  | Security_types.Policy_regression ->
+    "5. Account for every changed policy or permission artifact anywhere in the diff, not only the flagged regions: \
+     authorization policies such as Cedar, Puppet or configuration grants, ACLs, IAM, sudoers, and firewall rules. For \
+     each one, state in `notes` what access it grants compared with before and who gains it. A conclusion that one \
+     hunk tightens policy does not clear the others. Report an artifact that gives a principal broader actions, \
+     resources, or network reach than before, unless code or configuration you have read shows an equal or broader \
+     prior grant.\n"
+  | Injection | Xss | Command_injection | Authn | Authz | Ssrf | Path_traversal -> ""
+
+let build_input ~diff_text ~triage_signals ~file_paths ~max_steps ?correction () =
   let buf = Buffer.create (String.length diff_text + 512) in
   add_analysis_scope buf triage_signals;
   Buffer.add_string buf "## Triage Signals\n\n";
@@ -921,6 +945,24 @@ let build_input ~diff_text ~triage_signals ~file_paths ?correction () =
   Buffer.add_string buf Review_prompt.annotated_diff_format_explainer;
   Buffer.add_string buf "\n## Diff\n\n";
   Buffer.add_string buf diff_text;
+  Printf.bprintf buf
+    "\n\n\
+     ## Before You Answer\n\n\
+     You have up to %d turns, and each turn can fetch several files. A flow that crosses files usually takes more than \
+     one round of fetching.\n\n\
+     1. For each flagged region, name the facts outside the diff that your conclusion depends on: where the value \
+     comes from, what a called helper does, and whether a control applies. Fetch the files that hold them with \
+     `get_file_content` before writing the final JSON. Answer without fetching only when the diff itself shows the \
+     complete source, sink, and control for every flagged region.\n\
+     2. Judge new code on its own. Older code that uses the same pattern does not make a new instance safe.\n\
+     3. In `notes`, list each fetched file and the question it answered. For every concrete path you drop, cite the \
+     file and line you read that rules it out, or name the fact that no file in the repository could settle.\n\
+     4. Reach a conclusion for every flagged region. A conclusion about one hunk does not cover another.\n\
+     %s"
+    max_steps
+    (match triage_signals with
+    | [] -> ""
+    | first :: _ -> class_checklist first.vuln_class);
   (match correction with
   | None -> ()
   | Some correction ->

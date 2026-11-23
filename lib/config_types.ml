@@ -13,6 +13,19 @@ type vuln_class =
   | Path_traversal
   | Policy_regression
 
+let vuln_class_equal a b =
+  match a, b with
+  | Injection, Injection
+  | Xss, Xss
+  | Command_injection, Command_injection
+  | Authn, Authn
+  | Authz, Authz
+  | Ssrf, Ssrf
+  | Path_traversal, Path_traversal
+  | Policy_regression, Policy_regression ->
+    true
+  | (Injection | Xss | Command_injection | Authn | Authz | Ssrf | Path_traversal | Policy_regression), _ -> false
+
 let vuln_class_to_string = function
   | Injection -> "injection"
   | Xss -> "xss"
