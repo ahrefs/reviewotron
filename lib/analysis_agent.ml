@@ -916,14 +916,13 @@ let add_analysis_scope buf triage_signals =
 
 let class_checklist = function
   | Security_types.Policy_regression ->
-    Some
-      "5. Account for every changed policy or permission artifact anywhere in the diff, not only the flagged regions: \
-       authorization policies such as Cedar, Puppet or configuration grants, ACLs, IAM, sudoers, and firewall rules. \
-       For each one, state in `notes` what access it grants compared with before and who gains it. A conclusion that \
-       one hunk tightens policy does not clear the others. Report an artifact that gives a principal broader actions, \
-       resources, or network reach than before, unless code or configuration you have read shows an equal or broader \
-       prior grant.\n"
-  | Injection | Xss | Command_injection | Authn | Authz | Ssrf | Path_traversal -> None
+    "5. Account for every changed policy or permission artifact anywhere in the diff, not only the flagged regions: \
+     authorization policies such as Cedar, Puppet or configuration grants, ACLs, IAM, sudoers, and firewall rules. For \
+     each one, state in `notes` what access it grants compared with before and who gains it. A conclusion that one \
+     hunk tightens policy does not clear the others. Report an artifact that gives a principal broader actions, \
+     resources, or network reach than before, unless code or configuration you have read shows an equal or broader \
+     prior grant.\n"
+  | Injection | Xss | Command_injection | Authn | Authz | Ssrf | Path_traversal -> ""
 
 let build_input ~diff_text ~triage_signals ~file_paths ~max_steps ?correction () =
   let buf = Buffer.create (String.length diff_text + 512) in
@@ -958,11 +957,11 @@ let build_input ~diff_text ~triage_signals ~file_paths ~max_steps ?correction ()
      2. Judge new code on its own. Older code that uses the same pattern does not make a new instance safe.\n\
      3. In `notes`, list each fetched file and the question it answered. For every concrete path you drop, cite the \
      file and line you read that rules it out, or name the fact that no file in the repository could settle.\n\
-     4. Reach a conclusion for every flagged region. A conclusion about one hunk does not cover another.\n"
-    max_steps;
-  Stdlib.Option.iter (Buffer.add_string buf)
+     4. Reach a conclusion for every flagged region. A conclusion about one hunk does not cover another.\n\
+     %s"
+    max_steps
     (match triage_signals with
-    | [] -> None
+    | [] -> ""
     | first :: _ -> class_checklist first.vuln_class);
   (match correction with
   | None -> ()
